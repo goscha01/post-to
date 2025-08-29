@@ -101,73 +101,110 @@ router.get('/test-gmb/:accountId/:locationId', auth, async (req, res) => {
 router.get('/location/:locationId', auth, async (req, res) => {
   try {
     const { locationId } = req.params;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 3; // Show only 3 posts initially
+    const offset = (page - 1) * limit;
     
-         // Try to fetch real posts from Google My Business first
-     try {
-       // Extract account ID from the location path (assuming format: accounts/{accountId}/locations/{locationId})
-       const accountId = req.headers['x-gmb-account-id'] || '109194636448236279020'; // fallback
-       
-       console.log('Attempting to fetch real GMB posts...');
-       
-       // Try direct API call first
-       try {
-         const gmbResponse = await axios.get(
-           `https://mybusiness.googleapis.com/v4/accounts/${accountId}/locations/${locationId}/localPosts`,
-           {
-             headers: {
-               'Authorization': `Bearer ${req.user.accessToken}`,
-               'Content-Type': 'application/json'
-             }
-           }
-         );
-         
-         if (gmbResponse.data.localPosts && gmbResponse.data.localPosts.length > 0) {
-           // Convert GMB posts to our format
-           const realPosts = gmbResponse.data.localPosts.map(post => ({
-             id: post.name.split('/').pop(),
-             content: post.summary,
-             postType: post.topicType || 'STANDARD',
-             platform: 'google',
-             createdAt: post.createTime || new Date().toISOString(),
-             status: 'published',
-             gmbPost: post
-           }));
-           
-           console.log(`Found ${realPosts.length} real GMB posts for location ${locationId}`);
-           return res.json(realPosts);
-         }
-       } catch (v4Error) {
-         console.log('GMB v4 failed, trying alternative endpoint:', v4Error.message);
-         
-         // Try alternative endpoint
-         const gmbResponse = await axios.get(
-           `https://mybusinessaccountmanagement.googleapis.com/v1/accounts/${accountId}/locations/${locationId}/localPosts`,
-           {
-             headers: {
-               'Authorization': `Bearer ${req.user.accessToken}`,
-               'Content-Type': 'application/json'
-             }
-           }
-         );
-         
-         if (gmbResponse.data.localPosts && gmbResponse.data.localPosts.length > 0) {
-           // Convert GMB posts to our format
-           const realPosts = gmbResponse.data.localPosts.map(post => ({
-             id: post.name.split('/').pop(),
-             content: post.summary,
-             postType: post.topicType || 'STANDARD',
-             platform: 'google',
-             status: 'published',
-             gmbPost: post
-           }));
-           
-           console.log(`Found ${realPosts.length} real GMB posts for location ${locationId}`);
-           return res.json(realPosts);
-         }
-       }
-     } catch (gmbError) {
-       console.log('Could not fetch real GMB posts, using mock data:', gmbError.message);
-     }
+    // Try to fetch real posts from Google My Business first
+    try {
+      // Extract account ID from the location path (assuming format: accounts/{accountId}/locations/{locationId})
+      const accountId = req.headers['x-gmb-account-id'] || '109194636448236279020'; // fallback
+      
+      console.log('Attempting to fetch real GMB posts...');
+      
+      // Try direct API call first
+      try {
+        const gmbResponse = await axios.get(
+          `https://mybusiness.googleapis.com/v4/accounts/${accountId}/locations/${locationId}/localPosts`,
+          {
+            headers: {
+              'Authorization': `Bearer ${req.user.accessToken}`,
+              'Content-Type': 'application/json'
+            }
+          }
+        );
+        
+        if (gmbResponse.data.localPosts && gmbResponse.data.localPosts.length > 0) {
+          // Convert GMB posts to our format and sort by creation date (newest first)
+          const realPosts = gmbResponse.data.localPosts
+            .map(post => ({
+              id: post.name.split('/').pop(),
+              content: post.summary,
+              postType: post.topicType || 'STANDARD',
+              platform: 'google',
+              createdAt: post.createTime || new Date().toISOString(),
+              status: 'published',
+              gmbPost: post
+            }))
+            .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+          
+          // Apply pagination
+          const totalPosts = realPosts.length;
+          const paginatedPosts = realPosts.slice(offset, offset + limit);
+          
+          console.log(`Found ${totalPosts} real GMB posts for location ${locationId}, returning ${paginatedPosts.length} posts (page ${page})`);
+          
+          return res.json({
+            posts: paginatedPosts,
+            pagination: {
+              page,
+              limit,
+              total: totalPosts,
+              totalPages: Math.ceil(totalPosts / limit),
+              hasNext: page < Math.ceil(totalPosts / limit),
+              hasPrev: page > 1
+            }
+          });
+        }
+      } catch (v4Error) {
+        console.log('GMB v4 failed, trying alternative endpoint:', v4Error.message);
+        
+        // Try alternative endpoint
+        const gmbResponse = await axios.get(
+          `https://mybusinessaccountmanagement.googleapis.com/v1/accounts/${accountId}/locations/${locationId}/localPosts`,
+          {
+            headers: {
+              'Authorization': `Bearer ${req.user.accessToken}`,
+              'Content-Type': 'application/json'
+            }
+          }
+        );
+        
+        if (gmbResponse.data.localPosts && gmbResponse.data.localPosts.length > 0) {
+          // Convert GMB posts to our format and sort by creation date (newest first)
+          const realPosts = gmbResponse.data.localPosts
+            .map(post => ({
+              id: post.name.split('/').pop(),
+              content: post.summary,
+              postType: post.topicType || 'STANDARD',
+              platform: 'google',
+              status: 'published',
+              gmbPost: post
+            }))
+            .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+          
+          // Apply pagination
+          const totalPosts = realPosts.length;
+          const paginatedPosts = realPosts.slice(offset, offset + limit);
+          
+          console.log(`Found ${totalPosts} real GMB posts for location ${locationId}, returning ${paginatedPosts.length} posts (page ${page})`);
+          
+          return res.json({
+            posts: paginatedPosts,
+            pagination: {
+              page,
+              limit,
+              total: totalPosts,
+              totalPages: Math.ceil(totalPosts / limit),
+              hasNext: page < Math.ceil(totalPosts / limit),
+              hasPrev: page > 1
+            }
+          });
+        }
+      }
+    } catch (gmbError) {
+      console.log('Could not fetch real GMB posts, using mock data:', gmbError.message);
+    }
     
     // Fallback to mock data if GMB API fails
     const mockPosts = [
@@ -194,10 +231,97 @@ router.get('/location/:locationId', auth, async (req, res) => {
         platform: 'google',
         createdAt: new Date(Date.now() - 172800000).toISOString(), // 2 days ago
         status: 'scheduled'
+      },
+      {
+        id: '4',
+        content: 'New cleaning service packages available!',
+        postType: 'OFFER',
+        platform: 'google',
+        createdAt: new Date(Date.now() - 259200000).toISOString(), // 3 days ago
+        status: 'published'
+      },
+      {
+        id: '5',
+        content: 'Customer appreciation day this Friday!',
+        postType: 'EVENT',
+        platform: 'google',
+        createdAt: new Date(Date.now() - 345600000).toISOString(), // 4 days ago
+        status: 'scheduled'
+      },
+      {
+        id: '6',
+        content: 'Spring cleaning special - 15% off!',
+        postType: 'OFFER',
+        platform: 'google',
+        createdAt: new Date(Date.now() - 432000000).toISOString(), // 5 days ago
+        status: 'published'
+      },
+      {
+        id: '7',
+        content: 'Professional deep cleaning services',
+        postType: 'STANDARD',
+        platform: 'google',
+        createdAt: new Date(Date.now() - 518400000).toISOString(), // 6 days ago
+        status: 'published'
+      },
+      {
+        id: '8',
+        content: 'Eco-friendly cleaning products now available',
+        postType: 'STANDARD',
+        platform: 'google',
+        createdAt: new Date(Date.now() - 604800000).toISOString(), // 7 days ago
+        status: 'published'
+      },
+      {
+        id: '9',
+        content: 'Monthly maintenance packages',
+        postType: 'OFFER',
+        platform: 'google',
+        createdAt: new Date(Date.now() - 691200000).toISOString(), // 8 days ago
+        status: 'published'
+      },
+      {
+        id: '10',
+        content: 'Holiday cleaning schedule',
+        postType: 'EVENT',
+        platform: 'google',
+        createdAt: new Date(Date.now() - 777600000).toISOString(), // 9 days ago
+        status: 'scheduled'
+      },
+      {
+        id: '11',
+        content: 'Commercial cleaning services',
+        postType: 'STANDARD',
+        platform: 'google',
+        createdAt: new Date(Date.now() - 864000000).toISOString(), // 10 days ago
+        status: 'published'
+      },
+      {
+        id: '12',
+        content: 'Weekend cleaning appointments available',
+        postType: 'OFFER',
+        platform: 'google',
+        createdAt: new Date(Date.now() - 950400000).toISOString(), // 11 days ago
+        status: 'published'
       }
     ];
     
-    res.json(mockPosts);
+    // Sort mock posts by creation date (newest first) and apply pagination
+    const sortedMockPosts = mockPosts.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    const totalPosts = sortedMockPosts.length;
+    const paginatedPosts = sortedMockPosts.slice(offset, offset + limit);
+    
+    res.json({
+      posts: paginatedPosts,
+      pagination: {
+        page,
+        limit,
+        total: totalPosts,
+        totalPages: Math.ceil(totalPosts / limit),
+        hasNext: page < Math.ceil(totalPosts / limit),
+        hasPrev: page > 1
+      }
+    });
   } catch (error) {
     console.error('Error fetching posts:', error);
     res.status(500).json({ error: 'Failed to fetch posts' });

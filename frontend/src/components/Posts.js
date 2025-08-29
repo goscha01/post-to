@@ -21,6 +21,18 @@ const Posts = () => {
   const [loading, setLoading] = useState(true);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [selectedProfile, setSelectedProfile] = useState('');
+  
+  // Pagination state
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [totalPosts, setTotalPosts] = useState(0);
+  const [hasNext, setHasNext] = useState(false);
+  const [hasPrev, setHasPrev] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  
+  // Expanded posts state
+  const [expandedPosts, setExpandedPosts] = useState(new Set());
+  
   const [formData, setFormData] = useState({
     title: '',
     summary: '',
@@ -38,6 +50,13 @@ const Posts = () => {
       fetchData();
     }
   }, [isAuthenticated]);
+
+  // Auto-fetch posts when profile is selected
+  useEffect(() => {
+    if (selectedProfile) {
+      fetchPosts(selectedProfile, 1, false);
+    }
+  }, [selectedProfile]);
 
   const fetchData = async () => {
     try {
@@ -82,7 +101,7 @@ const Posts = () => {
     }
   };
 
-  const fetchPosts = async (locationId) => {
+  const fetchPosts = async (locationId, page = 1, append = false) => {
     if (!locationId) return;
     
     try {
@@ -91,14 +110,39 @@ const Posts = () => {
       const locationIdOnly = profileParts[profileParts.length - 1];
       const accountId = profileParts[1];
       
-      console.log('Fetching posts for location:', locationIdOnly, 'account:', accountId);
+      console.log('Fetching posts for location:', locationIdOnly, 'account:', accountId, 'page:', page);
       
-      const response = await axios.get(`http://localhost:3001/api/posts/location/${locationIdOnly}`, {
+      const response = await axios.get(`http://localhost:3001/api/posts/location/${locationIdOnly}?page=${page}&limit=3`, {
         headers: {
           'x-gmb-account-id': accountId
         }
       });
-      setPosts(response.data);
+      
+      // Handle pagination response
+      if (response.data.posts && response.data.pagination) {
+        if (append) {
+          // Append posts for load more functionality
+          setPosts(prevPosts => [...prevPosts, ...response.data.posts]);
+        } else {
+          // Replace posts for new page or initial load
+          setPosts(response.data.posts);
+        }
+        
+        // Update pagination state
+        setCurrentPage(response.data.pagination.page);
+        setTotalPages(response.data.pagination.totalPages);
+        setTotalPosts(response.data.pagination.total);
+        setHasNext(response.data.pagination.hasNext);
+        setHasPrev(response.data.pagination.hasPrev);
+      } else {
+        // Fallback for old response format
+        setPosts(response.data);
+        setCurrentPage(1);
+        setTotalPages(1);
+        setTotalPosts(response.data.length);
+        setHasNext(false);
+        setHasPrev(false);
+      }
     } catch (error) {
       console.error('Error fetching posts:', error);
     }
@@ -266,8 +310,10 @@ const Posts = () => {
       
       const response = await axios.post('http://localhost:3001/api/posts', postData);
       
-      // Refresh posts list
-      await fetchPosts(selectedProfile);
+      // Refresh posts list and reset to first page
+      setCurrentPage(1);
+      setExpandedPosts(new Set()); // Reset expanded posts when creating new post
+      await fetchPosts(selectedProfile, 1, false);
       
       // Reset form and close modal
       setFormData({
@@ -298,6 +344,54 @@ const Posts = () => {
       console.error('Error deleting post:', error);
       alert('Failed to delete post. Please try again.');
     }
+  };
+
+  const handleLoadMore = async () => {
+    if (!hasNext || loadingMore) return;
+    
+    setLoadingMore(true);
+    try {
+      await fetchPosts(selectedProfile, currentPage + 1, true);
+    } catch (error) {
+      console.error('Error loading more posts:', error);
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+
+  const handlePageChange = async (newPage) => {
+    if (newPage < 1 || newPage > totalPages) return;
+    
+    setCurrentPage(newPage);
+    await fetchPosts(selectedProfile, newPage, false);
+  };
+
+  // Helper function to truncate text to first sentence
+  const truncateToFirstSentence = (text, maxLength = 150) => {
+    if (!text) return '';
+    
+    // Find the first sentence (ends with ., !, or ?)
+    const firstSentenceMatch = text.match(/^[^.!?]+[.!?]/);
+    if (firstSentenceMatch) {
+      const firstSentence = firstSentenceMatch[0];
+      return firstSentence.length <= maxLength ? firstSentence : firstSentence.substring(0, maxLength) + '...';
+    }
+    
+    // If no sentence ending found, truncate by length
+    return text.length <= maxLength ? text : text.substring(0, maxLength) + '...';
+  };
+
+  // Toggle expanded state for a post
+  const toggleExpanded = (postId) => {
+    setExpandedPosts(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(postId)) {
+        newSet.delete(postId);
+      } else {
+        newSet.add(postId);
+      }
+      return newSet;
+    });
   };
 
   const getPostTypeIcon = (type) => {
@@ -375,7 +469,9 @@ const Posts = () => {
           value={selectedProfile}
           onChange={(e) => {
             setSelectedProfile(e.target.value);
-            fetchPosts(e.target.value);
+            setCurrentPage(1); // Reset to first page when changing profiles
+            setExpandedPosts(new Set()); // Reset expanded posts when changing profiles
+            fetchPosts(e.target.value, 1, false);
           }}
           className="block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
         >
@@ -397,7 +493,11 @@ const Posts = () => {
             <div className="flex items-center justify-between">
             <h2 className="text-lg font-medium text-gray-900">Posts</h2>
             <button
-              onClick={() => fetchPosts(selectedProfile)}
+              onClick={() => {
+                setCurrentPage(1);
+                setExpandedPosts(new Set()); // Reset expanded posts when refreshing
+                fetchPosts(selectedProfile, 1, false);
+              }}
               className="inline-flex items-center px-3 py-1 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50"
             >
               <Clock className="h-4 w-4 mr-1" />
@@ -407,50 +507,105 @@ const Posts = () => {
           </div>
           <div className="divide-y divide-gray-200">
             {posts.length > 0 ? (
-              posts.map((post) => (
-                <div key={post.id} className="px-6 py-4">
-                  <div className="flex items-start justify-between">
-                    <div className="flex-1">
-                      <div className="flex items-center space-x-3">
-                        <div className="flex-shrink-0">
-                          {getPostTypeIcon(post.postType)}
-                        </div>
-                        <h3 className="text-lg font-medium text-gray-900">{post.content || 'Untitled Post'}</h3>
-                        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getStatusColor(post.status)}`}>
-                          {post.status}
-                        </span>
-                      </div>
-                      <p className="mt-1 text-sm text-gray-600">{post.content}</p>
-                      <div className="mt-2 flex items-center space-x-4 text-sm text-gray-500">
-                        <span className="flex items-center">
-                          <Clock className="h-4 w-4 mr-1" />
-                          {post.createdAt ? new Date(post.createdAt).toLocaleDateString() : 'Date not available'}
-                        </span>
-                        {post.status === 'published' && (
-                          <span className="flex items-center">
-                            <CheckCircle className="h-4 w-4 mr-1" />
-                            Published
+              <>
+                {posts.map((post) => (
+                  <div key={post.id} className="px-6 py-4">
+                    <div className="flex items-start justify-between">
+                      <div className="flex-1">
+                        <div className="flex items-center space-x-3">
+                          <div className="flex-shrink-0">
+                            {getPostTypeIcon(post.postType)}
+                          </div>
+                          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getStatusColor(post.status)}`}>
+                            {post.status}
                           </span>
-                        )}
+                        </div>
+                        <div className="mt-2 text-base text-gray-900">
+                          {expandedPosts.has(post.id) ? (
+                            <div>
+                              <p>{post.content}</p>
+                              <button
+                                onClick={() => toggleExpanded(post.id)}
+                                className="text-primary-600 hover:text-primary-700 font-medium mt-1"
+                              >
+                                Show less
+                              </button>
+                            </div>
+                          ) : (
+                            <div>
+                              <p>{truncateToFirstSentence(post.content)}</p>
+                              {post.content && post.content.length > 150 && (
+                                <button
+                                  onClick={() => toggleExpanded(post.id)}
+                                  className="text-primary-600 hover:text-primary-700 font-medium mt-1"
+                                >
+                                  ...more
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                        <div className="mt-2 flex items-center space-x-4 text-sm text-gray-500">
+                          <span className="flex items-center">
+                            <Clock className="h-4 w-4 mr-1" />
+                            {post.createdAt ? new Date(post.createdAt).toLocaleDateString() : 'Date not available'}
+                          </span>
+                          {post.status === 'published' && (
+                            <span className="flex items-center">
+                              <CheckCircle className="h-4 w-4 mr-1" />
+                              Published
+                            </span>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                    <div className="ml-4 flex-shrink-0 flex items-center space-x-2">
-                      <button
-                        onClick={() => {/* Handle edit */}}
-                        className="text-gray-400 hover:text-gray-600"
-                      >
-                        <Edit className="h-4 w-4" />
-                      </button>
-                      <button
-                        onClick={() => handleDeletePost(post.id)}
-                        className="text-red-400 hover:text-red-600"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
+                      <div className="ml-4 flex-shrink-0 flex items-center space-x-2">
+                        <button
+                          onClick={() => {/* Handle edit */}}
+                          className="text-gray-400 hover:text-gray-600"
+                        >
+                          <Edit className="h-4 w-4" />
+                        </button>
+                        <button
+                          onClick={() => handleDeletePost(post.id)}
+                          className="text-red-400 hover:text-red-600"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
                     </div>
                   </div>
+                ))}
+                
+                {/* Load More Section */}
+                <div className="px-6 py-4 border-t border-gray-200">
+                  <div className="flex items-center justify-between">
+                    <div className="text-sm text-gray-700">
+                      <span>Showing {posts.length} of {totalPosts} posts</span>
+                    </div>
+                    
+                    {/* Load More Button */}
+                    {hasNext && (
+                      <button
+                        onClick={handleLoadMore}
+                        disabled={loadingMore}
+                        className="inline-flex items-center px-4 py-2 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-primary-600 hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {loadingMore ? (
+                          <>
+                            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                            Loading...
+                          </>
+                        ) : (
+                          <>
+                            <Plus className="h-4 w-4 mr-2" />
+                            Load More
+                          </>
+                        )}
+                      </button>
+                    )}
+                  </div>
                 </div>
-              ))
+              </>
             ) : (
               <div className="px-6 py-8 text-center">
                 <FileText className="mx-auto h-12 w-12 text-gray-400" />
