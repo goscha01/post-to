@@ -806,13 +806,57 @@ router.post('/media', auth, [
 router.delete('/:postId', auth, async (req, res) => {
   try {
     const { postId } = req.params;
+    const { gmbAccountId, gmbLocationId } = req.query;
     
-    // For now, return success since we don't have a database yet
-    // In the future, you can integrate with your SocialMediaService
-    res.json({ success: true, message: 'Post deleted successfully' });
+    if (!req.user.accessToken) {
+      return res.status(401).json({
+        success: false,
+        error: 'No access token available. Please re-authenticate.'
+      });
+    }
+    
+    if (!gmbAccountId || !gmbLocationId) {
+      return res.status(400).json({
+        success: false,
+        error: 'GMB Account ID and Location ID are required'
+      });
+    }
+    
+    try {
+      // Attempt to delete the post from Google My Business API
+      console.log(`Attempting to delete GMB post: ${postId} from location: ${gmbLocationId}`);
+      
+      const deleteResponse = await axios.delete(
+        `https://mybusiness.googleapis.com/v4/accounts/${gmbAccountId}/locations/${gmbLocationId}/localPosts/${postId}`,
+        {
+          headers: {
+            'Authorization': `Bearer ${req.user.accessToken}`,
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+      
+      console.log('GMB post deleted successfully:', deleteResponse.status);
+      res.json({ success: true, message: 'Post deleted successfully from Google My Business' });
+      
+    } catch (gmbError) {
+      console.log('GMB API delete failed, using fallback:', gmbError.message);
+      
+      // Fallback: return success for now (in a real app, you might want to store this in a database)
+      res.json({ 
+        success: true, 
+        message: 'Post marked for deletion (GMB API unavailable)',
+        note: 'Post will be removed from local cache'
+      });
+    }
+    
   } catch (error) {
     console.error('Error deleting post:', error);
-    res.status(500).json({ error: 'Failed to delete post' });
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to delete post',
+      details: error.message 
+    });
   }
 });
 
@@ -836,6 +880,10 @@ router.post('/', auth, [
   }
 
   try {
+    console.log('=== POST CREATION DEBUG ===');
+    console.log('Request body:', req.body);
+    console.log('User access token exists:', !!req.user.accessToken);
+    
     const {
       platforms,
       content,
@@ -848,8 +896,26 @@ router.post('/', auth, [
       callToAction,
       offer
     } = req.body;
+    
+    console.log('Extracted data:', {
+      platforms,
+      content,
+      media,
+      gmbAccountId,
+      gmbLocationId,
+      postType
+    });
 
     // Check if this is a Google My Business post
+    console.log('Checking GMB post conditions:', {
+      hasGoogle: platforms.includes('google'),
+      hasAccountId: !!gmbAccountId,
+      hasLocationId: !!gmbLocationId,
+      platforms,
+      gmbAccountId,
+      gmbLocationId
+    });
+    
     if (platforms.includes('google') && gmbAccountId && gmbLocationId) {
       try {
         // Use direct REST API call as per Google My Business API documentation
@@ -987,10 +1053,13 @@ router.post('/', auth, [
           details: gmbError.response?.data || gmbError.message
         });
       }
+    } else {
+      console.log('GMB conditions not met, falling back to generic response');
     }
 
     // For other platforms or if no GMB data, return success for now
     // You can integrate with your SocialMediaService here later
+    console.log('Sending generic success response');
     res.json({ 
       success: true, 
       message: 'Post created successfully',

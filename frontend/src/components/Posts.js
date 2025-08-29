@@ -36,8 +36,13 @@ const Posts = () => {
   // Expanded posts state
   const [expandedPosts, setExpandedPosts] = useState(new Set());
   
+  // Delete loading state
+  const [deletingPosts, setDeletingPosts] = useState(new Set());
+  
+  // Notification state
+  const [notification, setNotification] = useState(null);
+  
   const [formData, setFormData] = useState({
-    title: '',
     summary: '',
     postType: 'STANDARD',
     callToAction: {
@@ -206,7 +211,7 @@ const Posts = () => {
       // Prepare post data based on post type
       const postData = {
         platforms: ['google'],
-        content: formData.summary,
+        content: formData.summary, // This maps to the backend 'content' field
         gmbAccountId: accountId,
         gmbLocationId: locationId,
         postType: formData.postType
@@ -228,7 +233,7 @@ const Posts = () => {
       // Add event data for EVENT posts
       if (formData.postType === 'EVENT') {
         postData.event = {
-          title: formData.title || 'Event',
+          title: 'Event',
           schedule: {
             startDate: {
               year: new Date().getFullYear(),
@@ -325,6 +330,14 @@ const Posts = () => {
       }
 
       console.log('Sending post data:', postData);
+      console.log('Post data structure:', {
+        platforms: postData.platforms,
+        content: postData.content,
+        gmbAccountId: postData.gmbAccountId,
+        gmbLocationId: postData.gmbLocationId,
+        postType: postData.postType,
+        hasMedia: !!postData.media
+      });
       
       const response = await axios.post('http://localhost:3001/api/posts', postData);
       
@@ -352,15 +365,50 @@ const Posts = () => {
   };
 
   const handleDeletePost = async (postId) => {
-    if (!window.confirm('Are you sure you want to delete this post?')) return;
+    // Get post content for confirmation
+    const post = posts.find(p => p.id === postId);
+    const postContent = post?.content || 'this post';
+    
+    if (!window.confirm(`Are you sure you want to delete "${postContent.substring(0, 50)}${postContent.length > 50 ? '...' : ''}"?\n\nThis action cannot be undone.`)) return;
     
     try {
-      await axios.delete(`http://localhost:3001/api/posts/${postId}`);
-      await fetchPosts(selectedProfile);
-      alert('Post deleted successfully!');
+      // Set loading state for this specific post
+      setDeletingPosts(prev => new Set(prev).add(postId));
+      
+      // Extract account and location IDs from selectedProfile
+      const profileParts = selectedProfile.split('/');
+      const locationId = profileParts[profileParts.length - 1];
+      const accountId = profileParts[1]; // accounts/{accountId}/locations/{locationId}
+      
+      if (!accountId || !locationId) {
+        alert('Error: Could not determine account or location ID. Please select a different profile.');
+        return;
+      }
+      
+      await axios.delete(`http://localhost:3001/api/posts/${postId}`, {
+        params: {
+          gmbAccountId: accountId,
+          gmbLocationId: locationId
+        }
+      });
+      
+      // Refresh the current page of posts
+      await fetchPosts(selectedProfile, currentPage, false);
+      showNotification('Post deleted successfully!', 'success');
     } catch (error) {
       console.error('Error deleting post:', error);
-      alert('Failed to delete post. Please try again.');
+      if (error.response?.data?.error) {
+        showNotification(`Failed to delete post: ${error.response.data.error}`, 'error');
+      } else {
+        showNotification('Failed to delete post. Please try again.', 'error');
+      }
+    } finally {
+      // Clear loading state
+      setDeletingPosts(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(postId);
+        return newSet;
+      });
     }
   };
 
@@ -399,6 +447,12 @@ const Posts = () => {
     return text.length <= maxLength ? text : text.substring(0, maxLength) + '...';
   };
 
+  // Show notification
+  const showNotification = (message, type = 'success') => {
+    setNotification({ message, type });
+    setTimeout(() => setNotification(null), 3000);
+  };
+  
   // Toggle expanded state for a post
   const toggleExpanded = (postId) => {
     setExpandedPosts(prev => {
@@ -460,6 +514,25 @@ const Posts = () => {
 
   return (
     <div className="space-y-6">
+      {/* Notification */}
+      {notification && (
+        <div className={`p-4 rounded-md ${
+          notification.type === 'success' 
+            ? 'bg-green-50 border border-green-200 text-green-800' 
+            : 'bg-red-50 border border-red-200 text-red-800'
+        }`}>
+          <div className="flex items-center justify-between">
+            <span>{notification.message}</span>
+            <button
+              onClick={() => setNotification(null)}
+              className="text-gray-400 hover:text-gray-600"
+            >
+              ×
+            </button>
+            </div>
+        </div>
+      )}
+      
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -542,10 +615,19 @@ const Posts = () => {
                           </button>
                           <button
                             onClick={() => handleDeletePost(post.id)}
-                            className="text-red-400 hover:text-red-600 p-1 rounded hover:bg-red-50"
-                            title="Delete post"
+                            disabled={deletingPosts.has(post.id)}
+                            className={`p-1 rounded transition-colors ${
+                              deletingPosts.has(post.id)
+                                ? 'text-gray-400 cursor-not-allowed'
+                                : 'text-red-400 hover:text-red-600 hover:bg-red-50'
+                            }`}
+                            title={deletingPosts.has(post.id) ? 'Deleting...' : 'Delete post'}
                           >
-                            <Trash2 className="h-4 w-4" />
+                            {deletingPosts.has(post.id) ? (
+                              <div className="h-4 w-4 border-2 border-gray-400 border-t-transparent rounded-full animate-spin"></div>
+                            ) : (
+                              <Trash2 className="h-4 w-4" />
+                            )}
                           </button>
                         </div>
                       </div>
@@ -704,16 +786,7 @@ const Posts = () => {
                   </select>
                 </div>
                 
-                <div>
-                  <label className="block text-sm font-medium text-gray-700">Title</label>
-                  <input
-                    type="text"
-                    value={formData.title}
-                    onChange={(e) => setFormData({ ...formData, title: e.target.value })}
-                    className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
-                    required
-                  />
-                </div>
+
                 
                 <div>
                   <label className="block text-sm font-medium text-gray-700">Summary</label>
