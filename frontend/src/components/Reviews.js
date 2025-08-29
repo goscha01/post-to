@@ -114,7 +114,7 @@ const Reviews = () => {
   };
 
   const handleDeleteReply = async (reviewId) => {
-    if (!confirm('Are you sure you want to delete this reply?')) return;
+    if (!window.confirm('Are you sure you want to delete this reply?')) return;
     
     try {
       await axios.delete(`http://localhost:3001/api/reviews/${reviewId}/reply`);

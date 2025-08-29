@@ -176,6 +176,15 @@ router.get('/location/:locationId', auth, async (req, res) => {
                        thumbnailUrl: mediaItem.thumbnailUrl || mediaItem.thumbnail || null,
                        altText: mediaItem.altText || 'Post image'
                      };
+                     
+                     // Ensure Google Photos URLs have the proper format with query parameters
+                     if (extracted.sourceUrl && extracted.sourceUrl.includes('lh3.googleusercontent.com')) {
+                       // If the URL doesn't have query parameters, add them
+                       if (!extracted.sourceUrl.includes('=')) {
+                         extracted.sourceUrl = `${extracted.sourceUrl}=h305-no`;
+                       }
+                     }
+                     
                      console.log('Extracted media item:', extracted);
                      return extracted;
                    });
@@ -265,13 +274,25 @@ router.get('/location/:locationId', auth, async (req, res) => {
                  console.log('Post has media:', post.media.length, 'items');
                  
                  // Extract media information from the post
-                 media = post.media.map(mediaItem => ({
-                   id: mediaItem.name?.split('/').pop() || `media-${Date.now()}`,
-                   mediaFormat: mediaItem.mediaFormat || 'PHOTO',
-                   sourceUrl: mediaItem.googleUrl || mediaItem.sourceUrl || mediaItem.url || mediaItem.mediaUrl || null,
-                   thumbnailUrl: mediaItem.thumbnailUrl || mediaItem.thumbnail || null,
-                   altText: mediaItem.altText || 'Post image'
-                 }));
+                 media = post.media.map(mediaItem => {
+                   const extracted = {
+                     id: mediaItem.name?.split('/').pop() || `media-${Date.now()}`,
+                     mediaFormat: mediaItem.mediaFormat || 'PHOTO',
+                     sourceUrl: mediaItem.googleUrl || mediaItem.sourceUrl || mediaItem.url || mediaItem.mediaUrl || null,
+                     thumbnailUrl: mediaItem.thumbnailUrl || mediaItem.thumbnail || null,
+                     altText: mediaItem.altText || 'Post image'
+                   };
+                   
+                   // Ensure Google Photos URLs have the proper format with query parameters
+                   if (extracted.sourceUrl && extracted.sourceUrl.includes('lh3.googleusercontent.com')) {
+                     // If the URL doesn't have query parameters, add them
+                     if (!extracted.sourceUrl.includes('=')) {
+                       extracted.sourceUrl = `${extracted.sourceUrl}=h305-no`;
+                     }
+                   }
+                   
+                   return extracted;
+                 });
                }
              } catch (mediaError) {
                console.log('Could not fetch media for post:', mediaError.message);
@@ -578,6 +599,7 @@ router.post('/media', auth, [
       category, 
       hasSourceUrl: !!sourceUrl, 
       hasFileData: !!fileData,
+      sourceUrl: sourceUrl,
       userId: req.user.userId,
       accessTokenLength: req.user.accessToken ? req.user.accessToken.length : 0
     });
@@ -628,7 +650,8 @@ router.post('/media', auth, [
                category: category
              },
              sourceUrl: sourceUrl,
-             googleUrl: sourceUrl // Ensure both sourceUrl and googleUrl are available
+             googleUrl: sourceUrl, // Ensure both sourceUrl and googleUrl are available
+             url: sourceUrl // Add url field for consistency
            }
          };
        }
@@ -717,7 +740,8 @@ router.post('/media', auth, [
                  category: category
                },
                sourceUrl: `https://example.com/media/${Date.now()}.jpg`, // Mock URL for post creation
-               googleUrl: `https://example.com/media/${Date.now()}.jpg` // Ensure both sourceUrl and googleUrl are available
+               googleUrl: `https://example.com/media/${Date.now()}.jpg`, // Ensure both sourceUrl and googleUrl are available
+               url: `https://example.com/media/${Date.now()}.jpg` // Add url field for consistency
              }
            };
          }
@@ -726,18 +750,19 @@ router.post('/media', auth, [
       } catch (uploadError) {
         console.log('Real GMB file upload failed, using fallback:', uploadError.message);
         
-        // Fallback to mock response if real API fails
-        mediaResponse = {
-          data: {
-            name: `locations/${gmbLocationId}/media/fallback-${Date.now()}`,
-            mediaFormat: mediaFormat,
-            locationAssociation: {
-              category: category
-            },
-            sourceUrl: `https://example.com/fallback-${Date.now()}.jpg`, // Add fallback sourceUrl
-            googleUrl: `https://example.com/fallback-${Date.now()}.jpg` // Add fallback googleUrl
-          }
-        };
+                 // Fallback to mock response if real API fails
+         mediaResponse = {
+           data: {
+             name: `locations/${gmbLocationId}/media/fallback-${Date.now()}`,
+             mediaFormat: mediaFormat,
+             locationAssociation: {
+               category: category
+             },
+             sourceUrl: `https://example.com/fallback-${Date.now()}.jpg`, // Add fallback sourceUrl
+             googleUrl: `https://example.com/fallback-${Date.now()}.jpg`, // Add fallback googleUrl
+             url: `https://example.com/fallback-${Date.now()}.jpg` // Add url field for consistency
+           }
+         };
       }
     } else {
       return res.status(400).json({
@@ -962,10 +987,17 @@ router.post('/', auth, [
                  console.log('Detected media format from URL:', mediaFormat);
                }
                
-               const mediaItemToAdd = {
-                 mediaFormat: mediaFormat,
-                 sourceUrl: mediaItem.sourceUrl || mediaItem.url
-               };
+                               const mediaItemToAdd = {
+                  mediaFormat: mediaFormat,
+                  sourceUrl: mediaItem.sourceUrl || mediaItem.url
+                };
+                
+                // Ensure Google Photos URLs have proper format
+                if (mediaItemToAdd.sourceUrl && mediaItemToAdd.sourceUrl.includes('lh3.googleusercontent.com')) {
+                  if (!mediaItemToAdd.sourceUrl.includes('=')) {
+                    mediaItemToAdd.sourceUrl = `${mediaItemToAdd.sourceUrl}=h305-no`;
+                  }
+                }
                
                mediaItems.push(mediaItemToAdd);
                console.log('Added media item to array:', JSON.stringify(mediaItemToAdd, null, 2));

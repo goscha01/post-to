@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { useAuth } from '../contexts/AuthContext';
+import ImageUploader from './react_imgbb_uploader.js';
 import {
   FileText,
   Plus,
@@ -23,6 +24,7 @@ const Posts = () => {
   const [profiles, setProfiles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showImageUploaderModal, setShowImageUploaderModal] = useState(false);
   const [selectedProfile, setSelectedProfile] = useState('');
   
   // Pagination state
@@ -137,6 +139,9 @@ const Posts = () => {
         if (response.data.posts[0].media && response.data.posts[0].media.length > 0) {
           console.log('First media item:', response.data.posts[0].media[0]);
           console.log('First media item keys:', Object.keys(response.data.posts[0].media[0]));
+          console.log('First media item sourceUrl:', response.data.posts[0].media[0].sourceUrl);
+          console.log('First media item url:', response.data.posts[0].media[0].url);
+          console.log('First media item thumbnailUrl:', response.data.posts[0].media[0].thumbnailUrl);
         }
       }
       console.log('=== END FRONTEND POSTS DEBUG ===');
@@ -178,19 +183,27 @@ const Posts = () => {
     
     // Validate media URLs
     const validMediaUrls = formData.mediaUrls.filter(url => url.trim() !== '');
+    console.log('=== URL VALIDATION DEBUG ===');
+    console.log('All media URLs:', formData.mediaUrls);
+    console.log('Valid media URLs:', validMediaUrls);
+    
     const invalidUrls = validMediaUrls.filter(url => {
       try {
         new URL(url);
+        console.log('Valid URL:', url);
         return false;
-      } catch {
+      } catch (error) {
+        console.log('Invalid URL:', url, 'Error:', error.message);
         return true;
       }
     });
     
     if (invalidUrls.length > 0) {
+      console.log('Invalid URLs found:', invalidUrls);
       alert('Please enter valid image URLs for all media files.');
       return;
     }
+    console.log('=== END URL VALIDATION DEBUG ===');
     
     try {
       // Extract account and location IDs from selectedProfile
@@ -219,11 +232,7 @@ const Posts = () => {
          postType: formData.postType
        };
 
-       // Always add a mock image for testing media functionality
-       const mockImageUrl = 'https://picsum.photos/400/300?random=' + Date.now();
-       console.log('Adding mock image URL for testing:', mockImageUrl);
-
-      // Add call to action for OFFER posts
+       // Add call to action for OFFER posts
       if (formData.postType === 'OFFER' && formData.callToAction.url) {
         postData.callToAction = {
           actionType: formData.callToAction.type === 'BOOK' ? 'BOOK' : 
@@ -329,10 +338,14 @@ const Posts = () => {
       // Upload URLs
       if (formData.mediaUrls.length > 0) {
         try {
-          console.log('Uploading media URLs...');
-          const urlPromises = formData.mediaUrls
-            .filter(url => url.trim() !== '') // Filter out empty URLs
-            .map(async (url) => {
+          console.log('=== URL UPLOAD DEBUG ===');
+          console.log('URLs to upload:', formData.mediaUrls);
+          const validUrls = formData.mediaUrls.filter(url => url.trim() !== '');
+          console.log('Valid URLs:', validUrls);
+          
+          const urlPromises = validUrls.map(async (url, index) => {
+            console.log(`Processing URL ${index + 1}:`, url);
+            try {
               const mediaResponse = await axios.post('http://localhost:3001/api/posts/media', {
                 mediaFormat: 'PHOTO',
                 sourceUrl: url,
@@ -340,15 +353,25 @@ const Posts = () => {
                 gmbLocationId: locationId,
                 category: 'ADDITIONAL'
               });
+              console.log(`URL ${index + 1} upload response:`, mediaResponse.data);
               return mediaResponse.data.media;
-            });
+            } catch (error) {
+              console.error(`URL ${index + 1} upload failed:`, error.response?.data || error.message);
+              throw error;
+            }
+          });
 
           const uploadedUrls = await Promise.all(urlPromises);
+          console.log('=== URL UPLOAD SUCCESS ===');
           console.log('URLs uploaded successfully:', uploadedUrls);
           console.log('Uploaded URLs structure:', uploadedUrls.map(u => ({ name: u.name, mediaFormat: u.mediaFormat, sourceUrl: u.sourceUrl })));
           allMedia.push(...uploadedUrls);
+          console.log('=== END URL UPLOAD DEBUG ===');
         } catch (urlError) {
+          console.error('=== URL UPLOAD ERROR ===');
           console.error('Error uploading URLs:', urlError);
+          console.error('Error response:', urlError.response?.data);
+          console.error('Error status:', urlError.response?.status);
           alert('Warning: Some URLs failed to upload. Post will be created without those images.');
         }
       }
@@ -358,16 +381,9 @@ const Posts = () => {
        console.log('All media array before mapping:', allMedia);
        console.log('All media array length:', allMedia.length);
        
-       // Always add the mock image for testing
-       const mockMediaItem = {
-         mediaFormat: 'PHOTO',
-         sourceUrl: mockImageUrl
-       };
-       
        if (allMedia.length > 0) {
-         // Combine real media with mock image
-         const combinedMedia = [mockMediaItem, ...allMedia];
-         postData.media = combinedMedia.map(media => {
+         // Use only real media
+         postData.media = allMedia.map(media => {
            const mappedMedia = {
              mediaFormat: media.mediaFormat,
              sourceUrl: media.sourceUrl
@@ -375,11 +391,10 @@ const Posts = () => {
            console.log('Mapped media item:', mappedMedia);
            return mappedMedia;
          });
-         console.log('Final postData.media array with mock image:', postData.media);
+         console.log('Final postData.media array:', postData.media);
        } else {
-         // Only mock image if no real media
-         postData.media = [mockMediaItem];
-         console.log('Added only mock image to post data:', postData.media);
+         // No media to add
+         console.log('No media to add to post data');
        }
        console.log('=== END FRONTEND MEDIA DEBUG ===');
 
@@ -506,10 +521,30 @@ const Posts = () => {
     return text.length <= maxLength ? text : text.substring(0, maxLength) + '...';
   };
 
+  // Helper function to validate URL
+  const isValidUrl = (string) => {
+    try {
+      new URL(string);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  };
+
   // Show notification
   const showNotification = (message, type = 'success') => {
     setNotification({ message, type });
     setTimeout(() => setNotification(null), 3000);
+  };
+
+  // Handle adding uploaded image URL to form
+  const handleImageUploaded = (imageUrl) => {
+    setFormData(prev => ({
+      ...prev,
+      mediaUrls: [...prev.mediaUrls, imageUrl]
+    }));
+    setShowImageUploaderModal(false);
+    showNotification('Image uploaded successfully! You can now add it to your post.', 'success');
   };
   
   // Toggle expanded state for a post
@@ -636,6 +671,157 @@ const Posts = () => {
         </select>
       </div>
 
+      {/* Image Uploader Section */}
+      <div className="bg-white shadow rounded-lg p-6">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h2 className="text-lg font-medium text-gray-900">Image Uploader</h2>
+            <p className="text-sm text-gray-500">Upload images to ImgBB for your posts</p>
+          </div>
+          <button
+            onClick={() => setShowImageUploaderModal(true)}
+            className="inline-flex items-center px-3 py-2 border border-primary-300 shadow-sm text-sm font-medium rounded-md text-primary-700 bg-primary-50 hover:bg-primary-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500"
+          >
+            <Plus className="h-4 w-4 mr-2" />
+            Open Uploader
+          </button>
+        </div>
+        
+                 {/* Quick Upload Preview */}
+         <div className="bg-gray-50 rounded-lg p-4">
+           <p className="text-sm text-gray-600 mb-3">
+             Use the ImgBB image uploader to get direct URLs for your posts. Uploaded images will be automatically added to your next post.
+           </p>
+           
+           {/* Quick URL Input */}
+           <div className="mb-4 p-3 bg-white rounded border">
+             <label className="block text-sm font-medium text-gray-700 mb-2">Quick Add Image URL</label>
+             <div className="flex gap-2">
+               <input
+                 type="url"
+                 placeholder="https://example.com/image.jpg"
+                 className="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                 onKeyPress={(e) => {
+                   if (e.key === 'Enter') {
+                     e.preventDefault();
+                     const url = e.target.value.trim();
+                     if (url && isValidUrl(url)) {
+                       setFormData(prev => ({
+                         ...prev,
+                         mediaUrls: [...prev.mediaUrls, url]
+                       }));
+                       e.target.value = '';
+                     }
+                   }
+                 }}
+               />
+               <button
+                 onClick={(e) => {
+                   const input = e.target.previousElementSibling;
+                   const url = input.value.trim();
+                   if (url && isValidUrl(url)) {
+                     setFormData(prev => ({
+                       ...prev,
+                       mediaUrls: [...prev.mediaUrls, url]
+                     }));
+                     input.value = '';
+                   }
+                 }}
+                 className="px-3 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600 text-sm"
+               >
+                 Add
+               </button>
+             </div>
+             <p className="text-xs text-gray-500 mt-1">
+               Press Enter or click Add to quickly add an image URL to your post
+             </p>
+           </div>
+           
+           {/* Uploaded Images Display */}
+           {formData.mediaUrls.length > 0 ? (
+             <div className="space-y-3">
+               <div className="flex items-center justify-between">
+                 <span className="text-sm font-medium text-gray-700">
+                   {formData.mediaUrls.length} image(s) ready for next post
+                 </span>
+                 <button
+                   onClick={() => setFormData(prev => ({ ...prev, mediaUrls: [] }))}
+                   className="px-3 py-1 text-sm text-red-600 hover:text-red-700 hover:bg-red-50 rounded-md"
+                 >
+                   Clear All
+                 </button>
+               </div>
+               
+                               {/* Image Grid */}
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {formData.mediaUrls.map((url, index) => (
+                    <div key={index} className="bg-white rounded border p-3">
+                      <div className="relative group mb-2">
+                        <img
+                          src={url}
+                          alt={`Uploaded image ${index + 1}`}
+                          className="w-full h-32 object-cover rounded border shadow-sm"
+                          onError={(e) => {
+                            e.target.style.display = 'none';
+                            e.target.nextSibling.style.display = 'flex';
+                          }}
+                        />
+                        <div className="hidden w-full h-32 bg-gray-200 rounded border flex items-center justify-center text-xs text-gray-500">
+                          Invalid URL
+                        </div>
+                        
+                        {/* Remove button */}
+                        <button
+                          onClick={() => {
+                            const newUrls = formData.mediaUrls.filter((_, i) => i !== index);
+                            setFormData(prev => ({ ...prev, mediaUrls: newUrls }));
+                          }}
+                          className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs hover:bg-red-600 opacity-0 group-hover:opacity-100 transition-opacity"
+                          title="Remove image"
+                        >
+                          ×
+                        </button>
+                      </div>
+                      
+                      {/* URL Display */}
+                      <div className="text-xs">
+                        <p className="text-gray-600 mb-1">Image URL:</p>
+                        <div className="flex items-center gap-1">
+                          <input
+                            type="text"
+                            value={url}
+                            readOnly
+                            className="flex-1 bg-gray-50 border border-gray-200 rounded px-2 py-1 text-xs font-mono"
+                            onClick={(e) => e.target.select()}
+                          />
+                          <button
+                            onClick={() => {
+                              navigator.clipboard.writeText(url);
+                              showNotification('URL copied to clipboard!', 'success');
+                            }}
+                            className="px-2 py-1 bg-blue-500 text-white rounded text-xs hover:bg-blue-600"
+                            title="Copy URL"
+                          >
+                            Copy
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+             </div>
+           ) : (
+             <div className="flex items-center space-x-2">
+               <div className="flex-1 bg-white border border-gray-300 rounded-md px-3 py-2">
+                 <span className="text-sm text-gray-500">
+                   No images uploaded yet
+                 </span>
+               </div>
+             </div>
+           )}
+         </div>
+      </div>
+
       {/* Posts List */}
       {selectedProfile && (
         <div className="bg-white shadow rounded-lg">
@@ -695,27 +881,74 @@ const Posts = () => {
                       {post.media && post.media.length > 0 ? (
                         <div>
                           <div className="grid grid-cols-1 gap-0">
-                            {post.media.map((mediaItem) => (
-                              <div key={mediaItem.id} className="relative group">
-                                <img
-                                  src={mediaItem.sourceUrl || mediaItem.thumbnailUrl}
-                                  alt={mediaItem.altText || 'Post image'}
-                                  className="w-full h-48 object-cover shadow-sm"
-                                  onError={(e) => {
-                                    e.target.style.display = 'none';
-                                    e.target.nextSibling.style.display = 'flex';
-                                  }}
-                                />
-                                <div className="hidden absolute inset-0 bg-gray-200 rounded-t-lg flex items-center justify-center text-sm text-gray-500">
-                                  Image not available
-                                </div>
-                                {mediaItem.mediaFormat === 'VIDEO' && (
-                                  <div className="absolute top-2 right-2 bg-black bg-opacity-75 text-white text-xs px-2 py-1 rounded">
-                                    VIDEO
+                                                         {post.media.map((mediaItem, index) => {
+                               const imageUrl = mediaItem.sourceUrl || mediaItem.url || mediaItem.thumbnailUrl;
+                               console.log(`Rendering media item ${index}:`, {
+                                 id: mediaItem.id,
+                                 sourceUrl: mediaItem.sourceUrl,
+                                 url: mediaItem.url,
+                                 thumbnailUrl: mediaItem.thumbnailUrl,
+                                 finalUrl: imageUrl,
+                                 isGoogleUrl: imageUrl && imageUrl.includes('lh3.googleusercontent.com')
+                               });
+                               
+                                                                // Ensure Google Photos URLs have proper format
+                                 let processedUrl = imageUrl;
+                                 if (imageUrl && imageUrl.includes('lh3.googleusercontent.com')) {
+                                   if (!imageUrl.includes('=')) {
+                                     processedUrl = `${imageUrl}=h305-no`;
+                                     console.log(`Fixed Google URL: ${imageUrl} -> ${processedUrl}`);
+                                   } else {
+                                     // If it already has parameters, ensure it has the right format
+                                     if (!imageUrl.includes('h305-no')) {
+                                       processedUrl = `${imageUrl}=h305-no`;
+                                       console.log(`Enhanced Google URL: ${imageUrl} -> ${processedUrl}`);
+                                     }
+                                   }
+                                 }
+                              
+                              return (
+                                                                 <div key={mediaItem.id || index} className="relative group">
+                                   <img
+                                     src={processedUrl}
+                                     alt={mediaItem.altText || 'Post image'}
+                                     className="w-full h-48 object-cover shadow-sm"
+                                     onError={(e) => {
+                                       console.log('Image failed to load:', processedUrl);
+                                       
+                                       // Try alternative Google Photos URL formats
+                                       if (processedUrl.includes('lh3.googleusercontent.com')) {
+                                         const baseUrl = processedUrl.split('=')[0];
+                                         const alternativeUrl = `${baseUrl}=w400-h300-no`;
+                                         console.log('Trying alternative Google URL:', alternativeUrl);
+                                         e.target.src = alternativeUrl;
+                                         
+                                         // If that also fails, show the error state
+                                         e.target.onerror = () => {
+                                           console.log('Alternative URL also failed:', alternativeUrl);
+                                           e.target.style.display = 'none';
+                                           e.target.nextSibling.style.display = 'flex';
+                                         };
+                                       } else {
+                                         e.target.style.display = 'none';
+                                         e.target.nextSibling.style.display = 'flex';
+                                       }
+                                     }}
+                                     onLoad={(e) => {
+                                       console.log('Image loaded successfully:', processedUrl);
+                                     }}
+                                   />
+                                  <div className="hidden absolute inset-0 bg-gray-200 rounded-t-lg flex items-center justify-center text-sm text-gray-500">
+                                    Image not available
                                   </div>
-                                )}
-                              </div>
-                            ))}
+                                  {mediaItem.mediaFormat === 'VIDEO' && (
+                                    <div className="absolute top-2 right-2 bg-black bg-opacity-75 text-white text-xs px-2 py-1 rounded">
+                                      VIDEO
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
                           </div>
                         </div>
                       ) : (
@@ -891,6 +1124,21 @@ const Posts = () => {
                 <div>
                   <label className="block text-sm font-medium text-gray-700">Add Pictures</label>
                   
+                  {/* Image Uploader Button */}
+                  <div className="mb-3">
+                    <button
+                      type="button"
+                      onClick={() => setShowImageUploaderModal(true)}
+                      className="inline-flex items-center px-3 py-2 border border-primary-300 shadow-sm text-sm font-medium rounded-md text-primary-700 bg-primary-50 hover:bg-primary-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500"
+                    >
+                      <Plus className="h-4 w-4 mr-2" />
+                      Upload Images with ImgBB
+                    </button>
+                    <p className="text-xs text-gray-500 mt-1">
+                      Upload images to ImgBB and get direct URLs for your posts
+                    </p>
+                  </div>
+                  
                   {/* Mock Image Notice */}
                   <div className="mb-3 p-2 bg-blue-50 border border-blue-200 rounded-md">
                     <p className="text-xs text-blue-700">
@@ -1041,6 +1289,32 @@ const Posts = () => {
                   </button>
                 </div>
               </form>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Image Uploader Modal */}
+      {showImageUploaderModal && (
+        <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50">
+          <div className="relative top-10 mx-auto p-5 border w-11/12 max-w-4xl shadow-lg rounded-md bg-white">
+            <div className="mt-3">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-medium text-gray-900">Upload Images with ImgBB</h3>
+                <button
+                  onClick={() => setShowImageUploaderModal(false)}
+                  className="text-gray-400 hover:text-gray-600 text-2xl font-bold"
+                >
+                  ×
+                </button>
+              </div>
+              
+              {/* Custom ImageUploader with callback */}
+              <div className="max-h-96 overflow-y-auto">
+                <ImageUploader 
+                  onImageUploaded={handleImageUploaded}
+                />
+              </div>
             </div>
           </div>
         </div>
