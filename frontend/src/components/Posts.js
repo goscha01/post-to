@@ -11,7 +11,10 @@ import {
   CheckCircle,
   AlertCircle,
   Eye,
-  BarChart3
+  BarChart3,
+  Heart,
+  MessageCircle,
+  Share
 } from 'lucide-react';
 
 const Posts = () => {
@@ -117,6 +120,21 @@ const Posts = () => {
           'x-gmb-account-id': accountId
         }
       });
+      
+      console.log('=== FRONTEND POSTS DEBUG ===');
+      console.log('Posts response:', response.data);
+      console.log('Posts array:', response.data.posts);
+      if (response.data.posts && response.data.posts.length > 0) {
+        console.log('First post:', response.data.posts[0]);
+        console.log('First post media:', response.data.posts[0].media);
+        console.log('First post media type:', typeof response.data.posts[0].media);
+        console.log('First post media length:', response.data.posts[0].media?.length);
+        if (response.data.posts[0].media && response.data.posts[0].media.length > 0) {
+          console.log('First media item:', response.data.posts[0].media[0]);
+          console.log('First media item keys:', Object.keys(response.data.posts[0].media[0]));
+        }
+      }
+      console.log('=== END FRONTEND POSTS DEBUG ===');
       
       // Handle pagination response
       if (response.data.posts && response.data.pagination) {
@@ -505,28 +523,75 @@ const Posts = () => {
             </button>
           </div>
           </div>
-          <div className="divide-y divide-gray-200">
+          <div className="p-6">
             {posts.length > 0 ? (
               <>
-                {posts.map((post) => (
-                  <div key={post.id} className="px-6 py-4">
-                    <div className="flex items-start justify-between">
-                      <div className="flex-1">
-                        <div className="flex items-center space-x-3">
-                          <div className="flex-shrink-0">
-                            {getPostTypeIcon(post.postType)}
-                          </div>
-                          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getStatusColor(post.status)}`}>
-                            {post.status}
-                          </span>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6">
+                  {posts.map((post) => (
+                    <div key={post.id} className="bg-white rounded-lg shadow-sm hover:shadow-md transition-shadow duration-200 overflow-hidden">
+                      {/* Post Header with Action Buttons */}
+                      <div className="flex items-center justify-end p-3 bg-gray-50">
+                        {/* Action Buttons */}
+                        <div className="flex items-center space-x-2">
+                          <button
+                            onClick={() => {/* Handle edit */}}
+                            className="text-gray-400 hover:text-gray-600 p-1 rounded hover:bg-gray-100"
+                            title="Edit post"
+                          >
+                            <Edit className="h-4 w-4" />
+                          </button>
+                          <button
+                            onClick={() => handleDeletePost(post.id)}
+                            className="text-red-400 hover:text-red-600 p-1 rounded hover:bg-red-50"
+                            title="Delete post"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
                         </div>
-                        <div className="mt-2 text-base text-gray-900">
+                      </div>
+
+                      {/* Media Display - Image on Top */}
+                      {post.media && post.media.length > 0 ? (
+                        <div>
+                          <div className="grid grid-cols-1 gap-0">
+                            {post.media.map((mediaItem) => (
+                              <div key={mediaItem.id} className="relative group">
+                                <img
+                                  src={mediaItem.sourceUrl || mediaItem.thumbnailUrl}
+                                  alt={mediaItem.altText || 'Post image'}
+                                  className="w-full h-48 object-cover shadow-sm"
+                                  onError={(e) => {
+                                    e.target.style.display = 'none';
+                                    e.target.nextSibling.style.display = 'flex';
+                                  }}
+                                />
+                                <div className="hidden absolute inset-0 bg-gray-200 rounded-t-lg flex items-center justify-center text-sm text-gray-500">
+                                  Image not available
+                                </div>
+                                {mediaItem.mediaFormat === 'VIDEO' && (
+                                  <div className="absolute top-2 right-2 bg-black bg-opacity-75 text-white text-xs px-2 py-1 rounded">
+                                    VIDEO
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="mb-4 text-sm text-gray-500 text-center py-8 bg-gray-50 rounded-lg">
+                          No media attached to this post
+                        </div>
+                      )}
+
+                      {/* Post Content - Text Below Image */}
+                      <div className="p-3">
+                        <div className="text-sm text-gray-900 mb-3">
                           {expandedPosts.has(post.id) ? (
                             <div>
                               <p>{post.content}</p>
                               <button
                                 onClick={() => toggleExpanded(post.id)}
-                                className="text-primary-600 hover:text-primary-700 font-medium mt-1"
+                                className="text-primary-600 hover:text-primary-700 font-medium mt-2 text-sm"
                               >
                                 Show less
                               </button>
@@ -537,7 +602,7 @@ const Posts = () => {
                               {post.content && post.content.length > 150 && (
                                 <button
                                   onClick={() => toggleExpanded(post.id)}
-                                  className="text-primary-600 hover:text-primary-700 font-medium mt-1"
+                                  className="text-primary-600 hover:text-primary-700 font-medium mt-2 text-sm"
                                 >
                                   ...more
                                 </button>
@@ -545,7 +610,9 @@ const Posts = () => {
                             </div>
                           )}
                         </div>
-                        <div className="mt-2 flex items-center space-x-4 text-sm text-gray-500">
+
+                        {/* Post Footer with Date and Status */}
+                        <div className="flex items-center justify-between text-xs text-gray-500 pt-2 border-t border-gray-100">
                           <span className="flex items-center">
                             <Clock className="h-4 w-4 mr-1" />
                             {post.createdAt ? new Date(post.createdAt).toLocaleDateString() : 'Date not available'}
@@ -557,27 +624,15 @@ const Posts = () => {
                             </span>
                           )}
                         </div>
-                      </div>
-                      <div className="ml-4 flex-shrink-0 flex items-center space-x-2">
-                        <button
-                          onClick={() => {/* Handle edit */}}
-                          className="text-gray-400 hover:text-gray-600"
-                        >
-                          <Edit className="h-4 w-4" />
-                        </button>
-                        <button
-                          onClick={() => handleDeletePost(post.id)}
-                          className="text-red-400 hover:text-red-600"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </button>
+
+
                       </div>
                     </div>
-                  </div>
-                ))}
+                  ))}
+                </div>
                 
                 {/* Load More Section */}
-                <div className="px-6 py-4 border-t border-gray-200">
+                <div className="px-6 py-4 border-t border-gray-200 mt-6">
                   <div className="flex items-center justify-between">
                     <div className="text-sm text-gray-700">
                       <span>Showing {posts.length} of {totalPosts} posts</span>
@@ -607,19 +662,19 @@ const Posts = () => {
                 </div>
               </>
             ) : (
-              <div className="px-6 py-8 text-center">
-                <FileText className="mx-auto h-12 w-12 text-gray-400" />
-                <h3 className="mt-2 text-sm font-medium text-gray-900">No posts yet</h3>
-                <p className="mt-1 text-sm text-gray-500">
-                  Get started by creating your first post for this location.
+              <div className="col-span-full px-6 py-12 text-center">
+                <FileText className="mx-auto h-16 w-16 text-gray-400" />
+                <h3 className="mt-4 text-lg font-medium text-gray-900">No posts yet</h3>
+                <p className="mt-2 text-sm text-gray-500 max-w-md mx-auto">
+                  Get started by creating your first post for this location. Your posts will appear here in a beautiful grid layout.
                 </p>
                 <div className="mt-6">
                   <button
                     onClick={() => setShowCreateModal(true)}
-                    className="inline-flex items-center px-4 py-2 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-primary-600 hover:bg-primary-700"
+                    className="inline-flex items-center px-6 py-3 border border-transparent shadow-sm text-base font-medium rounded-lg text-white bg-primary-600 hover:bg-primary-700 transition-colors duration-200"
                   >
-                    <Plus className="h-4 w-4 mr-2" />
-                    Create Post
+                    <Plus className="h-5 w-5 mr-2" />
+                    Create Your First Post
                   </button>
                 </div>
               </div>

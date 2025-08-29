@@ -105,116 +105,234 @@ router.get('/location/:locationId', auth, async (req, res) => {
     const limit = parseInt(req.query.limit) || 3; // Show only 3 posts initially
     const offset = (page - 1) * limit;
     
-    // Try to fetch real posts from Google My Business first
-    try {
-      // Extract account ID from the location path (assuming format: accounts/{accountId}/locations/{locationId})
-      const accountId = req.headers['x-gmb-account-id'] || '109194636448236279020'; // fallback
-      
-      console.log('Attempting to fetch real GMB posts...');
-      
-      // Try direct API call first
-      try {
-        const gmbResponse = await axios.get(
-          `https://mybusiness.googleapis.com/v4/accounts/${accountId}/locations/${locationId}/localPosts`,
-          {
-            headers: {
-              'Authorization': `Bearer ${req.user.accessToken}`,
-              'Content-Type': 'application/json'
+              // Try to fetch real posts from Google My Business first
+     try {
+       // Extract account ID from the location path (assuming format: accounts/{accountId}/locations/{locationId})
+       const accountId = req.headers['x-gmb-account-id'] || '109194636448236279020'; // fallback
+       
+       console.log('Attempting to fetch real GMB posts...');
+       
+       // Try direct API call first
+       try {
+         const gmbResponse = await axios.get(
+           `https://mybusiness.googleapis.com/v4/accounts/${accountId}/locations/${locationId}/localPosts`,
+           {
+             headers: {
+               'Authorization': `Bearer ${req.user.accessToken}`,
+               'Content-Type': 'application/json'
+             }
+           }
+         );
+         
+                   if (gmbResponse.data.localPosts && gmbResponse.data.localPosts.length > 0) {
+            console.log('Found real GMB posts:', gmbResponse.data.localPosts.length);
+            console.log('=== COMPLETE GMB RESPONSE DEBUG ===');
+            console.log('Full GMB response:', JSON.stringify(gmbResponse.data, null, 2));
+            console.log('=== FIRST POST DETAILED DEBUG ===');
+            console.log('First post complete object:', JSON.stringify(gmbResponse.data.localPosts[0], null, 2));
+            console.log('First post media array:', gmbResponse.data.localPosts[0].media);
+            console.log('First post media type:', typeof gmbResponse.data.localPosts[0].media);
+            console.log('First post media length:', gmbResponse.data.localPosts[0].media?.length);
+            if (gmbResponse.data.localPosts[0].media && gmbResponse.data.localPosts[0].media.length > 0) {
+              console.log('First media item keys:', Object.keys(gmbResponse.data.localPosts[0].media[0]));
+              console.log('First media item complete:', JSON.stringify(gmbResponse.data.localPosts[0].media[0], null, 2));
             }
-          }
-        );
-        
-        if (gmbResponse.data.localPosts && gmbResponse.data.localPosts.length > 0) {
-          // Convert GMB posts to our format and sort by creation date (newest first)
-          const realPosts = gmbResponse.data.localPosts
-            .map(post => ({
-              id: post.name.split('/').pop(),
-              content: post.summary,
-              postType: post.topicType || 'STANDARD',
-              platform: 'google',
-              createdAt: post.createTime || new Date().toISOString(),
-              status: 'published',
-              gmbPost: post
-            }))
-            .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-          
-          // Apply pagination
-          const totalPosts = realPosts.length;
-          const paginatedPosts = realPosts.slice(offset, offset + limit);
-          
-          console.log(`Found ${totalPosts} real GMB posts for location ${locationId}, returning ${paginatedPosts.length} posts (page ${page})`);
-          
-          return res.json({
-            posts: paginatedPosts,
-            pagination: {
-              page,
-              limit,
-              total: totalPosts,
-              totalPages: Math.ceil(totalPosts / limit),
-              hasNext: page < Math.ceil(totalPosts / limit),
-              hasPrev: page > 1
-            }
-          });
-        }
-      } catch (v4Error) {
-        console.log('GMB v4 failed, trying alternative endpoint:', v4Error.message);
-        
-        // Try alternative endpoint
-        const gmbResponse = await axios.get(
-          `https://mybusinessaccountmanagement.googleapis.com/v1/accounts/${accountId}/locations/${locationId}/localPosts`,
-          {
-            headers: {
-              'Authorization': `Bearer ${req.user.accessToken}`,
-              'Content-Type': 'application/json'
-            }
-          }
-        );
-        
-        if (gmbResponse.data.localPosts && gmbResponse.data.localPosts.length > 0) {
-          // Convert GMB posts to our format and sort by creation date (newest first)
-          const realPosts = gmbResponse.data.localPosts
-            .map(post => ({
-              id: post.name.split('/').pop(),
-              content: post.summary,
-              postType: post.topicType || 'STANDARD',
-              platform: 'google',
-              status: 'published',
-              gmbPost: post
-            }))
-            .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-          
-          // Apply pagination
-          const totalPosts = realPosts.length;
-          const paginatedPosts = realPosts.slice(offset, offset + limit);
-          
-          console.log(`Found ${totalPosts} real GMB posts for location ${locationId}, returning ${paginatedPosts.length} posts (page ${page})`);
-          
-          return res.json({
-            posts: paginatedPosts,
-            pagination: {
-              page,
-              limit,
-              total: totalPosts,
-              totalPages: Math.ceil(totalPosts / limit),
-              hasNext: page < Math.ceil(totalPosts / limit),
-              hasPrev: page > 1
-            }
-          });
-        }
-      }
-    } catch (gmbError) {
-      console.log('Could not fetch real GMB posts, using mock data:', gmbError.message);
-    }
-    
-    // Fallback to mock data if GMB API fails
-    const mockPosts = [
+            console.log('=== END FIRST POST DEBUG ===');
+           
+           // Convert GMB posts to our format and sort by creation date (newest first)
+           const realPosts = await Promise.all(gmbResponse.data.localPosts.map(async (post) => {
+             // Try to fetch media for this post
+             let media = [];
+                           try {
+                if (post.media && post.media.length > 0) {
+                  console.log('=== MEDIA PROCESSING DEBUG ===');
+                  console.log('Post has media:', post.media.length, 'items');
+                  console.log('Raw media array:', post.media);
+                  console.log('First media item raw:', JSON.stringify(post.media[0], null, 2));
+                  console.log('First media item keys:', Object.keys(post.media[0]));
+                  
+                  // Try to find any URL-like fields
+                  const possibleUrlFields = ['sourceUrl', 'url', 'mediaUrl', 'thumbnailUrl', 'thumbnail', 'imageUrl', 'photoUrl', 'media', 'googleUrl'];
+                  console.log('Checking for URL fields:', possibleUrlFields);
+                  possibleUrlFields.forEach(field => {
+                    if (post.media[0][field]) {
+                      console.log(`Found ${field}:`, post.media[0][field]);
+                    }
+                  });
+                  
+                  // Additional debugging - check all fields in the media item
+                  console.log('=== ALL MEDIA ITEM FIELDS ===');
+                  Object.keys(post.media[0]).forEach(key => {
+                    console.log(`${key}:`, post.media[0][key]);
+                  });
+                  console.log('=== END ALL MEDIA ITEM FIELDS ===');
+                  
+                                     // Extract media information from the post
+                   media = post.media.map(mediaItem => {
+                     const extracted = {
+                       id: mediaItem.name?.split('/').pop() || `media-${Date.now()}`,
+                       mediaFormat: mediaItem.mediaFormat || 'PHOTO',
+                       sourceUrl: mediaItem.googleUrl || mediaItem.sourceUrl || mediaItem.url || mediaItem.mediaUrl || null,
+                       thumbnailUrl: mediaItem.thumbnailUrl || mediaItem.thumbnail || null,
+                       altText: mediaItem.altText || 'Post image'
+                     };
+                     console.log('Extracted media item:', extracted);
+                     return extracted;
+                   });
+                  
+                  console.log('Final processed media array:', media);
+                  console.log('=== END MEDIA PROCESSING DEBUG ===');
+                } else {
+                  console.log('Post has no media array');
+                  console.log('Post keys:', Object.keys(post));
+                  // Check if media might be in a different field
+                  if (post.attachments) console.log('Post has attachments:', post.attachments);
+                  if (post.photos) console.log('Post has photos:', post.photos);
+                  if (post.images) console.log('Post has images:', post.images);
+                }
+              } catch (mediaError) {
+                console.log('Could not fetch media for post:', mediaError.message);
+                console.log('Media error details:', mediaError);
+              }
+
+             return {
+               id: post.name.split('/').pop(),
+               content: post.summary,
+               postType: post.topicType || 'STANDARD',
+               platform: 'google',
+               createdAt: post.createTime || new Date().toISOString(),
+               status: 'published',
+               media: media,
+               gmbPost: post
+             };
+           }));
+           
+           // Sort by creation date (newest first)
+           realPosts.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+           
+           // Apply pagination
+           const totalPosts = realPosts.length;
+           const paginatedPosts = realPosts.slice(offset, offset + limit);
+           
+           console.log(`Found ${totalPosts} real GMB posts for location ${locationId}, returning ${paginatedPosts.length} posts (page ${page})`);
+           
+           return res.json({
+             posts: paginatedPosts,
+             pagination: {
+               page,
+               limit,
+               total: totalPosts,
+               totalPages: Math.ceil(totalPosts / limit),
+               hasNext: page < Math.ceil(totalPosts / limit),
+               hasPrev: page > 1
+             }
+           });
+         }
+       } catch (v4Error) {
+         console.log('GMB v4 failed, trying alternative endpoint:', v4Error.message);
+         
+         // Try alternative endpoint
+         const gmbResponse = await axios.get(
+           `https://mybusinessaccountmanagement.googleapis.com/v1/accounts/${accountId}/locations/${locationId}/localPosts`,
+           {
+             headers: {
+               'Authorization': `Bearer ${req.user.accessToken}`,
+               'Content-Type': 'application/json'
+             }
+           }
+         );
+         
+         if (gmbResponse.data.localPosts && gmbResponse.data.localPosts.length > 0) {
+           console.log('Found real GMB posts from alternative endpoint:', gmbResponse.data.localPosts.length);
+           console.log('=== ALTERNATIVE ENDPOINT DEBUG ===');
+           console.log('Alternative endpoint response:', JSON.stringify(gmbResponse.data, null, 2));
+           console.log('=== END ALTERNATIVE ENDPOINT DEBUG ===');
+           
+           // Add debugging for alternative endpoint posts
+           console.log('=== ALTERNATIVE ENDPOINT POSTS DEBUG ===');
+           console.log('First post from alternative endpoint:', JSON.stringify(gmbResponse.data.localPosts[0], null, 2));
+           if (gmbResponse.data.localPosts[0].media) {
+             console.log('First post media from alternative endpoint:', gmbResponse.data.localPosts[0].media);
+           }
+           console.log('=== END ALTERNATIVE ENDPOINT POSTS DEBUG ===');
+           
+           // Convert GMB posts to our format and sort by creation date (newest first)
+           const realPosts = await Promise.all(gmbResponse.data.localPosts.map(async (post) => {
+             // Try to fetch media for this post
+             let media = [];
+             try {
+               if (post.media && post.media.length > 0) {
+                 console.log('Post has media:', post.media.length, 'items');
+                 
+                 // Extract media information from the post
+                 media = post.media.map(mediaItem => ({
+                   id: mediaItem.name?.split('/').pop() || `media-${Date.now()}`,
+                   mediaFormat: mediaItem.mediaFormat || 'PHOTO',
+                   sourceUrl: mediaItem.googleUrl || mediaItem.sourceUrl || mediaItem.url || mediaItem.mediaUrl || null,
+                   thumbnailUrl: mediaItem.thumbnailUrl || mediaItem.thumbnail || null,
+                   altText: mediaItem.altText || 'Post image'
+                 }));
+               }
+             } catch (mediaError) {
+               console.log('Could not fetch media for post:', mediaError.message);
+             }
+
+             return {
+               id: post.name.split('/').pop(),
+               content: post.summary,
+               postType: post.topicType || 'STANDARD',
+               platform: 'google',
+               createdAt: post.createTime || new Date().toISOString(),
+               status: 'published',
+               media: media,
+               gmbPost: post
+             };
+           }));
+           
+           // Sort by creation date (newest first)
+           realPosts.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+           
+           // Apply pagination
+           const totalPosts = realPosts.length;
+           const paginatedPosts = realPosts.slice(offset, offset + limit);
+           
+           console.log(`Found ${totalPosts} real GMB posts for location ${locationId}, returning ${paginatedPosts.length} posts (page ${page})`);
+           
+           return res.json({
+             posts: paginatedPosts,
+             pagination: {
+               page,
+               limit,
+               total: totalPosts,
+               totalPages: Math.ceil(totalPosts / limit),
+               hasNext: page < Math.ceil(totalPosts / limit),
+               hasPrev: page > 1
+             }
+           });
+         }
+       }
+     } catch (gmbError) {
+       console.log('Could not fetch real GMB posts, using mock data:', gmbError.message);
+     }
+     
+     // Fallback to mock data if GMB API fails
+     const mockPosts = [
       {
         id: '1',
         content: 'Welcome to our business! We offer the best services in town.',
         postType: 'STANDARD',
         platform: 'google',
         createdAt: new Date().toISOString(),
-        status: 'published'
+        status: 'published',
+        media: [
+          {
+            id: 'media-1',
+            mediaFormat: 'PHOTO',
+            sourceUrl: 'https://picsum.photos/400/300?random=1',
+            thumbnailUrl: 'https://picsum.photos/200/150?random=1',
+            altText: 'Clean office space'
+          }
+        ]
       },
       {
         id: '2',
@@ -222,7 +340,16 @@ router.get('/location/:locationId', auth, async (req, res) => {
         postType: 'OFFER',
         platform: 'google',
         createdAt: new Date(Date.now() - 86400000).toISOString(), // 1 day ago
-        status: 'published'
+        status: 'published',
+        media: [
+          {
+            id: 'media-2',
+            mediaFormat: 'PHOTO',
+            sourceUrl: 'https://picsum.photos/400/300?random=2',
+            thumbnailUrl: 'https://picsum.photos/200/150?random=2',
+            altText: 'Special offer banner'
+          }
+        ]
       },
       {
         id: '3',
@@ -230,7 +357,16 @@ router.get('/location/:locationId', auth, async (req, res) => {
         postType: 'EVENT',
         platform: 'google',
         createdAt: new Date(Date.now() - 172800000).toISOString(), // 2 days ago
-        status: 'scheduled'
+        status: 'scheduled',
+        media: [
+          {
+            id: 'media-3',
+            mediaFormat: 'PHOTO',
+            sourceUrl: 'https://picsum.photos/400/300?random=3',
+            thumbnailUrl: 'https://picsum.photos/200/150?random=3',
+            altText: 'Grand opening celebration'
+          }
+        ]
       },
       {
         id: '4',
@@ -238,7 +374,16 @@ router.get('/location/:locationId', auth, async (req, res) => {
         postType: 'OFFER',
         platform: 'google',
         createdAt: new Date(Date.now() - 259200000).toISOString(), // 3 days ago
-        status: 'published'
+        status: 'published',
+        media: [
+          {
+            id: 'media-4',
+            mediaFormat: 'PHOTO',
+            sourceUrl: 'https://picsum.photos/400/300?random=4',
+            thumbnailUrl: 'https://picsum.photos/200/150?random=4',
+            altText: 'Cleaning service packages'
+          }
+        ]
       },
       {
         id: '5',
@@ -246,7 +391,16 @@ router.get('/location/:locationId', auth, async (req, res) => {
         postType: 'EVENT',
         platform: 'google',
         createdAt: new Date(Date.now() - 345600000).toISOString(), // 4 days ago
-        status: 'scheduled'
+        status: 'scheduled',
+        media: [
+          {
+            id: 'media-5',
+            mediaFormat: 'PHOTO',
+            sourceUrl: 'https://picsum.photos/400/300?random=5',
+            thumbnailUrl: 'https://picsum.photos/200/150?random=5',
+            altText: 'Customer appreciation event'
+          }
+        ]
       },
       {
         id: '6',
@@ -254,7 +408,16 @@ router.get('/location/:locationId', auth, async (req, res) => {
         postType: 'OFFER',
         platform: 'google',
         createdAt: new Date(Date.now() - 432000000).toISOString(), // 5 days ago
-        status: 'published'
+        status: 'published',
+        media: [
+          {
+            id: 'media-6',
+            mediaFormat: 'PHOTO',
+            sourceUrl: 'https://picsum.photos/400/300?random=6',
+            thumbnailUrl: 'https://picsum.photos/200/150?random=6',
+            altText: 'Spring cleaning special'
+          }
+        ]
       },
       {
         id: '7',
@@ -262,7 +425,16 @@ router.get('/location/:locationId', auth, async (req, res) => {
         postType: 'STANDARD',
         platform: 'google',
         createdAt: new Date(Date.now() - 518400000).toISOString(), // 6 days ago
-        status: 'published'
+        status: 'published',
+        media: [
+          {
+            id: 'media-7',
+            mediaFormat: 'PHOTO',
+            sourceUrl: 'https://picsum.photos/400/300?random=7',
+            thumbnailUrl: 'https://picsum.photos/200/150?random=7',
+            altText: 'Professional cleaning services'
+          }
+        ]
       },
       {
         id: '8',
@@ -270,7 +442,16 @@ router.get('/location/:locationId', auth, async (req, res) => {
         postType: 'STANDARD',
         platform: 'google',
         createdAt: new Date(Date.now() - 604800000).toISOString(), // 7 days ago
-        status: 'published'
+        status: 'published',
+        media: [
+          {
+            id: 'media-8',
+            mediaFormat: 'PHOTO',
+            sourceUrl: 'https://picsum.photos/400/300?random=8',
+            thumbnailUrl: 'https://picsum.photos/200/150?random=8',
+            altText: 'Eco-friendly cleaning products'
+          }
+        ]
       },
       {
         id: '9',
@@ -278,7 +459,16 @@ router.get('/location/:locationId', auth, async (req, res) => {
         postType: 'OFFER',
         platform: 'google',
         createdAt: new Date(Date.now() - 691200000).toISOString(), // 8 days ago
-        status: 'published'
+        status: 'published',
+        media: [
+          {
+            id: 'media-9',
+            mediaFormat: 'PHOTO',
+            sourceUrl: 'https://picsum.photos/400/300?random=9',
+            thumbnailUrl: 'https://picsum.photos/200/150?random=9',
+            altText: 'Monthly maintenance packages'
+          }
+        ]
       },
       {
         id: '10',
@@ -286,7 +476,16 @@ router.get('/location/:locationId', auth, async (req, res) => {
         postType: 'EVENT',
         platform: 'google',
         createdAt: new Date(Date.now() - 777600000).toISOString(), // 9 days ago
-        status: 'scheduled'
+        status: 'scheduled',
+        media: [
+          {
+            id: 'media-10',
+            mediaFormat: 'PHOTO',
+            sourceUrl: 'https://picsum.photos/400/300?random=10',
+            thumbnailUrl: 'https://picsum.photos/200/150?random=10',
+            altText: 'Holiday cleaning schedule'
+          }
+        ]
       },
       {
         id: '11',
@@ -294,7 +493,16 @@ router.get('/location/:locationId', auth, async (req, res) => {
         postType: 'STANDARD',
         platform: 'google',
         createdAt: new Date(Date.now() - 864000000).toISOString(), // 10 days ago
-        status: 'published'
+        status: 'published',
+        media: [
+          {
+            id: 'media-11',
+            mediaFormat: 'PHOTO',
+            sourceUrl: 'https://picsum.photos/400/300?random=11',
+            thumbnailUrl: 'https://picsum.photos/200/150?random=11',
+            altText: 'Commercial cleaning services'
+          }
+        ]
       },
       {
         id: '12',
@@ -302,7 +510,16 @@ router.get('/location/:locationId', auth, async (req, res) => {
         postType: 'OFFER',
         platform: 'google',
         createdAt: new Date(Date.now() - 950400000).toISOString(), // 11 days ago
-        status: 'published'
+        status: 'published',
+        media: [
+          {
+            id: 'media-12',
+            mediaFormat: 'PHOTO',
+            sourceUrl: 'https://picsum.photos/400/300?random=12',
+            thumbnailUrl: 'https://picsum.photos/200/150?random=12',
+            altText: 'Weekend appointments'
+          }
+        ]
       }
     ];
     
