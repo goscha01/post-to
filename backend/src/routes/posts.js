@@ -177,13 +177,20 @@ router.get('/location/:locationId', auth, async (req, res) => {
                        altText: mediaItem.altText || 'Post image'
                      };
                      
-                     // Ensure Google Photos URLs have the proper format with query parameters
-                     if (extracted.sourceUrl && extracted.sourceUrl.includes('lh3.googleusercontent.com')) {
-                       // If the URL doesn't have query parameters, add them
-                       if (!extracted.sourceUrl.includes('=')) {
+                                        // Ensure Google Photos URLs have the proper format with query parameters
+                   if (extracted.sourceUrl && extracted.sourceUrl.includes('lh3.googleusercontent.com')) {
+                     // If the URL doesn't have query parameters, add them
+                     if (!extracted.sourceUrl.includes('=')) {
+                       extracted.sourceUrl = `${extracted.sourceUrl}=h305-no`;
+                       console.log(`Fixed Google Photos URL: ${extracted.sourceUrl}`);
+                     } else {
+                       // If it already has parameters, ensure it has the right format
+                       if (!extracted.sourceUrl.includes('h305-no')) {
                          extracted.sourceUrl = `${extracted.sourceUrl}=h305-no`;
+                         console.log(`Enhanced Google Photos URL: ${extracted.sourceUrl}`);
                        }
                      }
+                   }
                      
                      console.log('Extracted media item:', extracted);
                      return extracted;
@@ -288,6 +295,13 @@ router.get('/location/:locationId', auth, async (req, res) => {
                      // If the URL doesn't have query parameters, add them
                      if (!extracted.sourceUrl.includes('=')) {
                        extracted.sourceUrl = `${extracted.sourceUrl}=h305-no`;
+                       console.log(`Fixed Google Photos URL: ${extracted.sourceUrl}`);
+                     } else {
+                       // If it already has parameters, ensure it has the right format
+                       if (!extracted.sourceUrl.includes('h305-no')) {
+                         extracted.sourceUrl = `${extracted.sourceUrl}=h305-no`;
+                         console.log(`Enhanced Google Photos URL: ${extracted.sourceUrl}`);
+                       }
                      }
                    }
                    
@@ -996,6 +1010,13 @@ router.post('/', auth, [
                 if (mediaItemToAdd.sourceUrl && mediaItemToAdd.sourceUrl.includes('lh3.googleusercontent.com')) {
                   if (!mediaItemToAdd.sourceUrl.includes('=')) {
                     mediaItemToAdd.sourceUrl = `${mediaItemToAdd.sourceUrl}=h305-no`;
+                    console.log(`Fixed Google Photos URL in post creation: ${mediaItemToAdd.sourceUrl}`);
+                  } else {
+                    // If it already has parameters, ensure it has the right format
+                    if (!mediaItemToAdd.sourceUrl.includes('h305-no')) {
+                      mediaItemToAdd.sourceUrl = `${mediaItemToAdd.sourceUrl}=h305-no`;
+                      console.log(`Enhanced Google Photos URL in post creation: ${mediaItemToAdd.sourceUrl}`);
+                    }
                   }
                 }
                

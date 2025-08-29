@@ -897,12 +897,12 @@ const Posts = () => {
                                  if (imageUrl && imageUrl.includes('lh3.googleusercontent.com')) {
                                    if (!imageUrl.includes('=')) {
                                      processedUrl = `${imageUrl}=h305-no`;
-                                     console.log(`Fixed Google URL: ${imageUrl} -> ${processedUrl}`);
+                                     console.log(`Fixed Google Photos URL: ${imageUrl} -> ${processedUrl}`);
                                    } else {
                                      // If it already has parameters, ensure it has the right format
                                      if (!imageUrl.includes('h305-no')) {
                                        processedUrl = `${imageUrl}=h305-no`;
-                                       console.log(`Enhanced Google URL: ${imageUrl} -> ${processedUrl}`);
+                                       console.log(`Enhanced Google Photos URL: ${imageUrl} -> ${processedUrl}`);
                                      }
                                    }
                                  }
@@ -920,14 +920,22 @@ const Posts = () => {
                                        if (processedUrl.includes('lh3.googleusercontent.com')) {
                                          const baseUrl = processedUrl.split('=')[0];
                                          const alternativeUrl = `${baseUrl}=w400-h300-no`;
-                                         console.log('Trying alternative Google URL:', alternativeUrl);
+                                         console.log('Trying alternative Google Photos URL format:', alternativeUrl);
                                          e.target.src = alternativeUrl;
                                          
-                                         // If that also fails, show the error state
+                                         // If that also fails, try another format
                                          e.target.onerror = () => {
-                                           console.log('Alternative URL also failed:', alternativeUrl);
-                                           e.target.style.display = 'none';
-                                           e.target.nextSibling.style.display = 'flex';
+                                           console.log('First alternative URL failed, trying second format');
+                                           const secondAlternativeUrl = `${baseUrl}=h400-no`;
+                                           console.log('Trying second alternative Google Photos URL format:', secondAlternativeUrl);
+                                           e.target.src = secondAlternativeUrl;
+                                           
+                                           // If all alternatives fail, show the error state
+                                           e.target.onerror = () => {
+                                             console.log('All Google Photos URL formats failed');
+                                             e.target.style.display = 'none';
+                                             e.target.nextSibling.style.display = 'flex';
+                                           };
                                          };
                                        } else {
                                          e.target.style.display = 'none';
