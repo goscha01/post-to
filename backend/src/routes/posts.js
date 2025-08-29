@@ -627,7 +627,8 @@ router.post('/media', auth, [
              locationAssociation: {
                category: category
              },
-             sourceUrl: sourceUrl
+             sourceUrl: sourceUrl,
+             googleUrl: sourceUrl // Ensure both sourceUrl and googleUrl are available
            }
          };
        }
@@ -715,7 +716,8 @@ router.post('/media', auth, [
                locationAssociation: {
                  category: category
                },
-               sourceUrl: `https://example.com/media/${Date.now()}.jpg` // Mock URL for post creation
+               sourceUrl: `https://example.com/media/${Date.now()}.jpg`, // Mock URL for post creation
+               googleUrl: `https://example.com/media/${Date.now()}.jpg` // Ensure both sourceUrl and googleUrl are available
              }
            };
          }
@@ -731,7 +733,9 @@ router.post('/media', auth, [
             mediaFormat: mediaFormat,
             locationAssociation: {
               category: category
-            }
+            },
+            sourceUrl: `https://example.com/fallback-${Date.now()}.jpg`, // Add fallback sourceUrl
+            googleUrl: `https://example.com/fallback-${Date.now()}.jpg` // Add fallback googleUrl
           }
         };
       }
@@ -882,6 +886,10 @@ router.post('/', auth, [
   try {
     console.log('=== POST CREATION DEBUG ===');
     console.log('Request body:', req.body);
+    console.log('Request body type:', typeof req.body);
+    console.log('Request body keys:', Object.keys(req.body));
+    console.log('Media field type:', typeof req.body.media);
+    console.log('Media field value:', req.body.media);
     console.log('User access token exists:', !!req.user.accessToken);
     
     const {
@@ -927,9 +935,57 @@ router.post('/', auth, [
            topicType: postType
          };
 
-         // Skip media for now to test basic posting
+         // Handle media upload for Google My Business posts
          if (media && media.length > 0) {
-           console.log('Media detected but skipping for basic post test');
+           console.log('=== MEDIA PROCESSING DEBUG ===');
+           console.log('Raw media array received:', JSON.stringify(media, null, 2));
+           console.log('Processing media for GMB post:', media.length, 'items');
+           
+           // Process media items according to GMB API requirements
+           const mediaItems = [];
+           for (const mediaItem of media) {
+             console.log('Processing media item:', JSON.stringify(mediaItem, null, 2));
+             
+             if (mediaItem.sourceUrl || mediaItem.url) {
+               // Detect media format based on URL or mediaFormat field
+               let mediaFormat = 'PHOTO'; // Default to PHOTO
+               if (mediaItem.mediaFormat) {
+                 mediaFormat = mediaItem.mediaFormat;
+                 console.log('Using mediaFormat from item:', mediaFormat);
+               } else if (mediaItem.sourceUrl || mediaItem.url) {
+                 const url = (mediaItem.sourceUrl || mediaItem.url).toLowerCase();
+                 if (url.includes('.mp4') || url.includes('.mov') || url.includes('.avi') || url.includes('.webm')) {
+                   mediaFormat = 'VIDEO';
+                 } else if (url.includes('.jpg') || url.includes('.jpeg') || url.includes('.png') || url.includes('.gif') || url.includes('.webp')) {
+                   mediaFormat = 'PHOTO';
+                 }
+                 console.log('Detected media format from URL:', mediaFormat);
+               }
+               
+               const mediaItemToAdd = {
+                 mediaFormat: mediaFormat,
+                 sourceUrl: mediaItem.sourceUrl || mediaItem.url
+               };
+               
+               mediaItems.push(mediaItemToAdd);
+               console.log('Added media item to array:', JSON.stringify(mediaItemToAdd, null, 2));
+             } else {
+               console.log('Media item missing sourceUrl/url:', mediaItem);
+             }
+           }
+           
+           if (mediaItems.length > 0) {
+             gmbPostData.media = mediaItems;
+             console.log('Final media array added to GMB post data:', JSON.stringify(mediaItems, null, 2));
+           } else {
+             console.log('No valid media items found to add');
+           }
+           console.log('=== END MEDIA PROCESSING DEBUG ===');
+         } else {
+           console.log('No media array received or media array is empty');
+           console.log('Media value:', media);
+           console.log('Media type:', typeof media);
+           console.log('Media length:', media ? media.length : 'N/A');
          }
 
          // Add event data if it's an EVENT post (as per API docs)
@@ -984,6 +1040,15 @@ router.post('/', auth, [
          }
 
          console.log('Using complete post data structure as per GMB API docs');
+         console.log('Final GMB post data structure:', {
+           hasMedia: !!gmbPostData.media,
+           mediaCount: gmbPostData.media ? gmbPostData.media.length : 0,
+           mediaFormats: gmbPostData.media ? gmbPostData.media.map(m => m.mediaFormat) : [],
+           topicType: gmbPostData.topicType,
+           hasEvent: !!gmbPostData.event,
+           hasCallToAction: !!gmbPostData.callToAction,
+           hasOffer: !!gmbPostData.offer
+         });
 
         console.log('Creating GMB post with data:', JSON.stringify(gmbPostData, null, 2));
         console.log('Using access token:', req.user.accessToken ? 'Token exists' : 'No token');

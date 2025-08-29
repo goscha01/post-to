@@ -173,6 +173,8 @@ const Posts = () => {
 
   const handleCreatePost = async (e) => {
     e.preventDefault();
+    console.log('=== FORM SUBMISSION STARTED ===');
+    console.log('Form data:', formData);
     
     // Validate media URLs
     const validMediaUrls = formData.mediaUrls.filter(url => url.trim() !== '');
@@ -208,14 +210,18 @@ const Posts = () => {
         return;
       }
       
-      // Prepare post data based on post type
-      const postData = {
-        platforms: ['google'],
-        content: formData.summary, // This maps to the backend 'content' field
-        gmbAccountId: accountId,
-        gmbLocationId: locationId,
-        postType: formData.postType
-      };
+             // Prepare post data based on post type
+       const postData = {
+         platforms: ['google'],
+         content: formData.summary, // This maps to the backend 'content' field
+         gmbAccountId: accountId,
+         gmbLocationId: locationId,
+         postType: formData.postType
+       };
+
+       // Always add a mock image for testing media functionality
+       const mockImageUrl = 'https://picsum.photos/400/300?random=' + Date.now();
+       console.log('Adding mock image URL for testing:', mockImageUrl);
 
       // Add call to action for OFFER posts
       if (formData.postType === 'OFFER' && formData.callToAction.url) {
@@ -265,17 +271,34 @@ const Posts = () => {
       const allMedia = [];
       
       // Upload local files
+      console.log('=== CHECKING MEDIA FILES ===');
+      console.log('formData.mediaFiles:', formData.mediaFiles);
+      console.log('formData.mediaFiles type:', typeof formData.mediaFiles);
+      console.log('formData.mediaFiles length:', formData.mediaFiles?.length);
+      console.log('formData.mediaFiles truthy check:', !!formData.mediaFiles);
+      console.log('formData.mediaFiles length > 0 check:', formData.mediaFiles?.length > 0);
+      
       if (formData.mediaFiles && formData.mediaFiles.length > 0) {
         try {
-          console.log('Uploading local files...');
-          const filePromises = formData.mediaFiles.map(async (file) => {
+          console.log('=== LOCAL FILE UPLOAD DEBUG ===');
+          console.log('Number of files to upload:', formData.mediaFiles.length);
+          console.log('Files to upload:', formData.mediaFiles.map(f => ({ name: f.name, size: f.size, type: f.type })));
+          
+          const filePromises = formData.mediaFiles.map(async (file, index) => {
+            console.log(`Processing file ${index + 1}:`, file.name);
+            
             // Convert file to base64
             const base64 = await new Promise((resolve) => {
               const reader = new FileReader();
-              reader.onload = () => resolve(reader.result.split(',')[1]);
+              reader.onload = () => {
+                const result = reader.result.split(',')[1];
+                console.log(`File ${file.name} converted to base64, length:`, result.length);
+                resolve(result);
+              };
               reader.readAsDataURL(file);
             });
 
+            console.log(`Sending file ${file.name} to backend...`);
             const mediaResponse = await axios.post('http://localhost:3001/api/posts/media', {
               mediaFormat: 'PHOTO',
               fileData: base64,
@@ -283,14 +306,22 @@ const Posts = () => {
               gmbLocationId: locationId,
               category: 'ADDITIONAL'
             });
+            
+            console.log(`File ${file.name} upload response:`, mediaResponse.data);
             return mediaResponse.data.media;
           });
 
           const uploadedFiles = await Promise.all(filePromises);
-          console.log('Local files uploaded successfully:', uploadedFiles);
+          console.log('=== LOCAL FILE UPLOAD SUCCESS ===');
+          console.log('All local files uploaded successfully:', uploadedFiles);
+          console.log('Uploaded files structure:', uploadedFiles.map(f => ({ name: f.name, mediaFormat: f.mediaFormat, sourceUrl: f.sourceUrl })));
           allMedia.push(...uploadedFiles);
+          console.log('=== END LOCAL FILE UPLOAD DEBUG ===');
         } catch (fileError) {
+          console.error('=== LOCAL FILE UPLOAD ERROR ===');
           console.error('Error uploading local files:', fileError);
+          console.error('Error response:', fileError.response?.data);
+          console.error('Error status:', fileError.response?.status);
           alert('Warning: Some local files failed to upload. Post will be created without those files.');
         }
       }
@@ -314,6 +345,7 @@ const Posts = () => {
 
           const uploadedUrls = await Promise.all(urlPromises);
           console.log('URLs uploaded successfully:', uploadedUrls);
+          console.log('Uploaded URLs structure:', uploadedUrls.map(u => ({ name: u.name, mediaFormat: u.mediaFormat, sourceUrl: u.sourceUrl })));
           allMedia.push(...uploadedUrls);
         } catch (urlError) {
           console.error('Error uploading URLs:', urlError);
@@ -321,13 +353,35 @@ const Posts = () => {
         }
       }
 
-      // Add all uploaded media to post data
-      if (allMedia.length > 0) {
-        postData.media = allMedia.map(media => ({
-          mediaFormat: media.mediaFormat,
-          sourceUrl: media.sourceUrl
-        }));
-      }
+             // Add all uploaded media to post data
+       console.log('=== FRONTEND MEDIA DEBUG ===');
+       console.log('All media array before mapping:', allMedia);
+       console.log('All media array length:', allMedia.length);
+       
+       // Always add the mock image for testing
+       const mockMediaItem = {
+         mediaFormat: 'PHOTO',
+         sourceUrl: mockImageUrl
+       };
+       
+       if (allMedia.length > 0) {
+         // Combine real media with mock image
+         const combinedMedia = [mockMediaItem, ...allMedia];
+         postData.media = combinedMedia.map(media => {
+           const mappedMedia = {
+             mediaFormat: media.mediaFormat,
+             sourceUrl: media.sourceUrl
+           };
+           console.log('Mapped media item:', mappedMedia);
+           return mappedMedia;
+         });
+         console.log('Final postData.media array with mock image:', postData.media);
+       } else {
+         // Only mock image if no real media
+         postData.media = [mockMediaItem];
+         console.log('Added only mock image to post data:', postData.media);
+       }
+       console.log('=== END FRONTEND MEDIA DEBUG ===');
 
       console.log('Sending post data:', postData);
       console.log('Post data structure:', {
@@ -340,11 +394,16 @@ const Posts = () => {
       });
       
       const response = await axios.post('http://localhost:3001/api/posts', postData);
+      console.log('=== POST CREATION RESPONSE ===');
+      console.log('Response status:', response.status);
+      console.log('Response data:', response.data);
       
       // Refresh posts list and reset to first page
+      console.log('=== REFRESHING POSTS ===');
       setCurrentPage(1);
       setExpandedPosts(new Set()); // Reset expanded posts when creating new post
       await fetchPosts(selectedProfile, 1, false);
+      console.log('=== POSTS REFRESHED ===');
       
       // Reset form and close modal
       setFormData({
@@ -832,18 +891,35 @@ const Posts = () => {
                 <div>
                   <label className="block text-sm font-medium text-gray-700">Add Pictures</label>
                   
+                  {/* Mock Image Notice */}
+                  <div className="mb-3 p-2 bg-blue-50 border border-blue-200 rounded-md">
+                    <p className="text-xs text-blue-700">
+                      <strong>Testing Mode:</strong> A mock image will automatically be added to every post for testing media functionality.
+                    </p>
+                  </div>
+                  
                   {/* File Upload Section */}
                   <div className="mb-4">
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Upload Local Files</label>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Upload Local Files (Optional)</label>
                     <input
                       type="file"
                       multiple
                       accept="image/*"
-                      onChange={(e) => {
-                        const files = Array.from(e.target.files);
-                        const newFiles = [...(formData.mediaFiles || []), ...files];
-                        setFormData({ ...formData, mediaFiles: newFiles });
-                      }}
+                                             onChange={(e) => {
+                         console.log('=== FILE INPUT CHANGE ===');
+                         console.log('Event target files:', e.target.files);
+                         console.log('Files length:', e.target.files.length);
+                         
+                         const files = Array.from(e.target.files);
+                         console.log('Converted files array:', files);
+                         console.log('Current formData.mediaFiles:', formData.mediaFiles);
+                         
+                         const newFiles = [...(formData.mediaFiles || []), ...files];
+                         console.log('New files array:', newFiles);
+                         
+                         setFormData({ ...formData, mediaFiles: newFiles });
+                         console.log('=== END FILE INPUT CHANGE ===');
+                       }}
                       className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-primary-50 file:text-primary-700 hover:file:bg-primary-100"
                     />
                     {formData.mediaFiles && formData.mediaFiles.length > 0 && (
@@ -869,7 +945,7 @@ const Posts = () => {
                   
                   {/* URL Input Section */}
                   <div className="mb-4">
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Or Add Picture URLs</label>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Or Add Picture URLs (Optional)</label>
                     <div className="space-y-2">
                       {formData.mediaUrls.map((url, index) => (
                         <div key={index} className="flex items-center space-x-2">
