@@ -23,7 +23,6 @@ const Posts = () => {
   const [posts, setPosts] = useState([]);
   const [profiles, setProfiles] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [showCreateModal, setShowCreateModal] = useState(false);
   const [showImageUploaderModal, setShowImageUploaderModal] = useState(false);
   const [selectedProfile, setSelectedProfile] = useState('');
   
@@ -44,16 +43,16 @@ const Posts = () => {
   // Notification state
   const [notification, setNotification] = useState(null);
   
-  const [formData, setFormData] = useState({
-    summary: '',
-    postType: 'STANDARD',
-    callToAction: {
-      type: 'BOOK',
-      url: ''
-    },
-    mediaUrls: [],
-    mediaFiles: []
-  });
+     const [formData, setFormData] = useState({
+     summary: '',
+     postType: 'STANDARD',
+     callToAction: {
+       type: 'BOOK',
+       url: ''
+     },
+     mediaUrls: [''],
+     mediaFiles: []
+   });
 
   useEffect(() => {
     if (isAuthenticated) {
@@ -335,67 +334,69 @@ const Posts = () => {
         }
       }
 
-      // Upload URLs
-      if (formData.mediaUrls.length > 0) {
-        try {
-          console.log('=== URL UPLOAD DEBUG ===');
-          console.log('URLs to upload:', formData.mediaUrls);
-          const validUrls = formData.mediaUrls.filter(url => url.trim() !== '');
-          console.log('Valid URLs:', validUrls);
-          
-          const urlPromises = validUrls.map(async (url, index) => {
-            console.log(`Processing URL ${index + 1}:`, url);
-            try {
-              const mediaResponse = await axios.post('http://localhost:3001/api/posts/media', {
-                mediaFormat: 'PHOTO',
-                sourceUrl: url,
-                gmbAccountId: accountId,
-                gmbLocationId: locationId,
-                category: 'ADDITIONAL'
-              });
-              console.log(`URL ${index + 1} upload response:`, mediaResponse.data);
-              return mediaResponse.data.media;
-            } catch (error) {
-              console.error(`URL ${index + 1} upload failed:`, error.response?.data || error.message);
-              throw error;
-            }
-          });
+             // Upload URLs
+       if (formData.mediaUrls.length > 0) {
+         try {
+           console.log('=== URL UPLOAD DEBUG ===');
+           console.log('URLs to upload:', formData.mediaUrls);
+           const validUrls = formData.mediaUrls.filter(url => url.trim() !== '');
+           console.log('Valid URLs:', validUrls);
+           
+           if (validUrls.length > 0) {
+             const urlPromises = validUrls.map(async (url, index) => {
+               console.log(`Processing URL ${index + 1}:`, url);
+               try {
+                 const mediaResponse = await axios.post('http://localhost:3001/api/posts/media', {
+                   mediaFormat: 'PHOTO',
+                   sourceUrl: url,
+                   gmbAccountId: accountId,
+                   gmbLocationId: locationId,
+                   category: 'ADDITIONAL'
+                 });
+                 console.log(`URL ${index + 1} upload response:`, mediaResponse.data);
+                 return mediaResponse.data.media;
+               } catch (error) {
+                 console.error(`URL ${index + 1} upload failed:`, error.response?.data || error.message);
+                 throw error;
+               }
+             });
 
-          const uploadedUrls = await Promise.all(urlPromises);
-          console.log('=== URL UPLOAD SUCCESS ===');
-          console.log('URLs uploaded successfully:', uploadedUrls);
-          console.log('Uploaded URLs structure:', uploadedUrls.map(u => ({ name: u.name, mediaFormat: u.mediaFormat, sourceUrl: u.sourceUrl })));
-          allMedia.push(...uploadedUrls);
-          console.log('=== END URL UPLOAD DEBUG ===');
-        } catch (urlError) {
-          console.error('=== URL UPLOAD ERROR ===');
-          console.error('Error uploading URLs:', urlError);
-          console.error('Error response:', urlError.response?.data);
-          console.error('Error status:', urlError.response?.status);
-          alert('Warning: Some URLs failed to upload. Post will be created without those images.');
-        }
-      }
+             const uploadedUrls = await Promise.all(urlPromises);
+             console.log('=== URL UPLOAD SUCCESS ===');
+             console.log('URLs uploaded successfully:', uploadedUrls);
+             console.log('Uploaded URLs structure:', uploadedUrls.map(u => ({ name: u.name, mediaFormat: u.mediaFormat, sourceUrl: u.sourceUrl })));
+             allMedia.push(...uploadedUrls);
+             console.log('=== END URL UPLOAD DEBUG ===');
+           }
+         } catch (urlError) {
+           console.error('=== URL UPLOAD ERROR ===');
+           console.error('Error uploading URLs:', urlError);
+           console.error('Error response:', urlError.response?.data);
+           console.error('Error status:', urlError.response?.status);
+           alert('Warning: Some URLs failed to upload. Post will be created without those images.');
+         }
+       }
 
              // Add all uploaded media to post data
        console.log('=== FRONTEND MEDIA DEBUG ===');
        console.log('All media array before mapping:', allMedia);
        console.log('All media array length:', allMedia.length);
        
-       if (allMedia.length > 0) {
-         // Use only real media
-         postData.media = allMedia.map(media => {
-           const mappedMedia = {
-             mediaFormat: media.mediaFormat,
-             sourceUrl: media.sourceUrl
-           };
-           console.log('Mapped media item:', mappedMedia);
-           return mappedMedia;
-         });
-         console.log('Final postData.media array:', postData.media);
-       } else {
-         // No media to add
-         console.log('No media to add to post data');
-       }
+               if (allMedia.length > 0) {
+          // Use only real media
+          postData.media = allMedia.map(media => {
+            const mappedMedia = {
+              mediaFormat: media.mediaFormat || 'PHOTO',
+              sourceUrl: media.sourceUrl || media.url || media.thumbnailUrl
+            };
+            console.log('Mapped media item:', mappedMedia);
+            return mappedMedia;
+          });
+          console.log('Final postData.media array:', postData.media);
+        } else {
+          // No media to add
+          console.log('No media to add to post data');
+        }
        console.log('=== END FRONTEND MEDIA DEBUG ===');
 
       console.log('Sending post data:', postData);
@@ -420,16 +421,15 @@ const Posts = () => {
       await fetchPosts(selectedProfile, 1, false);
       console.log('=== POSTS REFRESHED ===');
       
-      // Reset form and close modal
-      setFormData({
-        title: '',
-        summary: '',
-        postType: 'STANDARD',
-        callToAction: { type: 'BOOK', url: '' },
-        mediaUrls: [],
-        mediaFiles: []
-      });
-      setShowCreateModal(false);
+             // Reset form
+       setFormData({
+         title: '',
+         summary: '',
+         postType: 'STANDARD',
+         callToAction: { type: 'BOOK', url: '' },
+         mediaUrls: [''],
+         mediaFiles: []
+       });
       
       alert('Post created successfully!');
     } catch (error) {
@@ -635,13 +635,6 @@ const Posts = () => {
             Create and manage posts for your business profiles
           </p>
         </div>
-        <button
-          onClick={() => setShowCreateModal(true)}
-          className="inline-flex items-center px-4 py-2 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-primary-600 hover:bg-primary-700"
-        >
-          <Plus className="h-4 w-4 mr-2" />
-          Create Post
-        </button>
       </div>
 
       {/* Profile Selector */}
@@ -671,155 +664,231 @@ const Posts = () => {
         </select>
       </div>
 
-      {/* Image Uploader Section */}
+      {/* Create Post Form Section */}
       <div className="bg-white shadow rounded-lg p-6">
         <div className="flex items-center justify-between mb-4">
           <div>
-            <h2 className="text-lg font-medium text-gray-900">Image Uploader</h2>
-            <p className="text-sm text-gray-500">Upload images to ImgBB for your posts</p>
+            <h2 className="text-lg font-medium text-gray-900">Create New Post</h2>
+            <p className="text-sm text-gray-500">Fill out the form below to create a new post</p>
           </div>
-          <button
-            onClick={() => setShowImageUploaderModal(true)}
-            className="inline-flex items-center px-3 py-2 border border-primary-300 shadow-sm text-sm font-medium rounded-md text-primary-700 bg-primary-50 hover:bg-primary-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500"
-          >
-            <Plus className="h-4 w-4 mr-2" />
-            Open Uploader
-          </button>
         </div>
         
-                 {/* Quick Upload Preview */}
-         <div className="bg-gray-50 rounded-lg p-4">
-           <p className="text-sm text-gray-600 mb-3">
-             Use the ImgBB image uploader to get direct URLs for your posts. Uploaded images will be automatically added to your next post.
-           </p>
-           
-           {/* Quick URL Input */}
-           <div className="mb-4 p-3 bg-white rounded border">
-             <label className="block text-sm font-medium text-gray-700 mb-2">Quick Add Image URL</label>
-             <div className="flex gap-2">
-               <input
-                 type="url"
-                 placeholder="https://example.com/image.jpg"
-                 className="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
-                 onKeyPress={(e) => {
-                   if (e.key === 'Enter') {
-                     e.preventDefault();
-                     const url = e.target.value.trim();
-                     if (url && isValidUrl(url)) {
-                       setFormData(prev => ({
-                         ...prev,
-                         mediaUrls: [...prev.mediaUrls, url]
-                       }));
-                       e.target.value = '';
-                     }
-                   }
-                 }}
-               />
-               <button
-                 onClick={(e) => {
-                   const input = e.target.previousElementSibling;
-                   const url = input.value.trim();
-                   if (url && isValidUrl(url)) {
-                     setFormData(prev => ({
-                       ...prev,
-                       mediaUrls: [...prev.mediaUrls, url]
-                     }));
-                     input.value = '';
-                   }
-                 }}
-                 className="px-3 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600 text-sm"
-               >
-                 Add
-               </button>
-             </div>
-             <p className="text-xs text-gray-500 mt-1">
-               Press Enter or click Add to quickly add an image URL to your post
-             </p>
-           </div>
-           
-           {/* Uploaded Images Display */}
-           {formData.mediaUrls.length > 0 ? (
-             <div className="space-y-3">
-               <div className="flex items-center justify-between">
-                 <span className="text-sm font-medium text-gray-700">
-                   {formData.mediaUrls.length} image(s) ready for next post
-                 </span>
-                 <button
-                   onClick={() => setFormData(prev => ({ ...prev, mediaUrls: [] }))}
-                   className="px-3 py-1 text-sm text-red-600 hover:text-red-700 hover:bg-red-50 rounded-md"
-                 >
-                   Clear All
-                 </button>
-               </div>
-               
-                               {/* Image Grid */}
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {formData.mediaUrls.map((url, index) => (
-                    <div key={index} className="bg-white rounded border p-3">
-                      <div className="relative group mb-2">
-                        <img
-                          src={url}
-                          alt={`Uploaded image ${index + 1}`}
-                          className="w-full h-32 object-cover rounded border shadow-sm"
-                          onError={(e) => {
-                            e.target.style.display = 'none';
-                            e.target.nextSibling.style.display = 'flex';
-                          }}
-                        />
-                        <div className="hidden w-full h-32 bg-gray-200 rounded border flex items-center justify-center text-xs text-gray-500">
-                          Invalid URL
-                        </div>
-                        
-                        {/* Remove button */}
-                        <button
-                          onClick={() => {
-                            const newUrls = formData.mediaUrls.filter((_, i) => i !== index);
-                            setFormData(prev => ({ ...prev, mediaUrls: newUrls }));
-                          }}
-                          className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs hover:bg-red-600 opacity-0 group-hover:opacity-100 transition-opacity"
-                          title="Remove image"
-                        >
-                          ×
-                        </button>
-                      </div>
-                      
-                      {/* URL Display */}
-                      <div className="text-xs">
-                        <p className="text-gray-600 mb-1">Image URL:</p>
-                        <div className="flex items-center gap-1">
-                          <input
-                            type="text"
-                            value={url}
-                            readOnly
-                            className="flex-1 bg-gray-50 border border-gray-200 rounded px-2 py-1 text-xs font-mono"
-                            onClick={(e) => e.target.select()}
-                          />
-                          <button
-                            onClick={() => {
-                              navigator.clipboard.writeText(url);
-                              showNotification('URL copied to clipboard!', 'success');
-                            }}
-                            className="px-2 py-1 bg-blue-500 text-white rounded text-xs hover:bg-blue-600"
-                            title="Copy URL"
-                          >
-                            Copy
-                          </button>
-                        </div>
-                      </div>
+        <form onSubmit={handleCreatePost} className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700">Post Type</label>
+              <select
+                value={formData.postType}
+                onChange={(e) => setFormData({ ...formData, postType: e.target.value })}
+                className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
+              >
+                <option value="STANDARD">Standard Post</option>
+                <option value="OFFER">Offer</option>
+                <option value="EVENT">Event</option>
+                <option value="PRODUCT">Product</option>
+              </select>
+            </div>
+            
+            <div>
+              <label className="block text-sm font-medium text-gray-700">Call to Action Type</label>
+              <select
+                value={formData.callToAction.type}
+                onChange={(e) => setFormData({
+                  ...formData,
+                  callToAction: { ...formData.callToAction, type: e.target.value }
+                })}
+                className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
+              >
+                <option value="BOOK">Book</option>
+                <option value="ORDER">Order</option>
+                <option value="SHOP">Shop</option>
+                <option value="LEARN_MORE">Learn More</option>
+              </select>
+            </div>
+          </div>
+          
+          <div>
+            <label className="block text-sm font-medium text-gray-700">Summary</label>
+            <textarea
+              value={formData.summary}
+              onChange={(e) => setFormData({ ...formData, summary: e.target.value })}
+              rows={3}
+              className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
+              required
+            />
+          </div>
+          
+          <div>
+            <label className="block text-sm font-medium text-gray-700">Call to Action URL</label>
+            <input
+              type="url"
+              value={formData.callToAction.url}
+              onChange={(e) => setFormData({
+                ...formData,
+                callToAction: { ...formData.callToAction, url: e.target.value }
+              })}
+              className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
+            />
+          </div>
+          
+          <div>
+            <label className="block text-sm font-medium text-gray-700">Add Pictures</label>
+            
+            {/* Image Uploader Button */}
+            <div className="mb-3">
+              <button
+                type="button"
+                onClick={() => setShowImageUploaderModal(true)}
+                className="inline-flex items-center px-3 py-2 border border-primary-300 shadow-sm text-sm font-medium rounded-md text-primary-700 bg-primary-50 hover:bg-primary-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500"
+              >
+                <Plus className="h-4 w-4 mr-2" />
+                Upload Images with ImgBB
+              </button>
+              <p className="text-xs text-gray-500 mt-1">
+                Upload images to ImgBB and get direct URLs for your posts
+              </p>
+            </div>
+            
+            {/* File Upload Section */}
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 mb-2">Upload Local Files (Optional)</label>
+              <input
+                type="file"
+                multiple
+                accept="image/*"
+                onChange={(e) => {
+                  console.log('=== FILE INPUT CHANGE ===');
+                  console.log('Event target files:', e.target.files);
+                  console.log('Files length:', e.target.files.length);
+                  
+                  const files = Array.from(e.target.files);
+                  console.log('Converted files array:', files);
+                  console.log('Current formData.mediaFiles:', formData.mediaFiles);
+                  
+                  const newFiles = [...(formData.mediaFiles || []), ...files];
+                  console.log('New files array:', newFiles);
+                  
+                  setFormData({ ...formData, mediaFiles: newFiles });
+                  console.log('=== END FILE INPUT CHANGE ===');
+                }}
+                className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-primary-50 file:text-primary-700 hover:file:bg-primary-100"
+              />
+              {formData.mediaFiles && formData.mediaFiles.length > 0 && (
+                <div className="mt-2 space-y-2">
+                  {formData.mediaFiles.map((file, index) => (
+                    <div key={index} className="flex items-center space-x-2 text-sm">
+                      <span className="text-gray-600">{file.name}</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const newFiles = formData.mediaFiles.filter((_, i) => i !== index);
+                          setFormData({ ...formData, mediaFiles: newFiles });
+                        }}
+                        className="text-red-500 hover:text-red-700"
+                      >
+                        Remove
+                      </button>
                     </div>
                   ))}
                 </div>
-             </div>
-           ) : (
-             <div className="flex items-center space-x-2">
-               <div className="flex-1 bg-white border border-gray-300 rounded-md px-3 py-2">
-                 <span className="text-sm text-gray-500">
-                   No images uploaded yet
-                 </span>
+              )}
+            </div>
+            
+            {/* URL Input Section */}
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 mb-2">Or Add Picture URLs (Optional)</label>
+              <div className="space-y-2">
+                {formData.mediaUrls.map((url, index) => (
+                  <div key={index} className="flex items-center space-x-2">
+                    <input
+                      type="url"
+                      value={url}
+                      onChange={(e) => {
+                        const newUrls = [...formData.mediaUrls];
+                        newUrls[index] = e.target.value;
+                        setFormData({ ...formData, mediaUrls: newUrls });
+                      }}
+                      placeholder="https://example.com/image.jpg"
+                      className="flex-1 border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const newUrls = formData.mediaUrls.filter((_, i) => i !== index);
+                        setFormData({ ...formData, mediaUrls: newUrls });
+                      }}
+                      className="text-red-500 hover:text-red-700"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => setFormData({
+                    ...formData,
+                    mediaUrls: [...formData.mediaUrls, '']
+                  })}
+                  className="inline-flex items-center px-3 py-1 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50"
+                >
+                  + Add Picture URL
+                </button>
+              </div>
+            </div>
+            
+                         {/* Combined Preview */}
+             {(formData.mediaUrls.filter(url => url.trim() !== '').length > 0 || (formData.mediaFiles && formData.mediaFiles.length > 0)) && (
+               <div className="mt-3">
+                 <label className="block text-sm font-medium text-gray-700 mb-2">Preview</label>
+                 <div className="grid grid-cols-2 gap-2">
+                   {/* URL Previews */}
+                   {formData.mediaUrls
+                     .filter(url => url.trim() !== '')
+                     .map((url, index) => (
+                       <div key={`url-${index}`} className="relative">
+                         <img
+                           src={url}
+                           alt={`URL Preview ${index + 1}`}
+                           className="w-full h-24 object-cover rounded border"
+                           onError={(e) => {
+                             console.log('Preview image failed to load:', url);
+                             e.target.style.display = 'none';
+                             e.target.nextSibling.style.display = 'block';
+                           }}
+                           onLoad={(e) => {
+                             console.log('Preview image loaded successfully:', url);
+                           }}
+                         />
+                         <div className="hidden w-full h-24 bg-gray-200 rounded border flex items-center justify-center text-xs text-gray-500">
+                           Invalid URL
+                         </div>
+                       </div>
+                     ))}
+                   
+                   {/* File Previews */}
+                   {formData.mediaFiles && formData.mediaFiles.map((file, index) => (
+                     <div key={`file-${index}`} className="relative">
+                       <img
+                         src={URL.createObjectURL(file)}
+                         alt={`File Preview ${index + 1}`}
+                         className="w-full h-24 object-cover rounded border"
+                       />
+                     </div>
+                   ))}
+                 </div>
                </div>
-             </div>
-           )}
-         </div>
+             )}
+          </div>
+          
+          <div className="flex justify-end pt-4">
+            <button
+              type="submit"
+              className="px-6 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-primary-600 hover:bg-primary-700"
+            >
+              Create Post
+            </button>
+          </div>
+        </form>
       </div>
 
       {/* Posts List */}
@@ -877,11 +946,11 @@ const Posts = () => {
                         </div>
                       </div>
 
-                      {/* Media Display - Image on Top */}
-                      {post.media && post.media.length > 0 ? (
-                        <div>
-                          <div className="grid grid-cols-1 gap-0">
-                                                         {post.media.map((mediaItem, index) => {
+                                             {/* Media Display - Image on Top */}
+                       {post.media && post.media.length > 0 ? (
+                         <div>
+                           <div className="grid grid-cols-1 gap-0">
+                             {post.media.map((mediaItem, index) => {
                                const imageUrl = mediaItem.sourceUrl || mediaItem.url || mediaItem.thumbnailUrl;
                                console.log(`Rendering media item ${index}:`, {
                                  id: mediaItem.id,
@@ -892,23 +961,23 @@ const Posts = () => {
                                  isGoogleUrl: imageUrl && imageUrl.includes('lh3.googleusercontent.com')
                                });
                                
-                                                                // Ensure Google Photos URLs have proper format
-                                 let processedUrl = imageUrl;
-                                 if (imageUrl && imageUrl.includes('lh3.googleusercontent.com')) {
-                                   if (!imageUrl.includes('=')) {
+                               // Ensure Google Photos URLs have proper format
+                               let processedUrl = imageUrl;
+                               if (imageUrl && imageUrl.includes('lh3.googleusercontent.com')) {
+                                 if (!imageUrl.includes('=')) {
+                                   processedUrl = `${imageUrl}=h305-no`;
+                                   console.log(`Fixed Google Photos URL: ${imageUrl} -> ${processedUrl}`);
+                                 } else {
+                                   // If it already has parameters, ensure it has the right format
+                                   if (!imageUrl.includes('h305-no')) {
                                      processedUrl = `${imageUrl}=h305-no`;
-                                     console.log(`Fixed Google Photos URL: ${imageUrl} -> ${processedUrl}`);
-                                   } else {
-                                     // If it already has parameters, ensure it has the right format
-                                     if (!imageUrl.includes('h305-no')) {
-                                       processedUrl = `${imageUrl}=h305-no`;
-                                       console.log(`Enhanced Google Photos URL: ${imageUrl} -> ${processedUrl}`);
-                                     }
+                                     console.log(`Enhanced Google Photos URL: ${imageUrl} -> ${processedUrl}`);
                                    }
                                  }
-                              
-                              return (
-                                                                 <div key={mediaItem.id || index} className="relative group">
+                               }
+                             
+                               return (
+                                 <div key={mediaItem.id || index} className="relative group">
                                    <img
                                      src={processedUrl}
                                      alt={mediaItem.altText || 'Post image'}
@@ -946,24 +1015,24 @@ const Posts = () => {
                                        console.log('Image loaded successfully:', processedUrl);
                                      }}
                                    />
-                                  <div className="hidden absolute inset-0 bg-gray-200 rounded-t-lg flex items-center justify-center text-sm text-gray-500">
-                                    Image not available
-                                  </div>
-                                  {mediaItem.mediaFormat === 'VIDEO' && (
-                                    <div className="absolute top-2 right-2 bg-black bg-opacity-75 text-white text-xs px-2 py-1 rounded">
-                                      VIDEO
-                                    </div>
-                                  )}
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="mb-4 text-sm text-gray-500 text-center py-8 bg-gray-50 rounded-lg">
-                          No media attached to this post
-                        </div>
-                      )}
+                                   <div className="hidden absolute inset-0 bg-gray-200 rounded-t-lg flex items-center justify-center text-sm text-gray-500">
+                                     Image not available
+                                   </div>
+                                   {mediaItem.mediaFormat === 'VIDEO' && (
+                                     <div className="absolute top-2 right-2 bg-black bg-opacity-75 text-white text-xs px-2 py-1 rounded">
+                                       VIDEO
+                                     </div>
+                                   )}
+                                 </div>
+                               );
+                             })}
+                           </div>
+                         </div>
+                       ) : (
+                         <div className="mb-4 text-sm text-gray-500 text-center py-8 bg-gray-50 rounded-lg">
+                           No media attached to this post
+                         </div>
+                       )}
 
                       {/* Post Content - Text Below Image */}
                       <div className="p-3">
@@ -1050,257 +1119,14 @@ const Posts = () => {
                 <p className="mt-2 text-sm text-gray-500 max-w-md mx-auto">
                   Get started by creating your first post for this location. Your posts will appear here in a beautiful grid layout.
                 </p>
-                <div className="mt-6">
-                  <button
-                    onClick={() => setShowCreateModal(true)}
-                    className="inline-flex items-center px-6 py-3 border border-transparent shadow-sm text-base font-medium rounded-lg text-white bg-primary-600 hover:bg-primary-700 transition-colors duration-200"
-                  >
-                    <Plus className="h-5 w-5 mr-2" />
-                    Create Your First Post
-                  </button>
-                </div>
+
               </div>
             )}
           </div>
         </div>
       )}
 
-      {/* Create Post Modal */}
-      {showCreateModal && (
-        <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50">
-          <div className="relative top-20 mx-auto p-5 border w-96 shadow-lg rounded-md bg-white">
-            <div className="mt-3">
-              <h3 className="text-lg font-medium text-gray-900 mb-4">Create New Post</h3>
-              <form onSubmit={handleCreatePost} className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700">Post Type</label>
-                  <select
-                    value={formData.postType}
-                    onChange={(e) => setFormData({ ...formData, postType: e.target.value })}
-                    className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
-                  >
-                    <option value="STANDARD">Standard Post</option>
-                    <option value="OFFER">Offer</option>
-                    <option value="EVENT">Event</option>
-                    <option value="PRODUCT">Product</option>
-                  </select>
-                </div>
-                
-
-                
-                <div>
-                  <label className="block text-sm font-medium text-gray-700">Summary</label>
-                  <textarea
-                    value={formData.summary}
-                    onChange={(e) => setFormData({ ...formData, summary: e.target.value })}
-                    rows={3}
-                    className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
-                    required
-                  />
-                </div>
-                
-                <div>
-                  <label className="block text-sm font-medium text-gray-700">Call to Action Type</label>
-                  <select
-                    value={formData.callToAction.type}
-                    onChange={(e) => setFormData({
-                      ...formData,
-                      callToAction: { ...formData.callToAction, type: e.target.value }
-                    })}
-                    className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
-                  >
-                    <option value="BOOK">Book</option>
-                    <option value="ORDER">Order</option>
-                    <option value="SHOP">Shop</option>
-                    <option value="LEARN_MORE">Learn More</option>
-                  </select>
-                </div>
-                
-                <div>
-                  <label className="block text-sm font-medium text-gray-700">Call to Action URL</label>
-                  <input
-                    type="url"
-                    value={formData.callToAction.url}
-                    onChange={(e) => setFormData({
-                      ...formData,
-                      callToAction: { ...formData.callToAction, url: e.target.value }
-                    })}
-                    className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
-                  />
-                </div>
-                
-                <div>
-                  <label className="block text-sm font-medium text-gray-700">Add Pictures</label>
-                  
-                  {/* Image Uploader Button */}
-                  <div className="mb-3">
-                    <button
-                      type="button"
-                      onClick={() => setShowImageUploaderModal(true)}
-                      className="inline-flex items-center px-3 py-2 border border-primary-300 shadow-sm text-sm font-medium rounded-md text-primary-700 bg-primary-50 hover:bg-primary-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500"
-                    >
-                      <Plus className="h-4 w-4 mr-2" />
-                      Upload Images with ImgBB
-                    </button>
-                    <p className="text-xs text-gray-500 mt-1">
-                      Upload images to ImgBB and get direct URLs for your posts
-                    </p>
-                  </div>
-                  
-                  {/* Mock Image Notice */}
-                  <div className="mb-3 p-2 bg-blue-50 border border-blue-200 rounded-md">
-                    <p className="text-xs text-blue-700">
-                      <strong>Testing Mode:</strong> A mock image will automatically be added to every post for testing media functionality.
-                    </p>
-                  </div>
-                  
-                  {/* File Upload Section */}
-                  <div className="mb-4">
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Upload Local Files (Optional)</label>
-                    <input
-                      type="file"
-                      multiple
-                      accept="image/*"
-                                             onChange={(e) => {
-                         console.log('=== FILE INPUT CHANGE ===');
-                         console.log('Event target files:', e.target.files);
-                         console.log('Files length:', e.target.files.length);
-                         
-                         const files = Array.from(e.target.files);
-                         console.log('Converted files array:', files);
-                         console.log('Current formData.mediaFiles:', formData.mediaFiles);
-                         
-                         const newFiles = [...(formData.mediaFiles || []), ...files];
-                         console.log('New files array:', newFiles);
-                         
-                         setFormData({ ...formData, mediaFiles: newFiles });
-                         console.log('=== END FILE INPUT CHANGE ===');
-                       }}
-                      className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-primary-50 file:text-primary-700 hover:file:bg-primary-100"
-                    />
-                    {formData.mediaFiles && formData.mediaFiles.length > 0 && (
-                      <div className="mt-2 space-y-2">
-                        {formData.mediaFiles.map((file, index) => (
-                          <div key={index} className="flex items-center space-x-2 text-sm">
-                            <span className="text-gray-600">{file.name}</span>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const newFiles = formData.mediaFiles.filter((_, i) => i !== index);
-                                setFormData({ ...formData, mediaFiles: newFiles });
-                              }}
-                              className="text-red-500 hover:text-red-700"
-                            >
-                              Remove
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                  
-                  {/* URL Input Section */}
-                  <div className="mb-4">
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Or Add Picture URLs (Optional)</label>
-                    <div className="space-y-2">
-                      {formData.mediaUrls.map((url, index) => (
-                        <div key={index} className="flex items-center space-x-2">
-                          <input
-                            type="url"
-                            value={url}
-                            onChange={(e) => {
-                              const newUrls = [...formData.mediaUrls];
-                              newUrls[index] = e.target.value;
-                              setFormData({ ...formData, mediaUrls: newUrls });
-                            }}
-                            placeholder="https://example.com/image.jpg"
-                            className="flex-1 border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const newUrls = formData.mediaUrls.filter((_, i) => i !== index);
-                              setFormData({ ...formData, mediaUrls: newUrls });
-                            }}
-                            className="text-red-500 hover:text-red-700"
-                          >
-                            Remove
-                          </button>
-                        </div>
-                      ))}
-                      <button
-                        type="button"
-                        onClick={() => setFormData({
-                          ...formData,
-                          mediaUrls: [...formData.mediaUrls, '']
-                        })}
-                        className="inline-flex items-center px-3 py-1 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50"
-                      >
-                        + Add Picture URL
-                      </button>
-                    </div>
-                  </div>
-                  
-                  {/* Combined Preview */}
-                  {(formData.mediaUrls.filter(url => url.trim() !== '').length > 0 || (formData.mediaFiles && formData.mediaFiles.length > 0)) && (
-                    <div className="mt-3">
-                      <label className="block text-sm font-medium text-gray-700 mb-2">Preview</label>
-                      <div className="grid grid-cols-2 gap-2">
-                        {/* URL Previews */}
-                        {formData.mediaUrls
-                          .filter(url => url.trim() !== '')
-                          .map((url, index) => (
-                            <div key={`url-${index}`} className="relative">
-                              <img
-                                src={url}
-                                alt={`URL Preview ${index + 1}`}
-                                className="w-full h-24 object-cover rounded border"
-                                onError={(e) => {
-                                  e.target.style.display = 'none';
-                                  e.target.nextSibling.style.display = 'block';
-                                }}
-                              />
-                              <div className="hidden w-full h-24 bg-gray-200 rounded border flex items-center justify-center text-xs text-gray-500">
-                                Invalid URL
-                              </div>
-                            </div>
-                          ))}
-                        
-                        {/* File Previews */}
-                        {formData.mediaFiles && formData.mediaFiles.map((file, index) => (
-                          <div key={`file-${index}`} className="relative">
-                            <img
-                              src={URL.createObjectURL(file)}
-                              alt={`File Preview ${index + 1}`}
-                              className="w-full h-24 object-cover rounded border"
-                            />
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-                
-                <div className="flex justify-end space-x-3 pt-4">
-                  <button
-                    type="button"
-                    onClick={() => setShowCreateModal(false)}
-                    className="px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 hover:bg-gray-50"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    className="px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-primary-600 hover:bg-primary-700"
-                  >
-                    Create Post
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
-        </div>
-      )}
+      
 
       {/* Image Uploader Modal */}
       {showImageUploaderModal && (
