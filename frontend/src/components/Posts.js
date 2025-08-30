@@ -51,28 +51,28 @@ const Posts = () => {
    
    // Edit post state
    const [editingPost, setEditingPost] = useState(null);
-   const [editFormData, setEditFormData] = useState({
+       const [editFormData, setEditFormData] = useState({
+      summary: '',
+      postType: 'UPDATE',
+      callToAction: {
+        type: '',
+        url: ''
+      },
+      mediaUrls: ['']
+    });
+   
+   // Notification state
+   const [notification, setNotification] = useState(null);
+  
+     const [formData, setFormData] = useState({
      summary: '',
-     postType: 'STANDARD',
+     postType: 'UPDATE',
      callToAction: {
        type: '',
        url: ''
      },
      mediaUrls: ['']
    });
-   
-   // Notification state
-   const [notification, setNotification] = useState(null);
-  
-  const [formData, setFormData] = useState({
-    summary: '',
-    postType: 'STANDARD',
-    callToAction: {
-      type: '',
-      url: ''
-    },
-    mediaUrls: ['']
-  });
 
   useEffect(() => {
     if (isAuthenticated) {
@@ -399,13 +399,13 @@ const Posts = () => {
       await fetchPosts(selectedProfile, 1, false);
       console.log('=== POSTS REFRESHED ===');
       
-                           // Reset form
-      setFormData({
-        summary: '',
-        postType: 'STANDARD',
-        callToAction: { type: '', url: '' },
-        mediaUrls: ['']
-      });
+                                  // Reset form
+       setFormData({
+         summary: '',
+         postType: 'UPDATE',
+         callToAction: { type: '', url: '' },
+         mediaUrls: ['']
+       });
       
       alert('Post created successfully!');
     } catch (error) {
@@ -555,21 +555,21 @@ const Posts = () => {
      showNotification('Image uploaded successfully! You can now add it to your post.', 'success');
    };
 
-   // Handle edit post
-   const handleEditPost = (post) => {
-     setEditingPost(post);
-     setEditFormData({
-       summary: post.content || '',
-       postType: post.postType || 'STANDARD',
-       callToAction: {
-         type: post.callToAction?.actionType || '',
-         url: post.callToAction?.url || ''
-       },
-       mediaUrls: post.media && post.media.length > 0 
-         ? post.media.map(media => media.sourceUrl || media.url || media.thumbnailUrl).filter(Boolean)
-         : ['']
-     });
-   };
+       // Handle edit post
+    const handleEditPost = (post) => {
+      setEditingPost(post);
+      setEditFormData({
+        summary: post.content || '',
+        postType: post.postType || 'UPDATE',
+        callToAction: {
+          type: post.callToAction?.actionType || '',
+          url: post.callToAction?.url || ''
+        },
+        mediaUrls: post.media && post.media.length > 0 
+          ? post.media.map(media => media.sourceUrl || media.url || media.thumbnailUrl).filter(Boolean)
+          : ['']
+      });
+    };
 
    // Handle update post
    const handleUpdatePost = async (e) => {
@@ -656,7 +656,7 @@ const Posts = () => {
        setEditingPost(null);
        setEditFormData({
          summary: '',
-         postType: 'STANDARD',
+         postType: 'UPDATE',
          callToAction: { type: '', url: '' },
          mediaUrls: ['']
        });
@@ -680,7 +680,7 @@ const Posts = () => {
      setEditingPost(null);
      setEditFormData({
        summary: '',
-       postType: 'STANDARD',
+       postType: 'UPDATE',
        callToAction: { type: '', url: '' },
        mediaUrls: ['']
      });
@@ -725,7 +725,7 @@ const Posts = () => {
 
   const getPostTypeIcon = (type) => {
     switch (type) {
-      case 'STANDARD':
+      case 'UPDATE':
         return <FileText className="h-4 w-4" />;
       case 'OFFER':
         return <FileText className="h-4 w-4" />;
@@ -838,14 +838,74 @@ const Posts = () => {
                {editingPost ? 'Update your post below' : 'Fill out the form below to create a new post'}
              </p>
            </div>
-           {editingPost && (
-             <button
-               onClick={handleCancelEdit}
-               className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 border border-gray-300 rounded-md hover:bg-gray-200"
-             >
-               Cancel Edit
-             </button>
-           )}
+           <div className="flex items-center space-x-4">
+             {/* Post Type Selection Buttons */}
+             <div className="flex items-center space-x-2">
+               <span className="text-sm font-medium text-gray-700">Post Type:</span>
+               <div className="flex bg-gray-100 rounded-lg p-1">
+                 <button
+                   type="button"
+                   onClick={() => {
+                     if (editingPost) {
+                       setEditFormData({ ...editFormData, postType: 'UPDATE' });
+                     } else {
+                       setFormData({ ...formData, postType: 'UPDATE' });
+                     }
+                   }}
+                   className={`px-3 py-1 text-sm font-medium rounded-md transition-colors ${
+                     (editingPost ? editFormData.postType : formData.postType) === 'UPDATE'
+                       ? 'bg-white text-gray-900 shadow-sm'
+                       : 'text-gray-600 hover:text-gray-900'
+                   }`}
+                 >
+                   Update
+                 </button>
+                 <button
+                   type="button"
+                   onClick={() => {
+                     if (editingPost) {
+                       setEditFormData({ ...editFormData, postType: 'OFFER' });
+                     } else {
+                       setFormData({ ...formData, postType: 'OFFER' });
+                     }
+                   }}
+                   className={`px-3 py-1 text-sm font-medium rounded-md transition-colors ${
+                     (editingPost ? editFormData.postType : formData.postType) === 'OFFER'
+                       ? 'bg-white text-gray-900 shadow-sm'
+                       : 'text-gray-600 hover:text-gray-900'
+                   }`}
+                 >
+                   Offer
+                 </button>
+                 <button
+                   type="button"
+                   onClick={() => {
+                     if (editingPost) {
+                       setEditFormData({ ...editFormData, postType: 'EVENT' });
+                     } else {
+                       setFormData({ ...formData, postType: 'EVENT' });
+                     }
+                   }}
+                   className={`px-3 py-1 text-sm font-medium rounded-md transition-colors ${
+                     (editingPost ? editFormData.postType : formData.postType) === 'EVENT'
+                       ? 'bg-white text-gray-900 shadow-sm'
+                       : 'text-gray-600 hover:text-gray-900'
+                   }`}
+                 >
+                   Event
+                 </button>
+               </div>
+             </div>
+             
+             {editingPost && (
+               <button
+                 onClick={handleCancelEdit}
+                 className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 border border-gray-300 rounded-md hover:bg-gray-200"
+               >
+                 Cancel Edit
+               </button>
+             )}
+           </div>
          </div>
         
                  <form onSubmit={editingPost ? handleUpdatePost : handleCreatePost}>
@@ -897,39 +957,54 @@ const Posts = () => {
 
                </div>
 
-               {/* Description Section */}
-               <div>
-                 <label className="block text-sm font-medium text-gray-700">Description</label>
-                 <textarea
-                   value={editingPost ? editFormData.summary : formData.summary}
-                   onChange={(e) => editingPost 
-                     ? setEditFormData({ ...editFormData, summary: e.target.value })
-                     : setFormData({ ...formData, summary: e.target.value })
-                   }
-                   rows={4}
-                   className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
-                   placeholder="Write your post content here..."
-                   required
-                 />
-               </div>
+                               {/* Description Section */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">
+                    Description
+                    <span className="text-gray-500 font-normal ml-2">
+                      ({(editingPost ? editFormData.summary : formData.summary).length}/1500)
+                    </span>
+                  </label>
+                  <textarea
+                    value={editingPost ? editFormData.summary : formData.summary}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      if (value.length <= 1500) {
+                        if (editingPost) {
+                          setEditFormData({ ...editFormData, summary: value });
+                        } else {
+                          setFormData({ ...formData, summary: value });
+                        }
+                      }
+                    }}
+                    rows={4}
+                    maxLength={1500}
+                    className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
+                    placeholder="Write your post content here..."
+                    required
+                  />
+                  <div className="mt-1 text-xs text-gray-500 text-right">
+                    {(editingPost ? editFormData.summary : formData.summary).length}/1500 characters
+                  </div>
+                </div>
 
-               {/* Post Type Section */}
-               <div>
-                 <label className="block text-sm font-medium text-gray-700">Post Type</label>
-                 <select
-                   value={editingPost ? editFormData.postType : formData.postType}
-                   onChange={(e) => editingPost
-                     ? setEditFormData({ ...editFormData, postType: e.target.value })
-                     : setFormData({ ...formData, postType: e.target.value })
-                   }
-                   className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
-                 >
-                   <option value="STANDARD">Standard Post</option>
-                   <option value="OFFER">Offer</option>
-                   <option value="EVENT">Event</option>
-                   <option value="PRODUCT">Product</option>
-                 </select>
-               </div>
+                               {/* Post Type Section - Hidden since we have buttons above */}
+                <div className="hidden">
+                  <label className="block text-sm font-medium text-gray-700">Post Type</label>
+                  <select
+                    value={editingPost ? editFormData.postType : formData.postType}
+                    onChange={(e) => editingPost
+                      ? setEditFormData({ ...editFormData, postType: e.target.value })
+                      : setFormData({ ...formData, postType: e.target.value })
+                    }
+                    className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
+                  >
+                    <option value="UPDATE">Update</option>
+                    <option value="OFFER">Offer</option>
+                    <option value="EVENT">Event</option>
+                    <option value="PRODUCT">Product</option>
+                  </select>
+                </div>
 
                {/* Call to Action Type Section */}
                <div>

@@ -98,7 +98,7 @@ router.post('/posts', auth, [
   body('scheduledTime').optional().isISO8601(),
   body('gmbAccountId').optional(),
   body('gmbLocationId').optional(),
-  body('postType').optional().isIn(['STANDARD', 'EVENT', 'OFFER']),
+  body('postType').optional().isIn(['UPDATE', 'EVENT', 'OFFER']),
   body('event').optional(),
   body('callToAction').optional(),
   body('offer').optional()
@@ -116,7 +116,7 @@ router.post('/posts', auth, [
       scheduledTime,
       gmbAccountId,
       gmbLocationId,
-      postType = 'STANDARD',
+      postType = 'UPDATE',
       event,
       callToAction,
       offer

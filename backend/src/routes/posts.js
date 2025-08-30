@@ -4,6 +4,33 @@ const auth = require('../middleware/auth');
 const axios = require('axios');
 const router = express.Router();
 
+// Post type mapping functions
+const mapPostTypeToTopicType = (postType) => {
+  switch (postType) {
+    case 'UPDATE':
+      return 'STANDARD';
+    case 'EVENT':
+      return 'EVENT';
+    case 'OFFER':
+      return 'OFFER';
+    default:
+      return 'STANDARD';
+  }
+};
+
+const mapTopicTypeToPostType = (topicType) => {
+  switch (topicType) {
+    case 'STANDARD':
+      return 'UPDATE';
+    case 'EVENT':
+      return 'EVENT';
+    case 'OFFER':
+      return 'OFFER';
+    default:
+      return 'UPDATE';
+  }
+};
+
 // NOTE: Google My Business API integration with real API calls and fallbacks
 // The system will attempt real Google My Business API calls first
 // If the real API fails, it falls back to mock responses to ensure functionality
@@ -214,7 +241,7 @@ router.get('/location/:locationId', auth, async (req, res) => {
              const processedPost = {
                id: post.name.split('/').pop(),
                content: post.summary,
-               postType: post.topicType || 'STANDARD',
+               postType: mapTopicTypeToPostType(post.topicType) || 'UPDATE',
                platform: 'google',
                createdAt: post.createTime || new Date().toISOString(),
                status: 'published',
@@ -326,7 +353,7 @@ router.get('/location/:locationId', auth, async (req, res) => {
              const processedPost = {
                id: post.name.split('/').pop(),
                content: post.summary,
-               postType: post.topicType || 'STANDARD',
+               postType: mapTopicTypeToPostType(post.topicType) || 'UPDATE',
                platform: 'google',
                createdAt: post.createTime || new Date().toISOString(),
                status: 'published',
@@ -377,7 +404,7 @@ router.get('/location/:locationId', auth, async (req, res) => {
       {
         id: '1',
         content: 'Welcome to our business! We offer the best services in town.',
-        postType: 'STANDARD',
+        postType: 'UPDATE',
         platform: 'google',
         createdAt: new Date().toISOString(),
         status: 'published',
@@ -487,7 +514,7 @@ router.get('/location/:locationId', auth, async (req, res) => {
       {
         id: '7',
         content: 'Professional deep cleaning services',
-        postType: 'STANDARD',
+        postType: 'UPDATE',
         platform: 'google',
         createdAt: new Date(Date.now() - 518400000).toISOString(), // 6 days ago
         status: 'published',
@@ -504,7 +531,7 @@ router.get('/location/:locationId', auth, async (req, res) => {
       {
         id: '8',
         content: 'Eco-friendly cleaning products now available',
-        postType: 'STANDARD',
+        postType: 'UPDATE',
         platform: 'google',
         createdAt: new Date(Date.now() - 604800000).toISOString(), // 7 days ago
         status: 'published',
@@ -555,7 +582,7 @@ router.get('/location/:locationId', auth, async (req, res) => {
       {
         id: '11',
         content: 'Commercial cleaning services',
-        postType: 'STANDARD',
+        postType: 'UPDATE',
         platform: 'google',
         createdAt: new Date(Date.now() - 864000000).toISOString(), // 10 days ago
         status: 'published',
@@ -1085,7 +1112,7 @@ router.post('/', auth, [
   body('scheduledTime').optional().isISO8601(),
   body('gmbAccountId').optional(),
   body('gmbLocationId').optional(),
-  body('postType').optional().isIn(['STANDARD', 'EVENT', 'OFFER']),
+  body('postType').optional().isIn(['UPDATE', 'EVENT', 'OFFER']),
   body('event').optional(),
   body('callToAction').optional(),
   body('offer').optional()
@@ -1116,7 +1143,7 @@ router.post('/', auth, [
       scheduledTime,
       gmbAccountId,
       gmbLocationId,
-      postType = 'STANDARD',
+      postType = 'UPDATE',
       event,
       callToAction,
       offer
@@ -1149,7 +1176,7 @@ router.post('/', auth, [
          const gmbPostData = {
            languageCode: 'en-US',
            summary: content,
-           topicType: postType
+           topicType: mapPostTypeToTopicType(postType)
          };
 
          // Handle media upload for Google My Business posts

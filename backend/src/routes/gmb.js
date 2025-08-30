@@ -293,7 +293,7 @@ router.post('/accounts/:accountId/locations/:locationId/posts', auth, async (req
       callToAction,
       offer,
       media = [],
-      topicType = 'STANDARD'
+      topicType = 'UPDATE'
     } = req.body;
     
     // Remove "accounts/" and "locations/" prefixes if present

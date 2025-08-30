@@ -48,7 +48,7 @@ const Dashboard = () => {
         {
           id: 1,
           title: 'New Product Launch',
-          type: 'STANDARD',
+          type: 'UPDATE',
           status: 'published',
           publishedAt: '2024-01-15T10:30:00Z'
         },
