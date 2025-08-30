@@ -770,7 +770,10 @@ const Posts = () => {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6" style={{
+      '--tw-ring-color': 'rgb(59 130 246 / 1)',
+      '--tw-ring-opacity': '1'
+    }}>
       {/* Notification */}
       {notification && (
         <div className={`p-4 rounded-md ${
@@ -830,14 +833,11 @@ const Posts = () => {
              {/* Create/Edit Post Form Section */}
        <div className="bg-white shadow rounded-lg p-6">
          <div className="flex items-center justify-between mb-4">
-           <div>
-             <h2 className="text-lg font-medium text-gray-900">
-               {editingPost ? 'Edit Post' : 'Create New Post'}
-             </h2>
-             <p className="text-sm text-gray-500">
-               {editingPost ? 'Update your post below' : 'Fill out the form below to create a new post'}
-             </p>
-           </div>
+                       <div>
+              <h2 className="text-lg font-medium text-gray-900">
+                {editingPost ? 'Edit Post' : 'New Post'}
+              </h2>
+            </div>
            <div className="flex items-center space-x-4">
              {/* Post Type Selection Buttons */}
              <div className="flex items-center space-x-2">
@@ -1027,32 +1027,34 @@ const Posts = () => {
                    <option value="BOOK">Book</option>
                    <option value="ORDER">Order</option>
                    <option value="SHOP">Shop</option>
-                   <option value="LEARN_MORE">Learn More</option>
+                                       <option value="LEARN_MORE">Learn more</option>
                    <option value="SIGN_UP">Sign Up</option>
                    <option value="CALL">Call</option>
                  </select>
                </div>
 
                {/* Call to Action URL */}
-               <div>
-                 <label className="block text-sm font-medium text-gray-700">Call to Action URL</label>
-                 <input
-                   type="url"
-                   value={editingPost ? editFormData.callToAction.url : formData.callToAction.url}
-                   onChange={(e) => editingPost
-                     ? setEditFormData({
-                         ...editFormData,
-                         callToAction: { ...editFormData.callToAction, url: e.target.value }
-                       })
-                     : setFormData({
-                         ...formData,
-                         callToAction: { ...formData.callToAction, url: e.target.value }
-                       })
-                   }
-                   className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
-                   placeholder="https://example.com"
-                 />
-               </div>
+               {(editingPost ? editFormData.callToAction.type : formData.callToAction.type) && (
+                 <div>
+                   <label className="block text-sm font-medium text-gray-700">Call to Action URL</label>
+                   <input
+                     type="url"
+                     value={editingPost ? editFormData.callToAction.url : formData.callToAction.url}
+                     onChange={(e) => editingPost
+                       ? setEditFormData({
+                           ...editFormData,
+                           callToAction: { ...editFormData.callToAction, url: e.target.value }
+                         })
+                       : setFormData({
+                           ...formData,
+                           callToAction: { ...formData.callToAction, url: e.target.value }
+                         })
+                     }
+                     className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
+                     placeholder="https://example.com"
+                   />
+                 </div>
+               )}
 
                {/* Submit Button */}
                <div className="flex justify-end pt-4">
@@ -1090,9 +1092,9 @@ const Posts = () => {
                    
                    {/* Preview Content */}
                    <div className="space-y-4">
-                     {/* Image Preview */}
-                     <div>
-                       <h4 className="text-sm font-medium text-gray-700 mb-2">Image</h4>
+                                           {/* Image Preview */}
+                      <div>
+                        <h4 className="text-sm font-medium text-gray-700 mb-2"></h4>
                        {(editingPost ? editFormData.mediaUrls : formData.mediaUrls).filter(url => url.trim() !== '').length > 0 ? (
                          <div className="space-y-3">
                            {(editingPost ? editFormData.mediaUrls : formData.mediaUrls)
@@ -1147,27 +1149,27 @@ const Posts = () => {
                              : (editingPost ? editFormData.summary : formData.summary)
                            }
                          </p>
-                       ) : (
-                         <p className="text-sm text-gray-400 italic">No content yet</p>
-                       )}
+                                               ) : (
+                          <p className="text-sm text-gray-900 italic">No content yet</p>
+                        )}
                      </div>
 
-                     {/* Call to Action Link Preview */}
-                     <div className="space-y-2">
-                       <div>
-                         <h4 className="text-sm font-medium text-gray-700 mb-2">Aug 13, 2025</h4>
-                         {(editingPost ? editFormData.callToAction.type : formData.callToAction.type) ? (
-                           <a
-                             href={(editingPost ? editFormData.callToAction.url : formData.callToAction.url) || '#'}
-                             className={`text-primary-600 hover:text-primary-700 underline text-sm font-medium ${
-                               !(editingPost ? editFormData.callToAction.url : formData.callToAction.url) ? 'pointer-events-none opacity-50' : ''
-                             }`}
-                           >
-                             {editingPost ? editFormData.callToAction.type : formData.callToAction.type}
-                           </a>
-                         ) : (
-                           <span className="text-sm text-gray-400 italic">No CTA</span>
-                         )}
+                                           {/* Call to Action Link Preview */}
+                      <div className="space-y-2">
+                        <div>
+                          <h4 className="text-sm font-medium text-gray-500 mb-2">Aug 13, 2025</h4>
+                                                   {(editingPost ? editFormData.callToAction.type : formData.callToAction.type) ? (
+                            <a
+                              href={(editingPost ? editFormData.callToAction.url : formData.callToAction.url) || '#'}
+                              className={`text-primary-600 hover:text-primary-700 text-sm font-medium ${
+                                !(editingPost ? editFormData.callToAction.url : formData.callToAction.url) ? 'pointer-events-none' : ''
+                              }`}
+                            >
+                              {(editingPost ? editFormData.callToAction.type : formData.callToAction.type).charAt(0).toUpperCase() + (editingPost ? editFormData.callToAction.type : formData.callToAction.type).slice(1).toLowerCase()}
+                            </a>
+                          ) : (
+                            <span className="text-sm text-gray-400 italic">No CTA</span>
+                          )}
                        </div>
                      </div>
                    </div>
