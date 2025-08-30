@@ -23,7 +23,7 @@ const Posts = () => {
   const [posts, setPosts] = useState([]);
   const [profiles, setProfiles] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [showImageUploaderModal, setShowImageUploaderModal] = useState(false);
+
   const [selectedProfile, setSelectedProfile] = useState('');
   
   // Pagination state
@@ -39,19 +39,25 @@ const Posts = () => {
   
   // Delete loading state
   const [deletingPosts, setDeletingPosts] = useState(new Set());
+   
+   // Post creation loading state
+   const [creatingPost, setCreatingPost] = useState(false);
+   
+   // Image upload loading state
+   const [uploadingImages, setUploadingImages] = useState(false);
   
   // Notification state
   const [notification, setNotification] = useState(null);
   
-           const [formData, setFormData] = useState({
-        summary: '',
-        postType: 'STANDARD',
-        callToAction: {
-          type: 'BOOK',
-          url: ''
-        },
+  const [formData, setFormData] = useState({
+    summary: '',
+    postType: 'STANDARD',
+    callToAction: {
+      type: 'BOOK',
+      url: ''
+    },
         mediaUrls: ['']
-      });
+  });
 
   useEffect(() => {
     if (isAuthenticated) {
@@ -176,6 +182,7 @@ const Posts = () => {
 
   const handleCreatePost = async (e) => {
     e.preventDefault();
+     setCreatingPost(true);
     console.log('=== FORM SUBMISSION STARTED ===');
     console.log('Form data:', formData);
     
@@ -274,72 +281,72 @@ const Posts = () => {
         };
       }
 
-             // Upload media first if provided
-       const allMedia = [];
+      // Upload media first if provided
+      const allMedia = [];
 
-             // Upload URLs
-       if (formData.mediaUrls.length > 0) {
-         try {
-           console.log('=== URL UPLOAD DEBUG ===');
-           console.log('URLs to upload:', formData.mediaUrls);
-           const validUrls = formData.mediaUrls.filter(url => url.trim() !== '');
-           console.log('Valid URLs:', validUrls);
-           
+      // Upload URLs
+      if (formData.mediaUrls.length > 0) {
+        try {
+          console.log('=== URL UPLOAD DEBUG ===');
+          console.log('URLs to upload:', formData.mediaUrls);
+          const validUrls = formData.mediaUrls.filter(url => url.trim() !== '');
+          console.log('Valid URLs:', validUrls);
+          
            if (validUrls.length > 0) {
-             const urlPromises = validUrls.map(async (url, index) => {
-               console.log(`Processing URL ${index + 1}:`, url);
-               try {
-                 const mediaResponse = await axios.post('http://localhost:3001/api/posts/media', {
-                   mediaFormat: 'PHOTO',
-                   sourceUrl: url,
-                   gmbAccountId: accountId,
-                   gmbLocationId: locationId,
-                   category: 'ADDITIONAL'
-                 });
-                 console.log(`URL ${index + 1} upload response:`, mediaResponse.data);
-                 return mediaResponse.data.media;
-               } catch (error) {
-                 console.error(`URL ${index + 1} upload failed:`, error.response?.data || error.message);
-                 throw error;
-               }
-             });
+          const urlPromises = validUrls.map(async (url, index) => {
+            console.log(`Processing URL ${index + 1}:`, url);
+            try {
+              const mediaResponse = await axios.post('http://localhost:3001/api/posts/media', {
+                mediaFormat: 'PHOTO',
+                sourceUrl: url,
+                gmbAccountId: accountId,
+                gmbLocationId: locationId,
+                category: 'ADDITIONAL'
+              });
+              console.log(`URL ${index + 1} upload response:`, mediaResponse.data);
+              return mediaResponse.data.media;
+            } catch (error) {
+              console.error(`URL ${index + 1} upload failed:`, error.response?.data || error.message);
+              throw error;
+            }
+          });
 
-             const uploadedUrls = await Promise.all(urlPromises);
-             console.log('=== URL UPLOAD SUCCESS ===');
-             console.log('URLs uploaded successfully:', uploadedUrls);
-             console.log('Uploaded URLs structure:', uploadedUrls.map(u => ({ name: u.name, mediaFormat: u.mediaFormat, sourceUrl: u.sourceUrl })));
-             allMedia.push(...uploadedUrls);
-             console.log('=== END URL UPLOAD DEBUG ===');
+          const uploadedUrls = await Promise.all(urlPromises);
+          console.log('=== URL UPLOAD SUCCESS ===');
+          console.log('URLs uploaded successfully:', uploadedUrls);
+          console.log('Uploaded URLs structure:', uploadedUrls.map(u => ({ name: u.name, mediaFormat: u.mediaFormat, sourceUrl: u.sourceUrl })));
+          allMedia.push(...uploadedUrls);
+          console.log('=== END URL UPLOAD DEBUG ===');
            }
-         } catch (urlError) {
-           console.error('=== URL UPLOAD ERROR ===');
-           console.error('Error uploading URLs:', urlError);
-           console.error('Error response:', urlError.response?.data);
-           console.error('Error status:', urlError.response?.status);
-           alert('Warning: Some URLs failed to upload. Post will be created without those images.');
-         }
-       }
+        } catch (urlError) {
+          console.error('=== URL UPLOAD ERROR ===');
+          console.error('Error uploading URLs:', urlError);
+          console.error('Error response:', urlError.response?.data);
+          console.error('Error status:', urlError.response?.status);
+          alert('Warning: Some URLs failed to upload. Post will be created without those images.');
+        }
+      }
 
              // Add all uploaded media to post data
        console.log('=== FRONTEND MEDIA DEBUG ===');
        console.log('All media array before mapping:', allMedia);
        console.log('All media array length:', allMedia.length);
        
-               if (allMedia.length > 0) {
-          // Use only real media
-          postData.media = allMedia.map(media => {
-            const mappedMedia = {
+       if (allMedia.length > 0) {
+         // Use only real media
+         postData.media = allMedia.map(media => {
+           const mappedMedia = {
               mediaFormat: media.mediaFormat || 'PHOTO',
               sourceUrl: media.sourceUrl || media.url || media.thumbnailUrl
-            };
-            console.log('Mapped media item:', mappedMedia);
-            return mappedMedia;
-          });
-          console.log('Final postData.media array:', postData.media);
-        } else {
-          // No media to add
-          console.log('No media to add to post data');
-        }
+           };
+           console.log('Mapped media item:', mappedMedia);
+           return mappedMedia;
+         });
+         console.log('Final postData.media array:', postData.media);
+       } else {
+         // No media to add
+         console.log('No media to add to post data');
+       }
        console.log('=== END FRONTEND MEDIA DEBUG ===');
 
       console.log('Sending post data:', postData);
@@ -365,18 +372,20 @@ const Posts = () => {
       console.log('=== POSTS REFRESHED ===');
       
                            // Reset form
-        setFormData({
-          title: '',
-          summary: '',
-          postType: 'STANDARD',
-          callToAction: { type: 'BOOK', url: '' },
+      setFormData({
+        title: '',
+        summary: '',
+        postType: 'STANDARD',
+        callToAction: { type: 'BOOK', url: '' },
           mediaUrls: ['']
-        });
+      });
       
       alert('Post created successfully!');
     } catch (error) {
       console.error('Error creating post:', error);
       alert('Failed to create post. Please try again.');
+     } finally {
+       setCreatingPost(false);
     }
   };
 
@@ -463,15 +472,38 @@ const Posts = () => {
     return text.length <= maxLength ? text : text.substring(0, maxLength) + '...';
   };
 
-  // Helper function to validate URL
-  const isValidUrl = (string) => {
-    try {
-      new URL(string);
-      return true;
-    } catch (_) {
-      return false;
-    }
-  };
+     // Helper function to validate URL
+   const isValidUrl = (string) => {
+     try {
+       new URL(string);
+       return true;
+     } catch (_) {
+       return false;
+     }
+   };
+
+   // Helper function to format date as relative time
+   const formatRelativeTime = (dateString) => {
+     const date = new Date(dateString);
+     const now = new Date();
+     const diffInMs = now - date;
+     const diffInSeconds = Math.floor(diffInMs / 1000);
+     const diffInMinutes = Math.floor(diffInSeconds / 60);
+     const diffInHours = Math.floor(diffInMinutes / 60);
+     const diffInDays = Math.floor(diffInHours / 24);
+
+     if (diffInDays >= 7) {
+       return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+     } else if (diffInDays > 0) {
+       return `${diffInDays} day${diffInDays === 1 ? '' : 's'} ago`;
+     } else if (diffInHours > 0) {
+       return `${diffInHours} hour${diffInHours === 1 ? '' : 's'} ago`;
+     } else if (diffInMinutes > 0) {
+       return `${diffInMinutes} minute${diffInMinutes === 1 ? '' : 's'} ago`;
+     } else {
+       return `${diffInSeconds} second${diffInSeconds === 1 ? '' : 's'} ago`;
+     }
+   };
 
   // Show notification
   const showNotification = (message, type = 'success') => {
@@ -485,7 +517,7 @@ const Posts = () => {
       ...prev,
       mediaUrls: [...prev.mediaUrls, imageUrl]
     }));
-    setShowImageUploaderModal(false);
+     setUploadingImages(false);
     showNotification('Image uploaded successfully! You can now add it to your post.', 'success');
   };
   
@@ -615,122 +647,224 @@ const Posts = () => {
           </div>
         </div>
         
-        <form onSubmit={handleCreatePost} className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700">Post Type</label>
-              <select
-                value={formData.postType}
-                onChange={(e) => setFormData({ ...formData, postType: e.target.value })}
-                className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
-              >
-                <option value="STANDARD">Standard Post</option>
-                <option value="OFFER">Offer</option>
-                <option value="EVENT">Event</option>
-                <option value="PRODUCT">Product</option>
-              </select>
-            </div>
-            
-            <div>
-              <label className="block text-sm font-medium text-gray-700">Call to Action Type</label>
-              <select
-                value={formData.callToAction.type}
-                onChange={(e) => setFormData({
-                  ...formData,
-                  callToAction: { ...formData.callToAction, type: e.target.value }
-                })}
-                className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
-              >
-                <option value="BOOK">Book</option>
-                <option value="ORDER">Order</option>
-                <option value="SHOP">Shop</option>
-                <option value="LEARN_MORE">Learn More</option>
-              </select>
-            </div>
-          </div>
-          
-                     <div>
-             <label className="block text-sm font-medium text-gray-700">Description</label>
-             <textarea
-               value={formData.summary}
-               onChange={(e) => setFormData({ ...formData, summary: e.target.value })}
-               rows={3}
-               className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
-               required
-             />
-           </div>
-          
-          <div>
-            <label className="block text-sm font-medium text-gray-700">Call to Action URL</label>
-            <input
-              type="url"
-              value={formData.callToAction.url}
-              onChange={(e) => setFormData({
-                ...formData,
-                callToAction: { ...formData.callToAction, url: e.target.value }
-              })}
-              className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
-            />
-          </div>
-          
-          <div>
-            <label className="block text-sm font-medium text-gray-700">Add Pictures</label>
-            
-                         {/* Image Uploader Button */}
-             <div className="mb-3">
-               <button
-                 type="button"
-                 onClick={() => setShowImageUploaderModal(true)}
-                 className="inline-flex items-center px-3 py-2 border border-primary-300 shadow-sm text-sm font-medium rounded-md text-primary-700 bg-primary-50 hover:bg-primary-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500"
-               >
-                 <Plus className="h-4 w-4 mr-2" />
-                 Upload Images
-               </button>
+                 <form onSubmit={handleCreatePost}>
+           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+             {/* Left Column - Form */}
+             <div className="lg:col-span-2 space-y-4">
+               {/* Picture Upload Section - Moved to Top */}
+               <div>
+                 <label className="block text-sm font-medium text-gray-700 mb-2">Add Pictures</label>
+                 
+                 {/* Hidden ImgBB Image Uploader with Simple Button */}
+                 <div className="mb-4">
+                   <div className="hidden">
+                     <ImageUploader 
+                       onImageUploaded={handleImageUploaded}
+                     />
+                   </div>
+                   <button
+                     type="button"
+                     disabled={uploadingImages}
+                     onClick={() => {
+                       setUploadingImages(true);
+                       // Trigger the hidden file input from ImageUploader
+                       const fileInput = document.querySelector('input[type="file"]');
+                       if (fileInput) {
+                         fileInput.click();
+                       }
+                     }}
+                     className={`inline-flex items-center px-4 py-3 border border-primary-300 shadow-sm text-sm font-medium rounded-md transition-colors duration-200 ${
+                       uploadingImages
+                         ? 'text-primary-500 bg-primary-25 cursor-not-allowed'
+                         : 'text-primary-700 bg-primary-50 hover:bg-primary-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500'
+                     }`}
+                   >
+                     {uploadingImages ? (
+                       <>
+                         <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-primary-500 mr-2"></div>
+                         Uploading Images...
+                       </>
+                     ) : (
+                       <>
+                         <Plus className="h-5 w-5 mr-2" />
+                         Upload Images
+                       </>
+                     )}
+                   </button>
+                 </div>
+                 
+
+               </div>
+
+               {/* Description Section */}
+               <div>
+                 <label className="block text-sm font-medium text-gray-700">Description</label>
+                 <textarea
+                   value={formData.summary}
+                   onChange={(e) => setFormData({ ...formData, summary: e.target.value })}
+                   rows={4}
+                   className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
+                   placeholder="Write your post content here..."
+                   required
+                 />
+               </div>
+
+               {/* Post Type Section */}
+               <div>
+                 <label className="block text-sm font-medium text-gray-700">Post Type</label>
+                 <select
+                   value={formData.postType}
+                   onChange={(e) => setFormData({ ...formData, postType: e.target.value })}
+                   className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
+                 >
+                   <option value="STANDARD">Standard Post</option>
+                   <option value="OFFER">Offer</option>
+                   <option value="EVENT">Event</option>
+                   <option value="PRODUCT">Product</option>
+                 </select>
+               </div>
+
+               {/* Call to Action Type Section */}
+               <div>
+                 <label className="block text-sm font-medium text-gray-700">Call to Action Type</label>
+                 <select
+                   value={formData.callToAction.type}
+                   onChange={(e) => setFormData({
+                     ...formData,
+                     callToAction: { ...formData.callToAction, type: e.target.value }
+                   })}
+                   className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
+                 >
+                   <option value="BOOK">Book</option>
+                   <option value="ORDER">Order</option>
+                   <option value="SHOP">Shop</option>
+                   <option value="LEARN_MORE">Learn More</option>
+                 </select>
+               </div>
+
+               {/* Call to Action URL */}
+               <div>
+                 <label className="block text-sm font-medium text-gray-700">Call to Action URL</label>
+                 <input
+                   type="url"
+                   value={formData.callToAction.url}
+                   onChange={(e) => setFormData({
+                     ...formData,
+                     callToAction: { ...formData.callToAction, url: e.target.value }
+                   })}
+                   className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
+                   placeholder="https://example.com"
+                 />
+               </div>
+
+               {/* Submit Button */}
+               <div className="flex justify-end pt-4">
+                 <button
+                   type="submit"
+                   disabled={creatingPost}
+                   className={`px-8 py-3 border border-transparent rounded-md shadow-sm text-sm font-medium text-white transition-colors duration-200 ${
+                     creatingPost 
+                       ? 'bg-primary-400 cursor-not-allowed' 
+                       : 'bg-primary-600 hover:bg-primary-700'
+                   }`}
+                 >
+                   {creatingPost ? (
+                     <>
+                       <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mr-2 inline-block"></div>
+                       Creating Post...
+                     </>
+                   ) : (
+                     'Create Post'
+                   )}
+                 </button>
+               </div>
              </div>
-            
-            
-            
-                                      {/* Image Preview */}
-             {formData.mediaUrls.filter(url => url.trim() !== '').length > 0 && (
-               <div className="mt-3">
-                 <label className="block text-sm font-medium text-gray-700 mb-2">Preview</label>
-                 <div className="grid grid-cols-2 gap-2">
-                   {formData.mediaUrls
-                     .filter(url => url.trim() !== '')
-                     .map((url, index) => (
-                       <div key={`url-${index}`} className="relative">
-                         <img
-                           src={url}
-                           alt={`Image Preview ${index + 1}`}
-                           className="w-full h-24 object-cover rounded border"
-                           onError={(e) => {
-                             console.log('Preview image failed to load:', url);
-                             e.target.style.display = 'none';
-                             e.target.nextSibling.style.display = 'block';
-                           }}
-                           onLoad={(e) => {
-                             console.log('Preview image loaded successfully:', url);
-                           }}
-                         />
-                         <div className="hidden w-full h-24 bg-gray-200 rounded border flex items-center justify-center text-xs text-gray-500">
-                           Invalid URL
+
+             {/* Right Column - Post Preview */}
+             <div className="lg:col-span-1">
+               <div className="sticky top-6">
+                 <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
+                   <h3 className="text-lg font-medium text-gray-900 mb-4">Post Preview</h3>
+                   
+                   {/* Preview Content */}
+                   <div className="space-y-4">
+                     {/* Image Preview */}
+                     <div>
+                       <h4 className="text-sm font-medium text-gray-700 mb-2">Image</h4>
+                       {formData.mediaUrls.filter(url => url.trim() !== '').length > 0 ? (
+                         <div className="space-y-3">
+                           {formData.mediaUrls
+                             .filter(url => url.trim() !== '')
+                             .slice(0, 2) // Show only first 2 images in preview
+                             .map((url, index) => (
+                               <div key={`preview-${index}`} className="relative">
+                                 <img
+                                   src={url}
+                                   alt={`Preview ${index + 1}`}
+                                   className="w-full h-56 object-cover rounded-lg border shadow-sm"
+                                   onError={(e) => {
+                                     e.target.style.display = 'none';
+                                     e.target.nextSibling.style.display = 'block';
+                                   }}
+                                 />
+                                 <div className="hidden w-full h-56 bg-gray-200 rounded-lg border shadow-sm flex items-center justify-center text-xs text-gray-500">
+                                   Image
+                                 </div>
+                               </div>
+                             ))}
+                           {formData.mediaUrls.filter(url => url.trim() !== '').length > 2 && (
+                             <div className="text-xs text-gray-500 text-center py-2">
+                               +{formData.mediaUrls.filter(url => url.trim() !== '').length - 2} more images
+                             </div>
+                           )}
                          </div>
+                       ) : (
+                         <div className="w-full h-48 bg-gray-200 rounded-lg border-2 border-dashed border-gray-300 flex items-center justify-center">
+                           <div className="text-center">
+                             <div className="text-gray-400 text-4xl mb-2">📷</div>
+                             <p className="text-xs text-gray-500">No images uploaded</p>
+                           </div>
+                         </div>
+                       )}
+                     </div>
+
+                     {/* Content Preview */}
+                     <div>
+                       <h4 className="text-sm font-medium text-gray-700 mb-2">Content</h4>
+                       <div className="bg-white rounded border p-3 min-h-[80px]">
+                         {formData.summary ? (
+                           <p className="text-sm text-gray-900 leading-relaxed">
+                             {formData.summary.length > 150 
+                               ? `${formData.summary.substring(0, 150)}...` 
+                               : formData.summary
+                             }
+                           </p>
+                         ) : (
+                           <p className="text-sm text-gray-400 italic">No content yet</p>
+                         )}
                        </div>
-                     ))}
+                     </div>
+
+                     {/* Call to Action Link Preview */}
+                     <div className="space-y-2">
+                       <div>
+                         <h4 className="text-sm font-medium text-gray-700 mb-2">Aug 13, 2025</h4>
+                         <a
+                           href={formData.callToAction.url || '#'}
+                           className={`text-primary-600 hover:text-primary-700 underline text-sm font-medium ${
+                             !formData.callToAction.url ? 'pointer-events-none opacity-50' : ''
+                           }`}
+                         >
+                           Book
+                         </a>
+                       </div>
+                     </div>
+                   </div>
                  </div>
                </div>
-             )}
-          </div>
-          
-          <div className="flex justify-end pt-4">
-            <button
-              type="submit"
-              className="px-6 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-primary-600 hover:bg-primary-700"
-            >
-              Create Post
-            </button>
-          </div>
-        </form>
+             </div>
+           </div>
+         </form>
       </div>
 
       {/* Posts List */}
@@ -788,11 +922,11 @@ const Posts = () => {
                         </div>
                       </div>
 
-                                             {/* Media Display - Image on Top */}
-                       {post.media && post.media.length > 0 ? (
-                         <div>
-                           <div className="grid grid-cols-1 gap-0">
-                             {post.media.map((mediaItem, index) => {
+                      {/* Media Display - Image on Top */}
+                      {post.media && post.media.length > 0 ? (
+                        <div>
+                          <div className="grid grid-cols-1 gap-0">
+                                                         {post.media.map((mediaItem, index) => {
                                const imageUrl = mediaItem.sourceUrl || mediaItem.url || mediaItem.thumbnailUrl;
                                console.log(`Rendering media item ${index}:`, {
                                  id: mediaItem.id,
@@ -802,40 +936,40 @@ const Posts = () => {
                                  finalUrl: imageUrl,
                                  isGoogleUrl: imageUrl && imageUrl.includes('lh3.googleusercontent.com')
                                });
-                               
-                                                               return (
-                                  <div key={mediaItem.id || index} className="relative group">
-                                    <img
+                              
+                              return (
+                                                                 <div key={mediaItem.id || index} className="relative group">
+                                   <img
                                       src={imageUrl}
-                                      alt={mediaItem.altText || 'Post image'}
-                                      className="w-full h-48 object-cover shadow-sm"
-                                      onError={(e) => {
+                                     alt={mediaItem.altText || 'Post image'}
+                                     className="w-full h-48 object-cover shadow-sm"
+                                     onError={(e) => {
                                         console.log('Image failed to load:', imageUrl);
-                                        e.target.style.display = 'none';
-                                        e.target.nextSibling.style.display = 'flex';
-                                      }}
-                                      onLoad={(e) => {
+                                             e.target.style.display = 'none';
+                                             e.target.nextSibling.style.display = 'flex';
+                                     }}
+                                     onLoad={(e) => {
                                         console.log('Image loaded successfully:', imageUrl);
-                                      }}
-                                    />
-                                    <div className="hidden absolute inset-0 bg-gray-200 rounded-t-lg flex items-center justify-center text-sm text-gray-500">
-                                      Image not available
-                                    </div>
-                                    {mediaItem.mediaFormat === 'VIDEO' && (
-                                      <div className="absolute top-2 right-2 bg-black bg-opacity-75 text-white text-xs px-2 py-1 rounded">
-                                        VIDEO
-                                      </div>
-                                    )}
+                                     }}
+                                   />
+                                  <div className="hidden absolute inset-0 bg-gray-200 rounded-t-lg flex items-center justify-center text-sm text-gray-500">
+                                    Image not available
                                   </div>
-                                );
-                             })}
-                           </div>
-                         </div>
-                       ) : (
-                         <div className="mb-4 text-sm text-gray-500 text-center py-8 bg-gray-50 rounded-lg">
-                           No media attached to this post
-                         </div>
-                       )}
+                                  {mediaItem.mediaFormat === 'VIDEO' && (
+                                    <div className="absolute top-2 right-2 bg-black bg-opacity-75 text-white text-xs px-2 py-1 rounded">
+                                      VIDEO
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="mb-4 text-sm text-gray-500 text-center py-8 bg-gray-50 rounded-lg">
+                          No media attached to this post
+                        </div>
+                      )}
 
                       {/* Post Content - Text Below Image */}
                       <div className="p-3">
@@ -865,19 +999,19 @@ const Posts = () => {
                           )}
                         </div>
 
-                        {/* Post Footer with Date and Status */}
-                        <div className="flex items-center justify-between text-xs text-gray-500 pt-2 border-t border-gray-100">
-                          <span className="flex items-center">
-                            <Clock className="h-4 w-4 mr-1" />
-                            {post.createdAt ? new Date(post.createdAt).toLocaleDateString() : 'Date not available'}
-                          </span>
-                          {post.status === 'published' && (
-                            <span className="flex items-center">
-                              <CheckCircle className="h-4 w-4 mr-1" />
-                              Published
-                            </span>
-                          )}
-                        </div>
+                                                 {/* Post Footer with Date and Status */}
+                         <div className="flex items-center justify-between text-xs text-gray-500 pt-2 border-t border-gray-100">
+                           <span className="flex items-center">
+                             <Clock className="h-4 w-4 mr-1" />
+                             {post.createdAt ? formatRelativeTime(post.createdAt) : 'Date not available'}
+                           </span>
+                           {post.status === 'published' && (
+                             <span className="flex items-center">
+                               <CheckCircle className="h-4 w-4 mr-1" />
+                               Published
+                             </span>
+                           )}
+                         </div>
 
 
                       </div>
@@ -931,31 +1065,7 @@ const Posts = () => {
 
       
 
-      {/* Image Uploader Modal */}
-      {showImageUploaderModal && (
-        <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50">
-          <div className="relative top-10 mx-auto p-5 border w-11/12 max-w-4xl shadow-lg rounded-md bg-white">
-            <div className="mt-3">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-lg font-medium text-gray-900">Upload Images with ImgBB</h3>
-                <button
-                  onClick={() => setShowImageUploaderModal(false)}
-                  className="text-gray-400 hover:text-gray-600 text-2xl font-bold"
-                >
-                  ×
-                </button>
-              </div>
-              
-              {/* Custom ImageUploader with callback */}
-              <div className="max-h-96 overflow-y-auto">
-                <ImageUploader 
-                  onImageUploaded={handleImageUploaded}
-                />
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      
     </div>
   );
 };
