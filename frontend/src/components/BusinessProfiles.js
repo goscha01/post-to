@@ -9,7 +9,8 @@ import {
   CheckCircle,
   AlertCircle,
   RefreshCw,
-  Plus
+  Plus,
+  Image
 } from 'lucide-react';
 
 const BusinessProfiles = () => {
@@ -17,6 +18,7 @@ const BusinessProfiles = () => {
   const [profiles, setProfiles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [mediaLoading, setMediaLoading] = useState({});
 
   useEffect(() => {
     if (isAuthenticated) {
@@ -39,9 +41,45 @@ const BusinessProfiles = () => {
               const locationsResponse = await axios.get(
                 `http://localhost:3001/api/gmb/accounts/${accountId}/locations`
               );
+              
+              // Fetch profile pictures for each location
+              const locationsWithMedia = await Promise.all(
+                (locationsResponse.data.locations || []).map(async (location) => {
+                  try {
+                    setMediaLoading(prev => ({ ...prev, [location.name]: true }));
+                    const locationId = location.name.split('/').pop();
+                    const mediaResponse = await axios.get(
+                      `http://localhost:3001/api/gmb/accounts/${accountId}/locations/${locationId}/media`
+                    );
+                    
+                    // Get the first profile picture/logo
+                    let profilePicture = null;
+                    if (mediaResponse.data.success && mediaResponse.data.logos && mediaResponse.data.logos.length > 0) {
+                      profilePicture = mediaResponse.data.logos[0];
+                    } else if (mediaResponse.data.success && mediaResponse.data.profilePicture) {
+                      // Fallback to profilePicture if available
+                      profilePicture = mediaResponse.data.profilePicture;
+                    }
+                    
+                    setMediaLoading(prev => ({ ...prev, [location.name]: false }));
+                    return {
+                      ...location,
+                      profilePicture
+                    };
+                  } catch (mediaError) {
+                    console.error(`Error fetching media for location ${location.name}:`, mediaError);
+                    setMediaLoading(prev => ({ ...prev, [location.name]: false }));
+                    return {
+                      ...location,
+                      profilePicture: null
+                    };
+                  }
+                })
+              );
+              
               return {
                 ...account,
-                locations: locationsResponse.data.locations || []
+                locations: locationsWithMedia
               };
             } catch (error) {
               console.error(`Error fetching locations for ${account.name}:`, error);
@@ -142,7 +180,21 @@ const BusinessProfiles = () => {
                 <div className="flex items-center justify-between">
                   <div className="flex items-center">
                     <div className="flex-shrink-0">
-                      <div className="h-10 w-10 bg-primary-100 rounded-full flex items-center justify-center">
+                      {/* Account Profile Picture - Use first location's profile picture if available */}
+                      {profile.locations && profile.locations.length > 0 && profile.locations[0].profilePicture ? (
+                        <img
+                          src={profile.locations[0].profilePicture.googleUrl}
+                          alt={`${profile.accountName} logo`}
+                          className="h-10 w-10 rounded-full object-cover border-2 border-gray-200"
+                          onError={(e) => {
+                            e.target.style.display = 'none';
+                            e.target.nextSibling.style.display = 'flex';
+                          }}
+                        />
+                      ) : null}
+                      <div className={`h-10 w-10 bg-primary-100 rounded-full flex items-center justify-center ${
+                        profile.locations && profile.locations.length > 0 && profile.locations[0].profilePicture ? 'hidden' : ''
+                      }`}>
                         <Building2 className="h-6 w-6 text-primary-600" />
                       </div>
                     </div>
@@ -171,12 +223,38 @@ const BusinessProfiles = () => {
                       <div className="flex items-start justify-between">
                         <div className="flex-1">
                           <div className="flex items-center space-x-3">
-                            <h4 className="text-md font-medium text-gray-900">
-                              {location.title || 'Untitled Location'}
-                            </h4>
-                            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getVerificationStatusColor(location.locationState?.verificationStatus)}`}>
-                              {location.locationState?.verificationStatus || 'UNKNOWN'}
-                            </span>
+                            {/* Location Profile Picture */}
+                            <div className="flex-shrink-0">
+                              {mediaLoading[location.name] ? (
+                                <div className="h-8 w-8 bg-gray-100 rounded-full flex items-center justify-center">
+                                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-primary-600"></div>
+                                </div>
+                              ) : location.profilePicture ? (
+                                <img
+                                  src={location.profilePicture.googleUrl}
+                                  alt={`${location.title || 'Location'} logo`}
+                                  className="h-8 w-8 rounded-full object-cover border border-gray-200"
+                                  onError={(e) => {
+                                    e.target.style.display = 'none';
+                                    e.target.nextSibling.style.display = 'flex';
+                                  }}
+                                />
+                              ) : null}
+                              <div className={`h-8 w-8 bg-gray-100 rounded-full flex items-center justify-center ${
+                                mediaLoading[location.name] || location.profilePicture ? 'hidden' : ''
+                              }`}>
+                                <Image className="h-4 w-4 text-gray-400" />
+                              </div>
+                            </div>
+                            
+                            <div className="flex items-center space-x-2">
+                              <h4 className="text-md font-medium text-gray-900">
+                                {location.title || 'Untitled Location'}
+                              </h4>
+                              <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getVerificationStatusColor(location.locationState?.verificationStatus)}`}>
+                                {location.locationState?.verificationStatus || 'UNKNOWN'}
+                              </span>
+                            </div>
                           </div>
                           
                           {location.storefrontAddress && (
