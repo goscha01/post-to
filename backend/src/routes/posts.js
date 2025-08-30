@@ -139,35 +139,35 @@ router.get('/location/:locationId', auth, async (req, res) => {
             }
             console.log('=== END FIRST POST DEBUG ===');
            
-           // Convert GMB posts to our format and sort by creation date (newest first)
-           const realPosts = await Promise.all(gmbResponse.data.localPosts.map(async (post) => {
-             // Try to fetch media for this post
-             let media = [];
-                           try {
-                if (post.media && post.media.length > 0) {
-                  console.log('=== MEDIA PROCESSING DEBUG ===');
-                  console.log('Post has media:', post.media.length, 'items');
-                  console.log('Raw media array:', post.media);
-                  console.log('First media item raw:', JSON.stringify(post.media[0], null, 2));
-                  console.log('First media item keys:', Object.keys(post.media[0]));
-                  
-                  // Try to find any URL-like fields
-                  const possibleUrlFields = ['sourceUrl', 'url', 'mediaUrl', 'thumbnailUrl', 'thumbnail', 'imageUrl', 'photoUrl', 'media', 'googleUrl'];
-                  console.log('Checking for URL fields:', possibleUrlFields);
-                  possibleUrlFields.forEach(field => {
-                    if (post.media[0][field]) {
-                      console.log(`Found ${field}:`, post.media[0][field]);
-                    }
-                  });
-                  
-                  // Additional debugging - check all fields in the media item
-                  console.log('=== ALL MEDIA ITEM FIELDS ===');
-                  Object.keys(post.media[0]).forEach(key => {
-                    console.log(`${key}:`, post.media[0][key]);
-                  });
-                  console.log('=== END ALL MEDIA ITEM FIELDS ===');
-                  
-                                     // Extract media information from the post
+                        // Convert GMB posts to our format and sort by creation date (newest first)
+             const realPosts = await Promise.all(gmbResponse.data.localPosts.map(async (post) => {
+               // Try to fetch media for this post
+               let media = [];
+               try {
+                 if (post.media && post.media.length > 0) {
+                   console.log('=== MEDIA PROCESSING DEBUG ===');
+                   console.log('Post has media:', post.media.length, 'items');
+                   console.log('Raw media array:', post.media);
+                   console.log('First media item raw:', JSON.stringify(post.media[0], null, 2));
+                   console.log('First media item keys:', Object.keys(post.media[0]));
+                   
+                   // Try to find any URL-like fields
+                   const possibleUrlFields = ['sourceUrl', 'url', 'mediaUrl', 'thumbnailUrl', 'thumbnail', 'imageUrl', 'photoUrl', 'media', 'googleUrl'];
+                   console.log('Checking for URL fields:', possibleUrlFields);
+                   possibleUrlFields.forEach(field => {
+                     if (post.media[0][field]) {
+                       console.log(`Found ${field}:`, post.media[0][field]);
+                     }
+                   });
+                   
+                   // Additional debugging - check all fields in the media item
+                   console.log('=== ALL MEDIA ITEM FIELDS ===');
+                   Object.keys(post.media[0]).forEach(key => {
+                     console.log(`${key}:`, post.media[0][key]);
+                   });
+                   console.log('=== END ALL MEDIA ITEM FIELDS ===');
+                   
+                   // Extract media information from the post
                    media = post.media.map(mediaItem => {
                      const extracted = {
                        id: mediaItem.name?.split('/').pop() || `media-${Date.now()}`,
@@ -177,41 +177,41 @@ router.get('/location/:locationId', auth, async (req, res) => {
                        altText: mediaItem.altText || 'Post image'
                      };
                      
-                                        // Ensure Google Photos URLs have the proper format with query parameters
-                   if (extracted.sourceUrl && extracted.sourceUrl.includes('lh3.googleusercontent.com')) {
-                     // If the URL doesn't have query parameters, add them
-                     if (!extracted.sourceUrl.includes('=')) {
-                       extracted.sourceUrl = `${extracted.sourceUrl}=h305-no`;
-                       console.log(`Fixed Google Photos URL: ${extracted.sourceUrl}`);
-                     } else {
-                       // If it already has parameters, ensure it has the right format
-                       if (!extracted.sourceUrl.includes('h305-no')) {
+                     // Ensure Google Photos URLs have the proper format with query parameters
+                     if (extracted.sourceUrl && extracted.sourceUrl.includes('lh3.googleusercontent.com')) {
+                       // If the URL doesn't have parameters, add them
+                       if (!extracted.sourceUrl.includes('=')) {
                          extracted.sourceUrl = `${extracted.sourceUrl}=h305-no`;
-                         console.log(`Enhanced Google Photos URL: ${extracted.sourceUrl}`);
+                         console.log(`Fixed Google Photos URL: ${extracted.sourceUrl}`);
+                       } else {
+                         // If it already has parameters, ensure it has the right format
+                         if (!extracted.sourceUrl.includes('h305-no')) {
+                           extracted.sourceUrl = `${extracted.sourceUrl}=h305-no`;
+                           console.log(`Enhanced Google Photos URL: ${extracted.sourceUrl}`);
+                         }
                        }
                      }
-                   }
                      
                      console.log('Extracted media item:', extracted);
                      return extracted;
                    });
-                  
-                  console.log('Final processed media array:', media);
-                  console.log('=== END MEDIA PROCESSING DEBUG ===');
-                } else {
-                  console.log('Post has no media array');
-                  console.log('Post keys:', Object.keys(post));
-                  // Check if media might be in a different field
-                  if (post.attachments) console.log('Post has attachments:', post.attachments);
-                  if (post.photos) console.log('Post has photos:', post.photos);
-                  if (post.images) console.log('Post has images:', post.images);
-                }
-              } catch (mediaError) {
-                console.log('Could not fetch media for post:', mediaError.message);
-                console.log('Media error details:', mediaError);
-              }
+                   
+                   console.log('Final processed media array:', media);
+                   console.log('=== END MEDIA PROCESSING DEBUG ===');
+                 } else {
+                   console.log('Post has no media array');
+                   console.log('Post keys:', Object.keys(post));
+                   // Check if media might be in a different field
+                   if (post.attachments) console.log('Post has attachments:', post.attachments);
+                   if (post.photos) console.log('Post has photos:', post.photos);
+                   if (post.images) console.log('Post has images:', post.images);
+                 }
+               } catch (mediaError) {
+                 console.log('Could not fetch media for post:', mediaError.message);
+                 console.log('Media error details:', mediaError);
+               }
 
-             return {
+             const processedPost = {
                id: post.name.split('/').pop(),
                content: post.summary,
                postType: post.topicType || 'STANDARD',
@@ -219,8 +219,19 @@ router.get('/location/:locationId', auth, async (req, res) => {
                createdAt: post.createTime || new Date().toISOString(),
                status: 'published',
                media: media,
+               callToAction: post.callToAction || null,
                gmbPost: post
              };
+             
+             console.log('=== PROCESSED POST DEBUG ===');
+             console.log('Processed post ID:', processedPost.id);
+             console.log('Processed post media:', processedPost.media);
+             console.log('Processed post callToAction:', processedPost.callToAction);
+             console.log('Processed post has media:', !!processedPost.media);
+             console.log('Processed post has callToAction:', !!processedPost.callToAction);
+             console.log('=== END PROCESSED POST DEBUG ===');
+             
+             return processedPost;
            }));
            
            // Sort by creation date (newest first)
@@ -312,7 +323,7 @@ router.get('/location/:locationId', auth, async (req, res) => {
                console.log('Could not fetch media for post:', mediaError.message);
              }
 
-             return {
+             const processedPost = {
                id: post.name.split('/').pop(),
                content: post.summary,
                postType: post.topicType || 'STANDARD',
@@ -320,8 +331,19 @@ router.get('/location/:locationId', auth, async (req, res) => {
                createdAt: post.createTime || new Date().toISOString(),
                status: 'published',
                media: media,
+               callToAction: post.callToAction || null,
                gmbPost: post
              };
+             
+             console.log('=== ALTERNATIVE ENDPOINT PROCESSED POST DEBUG ===');
+             console.log('Processed post ID:', processedPost.id);
+             console.log('Processed post media:', processedPost.media);
+             console.log('Processed post callToAction:', processedPost.callToAction);
+             console.log('Processed post has media:', !!processedPost.media);
+             console.log('Processed post has callToAction:', !!processedPost.callToAction);
+             console.log('=== END ALTERNATIVE ENDPOINT PROCESSED POST DEBUG ===');
+             
+             return processedPost;
            }));
            
            // Sort by creation date (newest first)
@@ -369,23 +391,27 @@ router.get('/location/:locationId', auth, async (req, res) => {
           }
         ]
       },
-      {
-        id: '2',
-        content: 'Special offer this week - 20% off all services!',
-        postType: 'OFFER',
-        platform: 'google',
-        createdAt: new Date(Date.now() - 86400000).toISOString(), // 1 day ago
-        status: 'published',
-        media: [
-          {
-            id: 'media-2',
-            mediaFormat: 'PHOTO',
-            sourceUrl: 'https://picsum.photos/400/300?random=2',
-            thumbnailUrl: 'https://picsum.photos/200/150?random=2',
-            altText: 'Special offer banner'
-          }
-        ]
-      },
+             {
+         id: '2',
+         content: 'Special offer this week - 20% off all services!',
+         postType: 'OFFER',
+         platform: 'google',
+         createdAt: new Date(Date.now() - 86400000).toISOString(), // 1 day ago
+         status: 'published',
+         callToAction: {
+           actionType: 'BOOK',
+           url: 'https://example.com/book-now'
+         },
+         media: [
+           {
+             id: 'media-2',
+             mediaFormat: 'PHOTO',
+             sourceUrl: 'https://picsum.photos/400/300?random=2',
+             thumbnailUrl: 'https://picsum.photos/200/150?random=2',
+             altText: 'Special offer banner'
+           }
+         ]
+       },
       {
         id: '3',
         content: 'Join us for our grand opening event this Saturday!',
@@ -403,23 +429,27 @@ router.get('/location/:locationId', auth, async (req, res) => {
           }
         ]
       },
-      {
-        id: '4',
-        content: 'New cleaning service packages available!',
-        postType: 'OFFER',
-        platform: 'google',
-        createdAt: new Date(Date.now() - 259200000).toISOString(), // 3 days ago
-        status: 'published',
-        media: [
-          {
-            id: 'media-4',
-            mediaFormat: 'PHOTO',
-            sourceUrl: 'https://picsum.photos/400/300?random=4',
-            thumbnailUrl: 'https://picsum.photos/200/150?random=4',
-            altText: 'Cleaning service packages'
-          }
-        ]
-      },
+             {
+         id: '4',
+         content: 'New cleaning service packages available!',
+         postType: 'OFFER',
+         platform: 'google',
+         createdAt: new Date(Date.now() - 259200000).toISOString(), // 3 days ago
+         status: 'published',
+         callToAction: {
+           actionType: 'ORDER',
+           url: 'https://example.com/order-packages'
+         },
+         media: [
+           {
+             id: 'media-4',
+             mediaFormat: 'PHOTO',
+             sourceUrl: 'https://picsum.photos/400/300?random=4',
+             thumbnailUrl: 'https://picsum.photos/200/150?random=4',
+             altText: 'Cleaning service packages'
+           }
+         ]
+       },
       {
         id: '5',
         content: 'Customer appreciation day this Friday!',
@@ -1067,13 +1097,17 @@ router.post('/', auth, [
   }
 
   try {
-    console.log('=== POST CREATION DEBUG ===');
-    console.log('Request body:', req.body);
-    console.log('Request body type:', typeof req.body);
-    console.log('Request body keys:', Object.keys(req.body));
-    console.log('Media field type:', typeof req.body.media);
-    console.log('Media field value:', req.body.media);
-    console.log('User access token exists:', !!req.user.accessToken);
+         console.log('=== POST CREATION DEBUG ===');
+     console.log('Request body:', req.body);
+     console.log('Request body type:', typeof req.body);
+     console.log('Request body keys:', Object.keys(req.body));
+     console.log('Media field type:', typeof req.body.media);
+     console.log('Media field value:', req.body.media);
+     console.log('CallToAction field type:', typeof req.body.callToAction);
+     console.log('CallToAction field value:', req.body.callToAction);
+     console.log('CallToAction actionType:', req.body.callToAction?.actionType);
+     console.log('CallToAction url:', req.body.callToAction?.url);
+     console.log('User access token exists:', !!req.user.accessToken);
     
     const {
       platforms,
@@ -1217,14 +1251,27 @@ router.post('/', auth, [
            console.log('Added event data to post');
          }
 
-         // Add call to action if provided (as per API docs)
-         if (callToAction && callToAction.actionType && callToAction.url) {
-           gmbPostData.callToAction = {
-             actionType: callToAction.actionType,
-             url: callToAction.url
-           };
-           console.log('Added call to action to post');
-         }
+                   // Add call to action if provided (as per API docs)
+          console.log('=== CTA PROCESSING DEBUG ===');
+          console.log('Raw callToAction from request:', callToAction);
+          console.log('callToAction type:', typeof callToAction);
+          console.log('callToAction.actionType:', callToAction?.actionType);
+          console.log('callToAction.url:', callToAction?.url);
+          console.log('Has actionType:', !!callToAction?.actionType);
+          console.log('Has url:', !!callToAction?.url);
+          console.log('Both present:', !!(callToAction?.actionType && callToAction?.url));
+          
+          if (callToAction && callToAction.actionType && callToAction.url) {
+            gmbPostData.callToAction = {
+              actionType: callToAction.actionType,
+              url: callToAction.url
+            };
+            console.log('Added call to action to post:', gmbPostData.callToAction);
+          } else {
+            console.log('No call to action data provided or incomplete:', callToAction);
+            console.log('CTA validation failed - missing required fields');
+          }
+          console.log('=== END CTA PROCESSING DEBUG ===');
 
          // Add offer data if it's an OFFER post (as per API docs)
          if (postType === 'OFFER' && offer) {
@@ -1285,15 +1332,25 @@ router.post('/', auth, [
              console.log('GMB Error details:', gmbError.response.data);
            }
            
-           // Fallback to mock response
-           const mockGmbResponse = {
-             data: {
-               name: `locations/${gmbLocationId}/localPosts/fallback-${Date.now()}`,
-               summary: content,
-               topicType: postType,
-               createTime: new Date().toISOString()
-             }
-           };
+                                    // Fallback to mock response
+             console.log('=== FALLBACK RESPONSE DEBUG ===');
+             console.log('Creating fallback response with CTA:', callToAction);
+             
+             const mockGmbResponse = {
+               data: {
+                 name: `locations/${gmbLocationId}/localPosts/fallback-${Date.now()}`,
+                 summary: content,
+                 topicType: postType,
+                 createTime: new Date().toISOString(),
+                 callToAction: callToAction && callToAction.actionType && callToAction.url ? {
+                   actionType: callToAction.actionType,
+                   url: callToAction.url
+                 } : null
+               }
+             };
+             
+             console.log('Fallback response CTA:', mockGmbResponse.data.callToAction);
+             console.log('=== END FALLBACK RESPONSE DEBUG ===');
            
            console.log('Fallback GMB post creation successful');
            

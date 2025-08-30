@@ -55,7 +55,7 @@ const Posts = () => {
      summary: '',
      postType: 'STANDARD',
      callToAction: {
-       type: 'BOOK',
+       type: '',
        url: ''
      },
      mediaUrls: ['']
@@ -68,10 +68,10 @@ const Posts = () => {
     summary: '',
     postType: 'STANDARD',
     callToAction: {
-      type: 'BOOK',
+      type: '',
       url: ''
     },
-        mediaUrls: ['']
+    mediaUrls: ['']
   });
 
   useEffect(() => {
@@ -252,18 +252,21 @@ const Posts = () => {
          postType: formData.postType
        };
 
-       // Add call to action for OFFER posts
-      if (formData.postType === 'OFFER' && formData.callToAction.url) {
-        postData.callToAction = {
-          actionType: formData.callToAction.type === 'BOOK' ? 'BOOK' : 
-                     formData.callToAction.type === 'ORDER' ? 'ORDER' : 
-                     formData.callToAction.type === 'SHOP' ? 'SHOP' : 
-                     formData.callToAction.type === 'LEARN_MORE' ? 'LEARN_MORE' : 
-                     formData.callToAction.type === 'SIGN_UP' ? 'SIGN_UP' : 
-                     formData.callToAction.type === 'CALL' ? 'CALL' : 'BOOK',
-          url: formData.callToAction.url
-        };
-      }
+              // Add call to action only if both type and URL are provided
+       if (formData.callToAction.type && formData.callToAction.type.trim() !== '' && 
+           formData.callToAction.url && formData.callToAction.url.trim() !== '') {
+         postData.callToAction = {
+           actionType: formData.callToAction.type,
+           url: formData.callToAction.url.trim()
+         };
+         console.log('Added CTA to post data:', postData.callToAction);
+       } else if (formData.callToAction.type && formData.callToAction.type.trim() !== '') {
+         // Warning: CTA type selected but no URL provided
+         alert('Warning: You selected a Call to Action type but did not provide a URL. The CTA button will not be displayed.');
+         console.log('CTA type selected but no URL provided, skipping CTA');
+       } else {
+         console.log('No CTA type selected, skipping CTA');
+       }
 
       // Add event data for EVENT posts
       if (formData.postType === 'EVENT') {
@@ -364,15 +367,25 @@ const Posts = () => {
        }
        console.log('=== END FRONTEND MEDIA DEBUG ===');
 
-      console.log('Sending post data:', postData);
-      console.log('Post data structure:', {
-        platforms: postData.platforms,
-        content: postData.content,
-        gmbAccountId: postData.gmbAccountId,
-        gmbLocationId: postData.gmbLocationId,
-        postType: postData.postType,
-        hasMedia: !!postData.media
-      });
+             console.log('Sending post data:', postData);
+       console.log('Post data structure:', {
+         platforms: postData.platforms,
+         content: postData.content,
+         gmbAccountId: postData.gmbAccountId,
+         gmbLocationId: postData.gmbLocationId,
+         postType: postData.postType,
+         hasMedia: !!postData.media,
+         hasCallToAction: !!postData.callToAction,
+         callToAction: postData.callToAction
+       });
+       
+       // Additional CTA debugging
+       console.log('=== FRONTEND CTA DEBUG ===');
+       console.log('formData.callToAction:', formData.callToAction);
+       console.log('formData.callToAction.type:', formData.callToAction.type);
+       console.log('formData.callToAction.url:', formData.callToAction.url);
+       console.log('postData.callToAction:', postData.callToAction);
+       console.log('=== END FRONTEND CTA DEBUG ===');
       
       const response = await axios.post('http://localhost:3001/api/posts', postData);
       console.log('=== POST CREATION RESPONSE ===');
@@ -388,11 +401,10 @@ const Posts = () => {
       
                            // Reset form
       setFormData({
-        title: '',
         summary: '',
         postType: 'STANDARD',
-        callToAction: { type: 'BOOK', url: '' },
-          mediaUrls: ['']
+        callToAction: { type: '', url: '' },
+        mediaUrls: ['']
       });
       
       alert('Post created successfully!');
@@ -550,7 +562,7 @@ const Posts = () => {
        summary: post.content || '',
        postType: post.postType || 'STANDARD',
        callToAction: {
-         type: post.callToAction?.actionType || 'BOOK',
+         type: post.callToAction?.actionType || '',
          url: post.callToAction?.url || ''
        },
        mediaUrls: post.media && post.media.length > 0 
@@ -584,12 +596,16 @@ const Posts = () => {
          postType: editFormData.postType
        };
 
-       // Add call to action for all post types if URL is provided
-       if (editFormData.callToAction.url) {
+       // Add call to action only if both type and URL are provided
+       if (editFormData.callToAction.type && editFormData.callToAction.type.trim() !== '' && 
+           editFormData.callToAction.url && editFormData.callToAction.url.trim() !== '') {
          updateData.callToAction = {
            actionType: editFormData.callToAction.type,
-           url: editFormData.callToAction.url
+           url: editFormData.callToAction.url.trim()
          };
+       } else if (editFormData.callToAction.type && editFormData.callToAction.type.trim() !== '') {
+         // Warning: CTA type selected but no URL provided
+         alert('Warning: You selected a Call to Action type but did not provide a URL. The CTA button will not be displayed.');
        }
 
        // Add media if provided
@@ -641,7 +657,7 @@ const Posts = () => {
        setEditFormData({
          summary: '',
          postType: 'STANDARD',
-         callToAction: { type: 'BOOK', url: '' },
+         callToAction: { type: '', url: '' },
          mediaUrls: ['']
        });
        
@@ -665,7 +681,7 @@ const Posts = () => {
      setEditFormData({
        summary: '',
        postType: 'STANDARD',
-       callToAction: { type: 'BOOK', url: '' },
+       callToAction: { type: '', url: '' },
        mediaUrls: ['']
      });
    };
@@ -932,10 +948,13 @@ const Posts = () => {
                    }
                    className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
                  >
+                   <option value="">None</option>
                    <option value="BOOK">Book</option>
                    <option value="ORDER">Order</option>
                    <option value="SHOP">Shop</option>
                    <option value="LEARN_MORE">Learn More</option>
+                   <option value="SIGN_UP">Sign Up</option>
+                   <option value="CALL">Call</option>
                  </select>
                </div>
 
@@ -1062,14 +1081,18 @@ const Posts = () => {
                      <div className="space-y-2">
                        <div>
                          <h4 className="text-sm font-medium text-gray-700 mb-2">Aug 13, 2025</h4>
-                         <a
-                           href={(editingPost ? editFormData.callToAction.url : formData.callToAction.url) || '#'}
-                           className={`text-primary-600 hover:text-primary-700 underline text-sm font-medium ${
-                             !(editingPost ? editFormData.callToAction.url : formData.callToAction.url) ? 'pointer-events-none opacity-50' : ''
-                           }`}
-                         >
-                           {editingPost ? editFormData.callToAction.type : formData.callToAction.type}
-                         </a>
+                         {(editingPost ? editFormData.callToAction.type : formData.callToAction.type) ? (
+                           <a
+                             href={(editingPost ? editFormData.callToAction.url : formData.callToAction.url) || '#'}
+                             className={`text-primary-600 hover:text-primary-700 underline text-sm font-medium ${
+                               !(editingPost ? editFormData.callToAction.url : formData.callToAction.url) ? 'pointer-events-none opacity-50' : ''
+                             }`}
+                           >
+                             {editingPost ? editFormData.callToAction.type : formData.callToAction.type}
+                           </a>
+                         ) : (
+                           <span className="text-sm text-gray-400 italic">No CTA</span>
+                         )}
                        </div>
                      </div>
                    </div>
@@ -1103,8 +1126,33 @@ const Posts = () => {
             {posts.length > 0 ? (
               <>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6">
-                  {posts.map((post) => (
-                    <div key={post.id} className="bg-white rounded-lg shadow-sm hover:shadow-md transition-shadow duration-200 overflow-hidden">
+                                     {posts.map((post) => {
+                     console.log('=== POST DATA DEBUG ===');
+                     console.log('Post ID:', post.id);
+                     console.log('Post content:', post.content);
+                     console.log('Post media:', post.media);
+                     console.log('Post callToAction:', post.callToAction);
+                     console.log('Has callToAction:', !!post.callToAction);
+                     console.log('Has callToAction.url:', !!(post.callToAction && post.callToAction.url));
+                     console.log('Post media length:', post.media ? post.media.length : 'N/A');
+                     if (post.media && post.media.length > 0) {
+                       console.log('First media item:', post.media[0]);
+                       console.log('First media sourceUrl:', post.media[0].sourceUrl);
+                       console.log('First media url:', post.media[0].url);
+                     }
+                     
+                     // Additional CTA debugging
+                     if (post.callToAction) {
+                       console.log('CTA Details:');
+                       console.log('  - actionType:', post.callToAction.actionType);
+                       console.log('  - url:', post.callToAction.url);
+                       console.log('  - type:', post.callToAction.type);
+                       console.log('  - All CTA keys:', Object.keys(post.callToAction));
+                     }
+                     console.log('=== END POST DATA DEBUG ===');
+                     
+                     return (
+                       <div key={post.id} className="bg-white rounded-lg shadow-sm hover:shadow-md transition-shadow duration-200 overflow-hidden">
                       {/* Post Header with Action Buttons */}
                       <div className="flex items-center justify-end p-3 bg-gray-50">
                         {/* Action Buttons */}
@@ -1135,11 +1183,11 @@ const Posts = () => {
                         </div>
                       </div>
 
-                      {/* Media Display - Image on Top */}
-                      {post.media && post.media.length > 0 ? (
-                        <div>
-                          <div className="grid grid-cols-1 gap-0">
-                                                         {post.media.map((mediaItem, index) => {
+                                             {/* Media Display - Image on Top */}
+                       {post.media && post.media.length > 0 ? (
+                         <div>
+                           <div className="grid grid-cols-1 gap-0">
+                             {post.media.map((mediaItem, index) => {
                                const imageUrl = mediaItem.sourceUrl || mediaItem.url || mediaItem.thumbnailUrl;
                                console.log(`Rendering media item ${index}:`, {
                                  id: mediaItem.id,
@@ -1149,40 +1197,59 @@ const Posts = () => {
                                  finalUrl: imageUrl,
                                  isGoogleUrl: imageUrl && imageUrl.includes('lh3.googleusercontent.com')
                                });
-                              
-                              return (
-                                                                 <div key={mediaItem.id || index} className="relative group">
+                               
+                               if (!imageUrl) {
+                                 console.log('No valid image URL found for media item:', mediaItem);
+                                 return (
+                                   <div key={mediaItem.id || index} className="w-full h-48 bg-gray-200 rounded-t-lg flex items-center justify-center text-sm text-gray-500">
+                                     No image available
+                                   </div>
+                                 );
+                               }
+                               
+                               // Additional validation for image URL
+                               if (typeof imageUrl !== 'string' || imageUrl.trim() === '') {
+                                 console.log('Invalid image URL format:', imageUrl);
+                                 return (
+                                   <div key={mediaItem.id || index} className="w-full h-48 bg-gray-200 rounded-t-lg flex items-center justify-center text-sm text-gray-500">
+                                     Invalid image URL
+                                   </div>
+                                 );
+                               }
+                               
+                               return (
+                                 <div key={mediaItem.id || index} className="relative group">
                                    <img
-                                      src={imageUrl}
+                                     src={imageUrl}
                                      alt={mediaItem.altText || 'Post image'}
                                      className="w-full h-48 object-cover shadow-sm"
                                      onError={(e) => {
-                                        console.log('Image failed to load:', imageUrl);
-                                             e.target.style.display = 'none';
-                                             e.target.nextSibling.style.display = 'flex';
+                                       console.log('Image failed to load:', imageUrl);
+                                       e.target.style.display = 'none';
+                                       e.target.nextSibling.style.display = 'flex';
                                      }}
                                      onLoad={(e) => {
-                                        console.log('Image loaded successfully:', imageUrl);
+                                       console.log('Image loaded successfully:', imageUrl);
                                      }}
                                    />
-                                  <div className="hidden absolute inset-0 bg-gray-200 rounded-t-lg flex items-center justify-center text-sm text-gray-500">
-                                    Image not available
-                                  </div>
-                                  {mediaItem.mediaFormat === 'VIDEO' && (
-                                    <div className="absolute top-2 right-2 bg-black bg-opacity-75 text-white text-xs px-2 py-1 rounded">
-                                      VIDEO
-                                    </div>
-                                  )}
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="mb-4 text-sm text-gray-500 text-center py-8 bg-gray-50 rounded-lg">
-                          No media attached to this post
-                        </div>
-                      )}
+                                   <div className="hidden absolute inset-0 bg-gray-200 rounded-t-lg flex items-center justify-center text-sm text-gray-500">
+                                     Image not available
+                                   </div>
+                                   {mediaItem.mediaFormat === 'VIDEO' && (
+                                     <div className="absolute top-2 right-2 bg-black bg-opacity-75 text-white text-xs px-2 py-1 rounded">
+                                       VIDEO
+                                     </div>
+                                   )}
+                                 </div>
+                               );
+                             })}
+                           </div>
+                         </div>
+                       ) : (
+                         <div className="mb-4 text-sm text-gray-500 text-center py-8 bg-gray-50 rounded-lg">
+                           No media attached to this post
+                         </div>
+                       )}
 
                       {/* Post Content - Text Below Image */}
                       <div className="p-3">
@@ -1212,24 +1279,42 @@ const Posts = () => {
                           )}
                         </div>
 
-                                                 {/* Post Footer with Date and Status */}
+                                                 {/* Post Footer with Date, Status, and CTA */}
                          <div className="flex items-center justify-between text-xs text-gray-500 pt-2 border-t border-gray-100">
                            <span className="flex items-center">
                              <Clock className="h-4 w-4 mr-1" />
                              {post.createdAt ? formatRelativeTime(post.createdAt) : 'Date not available'}
                            </span>
-                           {post.status === 'published' && (
-                             <span className="flex items-center">
-                               <CheckCircle className="h-4 w-4 mr-1" />
-                               Published
-                             </span>
-                           )}
+                           <div className="flex items-center space-x-3">
+                             {post.callToAction && (
+                               <a
+                                 href={post.callToAction.url || '#'}
+                                 target="_blank"
+                                 rel="noopener noreferrer"
+                                 className={`inline-flex items-center px-2 py-1 text-xs font-medium rounded transition-colors duration-200 ${
+                                   post.callToAction.url 
+                                     ? 'bg-blue-100 text-blue-800 hover:bg-blue-200' 
+                                     : 'bg-gray-100 text-gray-500 cursor-not-allowed'
+                                 }`}
+                                 onClick={!post.callToAction.url ? (e) => e.preventDefault() : undefined}
+                               >
+                                 {post.callToAction.actionType || 'CTA'}
+                               </a>
+                             )}
+                             {post.status === 'published' && (
+                               <span className="flex items-center">
+                                 <CheckCircle className="h-4 w-4 mr-1" />
+                                 Published
+                               </span>
+                             )}
+                           </div>
                          </div>
 
 
-                      </div>
-                    </div>
-                  ))}
+                                             </div>
+                     </div>
+                   );
+                   })}
                 </div>
                 
                 {/* Load More Section */}
