@@ -43,16 +43,15 @@ const Posts = () => {
   // Notification state
   const [notification, setNotification] = useState(null);
   
-     const [formData, setFormData] = useState({
-     summary: '',
-     postType: 'STANDARD',
-     callToAction: {
-       type: 'BOOK',
-       url: ''
-     },
-     mediaUrls: [''],
-     mediaFiles: []
-   });
+           const [formData, setFormData] = useState({
+        summary: '',
+        postType: 'STANDARD',
+        callToAction: {
+          type: 'BOOK',
+          url: ''
+        },
+        mediaUrls: ['']
+      });
 
   useEffect(() => {
     if (isAuthenticated) {
@@ -275,64 +274,8 @@ const Posts = () => {
         };
       }
 
-      // Upload media first if provided
-      const allMedia = [];
-      
-      // Upload local files
-      console.log('=== CHECKING MEDIA FILES ===');
-      console.log('formData.mediaFiles:', formData.mediaFiles);
-      console.log('formData.mediaFiles type:', typeof formData.mediaFiles);
-      console.log('formData.mediaFiles length:', formData.mediaFiles?.length);
-      console.log('formData.mediaFiles truthy check:', !!formData.mediaFiles);
-      console.log('formData.mediaFiles length > 0 check:', formData.mediaFiles?.length > 0);
-      
-      if (formData.mediaFiles && formData.mediaFiles.length > 0) {
-        try {
-          console.log('=== LOCAL FILE UPLOAD DEBUG ===');
-          console.log('Number of files to upload:', formData.mediaFiles.length);
-          console.log('Files to upload:', formData.mediaFiles.map(f => ({ name: f.name, size: f.size, type: f.type })));
-          
-          const filePromises = formData.mediaFiles.map(async (file, index) => {
-            console.log(`Processing file ${index + 1}:`, file.name);
-            
-            // Convert file to base64
-            const base64 = await new Promise((resolve) => {
-              const reader = new FileReader();
-              reader.onload = () => {
-                const result = reader.result.split(',')[1];
-                console.log(`File ${file.name} converted to base64, length:`, result.length);
-                resolve(result);
-              };
-              reader.readAsDataURL(file);
-            });
-
-            console.log(`Sending file ${file.name} to backend...`);
-            const mediaResponse = await axios.post('http://localhost:3001/api/posts/media', {
-              mediaFormat: 'PHOTO',
-              fileData: base64,
-              gmbAccountId: accountId,
-              gmbLocationId: locationId,
-              category: 'ADDITIONAL'
-            });
-            
-            console.log(`File ${file.name} upload response:`, mediaResponse.data);
-            return mediaResponse.data.media;
-          });
-
-          const uploadedFiles = await Promise.all(filePromises);
-          console.log('=== LOCAL FILE UPLOAD SUCCESS ===');
-          console.log('All local files uploaded successfully:', uploadedFiles);
-          console.log('Uploaded files structure:', uploadedFiles.map(f => ({ name: f.name, mediaFormat: f.mediaFormat, sourceUrl: f.sourceUrl })));
-          allMedia.push(...uploadedFiles);
-          console.log('=== END LOCAL FILE UPLOAD DEBUG ===');
-        } catch (fileError) {
-          console.error('=== LOCAL FILE UPLOAD ERROR ===');
-          console.error('Error uploading local files:', fileError);
-          console.error('Error response:', fileError.response?.data);
-          console.error('Error status:', fileError.response?.status);
-          alert('Warning: Some local files failed to upload. Post will be created without those files.');
-        }
-      }
+             // Upload media first if provided
+       const allMedia = [];
 
              // Upload URLs
        if (formData.mediaUrls.length > 0) {
@@ -421,15 +364,14 @@ const Posts = () => {
       await fetchPosts(selectedProfile, 1, false);
       console.log('=== POSTS REFRESHED ===');
       
-             // Reset form
-       setFormData({
-         title: '',
-         summary: '',
-         postType: 'STANDARD',
-         callToAction: { type: 'BOOK', url: '' },
-         mediaUrls: [''],
-         mediaFiles: []
-       });
+                           // Reset form
+        setFormData({
+          title: '',
+          summary: '',
+          postType: 'STANDARD',
+          callToAction: { type: 'BOOK', url: '' },
+          mediaUrls: ['']
+        });
       
       alert('Post created successfully!');
     } catch (error) {
@@ -707,16 +649,16 @@ const Posts = () => {
             </div>
           </div>
           
-          <div>
-            <label className="block text-sm font-medium text-gray-700">Summary</label>
-            <textarea
-              value={formData.summary}
-              onChange={(e) => setFormData({ ...formData, summary: e.target.value })}
-              rows={3}
-              className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
-              required
-            />
-          </div>
+                     <div>
+             <label className="block text-sm font-medium text-gray-700">Description</label>
+             <textarea
+               value={formData.summary}
+               onChange={(e) => setFormData({ ...formData, summary: e.target.value })}
+               rows={3}
+               className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
+               required
+             />
+           </div>
           
           <div>
             <label className="block text-sm font-medium text-gray-700">Call to Action URL</label>
@@ -734,121 +676,32 @@ const Posts = () => {
           <div>
             <label className="block text-sm font-medium text-gray-700">Add Pictures</label>
             
-            {/* Image Uploader Button */}
-            <div className="mb-3">
-              <button
-                type="button"
-                onClick={() => setShowImageUploaderModal(true)}
-                className="inline-flex items-center px-3 py-2 border border-primary-300 shadow-sm text-sm font-medium rounded-md text-primary-700 bg-primary-50 hover:bg-primary-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500"
-              >
-                <Plus className="h-4 w-4 mr-2" />
-                Upload Images with ImgBB
-              </button>
-              <p className="text-xs text-gray-500 mt-1">
-                Upload images to ImgBB and get direct URLs for your posts
-              </p>
-            </div>
+                         {/* Image Uploader Button */}
+             <div className="mb-3">
+               <button
+                 type="button"
+                 onClick={() => setShowImageUploaderModal(true)}
+                 className="inline-flex items-center px-3 py-2 border border-primary-300 shadow-sm text-sm font-medium rounded-md text-primary-700 bg-primary-50 hover:bg-primary-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500"
+               >
+                 <Plus className="h-4 w-4 mr-2" />
+                 Upload Images
+               </button>
+             </div>
             
-            {/* File Upload Section */}
-            <div className="mb-4">
-              <label className="block text-sm font-medium text-gray-700 mb-2">Upload Local Files (Optional)</label>
-              <input
-                type="file"
-                multiple
-                accept="image/*"
-                onChange={(e) => {
-                  console.log('=== FILE INPUT CHANGE ===');
-                  console.log('Event target files:', e.target.files);
-                  console.log('Files length:', e.target.files.length);
-                  
-                  const files = Array.from(e.target.files);
-                  console.log('Converted files array:', files);
-                  console.log('Current formData.mediaFiles:', formData.mediaFiles);
-                  
-                  const newFiles = [...(formData.mediaFiles || []), ...files];
-                  console.log('New files array:', newFiles);
-                  
-                  setFormData({ ...formData, mediaFiles: newFiles });
-                  console.log('=== END FILE INPUT CHANGE ===');
-                }}
-                className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-primary-50 file:text-primary-700 hover:file:bg-primary-100"
-              />
-              {formData.mediaFiles && formData.mediaFiles.length > 0 && (
-                <div className="mt-2 space-y-2">
-                  {formData.mediaFiles.map((file, index) => (
-                    <div key={index} className="flex items-center space-x-2 text-sm">
-                      <span className="text-gray-600">{file.name}</span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const newFiles = formData.mediaFiles.filter((_, i) => i !== index);
-                          setFormData({ ...formData, mediaFiles: newFiles });
-                        }}
-                        className="text-red-500 hover:text-red-700"
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
             
-            {/* URL Input Section */}
-            <div className="mb-4">
-              <label className="block text-sm font-medium text-gray-700 mb-2">Or Add Picture URLs (Optional)</label>
-              <div className="space-y-2">
-                {formData.mediaUrls.map((url, index) => (
-                  <div key={index} className="flex items-center space-x-2">
-                    <input
-                      type="url"
-                      value={url}
-                      onChange={(e) => {
-                        const newUrls = [...formData.mediaUrls];
-                        newUrls[index] = e.target.value;
-                        setFormData({ ...formData, mediaUrls: newUrls });
-                      }}
-                      placeholder="https://example.com/image.jpg"
-                      className="flex-1 border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const newUrls = formData.mediaUrls.filter((_, i) => i !== index);
-                        setFormData({ ...formData, mediaUrls: newUrls });
-                      }}
-                      className="text-red-500 hover:text-red-700"
-                    >
-                      Remove
-                    </button>
-                  </div>
-                ))}
-                <button
-                  type="button"
-                  onClick={() => setFormData({
-                    ...formData,
-                    mediaUrls: [...formData.mediaUrls, '']
-                  })}
-                  className="inline-flex items-center px-3 py-1 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50"
-                >
-                  + Add Picture URL
-                </button>
-              </div>
-            </div>
             
-                         {/* Combined Preview */}
-             {(formData.mediaUrls.filter(url => url.trim() !== '').length > 0 || (formData.mediaFiles && formData.mediaFiles.length > 0)) && (
+                                      {/* Image Preview */}
+             {formData.mediaUrls.filter(url => url.trim() !== '').length > 0 && (
                <div className="mt-3">
                  <label className="block text-sm font-medium text-gray-700 mb-2">Preview</label>
                  <div className="grid grid-cols-2 gap-2">
-                   {/* URL Previews */}
                    {formData.mediaUrls
                      .filter(url => url.trim() !== '')
                      .map((url, index) => (
                        <div key={`url-${index}`} className="relative">
                          <img
                            src={url}
-                           alt={`URL Preview ${index + 1}`}
+                           alt={`Image Preview ${index + 1}`}
                            className="w-full h-24 object-cover rounded border"
                            onError={(e) => {
                              console.log('Preview image failed to load:', url);
@@ -864,17 +717,6 @@ const Posts = () => {
                          </div>
                        </div>
                      ))}
-                   
-                   {/* File Previews */}
-                   {formData.mediaFiles && formData.mediaFiles.map((file, index) => (
-                     <div key={`file-${index}`} className="relative">
-                       <img
-                         src={URL.createObjectURL(file)}
-                         alt={`File Preview ${index + 1}`}
-                         className="w-full h-24 object-cover rounded border"
-                       />
-                     </div>
-                   ))}
                  </div>
                </div>
              )}
@@ -961,70 +803,31 @@ const Posts = () => {
                                  isGoogleUrl: imageUrl && imageUrl.includes('lh3.googleusercontent.com')
                                });
                                
-                               // Ensure Google Photos URLs have proper format
-                               let processedUrl = imageUrl;
-                               if (imageUrl && imageUrl.includes('lh3.googleusercontent.com')) {
-                                 if (!imageUrl.includes('=')) {
-                                   processedUrl = `${imageUrl}=h305-no`;
-                                   console.log(`Fixed Google Photos URL: ${imageUrl} -> ${processedUrl}`);
-                                 } else {
-                                   // If it already has parameters, ensure it has the right format
-                                   if (!imageUrl.includes('h305-no')) {
-                                     processedUrl = `${imageUrl}=h305-no`;
-                                     console.log(`Enhanced Google Photos URL: ${imageUrl} -> ${processedUrl}`);
-                                   }
-                                 }
-                               }
-                             
-                               return (
-                                 <div key={mediaItem.id || index} className="relative group">
-                                   <img
-                                     src={processedUrl}
-                                     alt={mediaItem.altText || 'Post image'}
-                                     className="w-full h-48 object-cover shadow-sm"
-                                     onError={(e) => {
-                                       console.log('Image failed to load:', processedUrl);
-                                       
-                                       // Try alternative Google Photos URL formats
-                                       if (processedUrl.includes('lh3.googleusercontent.com')) {
-                                         const baseUrl = processedUrl.split('=')[0];
-                                         const alternativeUrl = `${baseUrl}=w400-h300-no`;
-                                         console.log('Trying alternative Google Photos URL format:', alternativeUrl);
-                                         e.target.src = alternativeUrl;
-                                         
-                                         // If that also fails, try another format
-                                         e.target.onerror = () => {
-                                           console.log('First alternative URL failed, trying second format');
-                                           const secondAlternativeUrl = `${baseUrl}=h400-no`;
-                                           console.log('Trying second alternative Google Photos URL format:', secondAlternativeUrl);
-                                           e.target.src = secondAlternativeUrl;
-                                           
-                                           // If all alternatives fail, show the error state
-                                           e.target.onerror = () => {
-                                             console.log('All Google Photos URL formats failed');
-                                             e.target.style.display = 'none';
-                                             e.target.nextSibling.style.display = 'flex';
-                                           };
-                                         };
-                                       } else {
-                                         e.target.style.display = 'none';
-                                         e.target.nextSibling.style.display = 'flex';
-                                       }
-                                     }}
-                                     onLoad={(e) => {
-                                       console.log('Image loaded successfully:', processedUrl);
-                                     }}
-                                   />
-                                   <div className="hidden absolute inset-0 bg-gray-200 rounded-t-lg flex items-center justify-center text-sm text-gray-500">
-                                     Image not available
-                                   </div>
-                                   {mediaItem.mediaFormat === 'VIDEO' && (
-                                     <div className="absolute top-2 right-2 bg-black bg-opacity-75 text-white text-xs px-2 py-1 rounded">
-                                       VIDEO
-                                     </div>
-                                   )}
-                                 </div>
-                               );
+                                                               return (
+                                  <div key={mediaItem.id || index} className="relative group">
+                                    <img
+                                      src={imageUrl}
+                                      alt={mediaItem.altText || 'Post image'}
+                                      className="w-full h-48 object-cover shadow-sm"
+                                      onError={(e) => {
+                                        console.log('Image failed to load:', imageUrl);
+                                        e.target.style.display = 'none';
+                                        e.target.nextSibling.style.display = 'flex';
+                                      }}
+                                      onLoad={(e) => {
+                                        console.log('Image loaded successfully:', imageUrl);
+                                      }}
+                                    />
+                                    <div className="hidden absolute inset-0 bg-gray-200 rounded-t-lg flex items-center justify-center text-sm text-gray-500">
+                                      Image not available
+                                    </div>
+                                    {mediaItem.mediaFormat === 'VIDEO' && (
+                                      <div className="absolute top-2 right-2 bg-black bg-opacity-75 text-white text-xs px-2 py-1 rounded">
+                                        VIDEO
+                                      </div>
+                                    )}
+                                  </div>
+                                );
                              })}
                            </div>
                          </div>
