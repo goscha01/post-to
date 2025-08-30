@@ -40,14 +40,29 @@ const Posts = () => {
   // Delete loading state
   const [deletingPosts, setDeletingPosts] = useState(new Set());
    
-   // Post creation loading state
+      // Post creation loading state
    const [creatingPost, setCreatingPost] = useState(false);
+   
+   // Post update loading state
+   const [updatingPost, setUpdatingPost] = useState(false);
    
    // Image upload loading state
    const [uploadingImages, setUploadingImages] = useState(false);
-  
-  // Notification state
-  const [notification, setNotification] = useState(null);
+   
+   // Edit post state
+   const [editingPost, setEditingPost] = useState(null);
+   const [editFormData, setEditFormData] = useState({
+     summary: '',
+     postType: 'STANDARD',
+     callToAction: {
+       type: 'BOOK',
+       url: ''
+     },
+     mediaUrls: ['']
+   });
+   
+   // Notification state
+   const [notification, setNotification] = useState(null);
   
   const [formData, setFormData] = useState({
     summary: '',
@@ -511,15 +526,173 @@ const Posts = () => {
     setTimeout(() => setNotification(null), 3000);
   };
 
-  // Handle adding uploaded image URL to form
-  const handleImageUploaded = (imageUrl) => {
-    setFormData(prev => ({
-      ...prev,
-      mediaUrls: [...prev.mediaUrls, imageUrl]
-    }));
+     // Handle adding uploaded image URL to form
+   const handleImageUploaded = (imageUrl) => {
+     if (editingPost) {
+       setEditFormData(prev => ({
+         ...prev,
+         mediaUrls: [...prev.mediaUrls, imageUrl]
+       }));
+     } else {
+       setFormData(prev => ({
+         ...prev,
+         mediaUrls: [...prev.mediaUrls, imageUrl]
+       }));
+     }
      setUploadingImages(false);
-    showNotification('Image uploaded successfully! You can now add it to your post.', 'success');
-  };
+     showNotification('Image uploaded successfully! You can now add it to your post.', 'success');
+   };
+
+   // Handle edit post
+   const handleEditPost = (post) => {
+     setEditingPost(post);
+     setEditFormData({
+       summary: post.content || '',
+       postType: post.postType || 'STANDARD',
+       callToAction: {
+         type: post.callToAction?.actionType || 'BOOK',
+         url: post.callToAction?.url || ''
+       },
+       mediaUrls: post.media && post.media.length > 0 
+         ? post.media.map(media => media.sourceUrl || media.url || media.thumbnailUrl).filter(Boolean)
+         : ['']
+     });
+   };
+
+   // Handle update post
+   const handleUpdatePost = async (e) => {
+     e.preventDefault();
+     if (!editingPost) return;
+
+     setUpdatingPost(true);
+     try {
+       console.log('=== UPDATE POST STARTED ===');
+       console.log('Editing post:', editingPost);
+       console.log('Edit form data:', editFormData);
+       
+       // Extract account and location IDs from selectedProfile
+       const profileParts = selectedProfile.split('/');
+       const locationId = profileParts[profileParts.length - 1];
+       const accountId = profileParts[1];
+
+       console.log('Profile parts:', profileParts);
+       console.log('Account ID:', accountId);
+       console.log('Location ID:', locationId);
+
+       const updateData = {
+         content: editFormData.summary,
+         postType: editFormData.postType
+       };
+
+       // Add call to action for all post types if URL is provided
+       if (editFormData.callToAction.url) {
+         updateData.callToAction = {
+           actionType: editFormData.callToAction.type,
+           url: editFormData.callToAction.url
+         };
+       }
+
+       // Add media if provided
+       if (editFormData.mediaUrls && editFormData.mediaUrls.length > 0) {
+         const validMediaUrls = editFormData.mediaUrls.filter(url => url.trim() !== '');
+         if (validMediaUrls.length > 0) {
+           updateData.media = validMediaUrls.map(url => ({
+             mediaFormat: 'PHOTO',
+             sourceUrl: url
+           }));
+         }
+       }
+
+       console.log('Update data to send:', updateData);
+
+       // Use PATCH request as per GMB API documentation
+       try {
+         console.log('Making PATCH request to:', `http://localhost:3001/api/posts/${editingPost.id}`);
+         console.log('With data:', updateData);
+         console.log('With params:', { gmbAccountId: accountId, gmbLocationId: locationId });
+         
+         const response = await axios.patch(`http://localhost:3001/api/posts/${editingPost.id}`, updateData, {
+           params: {
+             gmbAccountId: accountId,
+             gmbLocationId: locationId
+           }
+         });
+         console.log('PATCH request successful:', response.data);
+       } catch (patchError) {
+         console.log('PATCH request failed:', patchError);
+         console.log('PATCH error details:', patchError.response?.data);
+         console.log('PATCH error status:', patchError.response?.status);
+         throw patchError; // Re-throw to be caught by outer catch
+       }
+
+       console.log('=== UPDATE POST SUCCESS ===');
+       
+       // Refresh posts and reset edit state
+       console.log('Refreshing posts...');
+       try {
+         await fetchPosts(selectedProfile, currentPage, false);
+         console.log('Posts refreshed successfully');
+       } catch (fetchError) {
+         console.log('Error refreshing posts:', fetchError);
+       }
+       
+       console.log('Resetting edit state...');
+       setEditingPost(null);
+       setEditFormData({
+         summary: '',
+         postType: 'STANDARD',
+         callToAction: { type: 'BOOK', url: '' },
+         mediaUrls: ['']
+       });
+       
+       console.log('Showing success notification...');
+       showNotification('Post updated successfully!', 'success');
+       console.log('=== UPDATE POST COMPLETE ===');
+     } catch (error) {
+       console.error('=== UPDATE POST ERROR ===');
+       console.error('Error updating post:', error);
+       console.error('Error response:', error.response?.data);
+       console.error('Error status:', error.response?.status);
+       showNotification(`Failed to update post: ${error.response?.data?.error || error.message}`, 'error');
+     } finally {
+       setUpdatingPost(false);
+     }
+   };
+
+   // Cancel edit
+   const handleCancelEdit = () => {
+     setEditingPost(null);
+     setEditFormData({
+       summary: '',
+       postType: 'STANDARD',
+       callToAction: { type: 'BOOK', url: '' },
+       mediaUrls: ['']
+     });
+   };
+
+   // Handle delete image from preview
+   const handleDeleteImage = (index) => {
+     if (editingPost) {
+       setEditFormData(prev => {
+         const newUrls = prev.mediaUrls.filter((_, i) => i !== index);
+         // Ensure there's always at least one empty string for the form
+         return {
+           ...prev,
+           mediaUrls: newUrls.length === 0 ? [''] : newUrls
+         };
+       });
+     } else {
+       setFormData(prev => {
+         const newUrls = prev.mediaUrls.filter((_, i) => i !== index);
+         // Ensure there's always at least one empty string for the form
+         return {
+           ...prev,
+           mediaUrls: newUrls.length === 0 ? [''] : newUrls
+         };
+       });
+     }
+     showNotification('Image removed from preview', 'success');
+   };
   
   // Toggle expanded state for a post
   const toggleExpanded = (postId) => {
@@ -638,16 +811,28 @@ const Posts = () => {
         </select>
       </div>
 
-      {/* Create Post Form Section */}
-      <div className="bg-white shadow rounded-lg p-6">
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h2 className="text-lg font-medium text-gray-900">Create New Post</h2>
-            <p className="text-sm text-gray-500">Fill out the form below to create a new post</p>
-          </div>
-        </div>
+             {/* Create/Edit Post Form Section */}
+       <div className="bg-white shadow rounded-lg p-6">
+         <div className="flex items-center justify-between mb-4">
+           <div>
+             <h2 className="text-lg font-medium text-gray-900">
+               {editingPost ? 'Edit Post' : 'Create New Post'}
+             </h2>
+             <p className="text-sm text-gray-500">
+               {editingPost ? 'Update your post below' : 'Fill out the form below to create a new post'}
+             </p>
+           </div>
+           {editingPost && (
+             <button
+               onClick={handleCancelEdit}
+               className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 border border-gray-300 rounded-md hover:bg-gray-200"
+             >
+               Cancel Edit
+             </button>
+           )}
+         </div>
         
-                 <form onSubmit={handleCreatePost}>
+                 <form onSubmit={editingPost ? handleUpdatePost : handleCreatePost}>
            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
              {/* Left Column - Form */}
              <div className="lg:col-span-2 space-y-4">
@@ -700,8 +885,11 @@ const Posts = () => {
                <div>
                  <label className="block text-sm font-medium text-gray-700">Description</label>
                  <textarea
-                   value={formData.summary}
-                   onChange={(e) => setFormData({ ...formData, summary: e.target.value })}
+                   value={editingPost ? editFormData.summary : formData.summary}
+                   onChange={(e) => editingPost 
+                     ? setEditFormData({ ...editFormData, summary: e.target.value })
+                     : setFormData({ ...formData, summary: e.target.value })
+                   }
                    rows={4}
                    className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
                    placeholder="Write your post content here..."
@@ -713,8 +901,11 @@ const Posts = () => {
                <div>
                  <label className="block text-sm font-medium text-gray-700">Post Type</label>
                  <select
-                   value={formData.postType}
-                   onChange={(e) => setFormData({ ...formData, postType: e.target.value })}
+                   value={editingPost ? editFormData.postType : formData.postType}
+                   onChange={(e) => editingPost
+                     ? setEditFormData({ ...editFormData, postType: e.target.value })
+                     : setFormData({ ...formData, postType: e.target.value })
+                   }
                    className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
                  >
                    <option value="STANDARD">Standard Post</option>
@@ -728,11 +919,17 @@ const Posts = () => {
                <div>
                  <label className="block text-sm font-medium text-gray-700">Call to Action Type</label>
                  <select
-                   value={formData.callToAction.type}
-                   onChange={(e) => setFormData({
-                     ...formData,
-                     callToAction: { ...formData.callToAction, type: e.target.value }
-                   })}
+                   value={editingPost ? editFormData.callToAction.type : formData.callToAction.type}
+                   onChange={(e) => editingPost
+                     ? setEditFormData({
+                         ...editFormData,
+                         callToAction: { ...editFormData.callToAction, type: e.target.value }
+                       })
+                     : setFormData({
+                         ...formData,
+                         callToAction: { ...formData.callToAction, type: e.target.value }
+                       })
+                   }
                    className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
                  >
                    <option value="BOOK">Book</option>
@@ -747,11 +944,17 @@ const Posts = () => {
                  <label className="block text-sm font-medium text-gray-700">Call to Action URL</label>
                  <input
                    type="url"
-                   value={formData.callToAction.url}
-                   onChange={(e) => setFormData({
-                     ...formData,
-                     callToAction: { ...formData.callToAction, url: e.target.value }
-                   })}
+                   value={editingPost ? editFormData.callToAction.url : formData.callToAction.url}
+                   onChange={(e) => editingPost
+                     ? setEditFormData({
+                         ...editFormData,
+                         callToAction: { ...editFormData.callToAction, url: e.target.value }
+                       })
+                     : setFormData({
+                         ...formData,
+                         callToAction: { ...formData.callToAction, url: e.target.value }
+                       })
+                   }
                    className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
                    placeholder="https://example.com"
                  />
@@ -761,9 +964,9 @@ const Posts = () => {
                <div className="flex justify-end pt-4">
                  <button
                    type="submit"
-                   disabled={creatingPost}
+                   disabled={creatingPost || updatingPost}
                    className={`px-8 py-3 border border-transparent rounded-md shadow-sm text-sm font-medium text-white transition-colors duration-200 ${
-                     creatingPost 
+                     (creatingPost || updatingPost)
                        ? 'bg-primary-400 cursor-not-allowed' 
                        : 'bg-primary-600 hover:bg-primary-700'
                    }`}
@@ -773,8 +976,13 @@ const Posts = () => {
                        <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mr-2 inline-block"></div>
                        Creating Post...
                      </>
+                   ) : updatingPost ? (
+                     <>
+                       <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mr-2 inline-block"></div>
+                       Updating Post...
+                     </>
                    ) : (
-                     'Create Post'
+                     editingPost ? 'Update Post' : 'Create Post'
                    )}
                  </button>
                </div>
@@ -791,13 +999,13 @@ const Posts = () => {
                      {/* Image Preview */}
                      <div>
                        <h4 className="text-sm font-medium text-gray-700 mb-2">Image</h4>
-                       {formData.mediaUrls.filter(url => url.trim() !== '').length > 0 ? (
+                       {(editingPost ? editFormData.mediaUrls : formData.mediaUrls).filter(url => url.trim() !== '').length > 0 ? (
                          <div className="space-y-3">
-                           {formData.mediaUrls
+                           {(editingPost ? editFormData.mediaUrls : formData.mediaUrls)
                              .filter(url => url.trim() !== '')
                              .slice(0, 2) // Show only first 2 images in preview
                              .map((url, index) => (
-                               <div key={`preview-${index}`} className="relative">
+                               <div key={`preview-${index}`} className="relative group">
                                  <img
                                    src={url}
                                    alt={`Preview ${index + 1}`}
@@ -810,11 +1018,19 @@ const Posts = () => {
                                  <div className="hidden w-full h-56 bg-gray-200 rounded-lg border shadow-sm flex items-center justify-center text-xs text-gray-500">
                                    Image
                                  </div>
+                                 {/* Delete Button */}
+                                 <button
+                                   onClick={() => handleDeleteImage(index)}
+                                   className="absolute top-2 right-2 bg-red-500 hover:bg-red-600 text-white rounded-full w-6 h-6 flex items-center justify-center transition-colors duration-200"
+                                   title="Delete image"
+                                 >
+                                   ×
+                                 </button>
                                </div>
                              ))}
-                           {formData.mediaUrls.filter(url => url.trim() !== '').length > 2 && (
+                           {(editingPost ? editFormData.mediaUrls : formData.mediaUrls).filter(url => url.trim() !== '').length > 2 && (
                              <div className="text-xs text-gray-500 text-center py-2">
-                               +{formData.mediaUrls.filter(url => url.trim() !== '').length - 2} more images
+                               +{(editingPost ? editFormData.mediaUrls : formData.mediaUrls).filter(url => url.trim() !== '').length - 2} more images
                              </div>
                            )}
                          </div>
@@ -830,19 +1046,16 @@ const Posts = () => {
 
                      {/* Content Preview */}
                      <div>
-                       <h4 className="text-sm font-medium text-gray-700 mb-2">Content</h4>
-                       <div className="bg-white rounded border p-3 min-h-[80px]">
-                         {formData.summary ? (
-                           <p className="text-sm text-gray-900 leading-relaxed">
-                             {formData.summary.length > 150 
-                               ? `${formData.summary.substring(0, 150)}...` 
-                               : formData.summary
-                             }
-                           </p>
-                         ) : (
-                           <p className="text-sm text-gray-400 italic">No content yet</p>
-                         )}
-                       </div>
+                       {(editingPost ? editFormData.summary : formData.summary) ? (
+                         <p className="text-sm text-gray-900 leading-relaxed">
+                           {(editingPost ? editFormData.summary : formData.summary).length > 150 
+                             ? `${(editingPost ? editFormData.summary : formData.summary).substring(0, 150)}...` 
+                             : (editingPost ? editFormData.summary : formData.summary)
+                           }
+                         </p>
+                       ) : (
+                         <p className="text-sm text-gray-400 italic">No content yet</p>
+                       )}
                      </div>
 
                      {/* Call to Action Link Preview */}
@@ -850,12 +1063,12 @@ const Posts = () => {
                        <div>
                          <h4 className="text-sm font-medium text-gray-700 mb-2">Aug 13, 2025</h4>
                          <a
-                           href={formData.callToAction.url || '#'}
+                           href={(editingPost ? editFormData.callToAction.url : formData.callToAction.url) || '#'}
                            className={`text-primary-600 hover:text-primary-700 underline text-sm font-medium ${
-                             !formData.callToAction.url ? 'pointer-events-none opacity-50' : ''
+                             !(editingPost ? editFormData.callToAction.url : formData.callToAction.url) ? 'pointer-events-none opacity-50' : ''
                            }`}
                          >
-                           Book
+                           {editingPost ? editFormData.callToAction.type : formData.callToAction.type}
                          </a>
                        </div>
                      </div>
@@ -896,13 +1109,13 @@ const Posts = () => {
                       <div className="flex items-center justify-end p-3 bg-gray-50">
                         {/* Action Buttons */}
                         <div className="flex items-center space-x-2">
-                          <button
-                            onClick={() => {/* Handle edit */}}
-                            className="text-gray-400 hover:text-gray-600 p-1 rounded hover:bg-gray-100"
-                            title="Edit post"
-                          >
-                            <Edit className="h-4 w-4" />
-                          </button>
+                                                     <button
+                             onClick={() => handleEditPost(post)}
+                             className="text-gray-400 hover:text-gray-600 p-1 rounded hover:bg-gray-100"
+                             title="Edit post"
+                           >
+                             <Edit className="h-4 w-4" />
+                           </button>
                           <button
                             onClick={() => handleDeletePost(post.id)}
                             disabled={deletingPosts.has(post.id)}
