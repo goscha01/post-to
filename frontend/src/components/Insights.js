@@ -67,10 +67,90 @@ const Insights = () => {
     if (!profileId) return;
     
     try {
-      const response = await axios.get(`http://localhost:3001/api/insights/profile/${profileId}/summary`, {
-        params: { period }
-      });
-      setInsights(response.data);
+      console.log('🔍 Profile ID received:', profileId);
+      console.log('🔍 Profile ID type:', typeof profileId);
+      
+      // Extract account ID and location ID from the profile
+      let accountId, locationId;
+      
+      if (profileId.includes('/')) {
+        const profileParts = profileId.split('/');
+        console.log('🔍 Profile parts:', profileParts);
+        
+        if (profileParts[0] === 'locations' && profileParts.length === 2) {
+          // Format: locations/{locationId}
+          locationId = profileParts[1];
+          // Get account ID from the first profile
+          if (profiles.length > 0 && profiles[0].name) {
+            const accountNameParts = profiles[0].name.split('/');
+            accountId = accountNameParts[accountNameParts.length - 1];
+          }
+        } else if (profileParts.includes('accounts') && profileParts.includes('locations')) {
+          // Format: accounts/{accountId}/locations/{locationId}
+          const accountIndex = profileParts.findIndex(part => part === 'accounts');
+          const locationIndex = profileParts.findIndex(part => part === 'locations');
+          
+          if (accountIndex !== -1 && locationIndex !== -1) {
+            accountId = profileParts[accountIndex + 1];
+            locationId = profileParts[locationIndex + 1];
+          }
+        }
+      } else {
+        // Handle simple ID format
+        locationId = profileId;
+        // Try to get account ID from the first profile
+        if (profiles.length > 0 && profiles[0].name) {
+          const accountNameParts = profiles[0].name.split('/');
+          accountId = accountNameParts[accountNameParts.length - 1];
+        }
+      }
+      
+      console.log('🔍 Extracted accountId:', accountId);
+      console.log('🔍 Extracted locationId:', locationId);
+      
+      if (!accountId || !locationId) {
+        console.error('❌ Failed to extract accountId or locationId from profile:', profileId);
+        return;
+      }
+      
+      // Use the working basic insights endpoint
+      const requestData = {
+        accessToken: localStorage.getItem('gmb_google_access_token'),
+        accountId: accountId,
+        locationId: locationId,
+        metricRequests: [
+          {
+            metric: 'VIEWS_MAPS'
+          },
+          {
+            metric: 'VIEWS_SEARCH'
+          },
+          {
+            metric: 'ACTIONS_PHONE'
+          },
+          {
+            metric: 'ACTIONS_WEBSITE'
+          }
+        ],
+        timeRange: {
+          startTime: new Date(Date.now() - (parseInt(period) * 24 * 60 * 60 * 1000)).toISOString(),
+          endTime: new Date().toISOString()
+        }
+      };
+
+      console.log('📤 Fetching insights with data:', requestData);
+      
+      const response = await axios.post('http://localhost:3001/api/insights/basic', requestData);
+      
+      if (response.data.success) {
+        setInsights(response.data.data);
+        console.log('✅ Insights fetched successfully:', response.data.data);
+        console.log('🔍 Response data structure:', JSON.stringify(response.data, null, 2));
+        console.log('🔍 Insights data structure:', JSON.stringify(response.data.data, null, 2));
+        console.log('🔍 Location metrics:', JSON.stringify(response.data.data?.locationMetrics, null, 2));
+      } else {
+        console.error('❌ Failed to fetch insights:', response.data.error);
+      }
     } catch (error) {
       console.error('Error fetching insights:', error);
     }
@@ -81,8 +161,7 @@ const Insights = () => {
     
     setRefreshing(true);
     try {
-      // Fetch fresh insights from Google API
-      await axios.get(`http://localhost:3001/api/insights/google/${selectedProfile}`);
+      // Use the working basic insights endpoint directly
       await fetchInsights(selectedProfile, selectedPeriod);
     } catch (error) {
       console.error('Error refreshing insights:', error);
@@ -95,8 +174,58 @@ const Insights = () => {
     if (!selectedProfile) return;
     
     try {
-      const response = await axios.get(`http://localhost:3001/api/insights/profile/${selectedProfile}/export`, {
-        params: { format },
+      // Extract account ID and location ID from the profile
+      let accountId, locationId;
+      
+      if (selectedProfile.includes('/')) {
+        const profileParts = selectedProfile.split('/');
+        
+        if (profileParts[0] === 'locations' && profileParts.length === 2) {
+          // Format: locations/{locationId}
+          locationId = profileParts[1];
+          // Get account ID from the first profile
+          if (profiles.length > 0 && profiles[0].name) {
+            const accountNameParts = profiles[0].name.split('/');
+            accountId = accountNameParts[accountNameParts.length - 1];
+          }
+        } else if (profileParts.includes('accounts') && profileParts.includes('locations')) {
+          // Format: accounts/{accountId}/locations/{locationId}
+          const accountIndex = profileParts.findIndex(part => part === 'accounts');
+          const locationIndex = profileParts.findIndex(part => part === 'locations');
+          
+          if (accountIndex !== -1 && locationIndex !== -1) {
+            accountId = profileParts[accountIndex + 1];
+            locationId = profileParts[locationIndex + 1];
+          }
+        }
+      } else {
+        // Handle simple ID format
+        locationId = selectedProfile;
+        // Try to get account ID from the first profile
+        if (profiles.length > 0 && profiles[0].name) {
+          const accountNameParts = profiles[0].name.split('/');
+          accountId = accountNameParts[accountNameParts.length - 1];
+        }
+      }
+      
+      if (!accountId || !locationId) {
+        console.error('❌ Failed to extract accountId or locationId from profile:', selectedProfile);
+        return;
+      }
+      
+      // Use the working export endpoint
+      const requestData = {
+        accessToken: localStorage.getItem('gmb_google_access_token'),
+        accountId: accountId,
+        locationId: locationId,
+        format: format,
+        startDate: new Date(Date.now() - (parseInt(selectedPeriod) * 24 * 60 * 60 * 1000)).toISOString().split('T')[0],
+        endDate: new Date().toISOString().split('T')[0]
+      };
+
+      console.log('📤 Exporting insights with data:', requestData);
+      
+      const response = await axios.post('http://localhost:3001/api/insights/export', requestData, {
         responseType: format === 'csv' ? 'blob' : 'json'
       });
       
@@ -104,7 +233,7 @@ const Insights = () => {
         const url = window.URL.createObjectURL(new Blob([response.data]));
         const link = document.createElement('a');
         link.href = url;
-        link.setAttribute('download', `insights_${selectedProfile}_${new Date().toISOString().split('T')[0]}.csv`);
+        link.setAttribute('download', `insights_${locationId}_${new Date().toISOString().split('T')[0]}.csv`);
         document.body.appendChild(link);
         link.click();
         link.remove();
@@ -114,11 +243,13 @@ const Insights = () => {
         const url = window.URL.createObjectURL(dataBlob);
         const link = document.createElement('a');
         link.href = url;
-        link.setAttribute('download', `insights_${selectedProfile}_${new Date().toISOString().split('T')[0]}.json`);
+        link.setAttribute('download', `insights_${locationId}_${new Date().toISOString().split('T')[0]}.json`);
         document.body.appendChild(link);
         link.click();
         link.remove();
       }
+      
+      console.log('✅ Export completed successfully');
     } catch (error) {
       console.error('Error exporting insights:', error);
       alert('Failed to export insights. Please try again.');
@@ -126,6 +257,12 @@ const Insights = () => {
   };
 
   const getMetricIcon = (metricName) => {
+    // Safety check for undefined/null metricName
+    if (!metricName || typeof metricName !== 'string') {
+      console.warn('⚠️ getMetricIcon called with invalid metricName:', metricName);
+      return BarChart3; // Default icon
+    }
+    
     if (metricName.includes('VIEWS')) return Eye;
     if (metricName.includes('QUERIES')) return Users;
     if (metricName.includes('PHONE')) return Phone;
@@ -254,9 +391,9 @@ const Insights = () => {
                 <div className="ml-5 w-0 flex-1">
                   <dl>
                     <dt className="text-sm font-medium text-gray-500 truncate">Total Queries</dt>
-                    <dd className="text-lg font-medium text-gray-900">
-                      {insights.locationMetrics?.find(m => m.metric === 'QUERIES_DIRECT')?.metricValues?.[0]?.value || '0'}
-                    </dd>
+                                         <dd className="text-lg font-medium text-gray-900">
+                       {insights.locationMetrics?.find(m => m.metric === 'VIEWS_SEARCH')?.metricValues?.[0]?.value || '0'}
+                     </dd>
                   </dl>
                 </div>
               </div>
@@ -332,11 +469,14 @@ const Insights = () => {
           <div className="p-6">
             <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
                              {/* Real Google API metrics */}
-               {insights.locationMetrics?.map((metric, index) => (
+               {insights.locationMetrics?.filter(metric => metric && metric.metric).map((metric, index) => (
                  <div key={index} className="bg-gray-50 rounded-lg p-4">
                    <div className="flex items-center justify-between">
                      <div className="flex items-center">
-                       {getMetricIcon(metric.metric)}
+                       {(() => {
+                         const IconComponent = getMetricIcon(metric.metric);
+                         return <IconComponent className="h-5 w-5 text-gray-600" />;
+                       })()}
                        <span className="text-sm font-medium text-gray-900 ml-2">
                          {metric.metric.replace(/_/g, ' ').replace(/([A-Z])/g, ' $1').trim()}
                        </span>
