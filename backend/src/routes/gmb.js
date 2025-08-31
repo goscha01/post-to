@@ -186,44 +186,140 @@ router.get('/accounts/:accountId/locations/:locationId/reviews', auth, async (re
     
     console.log(`Fetching reviews for location: ${locationId} in account: ${accountId}`);
     
-    // Use Google Business Profile API for reviews
-    const businessProfileClient = getBusinessProfileClient(accessToken);
-    
-    // Note: Reviews are not directly available in Business Profile API v1
-    // We'll return an empty array for now
-    console.log('Reviews endpoint not available in Business Profile API v1');
-    
-    return res.json({
-      success: true,
-      reviews: [],
-      message: 'Reviews endpoint not available in Business Profile API v1'
-    });
-    
-    console.log('Reviews response:', JSON.stringify(reviewsResponse.data, null, 2));
-    
-    if (!reviewsResponse.data.reviews) {
-      return res.json({
+    // Try to access Google My Business API v4 directly via HTTP request for reviews
+    try {
+      console.log('Attempting to access GMB V4 API for reviews...');
+      const axios = require('axios');
+      const reviewsResponse = await axios.get(
+        `https://mybusiness.googleapis.com/v4/accounts/${accountId}/locations/${locationId}/reviews`,
+        {
+          headers: {
+            'Authorization': `Bearer ${accessToken}`,
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+      
+      console.log('Reviews response:', JSON.stringify(reviewsResponse.data, null, 2));
+      
+      if (!reviewsResponse.data.reviews) {
+        return res.json({
+          success: true,
+          reviews: []
+        });
+      }
+      
+      // Format the reviews data
+      const reviews = reviewsResponse.data.reviews.map(review => ({
+        name: review.name,
+        reviewId: review.name.split('/').pop(),
+        reviewer: review.reviewer,
+        starRating: review.starRating,
+        comment: review.comment,
+        createTime: review.createTime,
+        updateTime: review.updateTime,
+        reviewReply: review.reviewReply
+      }));
+      
+      res.json({
         success: true,
-        reviews: []
+        reviews: reviews
+      });
+      
+    } catch (gmbV4Error) {
+      console.log('GMB V4 API for reviews not available:', gmbV4Error.message);
+      if (gmbV4Error.response) {
+        console.log('GMB V4 API error response:', JSON.stringify(gmbV4Error.response.data, null, 2));
+      }
+      
+      // Fallback to empty reviews if GMB V4 API is not available
+      console.log('GMB V4 API failed, trying alternative approaches...');
+      
+      // Try to get reviews from Business Profile API v1 if available
+      try {
+        const businessProfileResponse = await gmbClient.accounts.locations.list({
+          parent: `accounts/${accountId}`,
+          readMask: 'name,title,storeCode,websiteUri,storefrontAddress,phoneNumbers,profile,regularHours,metadata,latlng,openInfo,labels,reviews'
+        });
+        
+        if (businessProfileResponse.data.locations) {
+          const location = businessProfileResponse.data.locations.find(loc => 
+            loc.name === `accounts/${accountId}/locations/${locationId}`
+          );
+          
+          if (location?.reviews && location.reviews.length > 0) {
+            console.log('Found reviews in Business Profile API:', location.reviews.length);
+            const reviews = location.reviews.map(review => ({
+              name: review.name,
+              reviewId: review.name?.split('/').pop() || 'unknown',
+              reviewer: { displayName: review.reviewerName || 'Anonymous' },
+              starRating: review.rating || 0,
+              comment: review.comment || '',
+              createTime: review.createTime || new Date().toISOString(),
+              updateTime: review.updateTime || new Date().toISOString(),
+              reviewReply: review.reply ? { comment: review.reply, updateTime: review.replyTime } : null
+            }));
+            
+            return res.json({
+              success: true,
+              reviews: reviews,
+              message: `Found ${reviews.length} reviews from Business Profile API`,
+              source: 'business_profile_v1'
+            });
+          }
+        }
+      } catch (businessProfileError) {
+        console.log('Business Profile API reviews not available:', businessProfileError.message);
+      }
+      
+      // Try to get reviews from Google Places API if we have a place ID
+      try {
+        if (location?.metadata?.placeId) {
+          console.log('Trying Places API for reviews...');
+          const placesClient = getPlacesClient(accessToken);
+          const placeResponse = await placesClient.places.get({
+            name: `places/${location.metadata.placeId}`,
+            fields: 'reviews,rating,userRatingCount'
+          });
+          
+          if (placeResponse.data.reviews && placeResponse.data.reviews.length > 0) {
+            console.log('Found reviews in Places API:', placeResponse.data.reviews.length);
+            const reviews = placeResponse.data.reviews.map(review => ({
+              name: `places/${location.metadata.placeId}/review/${review.time}`,
+              reviewId: review.time?.toString() || 'unknown',
+              reviewer: { displayName: review.authorName || 'Anonymous' },
+              starRating: review.rating || 0,
+              comment: review.text || '',
+              createTime: new Date(review.time * 1000).toISOString(),
+              updateTime: new Date(review.time * 1000).toISOString(),
+              reviewReply: null // Places API doesn't have business replies
+            }));
+            
+            return res.json({
+              success: true,
+              reviews: reviews,
+              message: `Found ${reviews.length} reviews from Places API`,
+              source: 'places_api'
+            });
+          }
+        }
+      } catch (placesError) {
+        console.log('Places API reviews not available:', placesError.message);
+      }
+      
+      // If all else fails, return empty reviews with explanation
+      res.json({
+        success: true,
+        reviews: [],
+        message: 'No reviews available - GMB V4 API access required. Please check Google Cloud Console to enable the Google My Business API.',
+        debug: {
+          gmbV4Error: gmbV4Error.message,
+          businessProfileAvailable: false,
+          placesAvailable: false,
+          suggestion: 'Enable Google My Business API v4 in Google Cloud Console or check OAuth scopes'
+        }
       });
     }
-    
-    // Format the reviews data
-    const reviews = reviewsResponse.data.reviews.map(review => ({
-      name: review.name,
-      reviewId: review.name.split('/').pop(),
-      reviewer: review.reviewer,
-      starRating: review.starRating,
-      comment: review.comment,
-      createTime: review.createTime,
-      updateTime: review.updateTime,
-      reviewReply: review.reviewReply
-    }));
-    
-    res.json({
-      success: true,
-      reviews: reviews
-    });
   } catch (error) {
     console.error('Error fetching reviews:', error);
     
@@ -236,6 +332,137 @@ router.get('/accounts/:accountId/locations/:locationId/reviews', auth, async (re
       error: 'Failed to fetch reviews',
       details: error.message,
       apiError: error.response?.data
+    });
+  }
+});
+
+// Get a specific review
+router.get('/accounts/:accountId/locations/:locationId/reviews/:reviewId', auth, async (req, res) => {
+  try {
+    let { accountId, locationId, reviewId } = req.params;
+    const { accessToken } = req.user;
+    
+    // Remove prefixes if present
+    accountId = accountId.replace('accounts/', '');
+    locationId = locationId.replace('locations/', '');
+    reviewId = reviewId.replace('reviews/', '');
+    
+    console.log(`Fetching specific review: ${reviewId} for location: ${locationId} in account: ${accountId}`);
+    
+    try {
+      const axios = require('axios');
+      const reviewResponse = await axios.get(
+        `https://mybusiness.googleapis.com/v4/accounts/${accountId}/locations/${locationId}/reviews/${reviewId}`,
+        {
+          headers: {
+            'Authorization': `Bearer ${accessToken}`,
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+      
+      console.log('Specific review found - ID:', reviewResponse.data.name?.split('/').pop());
+      
+      // Format the review data
+      const review = {
+        name: reviewResponse.data.name,
+        reviewId: reviewResponse.data.name.split('/').pop(),
+        reviewer: reviewResponse.data.reviewer,
+        starRating: reviewResponse.data.starRating,
+        comment: reviewResponse.data.comment,
+        createTime: reviewResponse.data.createTime,
+        updateTime: reviewResponse.data.updateTime,
+        reviewReply: reviewResponse.data.reviewReply
+      };
+      
+      res.json({
+        success: true,
+        review: review
+      });
+      
+    } catch (gmbV4Error) {
+      console.log('GMB V4 API for specific review not available:', gmbV4Error.message);
+      if (gmbV4Error.response) {
+        console.log('GMB V4 API error response:', JSON.stringify(gmbV4Error.response.data, null, 2));
+      }
+      
+      res.status(404).json({
+        success: false,
+        error: 'Review not found or GMB V4 API not available',
+        details: gmbV4Error.message
+      });
+    }
+    
+  } catch (error) {
+    console.error('Error fetching specific review:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to fetch specific review',
+      details: error.message
+    });
+  }
+});
+
+// Get reviews from multiple locations
+router.post('/accounts/:accountId/locations/batchGetReviews', auth, async (req, res) => {
+  try {
+    let { accountId } = req.params;
+    const { accessToken } = req.user;
+    const { locationNames, pageSize, pageToken, orderBy, ignoreRatingOnlyReviews } = req.body;
+    
+    // Remove "accounts/" prefix if present
+    accountId = accountId.replace('accounts/', '');
+    
+    console.log(`Fetching reviews from multiple locations for account: ${accountId}`);
+    console.log('Batch request - Locations:', locationNames?.length || 0, 'Page size:', pageSize);
+    
+    try {
+      const axios = require('axios');
+      const batchResponse = await axios.post(
+        `https://mybusiness.googleapis.com/v4/accounts/${accountId}/locations:batchGetReviews`,
+        {
+          locationNames: locationNames || [],
+          pageSize: pageSize || 50,
+          pageToken: pageToken,
+          orderBy: orderBy || 'CREATE_TIME_DESC',
+          ignoreRatingOnlyReviews: ignoreRatingOnlyReviews || false
+        },
+        {
+          headers: {
+            'Authorization': `Bearer ${accessToken}`,
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+      
+      console.log('Batch reviews response - Reviews found:', batchResponse.data.reviews?.length || 0);
+      
+      res.json({
+        success: true,
+        reviews: batchResponse.data.reviews || [],
+        nextPageToken: batchResponse.data.nextPageToken,
+        totalCount: batchResponse.data.reviews?.length || 0
+      });
+      
+    } catch (gmbV4Error) {
+      console.log('GMB V4 API for batch reviews not available:', gmbV4Error.message);
+      if (gmbV4Error.response) {
+        console.log('GMB V4 API error response:', JSON.stringify(gmbV4Error.response.data, null, 2));
+      }
+      
+      res.status(400).json({
+        success: false,
+        error: 'Batch reviews not available - GMB V4 API access required',
+        details: gmbV4Error.message
+      });
+    }
+    
+  } catch (error) {
+    console.error('Error fetching batch reviews:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to fetch batch reviews',
+      details: error.message
     });
   }
 });
@@ -266,7 +493,7 @@ router.get('/accounts/:accountId/locations/:locationId/posts', auth, async (req,
         }
       );
       
-      console.log('Posts response:', JSON.stringify(postsResponse.data, null, 2));
+      console.log('Posts response - Posts found:', postsResponse.data.localPosts?.length || 0);
       
       if (!postsResponse.data.localPosts) {
         return res.json({
@@ -343,7 +570,7 @@ router.post('/accounts/:accountId/locations/:locationId/posts', auth, async (req
     locationId = locationId.replace('locations/', '');
     
     console.log(`Creating post for location: ${locationId} in account: ${accountId}`);
-    console.log('Post data:', JSON.stringify(req.body, null, 2));
+    console.log('Post data - Summary:', summary, 'Type:', topicType);
     
     // Validate required fields
     if (!summary) {
@@ -388,7 +615,7 @@ router.post('/accounts/:accountId/locations/:locationId/posts', auth, async (req
         }));
       }
       
-      console.log('Final post data:', JSON.stringify(postData, null, 2));
+      console.log('Post data prepared - Summary:', postData.summary, 'Type:', postData.topicType);
       
       // Create the post using Google My Business API v4
       const createResponse = await axios.post(
@@ -402,7 +629,7 @@ router.post('/accounts/:accountId/locations/:locationId/posts', auth, async (req
         }
       );
       
-      console.log('Post creation response:', JSON.stringify(createResponse.data, null, 2));
+      console.log('Post created successfully - ID:', createResponse.data.name?.split('/').pop());
       
       // Format the response
       const createdPost = {
@@ -455,6 +682,137 @@ router.post('/accounts/:accountId/locations/:locationId/posts', auth, async (req
   }
 });
 
+// Reply to a review
+router.put('/accounts/:accountId/locations/:locationId/reviews/:reviewId/reply', auth, async (req, res) => {
+  try {
+    let { accountId, locationId, reviewId } = req.params;
+    const { accessToken } = req.user;
+    const { comment } = req.body;
+    
+    // Remove prefixes if present
+    accountId = accountId.replace('accounts/', '');
+    locationId = locationId.replace('locations/', '');
+    reviewId = reviewId.replace('reviews/', '');
+    
+    console.log(`Replying to review: ${reviewId} for location: ${locationId} in account: ${accountId}`);
+    console.log('Reply data - Comment length:', comment?.length || 0);
+    
+    // Validate required fields
+    if (!comment) {
+      return res.status(400).json({
+        success: false,
+        error: 'Comment is required for review reply'
+      });
+    }
+    
+    try {
+      const axios = require('axios');
+      const replyResponse = await axios.put(
+        `https://mybusiness.googleapis.com/v4/accounts/${accountId}/locations/${locationId}/reviews/${reviewId}/reply`,
+        { comment },
+        {
+          headers: {
+            'Authorization': `Bearer ${accessToken}`,
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+      
+      console.log('Review reply created/updated successfully');
+      
+      // Format the reply data
+      const reply = {
+        name: replyResponse.data.name,
+        comment: replyResponse.data.comment,
+        updateTime: replyResponse.data.updateTime
+      };
+      
+      res.json({
+        success: true,
+        message: 'Review reply created/updated successfully',
+        reply: reply
+      });
+      
+    } catch (gmbV4Error) {
+      console.log('GMB V4 API for review reply not available:', gmbV4Error.message);
+      if (gmbV4Error.response) {
+        console.log('GMB V4 API error response:', JSON.stringify(gmbV4Error.response.data, null, 2));
+      }
+      
+      res.status(400).json({
+        success: false,
+        error: 'Review reply not available - GMB V4 API access required',
+        message: 'This feature requires Google My Business API v4 access',
+        details: gmbV4Error.message
+      });
+    }
+    
+  } catch (error) {
+    console.error('Error replying to review:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to reply to review',
+      details: error.message
+    });
+  }
+});
+
+// Delete a review reply
+router.delete('/accounts/:accountId/locations/:locationId/reviews/:reviewId/reply', auth, async (req, res) => {
+  try {
+    let { accountId, locationId, reviewId } = req.params;
+    const { accessToken } = req.user;
+    
+    // Remove prefixes if present
+    accountId = accountId.replace('accounts/', '');
+    locationId = locationId.replace('locations/', '');
+    reviewId = reviewId.replace('reviews/', '');
+    
+    console.log(`Deleting reply for review: ${reviewId} for location: ${locationId} in account: ${accountId}`);
+    
+    try {
+      const axios = require('axios');
+      await axios.delete(
+        `https://mybusiness.googleapis.com/v4/accounts/${accountId}/locations/${locationId}/reviews/${reviewId}/reply`,
+        {
+          headers: {
+            'Authorization': `Bearer ${accessToken}`,
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+      
+      console.log('Review reply deleted successfully');
+      
+      res.json({
+        success: true,
+        message: 'Review reply deleted successfully'
+      });
+      
+    } catch (gmbV4Error) {
+      console.log('GMB V4 API for review reply deletion not available:', gmbV4Error.message);
+      if (gmbV4Error.response) {
+        console.log('GMB V4 API error response:', JSON.stringify(gmbV4Error.response.data, null, 2));
+      }
+      
+      res.status(400).json({
+        success: false,
+        error: 'Review reply deletion not available - GMB V4 API access required',
+        message: 'This feature requires Google My Business API v4 access',
+        details: gmbV4Error.message
+      });
+    }
+    
+  } catch (error) {
+    console.error('Error deleting review reply:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to delete review reply',
+      details: error.message
+    });
+  }
+});
+
 // Get media (including logos and photos) for a specific location using Business Profile API
 router.get('/accounts/:accountId/locations/:locationId/media', auth, async (req, res) => {
   try {
@@ -478,12 +836,14 @@ router.get('/accounts/:accountId/locations/:locationId/media', auth, async (req,
         readMask: 'name,title,storeCode,websiteUri,storefrontAddress,phoneNumbers,profile,regularHours,metadata,latlng,openInfo,labels'
       });
       
-      console.log('Locations response:', JSON.stringify(locationsResponse.data, null, 2));
+      console.log('Locations found:', locationsResponse.data.locations?.length || 0);
       
       // Find the specific location
       const location = locationsResponse.data.locations?.find(loc => 
         loc.name === `accounts/${accountId}/locations/${locationId}`
       );
+      
+      console.log('Location found:', !!location, 'Name:', location?.title || 'Unknown');
       
       let profilePicture = null;
       
@@ -497,19 +857,6 @@ router.get('/accounts/:accountId/locations/:locationId/media', auth, async (req,
           category: 'PROFILE'
         };
       }
-      
-      // Check if there are other media fields in the location data
-      console.log('Location data for media extraction:', JSON.stringify({
-        profile: location?.profile,
-        metadata: location?.metadata,
-        hasProfileImage: !!location?.profile?.profileImageUri,
-        hasLogoUri: !!location?.metadata?.logoUri,
-        hasCoverPhotoUri: !!location?.metadata?.coverPhotoUri,
-        hasPhotos: !!location?.photos,
-        allProfileKeys: location?.profile ? Object.keys(location.profile) : [],
-        allMetadataKeys: location?.metadata ? Object.keys(location.metadata) : [],
-        allLocationKeys: Object.keys(location || {})
-      }, null, 2));
       
       // Try to get additional media information from the location
       let mediaItems = [];
@@ -595,7 +942,7 @@ router.get('/accounts/:accountId/locations/:locationId/media', auth, async (req,
           }
         );
         
-        console.log('GMB V4 API response:', JSON.stringify(mediaV4Response.data, null, 2));
+        console.log('GMB V4 API media response - Items found:', mediaV4Response.data.mediaItems?.length || 0);
         
         if (mediaV4Response.data.mediaItems && mediaV4Response.data.mediaItems.length > 0) {
           mediaV4Response.data.mediaItems.forEach((item, index) => {
@@ -614,7 +961,7 @@ router.get('/accounts/:accountId/locations/:locationId/media', auth, async (req,
       } catch (gmbV4Error) {
         console.log('GMB V4 API not available:', gmbV4Error.message);
         if (gmbV4Error.response) {
-          console.log('GMB V4 API error response:', JSON.stringify(gmbV4Error.response.data, null, 2));
+          console.log('GMB V4 API error status:', gmbV4Error.response.status, 'Error:', gmbV4Error.response.data?.error?.message || 'Unknown error');
         }
       }
       
@@ -628,7 +975,7 @@ router.get('/accounts/:accountId/locations/:locationId/media', auth, async (req,
             fields: 'photos,editorialSummary,priceLevel,rating,userRatingCount,websiteUri,formattedPhoneNumber,internationalPhoneNumber'
           });
           
-          console.log('Places API response:', JSON.stringify(placeResponse.data, null, 2));
+          console.log('Places API response - Photos found:', placeResponse.data.photos?.length || 0);
           
           if (placeResponse.data.photos && placeResponse.data.photos.length > 0) {
             placeResponse.data.photos.forEach((photo, index) => {
@@ -668,7 +1015,7 @@ router.get('/accounts/:accountId/locations/:locationId/media', auth, async (req,
         });
         
         if (driveResponse.data.files && driveResponse.data.files.length > 0) {
-          console.log('Found Drive files:', JSON.stringify(driveResponse.data.files, null, 2));
+          console.log('Found Drive files:', driveResponse.data.files?.length || 0);
           driveResponse.data.files.forEach((file, index) => {
             mediaItems.push({
               name: `drive/${file.id}`,
@@ -686,7 +1033,7 @@ router.get('/accounts/:accountId/locations/:locationId/media', auth, async (req,
       } catch (driveError) {
         console.log('Google Drive API not available:', driveError.message);
         if (driveError.response) {
-          console.log('Drive API error response:', JSON.stringify(driveError.response.data, null, 2));
+          console.log('Drive API error status:', driveError.response.status, 'Error:', driveError.response.data?.error?.message || 'Unknown error');
         }
       }
       
@@ -702,7 +1049,7 @@ router.get('/accounts/:accountId/locations/:locationId/media', auth, async (req,
         });
         
         // This API doesn't provide media, but we can log it for debugging
-        console.log('Performance API response:', performanceResponse.data);
+        console.log('Performance API accessed successfully');
       } catch (performanceError) {
         console.log('Performance API not available:', performanceError.message);
       }
@@ -712,6 +1059,14 @@ router.get('/accounts/:accountId/locations/:locationId/media', auth, async (req,
       const photos = mediaItems.filter(item => item.category === 'PHOTO' || item.category === 'COVER' || item.category === 'PLACE_PHOTO');
       const businessImages = mediaItems.filter(item => item.category === 'BUSINESS_IMAGE' || item.source === 'GOOGLE_DRIVE');
       const allMedia = [...logos, ...photos, ...businessImages];
+      
+      console.log('=== MEDIA SUMMARY ===');
+      console.log('Total media items:', mediaItems.length);
+      console.log('Logos:', logos.length);
+      console.log('Photos:', photos.length);
+      console.log('Business images:', businessImages.length);
+      console.log('Sources - Business Profile:', logos.length + photos.length, 'GMB V4:', mediaItems.filter(item => item.source === 'GMB_V4_API').length, 'Places:', mediaItems.filter(item => item.category === 'PLACE_PHOTO').length, 'Drive:', mediaItems.filter(item => item.source === 'GOOGLE_DRIVE').length);
+      console.log('=====================');
       
       res.json({
         success: true,
@@ -890,6 +1245,10 @@ router.get('/test', (req, res) => {
       accounts: 'GET /api/gmb/accounts',
       locations: 'GET /api/gmb/accounts/:accountId/locations',
       reviews: 'GET /api/gmb/accounts/:accountId/locations/:locationId/reviews',
+      'specific-review': 'GET /api/gmb/accounts/:accountId/locations/:locationId/reviews/:reviewId',
+      'batch-reviews': 'POST /api/gmb/accounts/:accountId/locations/batchGetReviews',
+      'reply-to-review': 'PUT /api/gmb/accounts/:accountId/locations/:locationId/reviews/:reviewId/reply',
+      'delete-reply': 'DELETE /api/gmb/accounts/:accountId/locations/:locationId/reviews/:reviewId/reply',
       posts: 'GET /api/gmb/accounts/:accountId/locations/:locationId/posts',
       'create-post': 'POST /api/gmb/accounts/:accountId/locations/:locationId/posts',
       media: 'GET /api/gmb/accounts/:accountId/locations/:locationId/media',
@@ -900,8 +1259,85 @@ router.get('/test', (req, res) => {
       accountId: '109194636448236279020',
       locationId: '2141374650782668963'
     },
-    note: 'Posts and media now use GMB V4 API directly via HTTP requests'
+    note: 'Posts and media now use GMB V4 API directly via HTTP requests',
+    troubleshooting: {
+      reviews: 'If reviews are empty, check Google Cloud Console to enable Google My Business API v4',
+      oauth: 'Ensure OAuth scopes include https://www.googleapis.com/auth/business.manage',
+      apis: 'Enable these APIs: Google My Business API, Business Profile API, Places API'
+    }
   });
+});
+
+// API Status Check endpoint
+router.get('/api-status', auth, async (req, res) => {
+  try {
+    const { accessToken } = req.user;
+    
+    // Test different API endpoints to see what's available
+    const status = {
+      businessProfile: false,
+      gmbV4: false,
+      places: false,
+      drive: false,
+      errors: []
+    };
+    
+    try {
+      // Test Business Profile API
+      const businessProfileClient = getBusinessProfileClient(accessToken);
+      await businessProfileClient.accounts.list();
+      status.businessProfile = true;
+    } catch (error) {
+      status.errors.push(`Business Profile API: ${error.message}`);
+    }
+    
+    try {
+      // Test GMB V4 API
+      const axios = require('axios');
+      await axios.get('https://mybusiness.googleapis.com/v4/accounts', {
+        headers: { 'Authorization': `Bearer ${accessToken}` }
+      });
+      status.gmbV4 = true;
+    } catch (error) {
+      status.errors.push(`GMB V4 API: ${error.response?.status || 'No response'} - ${error.message}`);
+    }
+    
+    try {
+      // Test Places API
+      const placesClient = getPlacesClient(accessToken);
+      await placesClient.places.get({ name: 'places/ChIJN1t_tDeuEmsRUsoyG83frY4' });
+      status.places = true;
+    } catch (error) {
+      status.errors.push(`Places API: ${error.message}`);
+    }
+    
+    try {
+      // Test Drive API
+      const driveClient = getDriveClient(accessToken);
+      await driveClient.files.list({ pageSize: 1 });
+      status.drive = true;
+    } catch (error) {
+      status.errors.push(`Drive API: ${error.message}`);
+    }
+    
+    res.json({
+      success: true,
+      status,
+      message: 'API availability check completed',
+      recommendations: {
+        reviews: status.gmbV4 ? 'GMB V4 API is available - reviews should work' : 'Enable Google My Business API v4 in Google Cloud Console',
+        oauth: 'Check OAuth scopes include business.manage permission',
+        apis: 'Enable required APIs in Google Cloud Console'
+      }
+    });
+    
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to check API status',
+      details: error.message
+    });
+  }
 });
 
 // List all media for a location using GMB API v4
@@ -1002,6 +1438,145 @@ router.get('/accounts/:accountId/locations/:locationId/media/:mediaId', auth, as
       details: error.message
     });
   }
+});
+
+// Test GMB V4 API endpoint
+router.get('/test-gmb-v4', auth, async (req, res) => {
+  try {
+    const { accessToken } = req.user;
+    
+    console.log('Testing GMB V4 API access...');
+    
+    try {
+      const axios = require('axios');
+      
+      // Test basic GMB V4 API access
+      const accountsResponse = await axios.get('https://mybusiness.googleapis.com/v4/accounts', {
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      
+      console.log('GMB V4 API accounts response:', accountsResponse.status, accountsResponse.data);
+      
+      res.json({
+        success: true,
+        message: 'GMB V4 API is accessible',
+        accounts: accountsResponse.data.accounts || [],
+        status: accountsResponse.status
+      });
+      
+    } catch (gmbError) {
+      console.log('GMB V4 API test failed:', gmbError.message);
+      
+      if (gmbError.response) {
+        console.log('Error response:', gmbError.response.status, gmbError.response.data);
+        
+        res.json({
+          success: false,
+          message: 'GMB V4 API test failed',
+          error: {
+            status: gmbError.response.status,
+            message: gmbError.response.data?.error?.message || gmbError.message,
+            code: gmbError.response.data?.error?.code || 'unknown',
+            details: gmbError.response.data?.error?.details || []
+          },
+          troubleshooting: {
+            api: 'Check if Google My Business API v4 is enabled in Google Cloud Console',
+            oauth: 'Verify OAuth scopes include business.manage permission',
+            billing: 'Ensure billing is enabled for the Google Cloud project'
+          }
+        });
+      } else {
+        res.json({
+          success: false,
+          message: 'GMB V4 API test failed - no response',
+          error: gmbError.message,
+          troubleshooting: 'Check network connectivity and API endpoint availability'
+        });
+      }
+    }
+    
+  } catch (error) {
+    console.error('Error testing GMB V4 API:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to test GMB V4 API',
+      details: error.message
+    });
+  }
+});
+
+// Profile image proxy endpoint (no auth required)
+router.get('/proxy-image', async (req, res) => {
+  try {
+    const { url } = req.query;
+    
+    if (!url) {
+      return res.status(400).json({
+        success: false,
+        error: 'URL parameter is required'
+      });
+    }
+    
+    console.log('Proxying image:', url);
+    
+    const axios = require('axios');
+    const imageResponse = await axios.get(url, {
+      responseType: 'arraybuffer',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+      }
+    });
+    
+    console.log('Image response status:', imageResponse.status);
+    console.log('Image response headers:', imageResponse.headers);
+    console.log('Image data size:', imageResponse.data.length, 'bytes');
+    
+    // Convert to base64 data URL to avoid CORS issues
+    const base64 = Buffer.from(imageResponse.data).toString('base64');
+    const contentType = imageResponse.headers['content-type'] || 'image/jpeg';
+    const dataUrl = `data:${contentType};base64,${base64}`;
+    
+    console.log('Sending base64 data URL, length:', dataUrl.length);
+    
+    // Return the data URL as JSON
+    res.json({
+      success: true,
+      dataUrl: dataUrl,
+      contentType: contentType,
+      size: imageResponse.data.length
+    });
+    
+  } catch (error) {
+    console.error('Error proxying image:', error.message);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to proxy image',
+      details: error.message
+    });
+  }
+});
+
+// Handle preflight OPTIONS request for CORS
+router.options('/proxy-image', (req, res) => {
+  res.set({
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type'
+  });
+  res.sendStatus(200);
+});
+
+// Simple public test endpoint (no auth required)
+router.get('/test-public', (req, res) => {
+  res.json({
+    success: true,
+    message: 'Public test endpoint working!',
+    timestamp: new Date().toISOString(),
+    note: 'Use this to verify the server is running'
+  });
 });
 
 module.exports = router;

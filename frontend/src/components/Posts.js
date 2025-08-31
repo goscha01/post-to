@@ -18,6 +18,76 @@ import {
   Share
 } from 'lucide-react';
 
+// Post Image Component
+const PostImage = ({ imageUrl, altText, mediaFormat }) => {
+  const [imageSrc, setImageSrc] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    const fetchImage = async () => {
+      try {
+        setLoading(true);
+        setError(false);
+
+        // Check if it's a Google Photos URL that needs proxying
+        if (imageUrl && imageUrl.includes('lh3.googleusercontent.com')) {
+          const response = await axios.get(`http://localhost:3001/api/gmb/proxy-image?url=${encodeURIComponent(imageUrl)}`);
+          
+          if (response.data.success && response.data.dataUrl) {
+            setImageSrc(response.data.dataUrl);
+          } else {
+            setError(true);
+          }
+        } else {
+          // For non-Google URLs, use directly
+          setImageSrc(imageUrl);
+        }
+      } catch (err) {
+        console.error('Error fetching post image:', err);
+        setError(true);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    if (imageUrl) {
+      fetchImage();
+    }
+  }, [imageUrl]);
+
+  if (loading) {
+    return (
+      <div className="w-full h-48 bg-gray-200 rounded-t-lg flex items-center justify-center animate-pulse">
+        <div className="h-8 w-8 bg-gray-400 rounded"></div>
+      </div>
+    );
+  }
+
+  if (error || !imageSrc) {
+    return (
+      <div className="w-full h-48 bg-gray-200 rounded-t-lg flex items-center justify-center text-sm text-gray-500">
+        Image not available
+      </div>
+    );
+  }
+
+  return (
+    <div className="relative">
+      <img
+        src={imageSrc}
+        alt={altText}
+        className="w-full h-48 object-cover shadow-sm"
+      />
+      {mediaFormat === 'VIDEO' && (
+        <div className="absolute top-2 right-2 bg-black bg-opacity-75 text-white text-xs px-2 py-1 rounded">
+          VIDEO
+        </div>
+      )}
+    </div>
+  );
+};
+
 const Posts = () => {
   const { isAuthenticated } = useAuth();
   const [posts, setPosts] = useState([]);
@@ -392,22 +462,93 @@ const Posts = () => {
       console.log('Response status:', response.status);
       console.log('Response data:', response.data);
       
-      // Refresh posts list and reset to first page
-      console.log('=== REFRESHING POSTS ===');
-      setCurrentPage(1);
-      setExpandedPosts(new Set()); // Reset expanded posts when creating new post
-      await fetchPosts(selectedProfile, 1, false);
-      console.log('=== POSTS REFRESHED ===');
+             // Create a new post object to add to local state immediately
+       const newPostId = `new-post-${Date.now()}`;
+       const newPost = {
+         id: newPostId, // Temporary ID
+         content: formData.summary,
+         postType: formData.postType,
+         platform: 'google',
+         createdAt: new Date().toISOString(),
+         status: 'published',
+         media: allMedia.map(media => ({
+           id: media.name?.split('/').pop() || `media-${Date.now()}`,
+           mediaFormat: media.mediaFormat || 'PHOTO',
+           sourceUrl: media.sourceUrl || media.url || media.thumbnailUrl,
+           thumbnailUrl: media.thumbnailUrl || media.thumbnail || null,
+           altText: 'Post image'
+         })),
+         callToAction: postData.callToAction || null,
+         gmbPost: null // Will be populated when fetched from GMB
+       };
       
-                                  // Reset form
-       setFormData({
-         summary: '',
-         postType: 'UPDATE',
-         callToAction: { type: '', url: '' },
-         mediaUrls: ['']
-       });
+      console.log('=== CREATED NEW POST OBJECT ===');
+      console.log('New post object:', newPost);
+      console.log('New post media:', newPost.media);
       
-      alert('Post created successfully!');
+      // Add the new post to the beginning of the posts array
+      setPosts(prevPosts => [newPost, ...prevPosts]);
+      
+      // Reset form and state
+      setFormData({
+        summary: '',
+        postType: 'UPDATE',
+        callToAction: { type: '', url: '' },
+        mediaUrls: ['']
+      });
+      setCreatingPost(false);
+      setExpandedPosts(new Set()); // Reset expanded posts
+      
+      // Show success message
+      showNotification('Post created successfully!', 'success');
+      
+      // Refresh posts list in background to get the real GMB post data
+      console.log('=== REFRESHING POSTS IN BACKGROUND ===');
+      setTimeout(async () => {
+        try {
+          // Fetch fresh posts from GMB
+          const response = await axios.get(`http://localhost:3001/api/posts/location/${locationId}?page=${currentPage}&limit=3`, {
+            headers: {
+              'x-gmb-account-id': accountId
+            }
+          });
+          
+          if (response.data.posts && response.data.pagination) {
+            // Check if our new post appears in the GMB response
+            const gmbPostExists = response.data.posts.some(gmbPost => 
+              gmbPost.content === formData.summary && 
+              gmbPost.postType === formData.postType
+            );
+            
+            if (gmbPostExists) {
+              // New post found in GMB, replace local posts with GMB data
+              setPosts(response.data.posts);
+              console.log('New post found in GMB, synced successfully');
+            } else {
+              // New post not yet in GMB, keep local post and append GMB posts
+              setPosts(prevPosts => {
+                const localNewPost = prevPosts.find(p => p.id === newPostId);
+                if (localNewPost) {
+                  return [localNewPost, ...response.data.posts];
+                }
+                return response.data.posts;
+              });
+              console.log('New post not yet in GMB, preserved local post');
+            }
+            
+            // Update pagination state
+            setCurrentPage(response.data.pagination.page);
+            setTotalPages(response.data.pagination.totalPages);
+            setTotalPosts(response.data.pagination.total);
+            setHasNext(response.data.pagination.hasNext);
+            setHasPrev(response.data.pagination.hasPrev);
+          }
+          
+          console.log('=== POSTS REFRESHED IN BACKGROUND ===');
+        } catch (error) {
+          console.log('Background refresh failed:', error);
+        }
+      }, 3000); // Wait 3 seconds for GMB API to index the new post
     } catch (error) {
       console.error('Error creating post:', error);
       alert('Failed to create post. Please try again.');
@@ -1296,27 +1437,11 @@ const Posts = () => {
                                
                                return (
                                  <div key={mediaItem.id || index} className="relative group">
-                                   <img
-                                     src={imageUrl}
-                                     alt={mediaItem.altText || 'Post image'}
-                                     className="w-full h-48 object-cover shadow-sm"
-                                     onError={(e) => {
-                                       console.log('Image failed to load:', imageUrl);
-                                       e.target.style.display = 'none';
-                                       e.target.nextSibling.style.display = 'flex';
-                                     }}
-                                     onLoad={(e) => {
-                                       console.log('Image loaded successfully:', imageUrl);
-                                     }}
+                                   <PostImage
+                                     imageUrl={imageUrl}
+                                     altText={mediaItem.altText || 'Post image'}
+                                     mediaFormat={mediaItem.mediaFormat}
                                    />
-                                   <div className="hidden absolute inset-0 bg-gray-200 rounded-t-lg flex items-center justify-center text-sm text-gray-500">
-                                     Image not available
-                                   </div>
-                                   {mediaItem.mediaFormat === 'VIDEO' && (
-                                     <div className="absolute top-2 right-2 bg-black bg-opacity-75 text-white text-xs px-2 py-1 rounded">
-                                       VIDEO
-                                     </div>
-                                   )}
                                  </div>
                                );
                              })}
