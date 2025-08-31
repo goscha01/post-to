@@ -26,11 +26,28 @@ router.post('/basic', async (req, res) => {
 
     // Map dashboard metrics to actual Performance API DailyMetric enum values
     const metricMap = {
+      // Aggregated View Metrics (combine desktop + mobile)
       'VIEWS_MAPS': ['BUSINESS_IMPRESSIONS_DESKTOP_MAPS', 'BUSINESS_IMPRESSIONS_MOBILE_MAPS'],
       'VIEWS_SEARCH': ['BUSINESS_IMPRESSIONS_DESKTOP_SEARCH', 'BUSINESS_IMPRESSIONS_MOBILE_SEARCH'],
+      
+      // Detailed View Metrics (individual platform metrics)
+      'VIEWS_MAPS_DESKTOP': ['BUSINESS_IMPRESSIONS_DESKTOP_MAPS'],
+      'VIEWS_MAPS_MOBILE': ['BUSINESS_IMPRESSIONS_MOBILE_MAPS'],
+      'VIEWS_SEARCH_DESKTOP': ['BUSINESS_IMPRESSIONS_DESKTOP_SEARCH'],
+      'VIEWS_SEARCH_MOBILE': ['BUSINESS_IMPRESSIONS_MOBILE_SEARCH'],
+      
+      // Action Metrics
       'ACTIONS_PHONE': ['CALL_CLICKS'],
       'ACTIONS_WEBSITE': ['WEBSITE_CLICKS'],
-      'ACTIONS_DRIVING_DIRECTIONS': ['BUSINESS_DIRECTION_REQUESTS']
+      'ACTIONS_DRIVING_DIRECTIONS': ['BUSINESS_DIRECTION_REQUESTS'],
+      
+      // Communication Metrics
+      'BUSINESS_CONVERSATIONS': ['BUSINESS_CONVERSATIONS'],
+      
+      // Booking & Order Metrics
+      'BUSINESS_BOOKINGS': ['BUSINESS_BOOKINGS'],
+      'BUSINESS_FOOD_ORDERS': ['BUSINESS_FOOD_ORDERS'],
+      'BUSINESS_FOOD_MENU_CLICKS': ['BUSINESS_FOOD_MENU_CLICKS']
     };
 
     const allMetricsData = [];
@@ -45,6 +62,7 @@ router.post('/basic', async (req, res) => {
       for (const apiMetric of apiMetrics) {
         try {
           console.log(`🚀 Making API call for: ${gmbMetric} -> ${apiMetric}`);
+          console.log(`📅 Date range: ${startDate.toISOString()} to ${endDate.toISOString()}`);
           
           const response = await axios.get(
             `${PERFORMANCE_URL}/locations/${locationId}:fetchMultiDailyMetricsTimeSeries`,
@@ -68,6 +86,7 @@ router.post('/basic', async (req, res) => {
           console.log(`✅ API response for ${apiMetric}:`, JSON.stringify(response.data, null, 2));
           
           // Sum up values from this API metric
+          let metricValue = 0;
           if (response.data.multiDailyMetricTimeSeries) {
             response.data.multiDailyMetricTimeSeries.forEach(metricSeries => {
               if (metricSeries.dailyMetricTimeSeries) {
@@ -75,7 +94,9 @@ router.post('/basic', async (req, res) => {
                   if (dailySeries.timeSeries && dailySeries.timeSeries.datedValues) {
                     dailySeries.timeSeries.datedValues.forEach(datedValue => {
                       if (datedValue.value) {
-                        totalValue += parseInt(datedValue.value) || 0;
+                        const value = parseInt(datedValue.value) || 0;
+                        metricValue += value;
+                        console.log(`📊 Found value ${value} for ${apiMetric} on ${datedValue.date}`);
                       }
                     });
                   }
@@ -84,6 +105,9 @@ router.post('/basic', async (req, res) => {
             });
           }
           
+          console.log(`💰 Total value for ${apiMetric}: ${metricValue}`);
+          totalValue += metricValue;
+          
         } catch (error) {
           console.error(`❌ Failed to fetch ${apiMetric}:`, error.response?.data || error.message);
           console.error(`❌ Error status:`, error.response?.status);
@@ -91,6 +115,7 @@ router.post('/basic', async (req, res) => {
       }
       
       // Store the aggregated result for this dashboard metric
+      console.log(`🎯 Final aggregated value for ${gmbMetric}: ${totalValue}`);
       allMetricsData.push({
         gmbMetric: gmbMetric,
         totalValue: totalValue
@@ -178,13 +203,30 @@ function transformMultipleMetricsData(allMetricsData, originalMetrics) {
 // Get available metrics
 router.get('/metrics', async (req, res) => {
   try {
-    // Updated metrics with correct mapping to Performance API
+    // Complete list of available metrics with their API mappings
     const availableMetrics = [
-      'VIEWS_MAPS',         // Maps to BUSINESS_IMPRESSIONS_DESKTOP_MAPS + BUSINESS_IMPRESSIONS_MOBILE_MAPS
-      'VIEWS_SEARCH',       // Maps to BUSINESS_IMPRESSIONS_DESKTOP_SEARCH + BUSINESS_IMPRESSIONS_MOBILE_SEARCH
-      'ACTIONS_PHONE',      // Maps to CALL_CLICKS
-      'ACTIONS_WEBSITE',    // Maps to WEBSITE_CLICKS
-      'ACTIONS_DRIVING_DIRECTIONS'  // Maps to BUSINESS_DIRECTION_REQUESTS
+      // Core View Metrics (most commonly used)
+      'VIEWS_MAPS',         // Total Maps views (desktop + mobile)
+      'VIEWS_SEARCH',       // Total Search views (desktop + mobile)
+      
+      // Detailed View Metrics by Platform
+      'VIEWS_MAPS_DESKTOP',     // Maps views on desktop only
+      'VIEWS_MAPS_MOBILE',      // Maps views on mobile only  
+      'VIEWS_SEARCH_DESKTOP',   // Search views on desktop only
+      'VIEWS_SEARCH_MOBILE',    // Search views on mobile only
+      
+      // Action Metrics
+      'ACTIONS_PHONE',          // Phone number clicks
+      'ACTIONS_WEBSITE',        // Website button clicks
+      'ACTIONS_DRIVING_DIRECTIONS', // Direction requests
+      
+      // Communication Metrics
+      'BUSINESS_CONVERSATIONS', // Message conversations received
+      
+      // Booking & Order Metrics (for applicable businesses)
+      'BUSINESS_BOOKINGS',      // Reserve with Google bookings
+      'BUSINESS_FOOD_ORDERS',   // Food orders received
+      'BUSINESS_FOOD_MENU_CLICKS' // Menu content interactions
     ];
 
     res.json({
@@ -193,9 +235,17 @@ router.get('/metrics', async (req, res) => {
       apiMapping: {
         'VIEWS_MAPS': ['BUSINESS_IMPRESSIONS_DESKTOP_MAPS', 'BUSINESS_IMPRESSIONS_MOBILE_MAPS'],
         'VIEWS_SEARCH': ['BUSINESS_IMPRESSIONS_DESKTOP_SEARCH', 'BUSINESS_IMPRESSIONS_MOBILE_SEARCH'],
+        'VIEWS_MAPS_DESKTOP': ['BUSINESS_IMPRESSIONS_DESKTOP_MAPS'],
+        'VIEWS_MAPS_MOBILE': ['BUSINESS_IMPRESSIONS_MOBILE_MAPS'],
+        'VIEWS_SEARCH_DESKTOP': ['BUSINESS_IMPRESSIONS_DESKTOP_SEARCH'],
+        'VIEWS_SEARCH_MOBILE': ['BUSINESS_IMPRESSIONS_MOBILE_SEARCH'],
         'ACTIONS_PHONE': ['CALL_CLICKS'],
         'ACTIONS_WEBSITE': ['WEBSITE_CLICKS'],
-        'ACTIONS_DRIVING_DIRECTIONS': ['BUSINESS_DIRECTION_REQUESTS']
+        'ACTIONS_DRIVING_DIRECTIONS': ['BUSINESS_DIRECTION_REQUESTS'],
+        'BUSINESS_CONVERSATIONS': ['BUSINESS_CONVERSATIONS'],
+        'BUSINESS_BOOKINGS': ['BUSINESS_BOOKINGS'],
+        'BUSINESS_FOOD_ORDERS': ['BUSINESS_FOOD_ORDERS'],
+        'BUSINESS_FOOD_MENU_CLICKS': ['BUSINESS_FOOD_MENU_CLICKS']
       },
       options: {
         timeRange: ['TODAY', 'YESTERDAY', 'LAST_7_DAYS', 'LAST_30_DAYS', 'LAST_90_DAYS'],
