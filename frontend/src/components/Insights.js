@@ -22,6 +22,9 @@ const Insights = () => {
   const [selectedProfile, setSelectedProfile] = useState('');
   const [selectedPeriod, setSelectedPeriod] = useState('30');
   const [refreshing, setRefreshing] = useState(false);
+  const [useCustomTime, setUseCustomTime] = useState(false);
+  const [customStartDate, setCustomStartDate] = useState('');
+  const [customEndDate, setCustomEndDate] = useState('');
 
   useEffect(() => {
     if (isAuthenticated) {
@@ -132,10 +135,15 @@ const Insights = () => {
             metric: 'ACTIONS_WEBSITE'
           }
         ],
-        timeRange: {
-          startTime: new Date(Date.now() - (parseInt(period) * 24 * 60 * 60 * 1000)).toISOString(),
-          endTime: new Date().toISOString()
-        }
+        timeRange: useCustomTime && customStartDate && customEndDate
+          ? {
+              startTime: new Date(customStartDate).toISOString(),
+              endTime: new Date(customEndDate).toISOString()
+            }
+          : {
+              startTime: new Date(Date.now() - (parseInt(period) * 24 * 60 * 60 * 1000)).toISOString(),
+              endTime: new Date().toISOString()
+            }
       };
 
       console.log('📤 Fetching insights with data:', requestData);
@@ -167,6 +175,23 @@ const Insights = () => {
       console.error('Error refreshing insights:', error);
     } finally {
       setRefreshing(false);
+    }
+  };
+
+  const toggleCustomTime = () => {
+    setUseCustomTime(!useCustomTime);
+    if (!useCustomTime) {
+      // Set default custom dates when enabling
+      const today = new Date();
+      const thirtyDaysAgo = new Date(today.getTime() - (30 * 24 * 60 * 60 * 1000));
+      setCustomStartDate(thirtyDaysAgo.toISOString().split('T')[0]);
+      setCustomEndDate(today.toISOString().split('T')[0]);
+    }
+  };
+
+  const handleCustomTimeChange = () => {
+    if (useCustomTime && customStartDate && customEndDate && selectedProfile) {
+      fetchInsights(selectedProfile, selectedPeriod);
     }
   };
 
@@ -219,8 +244,12 @@ const Insights = () => {
         accountId: accountId,
         locationId: locationId,
         format: format,
-        startDate: new Date(Date.now() - (parseInt(selectedPeriod) * 24 * 60 * 60 * 1000)).toISOString().split('T')[0],
-        endDate: new Date().toISOString().split('T')[0]
+        startDate: useCustomTime && customStartDate && customEndDate
+          ? customStartDate
+          : new Date(Date.now() - (parseInt(selectedPeriod) * 24 * 60 * 60 * 1000)).toISOString().split('T')[0],
+        endDate: useCustomTime && customStartDate && customEndDate
+          ? customEndDate
+          : new Date().toISOString().split('T')[0]
       };
 
       console.log('📤 Exporting insights with data:', requestData);
@@ -315,20 +344,33 @@ const Insights = () => {
             <RefreshCw className={`h-4 w-4 mr-2 ${refreshing ? 'animate-spin' : ''}`} />
             Refresh
           </button>
-          <div className="relative">
-            <select
-              value={selectedPeriod}
-              onChange={(e) => {
-                setSelectedPeriod(e.target.value);
-                fetchInsights(selectedProfile, e.target.value);
-              }}
-              className="block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
-            >
-              <option value="7">Last 7 days</option>
-              <option value="30">Last 30 days</option>
-              <option value="90">Last 90 days</option>
-            </select>
-          </div>
+          <button
+            onClick={toggleCustomTime}
+            className={`inline-flex items-center px-4 py-2 border text-sm font-medium rounded-md ${
+              useCustomTime
+                ? 'border-primary-600 text-primary-600 bg-primary-50'
+                : 'border-gray-300 text-gray-700 bg-white hover:bg-gray-50'
+            }`}
+          >
+            <Calendar className="h-4 w-4 mr-2" />
+            Custom Time
+          </button>
+          {!useCustomTime && (
+            <div className="relative">
+              <select
+                value={selectedPeriod}
+                onChange={(e) => {
+                  setSelectedPeriod(e.target.value);
+                  fetchInsights(selectedProfile, e.target.value);
+                }}
+                className="block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
+              >
+                <option value="7">Last 7 days</option>
+                <option value="30">Last 30 days</option>
+                <option value="90">Last 90 days</option>
+              </select>
+            </div>
+          )}
         </div>
       </div>
 
@@ -356,6 +398,65 @@ const Insights = () => {
           )}
         </select>
       </div>
+
+      {/* Custom Time Range Selector */}
+      {useCustomTime && (
+        <div className="bg-white shadow rounded-lg p-6">
+          <label className="block text-sm font-medium text-gray-700 mb-4">
+            Custom Time Range
+          </label>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
+              <label htmlFor="start-date" className="block text-sm font-medium text-gray-700 mb-2">
+                Start Date
+              </label>
+              <input
+                type="date"
+                id="start-date"
+                value={customStartDate}
+                onChange={(e) => setCustomStartDate(e.target.value)}
+                className="block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
+              />
+            </div>
+            <div>
+              <label htmlFor="end-date" className="block text-sm font-medium text-gray-700 mb-2">
+                End Date
+              </label>
+              <input
+                type="date"
+                id="end-date"
+                value={customEndDate}
+                onChange={(e) => setCustomEndDate(e.target.value)}
+                className="block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
+              />
+            </div>
+            <div className="flex items-end">
+              <button
+                onClick={handleCustomTimeChange}
+                disabled={!customStartDate || !customEndDate || !selectedProfile}
+                className="w-full inline-flex justify-center items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-primary-600 hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Apply Range
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Time Range Indicator */}
+      {selectedProfile && (
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+          <div className="flex items-center">
+            <Calendar className="h-5 w-5 text-blue-600 mr-2" />
+            <span className="text-sm font-medium text-blue-800">
+              {useCustomTime && customStartDate && customEndDate
+                ? `Custom Range: ${new Date(customStartDate).toLocaleDateString()} - ${new Date(customEndDate).toLocaleDateString()}`
+                : `Last ${selectedPeriod} days: ${new Date(Date.now() - (parseInt(selectedPeriod) * 24 * 60 * 60 * 1000)).toLocaleDateString()} - ${new Date().toLocaleDateString()}`
+              }
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* Insights Overview */}
       {selectedProfile && insights && insights.locationMetrics && (
