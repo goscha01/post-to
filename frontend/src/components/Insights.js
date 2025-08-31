@@ -11,7 +11,12 @@ import {
   Globe,
   Calendar,
   Download,
-  RefreshCw
+  RefreshCw,
+  ChevronDown,
+  MousePointer,
+  MessageSquare,
+  ShoppingCart,
+  Info
 } from 'lucide-react';
 
 const Insights = () => {
@@ -25,6 +30,7 @@ const Insights = () => {
   const [useCustomTime, setUseCustomTime] = useState(false);
   const [customStartDate, setCustomStartDate] = useState('');
   const [customEndDate, setCustomEndDate] = useState('');
+  const [showAllMetrics, setShowAllMetrics] = useState(false);
 
   useEffect(() => {
     if (isAuthenticated) {
@@ -192,6 +198,87 @@ const Insights = () => {
   const handleCustomTimeChange = () => {
     if (useCustomTime && customStartDate && customEndDate && selectedProfile) {
       fetchInsights(selectedProfile, selectedPeriod);
+    }
+  };
+
+  const fetchAllMetrics = async () => {
+    if (!selectedProfile) return;
+    
+    try {
+      setRefreshing(true);
+      
+      // Extract account ID and location ID from the profile
+      let accountId, locationId;
+      
+      if (selectedProfile.includes('/')) {
+        const profileParts = selectedProfile.split('/');
+        
+        if (profileParts[0] === 'locations' && profileParts.length === 2) {
+          locationId = profileParts[1];
+          if (profiles.length > 0 && profiles[0].name) {
+            const accountNameParts = profiles[0].name.split('/');
+            accountId = accountNameParts[accountNameParts.length - 1];
+          }
+        } else if (profileParts.includes('accounts') && profileParts.includes('locations')) {
+          const accountIndex = profileParts.findIndex(part => part === 'accounts');
+          const locationIndex = profileParts.findIndex(part => part === 'locations');
+          
+          if (accountIndex !== -1 && locationIndex !== -1) {
+            accountId = profileParts[accountIndex + 1];
+            locationId = profileParts[locationIndex + 1];
+          }
+        }
+      } else {
+        locationId = selectedProfile;
+        if (profiles.length > 0 && profiles[0].name) {
+          const accountNameParts = profiles[0].name.split('/');
+          accountId = accountNameParts[accountNameParts.length - 1];
+        }
+      }
+      
+      if (!accountId || !locationId) {
+        console.error('❌ Failed to extract accountId or locationId from profile:', selectedProfile);
+        return;
+      }
+      
+      // Request ALL available metrics
+      const allMetrics = [
+        'VIEWS_MAPS', 'VIEWS_SEARCH', 'VIEWS_MAPS_DESKTOP', 'VIEWS_MAPS_MOBILE',
+        'VIEWS_SEARCH_DESKTOP', 'VIEWS_SEARCH_MOBILE', 'ACTIONS_PHONE', 'ACTIONS_WEBSITE',
+        'ACTIONS_DRIVING_DIRECTIONS', 'BUSINESS_CONVERSATIONS', 'BUSINESS_BOOKINGS',
+        'BUSINESS_FOOD_ORDERS', 'BUSINESS_FOOD_MENU_CLICKS'
+      ];
+      
+      const requestData = {
+        accessToken: localStorage.getItem('gmb_google_access_token'),
+        accountId: accountId,
+        locationId: locationId,
+        metricRequests: allMetrics.map(metric => ({ metric })),
+        timeRange: useCustomTime && customStartDate && customEndDate
+          ? {
+              startTime: new Date(customStartDate).toISOString(),
+              endTime: new Date(customEndDate).toISOString()
+            }
+          : {
+              startTime: new Date(Date.now() - (parseInt(selectedPeriod) * 24 * 60 * 60 * 1000)).toISOString(),
+              endTime: new Date().toISOString()
+            }
+      };
+      
+      console.log('📤 Fetching ALL metrics with data:', requestData);
+      
+      const response = await axios.post('http://localhost:3001/api/insights/basic', requestData);
+      
+      if (response.data.success) {
+        setInsights(response.data.data);
+        console.log('✅ All metrics fetched successfully:', response.data.data);
+      } else {
+        console.error('❌ Failed to fetch all metrics:', response.data.error);
+      }
+    } catch (error) {
+      console.error('Error fetching all metrics:', error);
+    } finally {
+      setRefreshing(false);
     }
   };
 
@@ -596,6 +683,175 @@ const Insights = () => {
 
             </div>
           </div>
+        </div>
+      )}
+
+      {/* All Available Metrics Section */}
+      {selectedProfile && (
+        <div className="bg-white shadow rounded-lg">
+          <div className="px-6 py-4 border-b border-gray-200">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-medium text-gray-900">All Available Metrics</h2>
+                             <div className="flex space-x-2">
+                 <button
+                   onClick={() => setShowAllMetrics(!showAllMetrics)}
+                   className="inline-flex items-center px-3 py-1 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50"
+                 >
+                   {showAllMetrics ? 'Hide Details' : 'Show All Metrics'}
+                   <ChevronDown className={`h-4 w-4 ml-1 transition-transform ${showAllMetrics ? 'rotate-180' : ''}`} />
+                 </button>
+                 <button
+                   onClick={fetchAllMetrics}
+                   disabled={refreshing}
+                   className="inline-flex items-center px-3 py-1 border border-green-300 text-sm font-medium rounded-md text-green-700 bg-green-50 hover:bg-green-100 disabled:opacity-50"
+                 >
+                   <RefreshCw className={`h-4 w-4 mr-1 ${refreshing ? 'animate-spin' : ''}`} />
+                   Fetch All Metrics
+                 </button>
+               </div>
+            </div>
+          </div>
+          {showAllMetrics && (
+            <div className="p-6">
+              {/* Metric Categories */}
+              <div className="space-y-6">
+                {/* Views & Impressions */}
+                <div>
+                  <h3 className="text-md font-medium text-gray-900 mb-3 flex items-center">
+                    <Eye className="h-5 w-5 text-blue-600 mr-2" />
+                    Views & Impressions
+                  </h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                                         {[
+                       { metric: 'VIEWS_MAPS', description: 'Total Maps views (desktop + mobile)', color: 'bg-blue-100 text-blue-800' },
+                       { metric: 'VIEWS_SEARCH', description: 'Total Search views (desktop + mobile)', color: 'bg-blue-100 text-blue-800' },
+                       { metric: 'VIEWS_MAPS_DESKTOP', description: 'Maps views on desktop only', color: 'bg-blue-50 text-blue-700' },
+                       { metric: 'VIEWS_MAPS_MOBILE', description: 'Maps views on mobile only', color: 'bg-blue-50 text-blue-700' },
+                       { metric: 'VIEWS_SEARCH_DESKTOP', description: 'Search views on desktop only', color: 'bg-blue-50 text-blue-700' },
+                       { metric: 'VIEWS_SEARCH_MOBILE', description: 'Search views on mobile only', color: 'bg-blue-50 text-blue-700' }
+                     ].map((item, index) => {
+                       const metricData = insights?.locationMetrics?.find(m => m.metric === item.metric);
+                       const value = metricData?.metricValues?.[0]?.value || '0';
+                       return (
+                         <div key={index} className="bg-gray-50 rounded-lg p-3 border-l-4 border-blue-400">
+                           <div className="flex items-center justify-between">
+                             <div>
+                               <div className="text-sm font-medium text-gray-900">{item.metric.replace(/_/g, ' ')}</div>
+                               <div className="text-xs text-gray-600 mt-1">{item.description}</div>
+                             </div>
+                             <div className="text-lg font-semibold text-blue-600">{value}</div>
+                           </div>
+                         </div>
+                       );
+                     })}
+                  </div>
+                </div>
+
+                {/* Actions */}
+                <div>
+                  <h3 className="text-md font-medium text-gray-900 mb-3 flex items-center">
+                    <MousePointer className="h-5 w-5 text-green-600 mr-2" />
+                    Customer Actions
+                  </h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                                         {[
+                       { metric: 'ACTIONS_PHONE', description: 'Phone number clicks', color: 'bg-green-100 text-green-800' },
+                       { metric: 'ACTIONS_WEBSITE', description: 'Website button clicks', color: 'bg-green-100 text-green-800' },
+                       { metric: 'ACTIONS_DRIVING_DIRECTIONS', description: 'Direction requests', color: 'bg-green-100 text-green-800' }
+                     ].map((item, index) => {
+                       const metricData = insights?.locationMetrics?.find(m => m.metric === item.metric);
+                       const value = metricData?.metricValues?.[0]?.value || '0';
+                       return (
+                         <div key={index} className="bg-gray-50 rounded-lg p-3 border-l-4 border-green-400">
+                           <div className="flex items-center justify-between">
+                             <div>
+                               <div className="text-sm font-medium text-gray-900">{item.metric.replace(/_/g, ' ')}</div>
+                               <div className="text-xs text-gray-600 mt-1">{item.description}</div>
+                             </div>
+                             <div className="text-lg font-semibold text-green-600">{value}</div>
+                           </div>
+                         </div>
+                       );
+                     })}
+                  </div>
+                </div>
+
+                {/* Communication */}
+                <div>
+                  <h3 className="text-md font-medium text-gray-900 mb-3 flex items-center">
+                    <MessageSquare className="h-5 w-5 text-purple-600 mr-2" />
+                    Communication
+                  </h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                                         {[
+                       { metric: 'BUSINESS_CONVERSATIONS', description: 'Message conversations received', color: 'bg-purple-100 text-purple-800' }
+                     ].map((item, index) => {
+                       const metricData = insights?.locationMetrics?.find(m => m.metric === item.metric);
+                       const value = metricData?.metricValues?.[0]?.value || '0';
+                       return (
+                         <div key={index} className="bg-gray-50 rounded-lg p-3 border-l-4 border-purple-400">
+                           <div className="flex items-center justify-between">
+                             <div>
+                               <div className="text-sm font-medium text-gray-900">{item.metric.replace(/_/g, ' ')}</div>
+                               <div className="text-xs text-gray-600 mt-1">{item.description}</div>
+                             </div>
+                             <div className="text-lg font-semibold text-purple-600">{value}</div>
+                           </div>
+                         </div>
+                       );
+                     })}
+                  </div>
+                </div>
+
+                {/* Commerce */}
+                <div>
+                  <h3 className="text-md font-medium text-gray-900 mb-3 flex items-center">
+                    <ShoppingCart className="h-5 w-5 text-orange-600 mr-2" />
+                    Commerce & Bookings
+                  </h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                                         {[
+                       { metric: 'BUSINESS_BOOKINGS', description: 'Reserve with Google bookings', color: 'bg-orange-100 text-orange-800' },
+                       { metric: 'BUSINESS_FOOD_ORDERS', description: 'Food orders received', color: 'bg-orange-100 text-orange-800' },
+                       { metric: 'BUSINESS_FOOD_MENU_CLICKS', description: 'Menu content interactions', color: 'bg-orange-100 text-orange-800' }
+                     ].map((item, index) => {
+                       const metricData = insights?.locationMetrics?.find(m => m.metric === item.metric);
+                       const value = metricData?.metricValues?.[0]?.value || '0';
+                       return (
+                         <div key={index} className="bg-gray-50 rounded-lg p-3 border-l-4 border-orange-400">
+                           <div className="flex items-center justify-between">
+                             <div>
+                               <div className="text-sm font-medium text-gray-900">{item.metric.replace(/_/g, ' ')}</div>
+                               <div className="text-xs text-gray-600 mt-1">{item.description}</div>
+                             </div>
+                             <div className="text-lg font-semibold text-orange-600">{value}</div>
+                           </div>
+                         </div>
+                       );
+                     })}
+                  </div>
+                </div>
+              </div>
+
+                             {/* Metric Selection Info */}
+               <div className="mt-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+                 <div className="flex">
+                   <Info className="h-5 w-5 text-yellow-600 mr-2 mt-0.5" />
+                   <div>
+                     <h4 className="text-sm font-medium text-yellow-800">Metric Selection</h4>
+                     <p className="text-sm text-yellow-700 mt-1">
+                       Currently showing: <strong>{insights?.locationMetrics?.length || 0} selected metrics</strong>. 
+                       {insights?.locationMetrics?.length === 0 ? (
+                         <span> Click <strong>"Fetch All Metrics"</strong> to load data for all available metrics.</span>
+                       ) : (
+                         <span> Click <strong>"Fetch All Metrics"</strong> to load additional metrics, or use the regular refresh for the current selection.</span>
+                       )}
+                     </p>
+                   </div>
+                 </div>
+               </div>
+            </div>
+          )}
         </div>
       )}
 
