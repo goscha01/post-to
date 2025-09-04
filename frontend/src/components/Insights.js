@@ -25,12 +25,152 @@ const Insights = () => {
   const [profiles, setProfiles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedProfile, setSelectedProfile] = useState('');
-  const [selectedPeriod, setSelectedPeriod] = useState('30');
+  const [selectedPeriod, setSelectedPeriod] = useState('30d');
   const [refreshing, setRefreshing] = useState(false);
   const [useCustomTime, setUseCustomTime] = useState(false);
   const [customStartDate, setCustomStartDate] = useState('');
   const [customEndDate, setCustomEndDate] = useState('');
   const [showAllMetrics, setShowAllMetrics] = useState(false);
+  const [showCustomTimeForm, setShowCustomTimeForm] = useState(false);
+
+  // Helper function to calculate time range start based on period
+  const getTimeRangeStart = (period) => {
+    const now = new Date();
+    
+    if (period === 'custom') {
+      return new Date(customStartDate);
+    }
+    
+    // Handle specific month selection (month_2024_04 format)
+    if (period.startsWith('month_')) {
+      const parts = period.split('_');
+      const year = parseInt(parts[1]);
+      const month = parseInt(parts[2]) - 1; // JavaScript months are 0-indexed
+      return new Date(year, month, 1, 0, 0, 0, 0);
+    }
+    
+    // Handle days
+    if (period.endsWith('d')) {
+      const days = parseInt(period);
+      return new Date(now.getTime() - (days * 24 * 60 * 60 * 1000));
+    }
+    
+    // Handle months - use actual calendar months
+    if (period.endsWith('m')) {
+      const months = parseInt(period);
+      const result = new Date(now);
+      result.setMonth(result.getMonth() - months);
+      // Set to first day of the month for consistency
+      result.setDate(1);
+      result.setHours(0, 0, 0, 0);
+      return result;
+    }
+    
+    // Handle years - use actual calendar years
+    if (period.endsWith('y')) {
+      const years = parseInt(period);
+      const result = new Date(now);
+      result.setFullYear(result.getFullYear() - years);
+      // Set to first day of the year for consistency
+      result.setMonth(0);
+      result.setDate(1);
+      result.setHours(0, 0, 0, 0);
+      return result;
+    }
+    
+    // Default to days for backward compatibility
+    const days = parseInt(period) || 30;
+    return new Date(now.getTime() - (days * 24 * 60 * 60 * 1000));
+  };
+
+  // Helper function to calculate time range end based on period
+  const getTimeRangeEnd = (period) => {
+    const now = new Date();
+    
+    if (period === 'custom') {
+      return new Date(customEndDate);
+    }
+    
+    // Handle specific month selection - end of the selected month
+    if (period.startsWith('month_')) {
+      const parts = period.split('_');
+      const year = parseInt(parts[1]);
+      const month = parseInt(parts[2]) - 1; // JavaScript months are 0-indexed
+      return new Date(year, month + 1, 0, 23, 59, 59, 999); // Last day of the month
+    }
+    
+    // For other periods, use current time
+    return now;
+  };
+
+  // Helper function to generate month options for dropdown
+  const generateMonthOptions = () => {
+    const options = [];
+    const now = new Date();
+    
+    // Generate options for the last 12 months
+    for (let i = 0; i < 12; i++) {
+      const date = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const monthName = date.toLocaleDateString('en-US', { month: 'long' });
+      const year = date.getFullYear();
+      const value = `month_${year}_${String(date.getMonth() + 1).padStart(2, '0')}`;
+      
+      options.push({
+        value: value,
+        label: `${monthName} ${year}`,
+        year: year,
+        month: date.getMonth()
+      });
+    }
+    
+    return options;
+  };
+
+  // Helper function to get display name for period
+  const getPeriodDisplayName = (period) => {
+    if (period === 'custom') return 'Custom Range';
+    
+    // Handle specific month selection
+    if (period.startsWith('month_')) {
+      const startDate = getTimeRangeStart(period);
+      const endDate = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 0); // Last day of the month
+      return `${startDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}`;
+    }
+    
+    if (period.endsWith('d')) {
+      const days = parseInt(period);
+      return `Last ${days} day${days === 1 ? '' : 's'}`;
+    }
+    
+    if (period.endsWith('m')) {
+      const months = parseInt(period);
+      const startDate = getTimeRangeStart(period);
+      const endDate = new Date();
+      
+      if (months === 1) {
+        return `${startDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}`;
+      } else {
+        const startMonth = startDate.toLocaleDateString('en-US', { month: 'long' });
+        const endMonth = endDate.toLocaleDateString('en-US', { month: 'long' });
+        return `${startMonth} - ${endMonth} ${endDate.getFullYear()}`;
+      }
+    }
+    
+    if (period.endsWith('y')) {
+      const years = parseInt(period);
+      const startDate = getTimeRangeStart(period);
+      const endDate = new Date();
+      
+      if (years === 1) {
+        return `${startDate.getFullYear()}`;
+      } else {
+        return `${startDate.getFullYear()} - ${endDate.getFullYear()}`;
+      }
+    }
+    
+    // Default for backward compatibility
+    return `Last ${period} days`;
+  };
 
   useEffect(() => {
     if (isAuthenticated) {
@@ -152,8 +292,8 @@ const Insights = () => {
               endTime: new Date(customEndDate).toISOString()
             }
           : {
-              startTime: new Date(Date.now() - (parseInt(period) * 24 * 60 * 60 * 1000)).toISOString(),
-              endTime: new Date().toISOString()
+              startTime: getTimeRangeStart(period).toISOString(),
+              endTime: getTimeRangeEnd(period).toISOString()
             }
       };
 
@@ -251,8 +391,8 @@ const Insights = () => {
               endTime: new Date(customEndDate).toISOString()
             }
           : {
-              startTime: new Date(Date.now() - (parseInt(period) * 24 * 60 * 60 * 1000)).toISOString(),
-              endTime: new Date().toISOString()
+              startTime: getTimeRangeStart(period).toISOString(),
+              endTime: getTimeRangeEnd(period).toISOString()
             }
       };
 
@@ -288,20 +428,10 @@ const Insights = () => {
     }
   };
 
-  const toggleCustomTime = () => {
-    setUseCustomTime(!useCustomTime);
-    if (!useCustomTime) {
-      // Set default custom dates when enabling
-      const today = new Date();
-      const thirtyDaysAgo = new Date(today.getTime() - (30 * 24 * 60 * 60 * 1000));
-      setCustomStartDate(thirtyDaysAgo.toISOString().split('T')[0]);
-      setCustomEndDate(today.toISOString().split('T')[0]);
-    }
-  };
 
   const handleCustomTimeChange = () => {
     if (useCustomTime && customStartDate && customEndDate && selectedProfile) {
-      fetchInsights(selectedProfile, selectedPeriod);
+      fetchInsights(selectedProfile, 'custom');
     }
   };
 
@@ -363,8 +493,8 @@ const Insights = () => {
               endTime: new Date(customEndDate).toISOString()
             }
           : {
-              startTime: new Date(Date.now() - (parseInt(selectedPeriod) * 24 * 60 * 60 * 1000)).toISOString(),
-              endTime: new Date().toISOString()
+              startTime: getTimeRangeStart(selectedPeriod).toISOString(),
+              endTime: getTimeRangeEnd(selectedPeriod).toISOString()
             }
       };
       
@@ -534,33 +664,55 @@ const Insights = () => {
             <RefreshCw className={`h-4 w-4 mr-2 ${refreshing ? 'animate-spin' : ''}`} />
             Refresh
           </button>
-          <button
-            onClick={toggleCustomTime}
-            className={`inline-flex items-center px-4 py-2 border text-sm font-medium rounded-md ${
-              useCustomTime
-                ? 'border-primary-600 text-primary-600 bg-primary-50'
-                : 'border-gray-300 text-gray-700 bg-white hover:bg-gray-50'
-            }`}
-          >
-            <Calendar className="h-4 w-4 mr-2" />
-            Custom Time
-          </button>
-          {!useCustomTime && (
-            <div className="relative">
-              <select
-                value={selectedPeriod}
-                onChange={(e) => {
-                  setSelectedPeriod(e.target.value);
-                  fetchInsights(selectedProfile, e.target.value);
-                }}
-                className="block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
-              >
-                <option value="7">Last 7 days</option>
-                <option value="30">Last 30 days</option>
-                <option value="90">Last 90 days</option>
-              </select>
-            </div>
-          )}
+          <div className="relative">
+            <select
+              value={selectedPeriod}
+              onChange={(e) => {
+                const value = e.target.value;
+                setSelectedPeriod(value);
+                if (value === 'custom') {
+                  setUseCustomTime(true);
+                  setShowCustomTimeForm(true);
+                  // Set default custom dates when enabling
+                  const today = new Date();
+                  const thirtyDaysAgo = new Date(today.getTime() - (30 * 24 * 60 * 60 * 1000));
+                  setCustomStartDate(thirtyDaysAgo.toISOString().split('T')[0]);
+                  setCustomEndDate(today.toISOString().split('T')[0]);
+                } else {
+                  setUseCustomTime(false);
+                  setShowCustomTimeForm(false);
+                  fetchInsights(selectedProfile, value);
+                }
+              }}
+              className="block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
+            >
+              <optgroup label="Days">
+                <option value="7d">Last 7 days</option>
+                <option value="30d">Last 30 days</option>
+                <option value="90d">Last 90 days</option>
+              </optgroup>
+              <optgroup label="Specific Months">
+                {generateMonthOptions().map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </optgroup>
+              <optgroup label="Calendar Months">
+                <option value="1m">Last 1 calendar month</option>
+                <option value="3m">Last 3 calendar months</option>
+                <option value="6m">Last 6 calendar months</option>
+                <option value="12m">Last 12 calendar months</option>
+              </optgroup>
+              <optgroup label="Years">
+                <option value="1y">Last 1 year</option>
+                <option value="2y">Last 2 years</option>
+              </optgroup>
+              <optgroup label="Custom">
+                <option value="custom">Custom time range</option>
+              </optgroup>
+            </select>
+          </div>
         </div>
       </div>
 
@@ -590,7 +742,7 @@ const Insights = () => {
       </div>
 
       {/* Custom Time Range Selector */}
-      {useCustomTime && (
+      {showCustomTimeForm && (
         <div className="bg-white shadow rounded-lg p-6">
           <label className="block text-sm font-medium text-gray-700 mb-4">
             Custom Time Range
@@ -641,7 +793,7 @@ const Insights = () => {
             <span className="text-sm font-medium text-blue-800">
               {useCustomTime && customStartDate && customEndDate
                 ? `Custom Range: ${new Date(customStartDate).toLocaleDateString()} - ${new Date(customEndDate).toLocaleDateString()}`
-                : `Last ${selectedPeriod} days: ${new Date(Date.now() - (parseInt(selectedPeriod) * 24 * 60 * 60 * 1000)).toLocaleDateString()} - ${new Date().toLocaleDateString()}`
+                : `${getPeriodDisplayName(selectedPeriod)}: ${getTimeRangeStart(selectedPeriod).toLocaleDateString()} - ${new Date().toLocaleDateString()}`
               }
             </span>
           </div>
