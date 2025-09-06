@@ -2,6 +2,18 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { useAuth } from '../contexts/AuthContext';
 import {
+  LineChart as RechartsLineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend,
+  ResponsiveContainer,
+  AreaChart,
+  Area
+} from 'recharts';
+import {
   BarChart3,
   TrendingUp,
   TrendingDown,
@@ -16,7 +28,9 @@ import {
   MousePointer,
   MessageSquare,
   ShoppingCart,
-  Info
+  Info,
+  LineChart,
+  Activity
 } from 'lucide-react';
 
 const Insights = () => {
@@ -32,6 +46,10 @@ const Insights = () => {
   const [customEndDate, setCustomEndDate] = useState('');
   const [showAllMetrics, setShowAllMetrics] = useState(false);
   const [showCustomTimeForm, setShowCustomTimeForm] = useState(false);
+  const [timelineData, setTimelineData] = useState(null);
+  const [timelineLoading, setTimelineLoading] = useState(false);
+  const [showTimeline, setShowTimeline] = useState(true);
+  const [selectedTimelineMetrics, setSelectedTimelineMetrics] = useState(['VIEWS_MAPS', 'VIEWS_SEARCH', 'ACTIONS_PHONE']);
 
   // Helper function to calculate time range start based on period
   const getTimeRangeStart = (period) => {
@@ -172,6 +190,194 @@ const Insights = () => {
     return `Last ${period} days`;
   };
 
+  // Timeline configuration
+  const timelineMetricOptions = [
+    { value: 'VIEWS_MAPS', label: 'Maps Views', color: '#3B82F6' },
+    { value: 'VIEWS_SEARCH', label: 'Search Views', color: '#10B981' },
+    { value: 'VIEWS_MAPS_DESKTOP', label: 'Maps (Desktop)', color: '#6366F1' },
+    { value: 'VIEWS_MAPS_MOBILE', label: 'Maps (Mobile)', color: '#8B5CF6' },
+    { value: 'VIEWS_SEARCH_DESKTOP', label: 'Search (Desktop)', color: '#06B6D4' },
+    { value: 'VIEWS_SEARCH_MOBILE', label: 'Search (Mobile)', color: '#84CC16' },
+    { value: 'ACTIONS_PHONE', label: 'Phone Clicks', color: '#F59E0B' },
+    { value: 'ACTIONS_WEBSITE', label: 'Website Clicks', color: '#EF4444' },
+    { value: 'ACTIONS_DRIVING_DIRECTIONS', label: 'Directions', color: '#EC4899' },
+    { value: 'BUSINESS_CONVERSATIONS', label: 'Conversations', color: '#14B8A6' },
+    { value: 'BUSINESS_BOOKINGS', label: 'Bookings', color: '#F97316' },
+    { value: 'BUSINESS_FOOD_ORDERS', label: 'Food Orders', color: '#DC2626' }
+  ];
+
+// Replace your fetchTimelineData function with this version that uses the working date range
+
+const fetchTimelineData = async (profileId, period, profilesData = profiles, explicitMetrics = null) => {
+  if (!profileId) return;
+  
+  try {
+    setTimelineLoading(true);
+    console.log('🔍 Fetching timeline for profile:', profileId);
+    
+    // Use explicit metrics or fall back to state, but ensure we have some metrics
+    const metricsToUse = explicitMetrics || selectedTimelineMetrics || ['ACTIONS_PHONE'];
+    console.log('🔍 DEBUG: Metrics to use:', metricsToUse);
+    console.log('🔍 DEBUG: selectedTimelineMetrics state:', selectedTimelineMetrics);
+    
+    // Extract account ID and location ID from the profile (same logic as existing functions)
+    let accountId, locationId;
+    
+    if (profileId.includes('/')) {
+      const profileParts = profileId.split('/');
+      
+      if (profileParts[0] === 'locations' && profileParts.length === 2) {
+        locationId = profileParts[1];
+        if (profilesData.length > 0 && profilesData[0].name) {
+          const accountNameParts = profilesData[0].name.split('/');
+          accountId = accountNameParts[accountNameParts.length - 1];
+        }
+      } else if (profileParts.includes('accounts') && profileParts.includes('locations')) {
+        const accountIndex = profileParts.findIndex(part => part === 'accounts');
+        const locationIndex = profileParts.findIndex(part => part === 'locations');
+        
+        if (accountIndex !== -1 && locationIndex !== -1) {
+          accountId = profileParts[accountIndex + 1];
+          locationId = profileParts[locationIndex + 1];
+        }
+      }
+    } else {
+      locationId = profileId;
+      if (profilesData.length > 0 && profilesData[0].name) {
+        const accountNameParts = profilesData[0].name.split('/');
+        accountId = accountNameParts[accountNameParts.length - 1];
+      }
+    }
+    
+    if (!accountId || !locationId) {
+      console.error('❌ Failed to extract accountId or locationId for timeline');
+      return;
+    }
+    
+    const requestData = {
+      accessToken: localStorage.getItem('gmb_google_access_token'),
+      accountId: accountId,
+      locationId: locationId,
+      metricRequests: metricsToUse.map(metric => ({ metric })),
+      timeRange: useCustomTime && customStartDate && customEndDate
+        ? {
+            startTime: new Date(customStartDate).toISOString(),
+            endTime: new Date(customEndDate).toISOString()
+          }
+        : {
+            startTime: getTimeRangeStart(period).toISOString(),
+            endTime: getTimeRangeEnd(period).toISOString()
+          }
+    };
+
+    console.log('📤 Fetching timeline data with:', requestData);
+    console.log('🔍 Timeline date range:', {
+      startTime: requestData.timeRange.startTime,
+      endTime: requestData.timeRange.endTime,
+      period: period
+    });
+    console.log('🔍 DEBUG: Final metricRequests array:', requestData.metricRequests);
+    
+    const response = await axios.post('http://localhost:3001/api/insights/timeline', requestData);
+    
+    if (response.data.success) {
+      setTimelineData(response.data.data);
+      console.log('✅ Timeline data fetched successfully:', response.data.data);
+    } else {
+      console.error('❌ Failed to fetch timeline data:', response.data.error);
+    }
+  } catch (error) {
+    console.error('Error fetching timeline data:', error);
+  } finally {
+    setTimelineLoading(false);
+  }
+};
+
+  // Transform timeline data for chart
+// Add this debug code to your transformTimelineDataForChart function
+const transformTimelineDataForChart = () => {
+  console.log('🔍 DEBUG: Starting timeline transform');
+  console.log('🔍 DEBUG: timelineData:', timelineData);
+  
+  if (!timelineData || !timelineData.metrics) {
+    console.log('❌ DEBUG: No timeline data or metrics found');
+    return [];
+  }
+  
+  console.log('🔍 DEBUG: Found metrics:', timelineData.metrics.length);
+  
+  // Get all unique dates from all metrics
+  const allDates = new Set();
+  timelineData.metrics.forEach(metric => {
+    console.log('🔍 DEBUG: Processing metric:', metric.metric);
+    console.log('🔍 DEBUG: Time series data length:', metric.timeSeriesData?.length || 0);
+    
+    if (metric.timeSeriesData) {
+      metric.timeSeriesData.forEach(dataPoint => {
+        console.log('🔍 DEBUG: Found data point:', dataPoint);
+        allDates.add(dataPoint.date);
+      });
+    }
+  });
+  
+  console.log('🔍 DEBUG: All unique dates:', Array.from(allDates));
+  
+  // Sort dates
+  const sortedDates = Array.from(allDates).sort();
+  console.log('🔍 DEBUG: Sorted dates:', sortedDates);
+  
+  // Transform data into chart format
+  const chartData = sortedDates.map(date => {
+    const dataPoint = { 
+      date: new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) 
+    };
+    
+    timelineData.metrics.forEach(metric => {
+      const dayData = metric.timeSeriesData.find(d => d.date === date);
+      dataPoint[metric.metric] = dayData ? dayData.value : 0;
+    });
+    
+    return dataPoint;
+  });
+  
+  console.log('🔍 DEBUG: Final chart data:', chartData);
+  console.log('🔍 DEBUG: Chart data length:', chartData.length);
+  
+  // ADD THIS NEW DEBUG CODE
+  console.log('🔍 DEBUG: Sample chart data points (first 3):');
+  chartData.slice(0, 3).forEach((point, index) => {
+    console.log(`🔍 DEBUG: Point ${index}:`, point);
+  });
+  
+  // Check for ACTIONS_PHONE specifically
+  const hasPhoneData = chartData.some(point => point.ACTIONS_PHONE > 0);
+  console.log('🔍 DEBUG: Has phone data:', hasPhoneData);
+  
+  // Show metric totals
+  const metricTotals = {};
+  timelineData.metrics.forEach(metric => {
+    const total = metric.timeSeriesData.reduce((sum, point) => sum + point.value, 0);
+    metricTotals[metric.metric] = total;
+  });
+  console.log('🔍 DEBUG: Metric totals:', metricTotals);
+  
+  return chartData;
+};
+
+  // Handle timeline metric selection
+  const handleTimelineMetricToggle = (metric) => {
+    const newSelection = selectedTimelineMetrics.includes(metric)
+      ? selectedTimelineMetrics.filter(m => m !== metric)
+      : [...selectedTimelineMetrics, metric];
+    
+    setSelectedTimelineMetrics(newSelection);
+    
+    // Pass the new selection explicitly to avoid state timing issues
+    if (selectedProfile && newSelection.length > 0) {
+      setTimeout(() => fetchTimelineData(selectedProfile, selectedPeriod, profiles, newSelection), 100);
+    }
+  };
+
   useEffect(() => {
     if (isAuthenticated) {
       fetchData();
@@ -207,6 +413,8 @@ const Insights = () => {
           // Automatically fetch insights for the first profile when page loads
           // Pass the profiles data directly to avoid state timing issues
           await fetchInsightsWithProfiles(firstLocation, selectedPeriod, profilesWithLocations);
+          // Also fetch timeline data
+          await fetchTimelineData(firstLocation, selectedPeriod, profilesWithLocations);
         }
       }
     } catch (error) {
@@ -421,6 +629,8 @@ const Insights = () => {
     try {
       // Use the working basic insights endpoint directly
       await fetchInsights(selectedProfile, selectedPeriod);
+      // Also refresh timeline data
+      await fetchTimelineData(selectedProfile, selectedPeriod);
     } catch (error) {
       console.error('Error refreshing insights:', error);
     } finally {
@@ -432,6 +642,7 @@ const Insights = () => {
   const handleCustomTimeChange = () => {
     if (useCustomTime && customStartDate && customEndDate && selectedProfile) {
       fetchInsights(selectedProfile, 'custom');
+      fetchTimelineData(selectedProfile, 'custom');
     }
   };
 
@@ -682,6 +893,7 @@ const Insights = () => {
                   setUseCustomTime(false);
                   setShowCustomTimeForm(false);
                   fetchInsights(selectedProfile, value);
+                  fetchTimelineData(selectedProfile, value);
                 }
               }}
               className="block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
@@ -727,6 +939,7 @@ const Insights = () => {
           onChange={(e) => {
             setSelectedProfile(e.target.value);
             fetchInsights(e.target.value, selectedPeriod);
+            fetchTimelineData(e.target.value, selectedPeriod);
           }}
           className="block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
         >
@@ -797,6 +1010,168 @@ const Insights = () => {
               }
             </span>
           </div>
+        </div>
+      )}
+
+      {/* Timeline Graph Section */}
+      {selectedProfile && (
+        <div className="bg-white shadow rounded-lg">
+          <div className="px-6 py-4 border-b border-gray-200">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-medium text-gray-900 flex items-center">
+                <Activity className="h-5 w-5 text-blue-600 mr-2" />
+                Performance Timeline
+              </h2>
+              <div className="flex space-x-2">
+                <button
+                  onClick={() => setShowTimeline(!showTimeline)}
+                  className="inline-flex items-center px-3 py-1 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50"
+                >
+                  <LineChart className="h-4 w-4 mr-1" />
+                  {showTimeline ? 'Hide Timeline' : 'Show Timeline'}
+                </button>
+                <button
+                  onClick={() => fetchTimelineData(selectedProfile, selectedPeriod)}
+                  disabled={timelineLoading}
+                  className="inline-flex items-center px-3 py-1 border border-blue-300 text-sm font-medium rounded-md text-blue-700 bg-blue-50 hover:bg-blue-100 disabled:opacity-50"
+                >
+                  <RefreshCw className={`h-4 w-4 mr-1 ${timelineLoading ? 'animate-spin' : ''}`} />
+                  Refresh Timeline
+                </button>
+              </div>
+            </div>
+          </div>
+          
+          {showTimeline && (
+            <div className="p-6">
+              {/* Metric Selection */}
+              <div className="mb-6">
+                <label className="block text-sm font-medium text-gray-700 mb-3">
+                  Select Metrics for Timeline
+                </label>
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
+                  {timelineMetricOptions.map((option) => (
+                    <label key={option.value} className="flex items-center space-x-2 p-2 border rounded-md hover:bg-gray-50 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={selectedTimelineMetrics.includes(option.value)}
+                        onChange={() => handleTimelineMetricToggle(option.value)}
+                        className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                      />
+                      <div className="flex items-center space-x-1">
+                        <div 
+                          className="w-3 h-3 rounded"
+                          style={{ backgroundColor: option.color }}
+                        ></div>
+                        <span className="text-sm text-gray-700">{option.label}</span>
+                      </div>
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+{/* Timeline Chart */}
+{timelineLoading ? (
+  <div className="flex items-center justify-center h-64">
+    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+  </div>
+) : (() => {
+  const chartData = transformTimelineDataForChart();
+  console.log('🔍 DEBUG: About to render chart with data:', chartData);
+  console.log('🔍 DEBUG: Selected timeline metrics:', selectedTimelineMetrics);
+  
+  return chartData.length > 0 ? (
+    <div className="h-96">
+      <ResponsiveContainer width="100%" height="100%">
+        <AreaChart data={chartData}>
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis 
+            dataKey="date" 
+            tick={{ fontSize: 12 }}
+            angle={-45}
+            textAnchor="end"
+            height={60}
+          />
+          <YAxis tick={{ fontSize: 12 }} />
+          <Tooltip 
+            contentStyle={{
+              backgroundColor: 'rgba(255, 255, 255, 0.95)',
+              border: '1px solid #e5e7eb',
+              borderRadius: '6px'
+            }}
+          />
+          <Legend />
+          {selectedTimelineMetrics.map((metric) => {
+            const option = timelineMetricOptions.find(opt => opt.value === metric);
+            console.log('🔍 DEBUG: Rendering area for metric:', metric, 'with color:', option?.color);
+            return (
+              <Area
+                key={metric}
+                type="monotone"
+                dataKey={metric}
+                stackId="1"
+                stroke={option?.color || '#3B82F6'}
+                fill={option?.color || '#3B82F6'}
+                fillOpacity={0.6}
+                name={option?.label || metric}
+              />
+            );
+          })}
+        </AreaChart>
+      </ResponsiveContainer>
+    </div>
+  ) : (
+    <div className="flex flex-col items-center justify-center h-64 text-gray-500">
+      <LineChart className="h-12 w-12 mb-2 text-gray-400" />
+      <p className="text-lg font-medium">No timeline data available</p>
+      <p className="text-sm">Chart data length: {chartData.length}</p>
+      <p className="text-sm">Timeline data exists: {timelineData ? 'Yes' : 'No'}</p>
+      <p className="text-sm">Metrics count: {timelineData?.metrics?.length || 0}</p>
+    </div>
+  );
+})()}
+
+              {/* Timeline Stats */}
+              {timelineData && timelineData.metrics && (
+                <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+                  {timelineData.metrics.map((metric) => {
+                    const option = timelineMetricOptions.find(opt => opt.value === metric.metric);
+                    const totalValue = metric.totalValue || 0;
+                    const avgValue = metric.timeSeriesData.length > 0 
+                      ? Math.round(totalValue / metric.timeSeriesData.length) 
+                      : 0;
+                    const maxValue = Math.max(...metric.timeSeriesData.map(d => d.value));
+                    
+                    return (
+                      <div key={metric.metric} className="bg-gray-50 rounded-lg p-4">
+                        <div className="flex items-center justify-between mb-2">
+                          <h4 className="text-sm font-medium text-gray-900">{option?.label || metric.metric}</h4>
+                          <div 
+                            className="w-3 h-3 rounded"
+                            style={{ backgroundColor: option?.color || '#3B82F6' }}
+                          ></div>
+                        </div>
+                        <div className="space-y-1">
+                          <div className="flex justify-between text-xs text-gray-600">
+                            <span>Total:</span>
+                            <span className="font-medium">{totalValue.toLocaleString()}</span>
+                          </div>
+                          <div className="flex justify-between text-xs text-gray-600">
+                            <span>Daily Avg:</span>
+                            <span className="font-medium">{avgValue.toLocaleString()}</span>
+                          </div>
+                          <div className="flex justify-between text-xs text-gray-600">
+                            <span>Peak Day:</span>
+                            <span className="font-medium">{maxValue.toLocaleString()}</span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 

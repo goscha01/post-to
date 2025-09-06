@@ -1,12 +1,244 @@
-// Updated insights.js - Fixed API calls for Google Business Profile Performance API
+// Updated insights.js - Added timeline/historical data support
 const express = require('express');
 const router = express.Router();
 const axios = require('axios');
 
 // API URL for Google Business Profile Performance API
 const PERFORMANCE_URL = 'https://businessprofileperformance.googleapis.com/v1';
+// Clean timeline endpoint - replace your current timeline implementation
 
-// Get basic insights for a location using Google Business Profile Performance API
+router.post('/timeline', async (req, res) => {
+  try {
+    const { accessToken, accountId, locationId, metricRequests, timeRange } = req.body;
+    
+    console.log('Timeline insights request received for location:', locationId);
+    console.log('Fetching real timeline data from Google API');
+    
+    if (!accessToken || !locationId || !metricRequests || !timeRange) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required parameters: accessToken, locationId, metricRequests, timeRange'
+      });
+    }
+
+    const startDate = new Date(timeRange.startTime);
+    const endDate = new Date(timeRange.endTime);
+
+    // Use the same metric mapping as your basic endpoint
+    const metricMap = {
+      'VIEWS_MAPS': ['BUSINESS_IMPRESSIONS_DESKTOP_MAPS', 'BUSINESS_IMPRESSIONS_MOBILE_MAPS'],
+      'VIEWS_SEARCH': ['BUSINESS_IMPRESSIONS_DESKTOP_SEARCH', 'BUSINESS_IMPRESSIONS_MOBILE_SEARCH'],
+      'VIEWS_MAPS_DESKTOP': ['BUSINESS_IMPRESSIONS_DESKTOP_MAPS'],
+      'VIEWS_MAPS_MOBILE': ['BUSINESS_IMPRESSIONS_MOBILE_MAPS'],
+      'VIEWS_SEARCH_DESKTOP': ['BUSINESS_IMPRESSIONS_DESKTOP_SEARCH'],
+      'VIEWS_SEARCH_MOBILE': ['BUSINESS_IMPRESSIONS_MOBILE_SEARCH'],
+      'ACTIONS_PHONE': ['CALL_CLICKS'],
+      'ACTIONS_WEBSITE': ['WEBSITE_CLICKS'],
+      'ACTIONS_DRIVING_DIRECTIONS': ['BUSINESS_DIRECTION_REQUESTS'],
+      'BUSINESS_CONVERSATIONS': ['BUSINESS_CONVERSATIONS'],
+      'BUSINESS_BOOKINGS': ['BUSINESS_BOOKINGS'],
+      'BUSINESS_FOOD_ORDERS': ['BUSINESS_FOOD_ORDERS'],
+      'BUSINESS_FOOD_MENU_CLICKS': ['BUSINESS_FOOD_MENU_CLICKS']
+    };
+
+    const timelineMetrics = [];
+    
+    for (const metricRequest of metricRequests) {
+      const gmbMetric = metricRequest.metric;
+      const apiMetrics = metricMap[gmbMetric] || [gmbMetric];
+      
+      console.log(`Fetching timeline data for: ${gmbMetric} -> ${apiMetrics.join(', ')}`);
+      
+      // Store daily values - key is date string, value is total for that date
+      const dailyTotals = {};
+      let totalValue = 0;
+      
+      // Fetch data for each API metric that maps to this dashboard metric
+      for (const apiMetric of apiMetrics) {
+        try {
+          console.log(`Making timeline API call for: ${gmbMetric} -> ${apiMetric}`);
+          
+          const response = await axios.get(
+            `${PERFORMANCE_URL}/locations/${locationId}:fetchMultiDailyMetricsTimeSeries`,
+            {
+              headers: {
+                'Authorization': `Bearer ${accessToken}`,
+                'Content-Type': 'application/json'
+              },
+              params: {
+                dailyMetrics: apiMetric,
+                'dailyRange.startDate.year': startDate.getFullYear(),
+                'dailyRange.startDate.month': startDate.getMonth() + 1,
+                'dailyRange.startDate.day': startDate.getDate(),
+                'dailyRange.endDate.year': endDate.getFullYear(),
+                'dailyRange.endDate.month': endDate.getMonth() + 1,
+                'dailyRange.endDate.day': endDate.getDate()
+              }
+            }
+          );
+          
+          console.log(`Timeline API response for ${apiMetric}:`, JSON.stringify(response.data, null, 2));
+          
+          // Parse the timeline data from Google's response
+          if (response.data.multiDailyMetricTimeSeries) {
+            response.data.multiDailyMetricTimeSeries.forEach(metricSeries => {
+              if (metricSeries.dailyMetricTimeSeries) {
+                metricSeries.dailyMetricTimeSeries.forEach(dailySeries => {
+                  if (dailySeries.timeSeries && dailySeries.timeSeries.datedValues) {
+                    dailySeries.timeSeries.datedValues.forEach(datedValue => {
+                      if (datedValue.value && datedValue.date) {
+                        const dateStr = formatGoogleDate(datedValue.date);
+                        const value = parseInt(datedValue.value) || 0;
+                        
+                        // Aggregate values by date (for metrics that combine multiple API metrics)
+                        if (!dailyTotals[dateStr]) {
+                          dailyTotals[dateStr] = 0;
+                        }
+                        dailyTotals[dateStr] += value;
+                        totalValue += value;
+                        
+                        console.log(`Found timeline value ${value} for ${apiMetric} on ${dateStr}`);
+                      }
+                    });
+                  }
+                });
+              }
+            });
+          }
+          
+        } catch (error) {
+          console.error(`Failed to fetch timeline data for ${apiMetric}:`, error.response?.data || error.message);
+          console.error(`Error status:`, error.response?.status);
+        }
+      }
+      
+      // Convert daily totals to timeline format
+      const timeSeriesData = [];
+      const daysDiff = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24));
+      
+      for (let i = 0; i < daysDiff; i++) {
+        const currentDate = new Date(startDate);
+        currentDate.setDate(currentDate.getDate() + i);
+        const dateStr = currentDate.toISOString().split('T')[0];
+        
+        timeSeriesData.push({
+          date: dateStr,
+          value: dailyTotals[dateStr] || 0,
+          timestamp: currentDate.toISOString()
+        });
+      }
+      
+      console.log(`Timeline data for ${gmbMetric}: ${totalValue} total, ${timeSeriesData.length} days`);
+      
+      timelineMetrics.push({
+        metric: gmbMetric,
+        timeSeriesData,
+        totalValue
+      });
+    }
+
+    const transformedData = {
+      locationId: locationId,
+      dateRange: {
+        startDate: startDate.toISOString().split('T')[0],
+        endDate: endDate.toISOString().split('T')[0]
+      },
+      metrics: timelineMetrics
+    };
+    
+    console.log('Real timeline data fetched successfully');
+    console.log(`Fetched ${timelineMetrics.length} metrics with real daily data`);
+
+    res.json({
+      success: true,
+      data: transformedData
+    });
+
+  } catch (error) {
+    console.error('Error fetching real timeline data:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch timeline insights from Google API',
+      message: error.message
+    });
+  }
+});
+
+// Helper function to format Google's date response to YYYY-MM-DD format
+function formatGoogleDate(googleDate) {
+  if (typeof googleDate === 'string') {
+    return googleDate; // Already in correct format
+  }
+  
+  if (googleDate.year && googleDate.month && googleDate.day) {
+    const year = googleDate.year;
+    const month = googleDate.month.toString().padStart(2, '0');
+    const day = googleDate.day.toString().padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+  
+  return new Date().toISOString().split('T')[0]; // Fallback
+}
+
+function generateDailyDistribution(totalValue, startDate, endDate) {
+  const timeSeriesData = [];
+  const daysDiff = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24));
+  
+  if (daysDiff <= 0) return timeSeriesData;
+  
+  if (totalValue <= 0) {
+    for (let i = 0; i < daysDiff; i++) {
+      const currentDate = new Date(startDate);
+      currentDate.setDate(currentDate.getDate() + i);
+      
+      timeSeriesData.push({
+        date: currentDate.toISOString().split('T')[0],
+        value: 0,
+        timestamp: currentDate.toISOString()
+      });
+    }
+    return timeSeriesData;
+  }
+
+  const dailyValues = [];
+  const baseDaily = totalValue / daysDiff;
+  
+  for (let i = 0; i < daysDiff; i++) {
+    const currentDate = new Date(startDate);
+    currentDate.setDate(currentDate.getDate() + i);
+    
+    const dayOfWeek = currentDate.getDay();
+    const weekendFactor = (dayOfWeek === 0 || dayOfWeek === 6) ? 0.7 : 1.0;
+    const midWeekFactor = (dayOfWeek >= 2 && dayOfWeek <= 4) ? 1.2 : 1.0;
+    const randomFactor = 0.85 + (Math.random() * 0.3);
+    
+    let dailyValue = Math.round(baseDaily * weekendFactor * midWeekFactor * randomFactor);
+    dailyValue = Math.max(0, dailyValue);
+    
+    dailyValues.push(dailyValue);
+  }
+  
+  const generatedTotal = dailyValues.reduce((sum, val) => sum + val, 0);
+  const adjustmentFactor = totalValue / (generatedTotal || 1);
+  
+  for (let i = 0; i < daysDiff; i++) {
+    const currentDate = new Date(startDate);
+    currentDate.setDate(currentDate.getDate() + i);
+    
+    const adjustedValue = Math.round(dailyValues[i] * adjustmentFactor);
+    
+    timeSeriesData.push({
+      date: currentDate.toISOString().split('T')[0],
+      value: adjustedValue,
+      timestamp: currentDate.toISOString()
+    });
+  }
+  
+  return timeSeriesData;
+}
+
+
+// Get basic insights for a location (original aggregated functionality)
 router.post('/basic', async (req, res) => {
   try {
     const { accessToken, accountId, locationId, metricRequests, timeRange } = req.body;
@@ -65,8 +297,7 @@ router.post('/basic', async (req, res) => {
           console.log(`📅 Date range: ${startDate.toISOString()} to ${endDate.toISOString()}`);
           
           const response = await axios.get(
-            `${PERFORMANCE_URL}/locations/${locationId}:fetchMultiDailyMetricsTimeSeries`,
-            {
+`${PERFORMANCE_URL}/locations/${locationId}:fetchMultiDailyMetricsTimeSeries`,            {
               headers: {
                 'Authorization': `Bearer ${accessToken}`,
                 'Content-Type': 'application/json'
@@ -151,55 +382,6 @@ router.post('/basic', async (req, res) => {
   }
 });
 
-// Helper function to transform multiple metrics data
-function transformMultipleMetricsData(allMetricsData, originalMetrics) {
-  try {
-    const locationMetrics = [];
-    
-    for (const metricData of allMetricsData) {
-      const { gmbMetric, data } = metricData;
-      
-      let totalValue = 0;
-      
-      // Handle the API response structure
-      if (data.multiDailyMetricTimeSeries && data.multiDailyMetricTimeSeries.length > 0) {
-        const metricSeries = data.multiDailyMetricTimeSeries[0];
-        
-        if (metricSeries.dailyMetricTimeSeries && metricSeries.dailyMetricTimeSeries.length > 0) {
-          const dailySeries = metricSeries.dailyMetricTimeSeries[0];
-          
-          if (dailySeries.timeSeries && dailySeries.timeSeries.datedValues) {
-            dailySeries.timeSeries.datedValues.forEach(datedValue => {
-              if (datedValue.value) {
-                totalValue += parseInt(datedValue.value) || 0;
-              }
-            });
-          }
-        }
-      }
-      
-      locationMetrics.push({
-        metric: gmbMetric,
-        metricValues: [{
-          value: totalValue.toString(),
-          time: new Date().toISOString()
-        }]
-      });
-    }
-    
-    return { locationMetrics };
-    
-  } catch (error) {
-    console.error('🚨 Error transforming data:', error);
-    return {
-      locationMetrics: [{
-        metric: 'VIEWS_MAPS',
-        metricValues: [{ value: '0', time: new Date().toISOString() }]
-      }]
-    };
-  }
-}
-
 // Get available metrics
 router.get('/metrics', async (req, res) => {
   try {
@@ -232,6 +414,10 @@ router.get('/metrics', async (req, res) => {
     res.json({
       success: true,
       metrics: availableMetrics,
+      endpoints: {
+        '/basic': 'Get aggregated metrics (total values over date range)',
+        '/timeline': 'Get historical daily data for timeline graphs'
+      },
       apiMapping: {
         'VIEWS_MAPS': ['BUSINESS_IMPRESSIONS_DESKTOP_MAPS', 'BUSINESS_IMPRESSIONS_MOBILE_MAPS'],
         'VIEWS_SEARCH': ['BUSINESS_IMPRESSIONS_DESKTOP_SEARCH', 'BUSINESS_IMPRESSIONS_MOBILE_SEARCH'],
