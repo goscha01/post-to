@@ -3,14 +3,10 @@ import axios from 'axios';
 import { useAuth } from '../contexts/AuthContext';
 import {
   Building2,
-  MapPin,
-  Phone,
-  Globe,
   CheckCircle,
   AlertCircle,
   RefreshCw,
-  Plus,
-  Image
+  Star
 } from 'lucide-react';
 
 // Account Profile Image Component
@@ -70,69 +66,12 @@ const AccountProfileImage = ({ profilePicture, accountName }) => {
   );
 };
 
-// Location Profile Image Component
-const LocationProfileImage = ({ profilePicture, locationName }) => {
-  const [imageSrc, setImageSrc] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(false);
-
-  useEffect(() => {
-    const fetchImage = async () => {
-      if (!profilePicture) return;
-      
-      try {
-        setLoading(true);
-        setError(false);
-        
-        const response = await axios.get(`http://localhost:3001/api/gmb/proxy-image?url=${encodeURIComponent(profilePicture.googleUrl)}`);
-        
-        if (response.data.success && response.data.dataUrl) {
-          setImageSrc(response.data.dataUrl);
-        } else {
-          setError(true);
-        }
-      } catch (err) {
-        console.error('Error fetching location profile image:', err);
-        setError(true);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchImage();
-  }, [profilePicture]);
-
-  if (loading) {
-    return (
-      <div className="h-8 w-8 bg-gray-100 rounded-full flex items-center justify-center">
-        <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-primary-600"></div>
-      </div>
-    );
-  }
-
-  if (error || !imageSrc) {
-    return (
-      <div className="h-8 w-8 bg-gray-100 rounded-full flex items-center justify-center">
-        <Image className="h-4 w-4 text-gray-400" />
-      </div>
-    );
-  }
-
-  return (
-    <img 
-      src={imageSrc}
-      alt={`${locationName || 'Location'} logo`}
-      className="h-8 w-8 rounded-full object-cover border border-gray-200"
-    />
-  );
-};
 
 const BusinessProfiles = () => {
   const { isAuthenticated } = useAuth();
   const [profiles, setProfiles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [mediaLoading, setMediaLoading] = useState({});
 
   useEffect(() => {
     if (isAuthenticated) {
@@ -146,8 +85,8 @@ const BusinessProfiles = () => {
       const response = await axios.get('http://localhost:3001/api/gmb/accounts');
       
       if (response.data.accounts) {
-        // Fetch locations for each account
-        const profilesWithLocations = await Promise.all(
+        // Fetch business data for each account (single card per business)
+        const businessProfiles = await Promise.all(
           response.data.accounts.map(async (account) => {
             try {
               // Extract account ID from the full name (e.g., "accounts/123456789" -> "123456789")
@@ -156,80 +95,77 @@ const BusinessProfiles = () => {
                 `http://localhost:3001/api/gmb/accounts/${accountId}/locations`
               );
               
-              // Fetch account-level media (for account icon)
+              // Get the first location for business data
+              const firstLocation = locationsResponse.data.locations?.[0];
+              if (!firstLocation) {
+                return {
+                  ...account,
+                  accountProfilePicture: null,
+                  businessName: account.accountName,
+                  totalReviews: 0,
+                  averageRating: 0,
+                  locationCount: 0
+                };
+              }
+              
+              const locationId = firstLocation.name.split('/').pop();
+              
+              // Extract the proper business name from location data
+              let businessName = account.accountName; // fallback
+              
+              if (firstLocation.locationName) {
+                businessName = firstLocation.locationName;
+              } else if (firstLocation.title) {
+                businessName = firstLocation.title;
+              } else if (firstLocation.storefrontAddress?.addressLines?.[0]) {
+                // Try to get business name from address if title is not available
+                businessName = firstLocation.storefrontAddress.addressLines[0];
+              }
+              
+              // Fetch account-level media (for business icon)
               let accountProfilePicture = null;
               try {
-                // Try to get account media from the first location's media endpoint
-                if (locationsResponse.data.locations && locationsResponse.data.locations.length > 0) {
-                  const firstLocationId = locationsResponse.data.locations[0].name.split('/').pop();
-                  const accountMediaResponse = await axios.get(
-                    `http://localhost:3001/api/gmb/accounts/${accountId}/locations/${firstLocationId}/media`
-                  );
-                  
-                  if (accountMediaResponse.data.success) {
-                    if (accountMediaResponse.data.logos && accountMediaResponse.data.logos.length > 0) {
-                      accountProfilePicture = accountMediaResponse.data.logos[0];
-                    } else if (accountMediaResponse.data.profilePicture) {
-                      accountProfilePicture = accountMediaResponse.data.profilePicture;
-                    }
+                const accountMediaResponse = await axios.get(
+                  `http://localhost:3001/api/gmb/accounts/${accountId}/locations/${locationId}/media`
+                );
+                
+                if (accountMediaResponse.data.success) {
+                  if (accountMediaResponse.data.logos && accountMediaResponse.data.logos.length > 0) {
+                    accountProfilePicture = accountMediaResponse.data.logos[0];
+                  } else if (accountMediaResponse.data.profilePicture) {
+                    accountProfilePicture = accountMediaResponse.data.profilePicture;
                   }
                 }
               } catch (accountMediaError) {
                 console.error(`Error fetching account media for ${account.name}:`, accountMediaError);
               }
               
-              // Fetch profile pictures for each location
-              const locationsWithMedia = await Promise.all(
-                (locationsResponse.data.locations || []).map(async (location) => {
-                  try {
-                    setMediaLoading(prev => ({ ...prev, [location.name]: true }));
-                    const locationId = location.name.split('/').pop();
-                    const mediaResponse = await axios.get(
-                      `http://localhost:3001/api/gmb/accounts/${accountId}/locations/${locationId}/media`
-                    );
-                    
-                    // Get the first profile picture/logo
-                    let profilePicture = null;
-                    if (mediaResponse.data.success && mediaResponse.data.logos && mediaResponse.data.logos.length > 0) {
-                      profilePicture = mediaResponse.data.logos[0];
-                    } else if (mediaResponse.data.success && mediaResponse.data.profilePicture) {
-                      // Fallback to profilePicture if available
-                      profilePicture = mediaResponse.data.profilePicture;
-                    }
-                    
-                    setMediaLoading(prev => ({ ...prev, [location.name]: false }));
-                    return {
-                      ...location,
-                      profilePicture
-                    };
-                  } catch (mediaError) {
-                    console.error(`Error fetching media for location ${location.name}:`, mediaError);
-                    setMediaLoading(prev => ({ ...prev, [location.name]: false }));
-                    return {
-                      ...location,
-                      profilePicture: null
-                    };
-                  }
-                })
-              );
+              // Fetch review statistics
+              const reviewStats = await fetchReviewStats(accountId, locationId);
               
               return {
                 ...account,
                 accountProfilePicture,
-                locations: locationsWithMedia
+                businessName,
+                totalReviews: reviewStats.totalReviews,
+                averageRating: reviewStats.averageRating,
+                locationCount: locationsResponse.data.locations?.length || 0
               };
             } catch (error) {
-              console.error(`Error fetching locations for ${account.name}:`, error);
+              console.error(`Error fetching business data for ${account.name}:`, error);
               return {
                 ...account,
                 accountProfilePicture: null,
-                locations: []
+                businessName: account.accountName,
+                totalReviews: 0,
+                averageRating: 0,
+                locationCount: 0
               };
             }
           })
         );
         
-        setProfiles(profilesWithLocations);
+        setProfiles(businessProfiles);
       }
     } catch (error) {
       console.error('Error fetching profiles:', error);
@@ -242,6 +178,49 @@ const BusinessProfiles = () => {
     setRefreshing(true);
     await fetchProfiles();
     setRefreshing(false);
+  };
+
+  const fetchReviewStats = async (accountId, locationId) => {
+    try {
+      const response = await axios.get(`http://localhost:3001/api/gmb/accounts/${accountId}/locations/${locationId}/reviews`);
+      
+      if (response.data.success && response.data.reviews) {
+        const reviews = response.data.reviews;
+        const totalReviews = reviews.length;
+        
+        // Calculate average rating
+        let totalRating = 0;
+        let validRatings = 0;
+        
+        reviews.forEach(review => {
+          let rating = 0;
+          if (typeof review.starRating === 'string') {
+            const ratingMap = {
+              'ONE': 1, 'TWO': 2, 'THREE': 3, 'FOUR': 4, 'FIVE': 5
+            };
+            rating = ratingMap[review.starRating] || 0;
+          } else {
+            rating = Number(review.starRating || review.rating) || 0;
+          }
+          
+          if (rating > 0 && rating <= 5) {
+            totalRating += rating;
+            validRatings++;
+          }
+        });
+        
+        const averageRating = validRatings > 0 ? (totalRating / validRatings).toFixed(1) : 0;
+        
+        return {
+          totalReviews,
+          averageRating: parseFloat(averageRating)
+        };
+      }
+    } catch (error) {
+      console.error('Error fetching review stats:', error);
+    }
+    
+    return { totalReviews: 0, averageRating: 0 };
   };
 
   const getStatusColor = (status) => {
@@ -268,6 +247,33 @@ const BusinessProfiles = () => {
       default:
         return 'bg-gray-100 text-gray-800';
     }
+  };
+
+  const renderStars = (rating) => {
+    const stars = [];
+    const fullStars = Math.floor(rating);
+    const hasHalfStar = rating % 1 !== 0;
+    
+    for (let i = 0; i < fullStars; i++) {
+      stars.push(
+        <Star key={i} className="h-4 w-4 text-yellow-400 fill-current" />
+      );
+    }
+    
+    if (hasHalfStar) {
+      stars.push(
+        <Star key="half" className="h-4 w-4 text-yellow-400 fill-current opacity-50" />
+      );
+    }
+    
+    const emptyStars = 5 - Math.ceil(rating);
+    for (let i = 0; i < emptyStars; i++) {
+      stars.push(
+        <Star key={`empty-${i}`} className="h-4 w-4 text-gray-300" />
+      );
+    }
+    
+    return stars;
   };
 
   if (!isAuthenticated) {
@@ -308,29 +314,40 @@ const BusinessProfiles = () => {
         </button>
       </div>
 
-      {/* Profiles List */}
+      {/* Business Profiles List */}
       <div className="space-y-6">
         {profiles.length > 0 ? (
           profiles.map((profile) => (
             <div key={profile.name} className="bg-white shadow rounded-lg">
-              {/* Account Header */}
-              <div className="px-6 py-4 border-b border-gray-200">
+              <div className="px-6 py-6">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center">
                     <div className="flex-shrink-0">
-                      {/* Account Profile Picture - Use account-level media */}
                       <AccountProfileImage 
                         profilePicture={profile.accountProfilePicture}
-                        accountName={profile.accountName}
+                        accountName={profile.businessName}
                       />
                     </div>
                     <div className="ml-4">
-                      <h3 className="text-lg font-medium text-gray-900">
-                        {profile.accountName}
+                      <h3 className="text-xl font-semibold text-gray-900">
+                        {profile.businessName}
                       </h3>
-                      <p className="text-sm text-gray-500">
-                        Account ID: {profile.name.split('/').pop()}
-                      </p>
+                      <div className="flex items-center space-x-4 mt-2">
+                        <div className="flex items-center space-x-1">
+                          {renderStars(profile.averageRating)}
+                          <span className="text-sm font-medium text-gray-700 ml-1">
+                            {profile.averageRating > 0 ? profile.averageRating.toFixed(1) : 'No rating'}
+                          </span>
+                        </div>
+                        <div className="text-sm text-gray-500">
+                          {profile.totalReviews} review{profile.totalReviews !== 1 ? 's' : ''}
+                        </div>
+                        {profile.locationCount > 1 && (
+                          <div className="text-sm text-gray-500">
+                            {profile.locationCount} location{profile.locationCount !== 1 ? 's' : ''}
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
                   <div className="flex items-center space-x-2">
@@ -339,100 +356,6 @@ const BusinessProfiles = () => {
                     </span>
                   </div>
                 </div>
-              </div>
-
-              {/* Locations */}
-              <div className="divide-y divide-gray-200">
-                {profile.locations && profile.locations.length > 0 ? (
-                  profile.locations.map((location) => (
-                    <div key={location.name} className="px-6 py-4">
-                      <div className="flex items-start justify-between">
-                        <div className="flex-1">
-                          <div className="flex items-center space-x-3">
-                            {/* Location Profile Picture */}
-                            <div className="flex-shrink-0">
-                              {mediaLoading[location.name] ? (
-                                <div className="h-8 w-8 bg-gray-100 rounded-full flex items-center justify-center">
-                                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-primary-600"></div>
-                                </div>
-                              ) : (
-                                <LocationProfileImage 
-                                  profilePicture={location.profilePicture}
-                                  locationName={location.title}
-                                />
-                              )}
-                            </div>
-                            
-                            <div className="flex items-center space-x-2">
-                              <h4 className="text-md font-medium text-gray-900">
-                                {location.title || 'Untitled Location'}
-                              </h4>
-                              <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getVerificationStatusColor(location.locationState?.verificationStatus)}`}>
-                                {location.locationState?.verificationStatus || 'UNKNOWN'}
-                              </span>
-                            </div>
-                          </div>
-                          
-                          {location.storefrontAddress && (
-                            <div className="mt-2 flex items-center text-sm text-gray-500">
-                              <MapPin className="h-4 w-4 mr-1" />
-                              {location.storefrontAddress.addressLines?.join(', ')}
-                            </div>
-                          )}
-                          
-                          {location.phoneNumbers && location.phoneNumbers.length > 0 && (
-                            <div className="mt-1 flex items-center text-sm text-gray-500">
-                              <Phone className="h-4 w-4 mr-1" />
-                              {location.phoneNumbers[0].primaryPhone}
-                            </div>
-                          )}
-                          
-                          {location.websiteUri && (
-                            <div className="mt-1 flex items-center text-sm text-gray-500">
-                              <Globe className="h-4 w-4 mr-1" />
-                              <a 
-                                href={location.websiteUri} 
-                                target="_blank" 
-                                rel="noopener noreferrer"
-                                className="text-primary-600 hover:text-primary-500"
-                              >
-                                {location.websiteUri}
-                              </a>
-                            </div>
-                          )}
-                          
-                          {location.categories && location.categories.length > 0 && (
-                            <div className="mt-2">
-                              <span className="text-xs text-gray-500">Category: </span>
-                              <span className="text-xs font-medium text-gray-700">
-                                {location.categories[0].displayName}
-                              </span>
-                            </div>
-                          )}
-                        </div>
-                        
-                        <div className="ml-4 flex-shrink-0">
-                          <div className="flex items-center space-x-2">
-                            {location.locationState?.status === 'VERIFIED' && (
-                              <CheckCircle className="h-5 w-5 text-green-500" />
-                            )}
-                            {location.locationState?.status === 'UNVERIFIED' && (
-                              <AlertCircle className="h-5 w-5 text-yellow-500" />
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  ))
-                ) : (
-                  <div className="px-6 py-8 text-center">
-                    <Building2 className="mx-auto h-12 w-12 text-gray-400" />
-                    <h3 className="mt-2 text-sm font-medium text-gray-900">No locations found</h3>
-                    <p className="mt-1 text-sm text-gray-500">
-                      This account doesn't have any locations yet.
-                    </p>
-                  </div>
-                )}
               </div>
             </div>
           ))
