@@ -463,9 +463,9 @@ const Posts = () => {
       console.log('Response data:', response.data);
       
              // Create a new post object to add to local state immediately
-       const newPostId = `new-post-${Date.now()}`;
+       const newPostId = response.data.postId || `new-post-${Date.now()}`;
        const newPost = {
-         id: newPostId, // Temporary ID
+         id: newPostId, // Use real post ID from backend response
          content: formData.summary,
          postType: formData.postType,
          platform: 'google',

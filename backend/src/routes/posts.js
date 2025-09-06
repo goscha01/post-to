@@ -1012,13 +1012,13 @@ router.patch('/:postId', auth, async (req, res) => {
 
        // Add post type if specified
        if (postType) {
-         updateData.topicType = postType;
+         updateData.topicType = mapPostTypeToTopicType(postType);
        }
 
        // Add call to action if specified
-       if (callToAction && callToAction.url) {
+       if (callToAction && callToAction.actionType && callToAction.url) {
          updateData.callToAction = {
-           actionType: callToAction.actionType || 'BOOK',
+           actionType: callToAction.actionType,
            url: callToAction.url
          };
        }
@@ -1036,7 +1036,7 @@ router.patch('/:postId', auth, async (req, res) => {
              // Build updateMask dynamically based on what's being updated
        let updateMask = 'summary';
        if (postType) updateMask += ',topicType';
-       if (callToAction && callToAction.url) updateMask += ',callToAction';
+       if (callToAction && callToAction.actionType && callToAction.url) updateMask += ',callToAction';
        if (req.body.media && req.body.media.length > 0) updateMask += ',media';
        
        console.log('Update mask:', updateMask);
