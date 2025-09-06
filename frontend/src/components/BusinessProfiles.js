@@ -13,6 +13,120 @@ import {
   Image
 } from 'lucide-react';
 
+// Account Profile Image Component
+const AccountProfileImage = ({ profilePicture, accountName }) => {
+  const [imageSrc, setImageSrc] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    const fetchImage = async () => {
+      if (!profilePicture) return;
+      
+      try {
+        setLoading(true);
+        setError(false);
+        
+        const response = await axios.get(`http://localhost:3001/api/gmb/proxy-image?url=${encodeURIComponent(profilePicture.googleUrl)}`);
+        
+        if (response.data.success && response.data.dataUrl) {
+          setImageSrc(response.data.dataUrl);
+        } else {
+          setError(true);
+        }
+      } catch (err) {
+        console.error('Error fetching account profile image:', err);
+        setError(true);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchImage();
+  }, [profilePicture]);
+
+  if (loading) {
+    return (
+      <div className="h-10 w-10 bg-gray-100 rounded-full flex items-center justify-center">
+        <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-primary-600"></div>
+      </div>
+    );
+  }
+
+  if (error || !imageSrc) {
+    return (
+      <div className="h-10 w-10 bg-primary-100 rounded-full flex items-center justify-center">
+        <Building2 className="h-6 w-6 text-primary-600" />
+      </div>
+    );
+  }
+
+  return (
+    <img 
+      src={imageSrc}
+      alt={`${accountName} logo`}
+      className="h-10 w-10 rounded-full object-cover border-2 border-gray-200"
+    />
+  );
+};
+
+// Location Profile Image Component
+const LocationProfileImage = ({ profilePicture, locationName }) => {
+  const [imageSrc, setImageSrc] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    const fetchImage = async () => {
+      if (!profilePicture) return;
+      
+      try {
+        setLoading(true);
+        setError(false);
+        
+        const response = await axios.get(`http://localhost:3001/api/gmb/proxy-image?url=${encodeURIComponent(profilePicture.googleUrl)}`);
+        
+        if (response.data.success && response.data.dataUrl) {
+          setImageSrc(response.data.dataUrl);
+        } else {
+          setError(true);
+        }
+      } catch (err) {
+        console.error('Error fetching location profile image:', err);
+        setError(true);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchImage();
+  }, [profilePicture]);
+
+  if (loading) {
+    return (
+      <div className="h-8 w-8 bg-gray-100 rounded-full flex items-center justify-center">
+        <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-primary-600"></div>
+      </div>
+    );
+  }
+
+  if (error || !imageSrc) {
+    return (
+      <div className="h-8 w-8 bg-gray-100 rounded-full flex items-center justify-center">
+        <Image className="h-4 w-4 text-gray-400" />
+      </div>
+    );
+  }
+
+  return (
+    <img 
+      src={imageSrc}
+      alt={`${locationName || 'Location'} logo`}
+      className="h-8 w-8 rounded-full object-cover border border-gray-200"
+    />
+  );
+};
+
 const BusinessProfiles = () => {
   const { isAuthenticated } = useAuth();
   const [profiles, setProfiles] = useState([]);
@@ -41,6 +155,28 @@ const BusinessProfiles = () => {
               const locationsResponse = await axios.get(
                 `http://localhost:3001/api/gmb/accounts/${accountId}/locations`
               );
+              
+              // Fetch account-level media (for account icon)
+              let accountProfilePicture = null;
+              try {
+                // Try to get account media from the first location's media endpoint
+                if (locationsResponse.data.locations && locationsResponse.data.locations.length > 0) {
+                  const firstLocationId = locationsResponse.data.locations[0].name.split('/').pop();
+                  const accountMediaResponse = await axios.get(
+                    `http://localhost:3001/api/gmb/accounts/${accountId}/locations/${firstLocationId}/media`
+                  );
+                  
+                  if (accountMediaResponse.data.success) {
+                    if (accountMediaResponse.data.logos && accountMediaResponse.data.logos.length > 0) {
+                      accountProfilePicture = accountMediaResponse.data.logos[0];
+                    } else if (accountMediaResponse.data.profilePicture) {
+                      accountProfilePicture = accountMediaResponse.data.profilePicture;
+                    }
+                  }
+                }
+              } catch (accountMediaError) {
+                console.error(`Error fetching account media for ${account.name}:`, accountMediaError);
+              }
               
               // Fetch profile pictures for each location
               const locationsWithMedia = await Promise.all(
@@ -79,12 +215,14 @@ const BusinessProfiles = () => {
               
               return {
                 ...account,
+                accountProfilePicture,
                 locations: locationsWithMedia
               };
             } catch (error) {
               console.error(`Error fetching locations for ${account.name}:`, error);
               return {
                 ...account,
+                accountProfilePicture: null,
                 locations: []
               };
             }
@@ -180,23 +318,11 @@ const BusinessProfiles = () => {
                 <div className="flex items-center justify-between">
                   <div className="flex items-center">
                     <div className="flex-shrink-0">
-                      {/* Account Profile Picture - Use first location's profile picture if available */}
-                      {profile.locations && profile.locations.length > 0 && profile.locations[0].profilePicture ? (
-                        <img
-                          src={profile.locations[0].profilePicture.googleUrl}
-                          alt={`${profile.accountName} logo`}
-                          className="h-10 w-10 rounded-full object-cover border-2 border-gray-200"
-                          onError={(e) => {
-                            e.target.style.display = 'none';
-                            e.target.nextSibling.style.display = 'flex';
-                          }}
-                        />
-                      ) : null}
-                      <div className={`h-10 w-10 bg-primary-100 rounded-full flex items-center justify-center ${
-                        profile.locations && profile.locations.length > 0 && profile.locations[0].profilePicture ? 'hidden' : ''
-                      }`}>
-                        <Building2 className="h-6 w-6 text-primary-600" />
-                      </div>
+                      {/* Account Profile Picture - Use account-level media */}
+                      <AccountProfileImage 
+                        profilePicture={profile.accountProfilePicture}
+                        accountName={profile.accountName}
+                      />
                     </div>
                     <div className="ml-4">
                       <h3 className="text-lg font-medium text-gray-900">
@@ -229,22 +355,12 @@ const BusinessProfiles = () => {
                                 <div className="h-8 w-8 bg-gray-100 rounded-full flex items-center justify-center">
                                   <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-primary-600"></div>
                                 </div>
-                              ) : location.profilePicture ? (
-                                <img
-                                  src={location.profilePicture.googleUrl}
-                                  alt={`${location.title || 'Location'} logo`}
-                                  className="h-8 w-8 rounded-full object-cover border border-gray-200"
-                                  onError={(e) => {
-                                    e.target.style.display = 'none';
-                                    e.target.nextSibling.style.display = 'flex';
-                                  }}
+                              ) : (
+                                <LocationProfileImage 
+                                  profilePicture={location.profilePicture}
+                                  locationName={location.title}
                                 />
-                              ) : null}
-                              <div className={`h-8 w-8 bg-gray-100 rounded-full flex items-center justify-center ${
-                                mediaLoading[location.name] || location.profilePicture ? 'hidden' : ''
-                              }`}>
-                                <Image className="h-4 w-4 text-gray-400" />
-                              </div>
+                              )}
                             </div>
                             
                             <div className="flex items-center space-x-2">
