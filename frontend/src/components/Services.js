@@ -39,14 +39,14 @@ const Services = () => {
   const [newServiceName, setNewServiceName] = useState('');
   const [newServiceDescription, setNewServiceDescription] = useState('');
   const [newServicePrice, setNewServicePrice] = useState('');
-  const [newServiceCurrency, setNewServiceCurrency] = useState('USD');
+  const [newServiceCurrency, setNewServiceCurrency] = useState('No price');
   const [selectedPredefinedService, setSelectedPredefinedService] = useState('');
   const [showEditServiceModal, setShowEditServiceModal] = useState(false);
   const [editingService, setEditingService] = useState(null);
   const [editServiceName, setEditServiceName] = useState('');
   const [editServiceDescription, setEditServiceDescription] = useState('');
   const [editServicePrice, setEditServicePrice] = useState('');
-  const [editServiceCurrency, setEditServiceCurrency] = useState('USD');
+  const [editServiceCurrency, setEditServiceCurrency] = useState('No price');
   const [isLoading, setIsLoading] = useState(false);
   const [lastApiCall, setLastApiCall] = useState(0);
 
@@ -65,76 +65,6 @@ const Services = () => {
     setLastApiCall(Date.now());
   };
 
-  const testApiPermissions = async () => {
-    if (!selectedProfile) return;
-    
-    try {
-      const locationId = selectedProfile.name.split('/').pop();
-      const accountId = selectedProfile.accountId;
-      
-      console.log('🧪 Testing API permissions...');
-      
-      // Test 1: Check location metadata
-      try {
-        const locationResponse = await axios.get(`http://localhost:3001/api/gmb/accounts/${accountId}/locations`);
-        if (locationResponse.data.success && locationResponse.data.locations) {
-          const location = locationResponse.data.locations.find(loc => 
-            loc.name === `accounts/${accountId}/locations/${locationId}`
-          );
-          
-          if (location && location.metadata) {
-            console.log('✅ Location metadata retrieved:', {
-              canModifyServiceList: location.metadata.canModifyServiceList,
-              canDelete: location.metadata.canDelete,
-              placeId: location.metadata.placeId
-            });
-          }
-        }
-      } catch (error) {
-        console.log('❌ Failed to get location metadata:', error.message);
-      }
-      
-      // Test 2: Try to get current services
-      try {
-        const servicesResponse = await axios.get(`http://localhost:3001/api/gmb/locations/${locationId}/services`);
-        console.log('✅ Services fetch successful:', {
-          success: servicesResponse.data.success,
-          serviceCount: servicesResponse.data.serviceItems?.length || 0
-        });
-      } catch (error) {
-        console.log('❌ Failed to get services:', error.message);
-      }
-      
-      // Test 3: Try a minimal service update
-      try {
-        const testService = {
-          freeFormServiceItem: {
-            category: 'gcid:house_cleaning_service',
-            label: {
-              displayName: 'API Test Service',
-              description: 'Testing if we can add services'
-            }
-          }
-        };
-        
-        const testResponse = await axios.patch(`http://localhost:3001/api/gmb/locations/${locationId}/services`, {
-          serviceItems: [testService]
-        });
-        
-        console.log('✅ Service update test successful:', testResponse.data);
-        
-      } catch (error) {
-        console.log('❌ Service update test failed:', {
-          status: error.response?.status,
-          message: error.response?.data?.error || error.message,
-          data: error.response?.data
-        });
-      }
-      
-    } catch (error) {
-      console.error('❌ API permission test failed:', error);
-    }
-  };
 
   useEffect(() => {
     if (isAuthenticated) {
@@ -745,7 +675,7 @@ const Services = () => {
     setNewServiceName('');
     setNewServiceDescription('');
     setNewServicePrice('');
-    setNewServiceCurrency('USD');
+    setNewServiceCurrency('No price');
     setSelectedPredefinedService('');
   };
 
@@ -754,7 +684,7 @@ const Services = () => {
     setEditServiceName(service.name);
     setEditServiceDescription(service.description || '');
     setEditServicePrice(service.price ? service.price.amount.toString() : '');
-    setEditServiceCurrency(service.price ? service.price.currency : 'USD');
+    setEditServiceCurrency(service.price ? service.price.currency : 'No price');
     setShowEditServiceModal(true);
   };
 
@@ -791,8 +721,8 @@ const Services = () => {
             }
           };
           
-          // Add price if provided
-          if (editServicePrice && editServicePrice.trim()) {
+          // Add price if provided and currency is not "No price"
+          if (editServicePrice && editServicePrice.trim() && editServiceCurrency !== 'No price') {
             const priceAmount = parseFloat(editServicePrice);
             if (!isNaN(priceAmount)) {
               const units = Math.floor(priceAmount).toString();
@@ -805,7 +735,7 @@ const Services = () => {
               };
             }
           } else {
-            // Remove price if empty
+            // Remove price if empty or "No price" selected
             delete updatedItem.price;
           }
           
@@ -870,8 +800,8 @@ const Services = () => {
         }
       };
       
-      // Add price if provided
-      if (servicePrice && servicePrice.trim()) {
+      // Add price if provided and currency is not "No price"
+      if (servicePrice && servicePrice.trim() && serviceCurrency !== 'No price') {
         const priceAmount = parseFloat(servicePrice);
         if (!isNaN(priceAmount)) {
           const units = Math.floor(priceAmount).toString();
@@ -912,170 +842,6 @@ const Services = () => {
     }
   };
 
-  const restoreAllServices = async () => {
-    if (!selectedProfile) return;
-    
-    try {
-      const locationId = selectedProfile.name.split('/').pop();
-      
-      // First, let's check if the location supports service management
-      console.log('🔍 Checking if location supports service management...');
-      
-      try {
-        // Try to get the location details to check metadata
-        const accountId = selectedProfile.accountId;
-        const locationResponse = await axios.get(`http://localhost:3001/api/gmb/accounts/${accountId}/locations`);
-        
-        if (locationResponse.data.success && locationResponse.data.locations) {
-          const location = locationResponse.data.locations.find(loc => 
-            loc.name === `accounts/${accountId}/locations/${locationId}`
-          );
-          
-          if (location && location.metadata) {
-            console.log('📍 Location metadata:', {
-              canModifyServiceList: location.metadata.canModifyServiceList,
-              canDelete: location.metadata.canDelete,
-              placeId: location.metadata.placeId
-            });
-            
-            if (location.metadata.canModifyServiceList === false) {
-              setError('This business location does not support service management. The canModifyServiceList flag is false.');
-              return;
-            }
-          }
-        }
-      } catch (metadataError) {
-        console.log('Could not check location metadata:', metadataError.message);
-      }
-      
-      // Get current services and convert any structured services to free-form
-      const currentServicesResponse = await axios.get(`http://localhost:3001/api/gmb/locations/${locationId}/services`);
-      let currentServiceItems = [];
-      
-      if (currentServicesResponse.data.success && currentServicesResponse.data.serviceItems) {
-        // Convert all existing services to free-form to avoid invalid structured service IDs
-        currentServiceItems = currentServicesResponse.data.serviceItems.map(item => {
-          if (item.structuredServiceItem) {
-            // Convert structured service to free-form
-            const serviceName = item.structuredServiceItem.serviceTypeId 
-              ? item.structuredServiceItem.serviceTypeId.split(':').pop().replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())
-              : 'Cleaning Service';
-            
-            return {
-              freeFormServiceItem: {
-                category: 'gcid:house_cleaning_service',
-                label: {
-                  displayName: serviceName,
-                  description: item.structuredServiceItem.description || `Professional ${serviceName.toLowerCase()} service`
-                }
-              }
-            };
-          } else {
-            // Keep free-form services as-is but ensure they have the category field
-            return {
-              freeFormServiceItem: {
-                category: item.freeFormServiceItem?.category || 'gcid:house_cleaning_service',
-                label: {
-                  displayName: item.freeFormServiceItem?.label?.displayName || 'Service',
-                  description: item.freeFormServiceItem?.label?.description || ''
-                }
-              }
-            };
-          }
-        });
-      }
-      
-      // Try adding just ONE service first to test
-      const testService = {
-        freeFormServiceItem: {
-          category: 'gcid:house_cleaning_service',
-          label: {
-            displayName: 'Test Service',
-            description: 'This is a test service to check if the API works'
-          }
-        }
-      };
-      
-      console.log('🧪 Testing with single service first...');
-      
-      try {
-        const testResponse = await axios.patch(`http://localhost:3001/api/gmb/locations/${locationId}/services`, {
-          serviceItems: [testService]
-        });
-        
-        if (testResponse.data.success) {
-          console.log('✅ Single service test successful! The API works.');
-          
-          // If single service works, try adding more
-          const essentialServices = [
-            { name: 'Deep Cleaning', description: 'Comprehensive deep cleaning service' },
-            { name: 'Regular Cleaning', description: 'Regular house cleaning service' },
-            { name: 'Move-in/Move-out Cleaning', description: 'Cleaning for moving situations' },
-            { name: 'Office Cleaning', description: 'Commercial office cleaning' },
-            { name: 'General Housekeeping', description: 'General housekeeping services' }
-          ];
-          
-          // Convert to Google API format
-          const newServiceItems = essentialServices.map(service => ({
-            freeFormServiceItem: {
-              category: 'gcid:house_cleaning_service',
-              label: {
-                displayName: service.name,
-                description: service.description
-              }
-            }
-          }));
-          
-          // Remove duplicates
-          const existingServiceNames = currentServiceItems.map(item => 
-            item.freeFormServiceItem?.label?.displayName || 
-            item.structuredServiceItem?.serviceTypeId || 
-            'unknown'
-          );
-          
-          const uniqueNewServices = newServiceItems.filter(newService => 
-            !existingServiceNames.includes(newService.freeFormServiceItem.label.displayName)
-          );
-          
-          // Combine existing + new services
-          const allServiceItems = [...currentServiceItems, ...uniqueNewServices];
-          
-          console.log('🔄 Adding remaining services...');
-          
-          const response = await axios.patch(`http://localhost:3001/api/gmb/locations/${locationId}/services`, {
-            serviceItems: allServiceItems
-          });
-          
-          if (response.data.success) {
-            console.log('✅ All services restored successfully!');
-            await fetchExistingServices();
-            setError(null);
-            alert(`Successfully restored ${uniqueNewServices.length} new services! (${currentServiceItems.length} existing + ${uniqueNewServices.length} new = ${allServiceItems.length} total)`);
-          } else {
-            console.error('❌ Failed to restore services:', response.data);
-            setError('Failed to restore services after successful test.');
-          }
-          
-        } else {
-          console.error('❌ Single service test failed:', testResponse.data);
-          setError('Failed to add even a single service. The business location may not support service management.');
-        }
-        
-      } catch (testError) {
-        console.error('❌ Single service test error:', testError);
-        console.error('Error details:', {
-          message: testError.message,
-          status: testError.response?.status,
-          data: testError.response?.data
-        });
-        setError(`Failed to add services. Error: ${testError.response?.data?.error || testError.message}`);
-      }
-      
-    } catch (error) {
-      console.error('Error restoring services:', error);
-      setError('Failed to restore services');
-    }
-  };
 
 
 
@@ -1261,18 +1027,6 @@ const Services = () => {
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-lg font-medium text-gray-900">Services Management</h3>
             <div className="flex gap-2">
-              <button
-                onClick={testApiPermissions}
-                className="inline-flex items-center px-3 py-2 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-orange-600 hover:bg-orange-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-orange-500"
-              >
-                Test API
-              </button>
-              <button
-                onClick={restoreAllServices}
-                className="inline-flex items-center px-3 py-2 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-purple-600 hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500"
-              >
-                Restore All Services
-              </button>
               <button
                 onClick={() => setShowAddServiceModal(true)}
                 className="inline-flex items-center px-3 py-2 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500"
@@ -1612,11 +1366,10 @@ const Services = () => {
                     onChange={(e) => setNewServiceCurrency(e.target.value)}
                     className="px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                   >
-                    <option value="USD">USD</option>
-                    <option value="EUR">EUR</option>
-                    <option value="GBP">GBP</option>
-                    <option value="CAD">CAD</option>
-                    <option value="AUD">AUD</option>
+                    <option value="No price">No price</option>
+                    <option value="Free">Free</option>
+                    <option value="Fixed">Fixed</option>
+                    <option value="From">From</option>
                   </select>
                   <input
                     type="number"
@@ -1715,11 +1468,10 @@ const Services = () => {
                     onChange={(e) => setEditServiceCurrency(e.target.value)}
                     className="px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                   >
-                    <option value="USD">USD</option>
-                    <option value="EUR">EUR</option>
-                    <option value="GBP">GBP</option>
-                    <option value="CAD">CAD</option>
-                    <option value="AUD">AUD</option>
+                    <option value="No price">No price</option>
+                    <option value="Free">Free</option>
+                    <option value="Fixed">Fixed</option>
+                    <option value="From">From</option>
                   </select>
                   <input
                     type="number"
