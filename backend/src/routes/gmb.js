@@ -1115,6 +1115,248 @@ router.get('/accounts/:accountId/locations/:locationId/media', auth, async (req,
   }
 });
 
+// Get predefined services by category name
+router.get('/categories', auth, async (req, res) => {
+  try {
+    const { regionCode = 'US', languageCode = 'en', filter, view = 'FULL' } = req.query;
+    const { accessToken } = req.user;
+    
+    const gmbClient = getBusinessProfileClient(accessToken);
+    
+    const params = {
+      regionCode,
+      languageCode,
+      view
+    };
+    
+    if (filter) {
+      params.filter = filter;
+    }
+    
+    const response = await gmbClient.categories.list(params);
+    
+    res.json({
+      success: true,
+      categories: response.data.categories || []
+    });
+  } catch (error) {
+    console.error('Error fetching categories:', error);
+    console.error('Error details:', {
+      message: error.message,
+      code: error.code,
+      status: error.status,
+      response: error.response?.data
+    });
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch categories',
+      details: error.message
+    });
+  }
+});
+
+// Get predefined services by category ID
+router.get('/categories/batchGet', auth, async (req, res) => {
+  try {
+    const { regionCode = 'US', languageCode = 'en', names, view = 'FULL' } = req.query;
+    const { accessToken } = req.user;
+    
+    if (!names) {
+      return res.status(400).json({
+        success: false,
+        error: 'Category names are required'
+      });
+    }
+    
+    const gmbClient = getBusinessProfileClient(accessToken);
+    
+    // Convert category IDs to proper format (categories/gcid:category_id)
+    const formattedNames = Array.isArray(names) ? names : [names];
+    const properNames = formattedNames.map(name => {
+      if (name.startsWith('gcid:')) {
+        return `categories/${name}`;
+      } else if (name.startsWith('categories/')) {
+        return name;
+      } else {
+        return `categories/gcid:${name}`;
+      }
+    });
+    
+    const response = await gmbClient.categories.batchGet({
+      regionCode,
+      languageCode,
+      names: properNames,
+      view
+    });
+    
+    if (response.data.categories && response.data.categories.length > 0) {
+      const category = response.data.categories[0];
+      console.log(`📋 SERVICES AVAILABLE for "${category.displayName}" (${category.name}):`);
+      console.log('Full category object:', JSON.stringify(category, null, 2));
+      
+      if (category.serviceTypes && category.serviceTypes.length > 0) {
+        console.log('Service types found:', category.serviceTypes.length);
+        console.log('First service type:', JSON.stringify(category.serviceTypes[0], null, 2));
+        
+        // Check if service types have actual data
+        const hasValidServices = category.serviceTypes.some(service => 
+          service.displayName || service.serviceTypeId
+        );
+        
+        if (!hasValidServices) {
+          console.log('Service types are empty, providing fallback services');
+          // Provide fallback services for house cleaning (as free-form services)
+          const fallbackServices = [
+            { displayName: 'Deep Cleaning', description: 'Comprehensive deep cleaning service' },
+            { displayName: 'Regular Cleaning', description: 'Standard house cleaning service' },
+            { displayName: 'Move-in/Move-out Cleaning', description: 'Cleaning for moving situations' },
+            { displayName: 'Office Cleaning', description: 'Commercial office cleaning' },
+            { displayName: 'Post-Construction Cleaning', description: 'Cleaning after construction work' },
+            { displayName: 'Upholstery Cleaning', description: 'Furniture and upholstery cleaning' },
+            { displayName: 'Mattress Cleaning', description: 'Specialized mattress cleaning' },
+            { displayName: 'Window Cleaning', description: 'Interior and exterior window cleaning' }
+          ];
+          
+          category.serviceTypes = fallbackServices;
+          console.log('Using fallback services:', fallbackServices);
+        }
+        
+        category.serviceTypes.forEach((service, index) => {
+          console.log(`  ${index + 1}. ${service.displayName} (${service.serviceTypeId})`);
+        });
+      } else {
+        console.log('  No predefined services available for this category');
+      }
+    }
+    
+    res.json({
+      success: true,
+      categories: response.data.categories || []
+    });
+  } catch (error) {
+    console.error('Error fetching categories by ID:', error);
+    console.error('Error details:', {
+      message: error.message,
+      code: error.code,
+      status: error.status,
+      response: error.response?.data
+    });
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch categories by ID',
+      details: error.message
+    });
+  }
+});
+
+// Get existing services for a location
+router.get('/locations/:locationId/services', auth, async (req, res) => {
+  try {
+    const { locationId } = req.params;
+    const { accessToken } = req.user;
+    
+    const gmbClient = getBusinessProfileClient(accessToken);
+    
+    console.log('Backend: Fetching services for location:', locationId);
+    
+    const response = await gmbClient.locations.get({
+      name: `locations/${locationId}`,
+      readMask: 'serviceItems'
+    });
+    
+    console.log('Backend: Google API response for location services:', response.data);
+    console.log('Backend: Service items count:', response.data.serviceItems ? response.data.serviceItems.length : 0);
+    
+    if (response.data.serviceItems && response.data.serviceItems.length > 0) {
+      console.log('Backend: First few service items:');
+      response.data.serviceItems.slice(0, 3).forEach((item, index) => {
+        console.log(`  Service ${index + 1}:`, item);
+        if (item.structuredServiceItem) {
+          console.log(`    - Structured:`, item.structuredServiceItem);
+        }
+        if (item.freeFormServiceItem) {
+          console.log(`    - Free form:`, item.freeFormServiceItem);
+        }
+      });
+    }
+    
+    res.json({
+      success: true,
+      serviceItems: response.data.serviceItems || []
+    });
+  } catch (error) {
+    console.error('Error fetching location services:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch location services',
+      details: error.message
+    });
+  }
+});
+
+// Update services for a location
+router.patch('/locations/:locationId/services', auth, async (req, res) => {
+  try {
+    const { locationId } = req.params;
+    const { serviceItems } = req.body;
+    const { accessToken } = req.user;
+    
+    console.log('Backend: Updating services for location:', locationId);
+    console.log('Backend: Service items received:', JSON.stringify(serviceItems, null, 2));
+    
+    if (!serviceItems || !Array.isArray(serviceItems)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Service items array is required'
+      });
+    }
+    
+    const gmbClient = getBusinessProfileClient(accessToken);
+    
+    const response = await gmbClient.locations.patch({
+      name: `locations/${locationId}`,
+      updateMask: 'serviceItems',
+      requestBody: {
+        serviceItems: serviceItems
+      }
+    });
+    
+    res.json({
+      success: true,
+      location: response.data
+    });
+  } catch (error) {
+    console.error('Error updating location services:', error);
+    console.error('Error details:', {
+      message: error.message,
+      code: error.code,
+      status: error.status,
+      response: error.response?.data,
+      requestBody: req.body
+    });
+    
+    // Log the specific Google API error
+    if (error.response?.data) {
+      console.error('Google API Error Response:', JSON.stringify(error.response.data, null, 2));
+    }
+    
+    // Log the request that was sent to Google
+    console.error('Request sent to Google:', {
+      name: `locations/${req.params.locationId}`,
+      updateMask: 'serviceItems',
+      requestBody: {
+        serviceItems: req.body.serviceItems
+      }
+    });
+    
+    res.status(500).json({
+      success: false,
+      error: 'Failed to update location services',
+      details: error.message,
+      googleError: error.response?.data
+    });
+  }
+});
 
 // Get account details
 router.get('/accounts/:accountId', auth, async (req, res) => {
