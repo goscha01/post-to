@@ -6,7 +6,17 @@ import {
   CheckCircle,
   AlertCircle,
   RefreshCw,
-  Star
+  Star,
+  X,
+  MapPin,
+  Phone,
+  Globe,
+  Clock,
+  Mail,
+  ExternalLink,
+  Eye,
+  Tag,
+  Navigation
 } from 'lucide-react';
 
 // Account Profile Image Component
@@ -66,12 +76,543 @@ const AccountProfileImage = ({ profilePicture, accountName }) => {
   );
 };
 
+// Business Profile Popup Component
+const BusinessProfilePopup = ({ isOpen, onClose, profile, accountId }) => {
+  const [detailedData, setDetailedData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    if (isOpen && accountId) {
+      fetchDetailedProfileData();
+    }
+  }, [isOpen, accountId]);
+
+  const fetchDetailedProfileData = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      
+      // Get the first location for detailed data
+      const locationsResponse = await axios.get(
+        `http://localhost:3001/api/gmb/accounts/${accountId}/locations`
+      );
+      
+      if (locationsResponse.data.success && locationsResponse.data.locations.length > 0) {
+        const location = locationsResponse.data.locations[0];
+        setDetailedData(location);
+      }
+    } catch (err) {
+      console.error('Error fetching detailed profile data:', err);
+      setError('Failed to load detailed profile data');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const formatAddress = (address) => {
+    if (!address || typeof address !== 'object') return 'Not available';
+    
+    const parts = [];
+    if (address.addressLines && Array.isArray(address.addressLines)) {
+      parts.push(...address.addressLines);
+    }
+    if (address.locality) parts.push(address.locality);
+    if (address.administrativeArea) parts.push(address.administrativeArea);
+    if (address.postalCode) parts.push(address.postalCode);
+    if (address.regionCode) parts.push(address.regionCode);
+    
+    return parts.join(', ') || 'Not available';
+  };
+
+  const formatPhoneNumbers = (phoneNumbers) => {
+    if (!phoneNumbers) return 'Not available';
+    
+    // Handle the actual phone structure: { primaryPhone: "...", additionalPhones: [...] }
+    if (typeof phoneNumbers === 'object' && phoneNumbers.primaryPhone) {
+      const phones = [phoneNumbers.primaryPhone];
+      if (phoneNumbers.additionalPhones && Array.isArray(phoneNumbers.additionalPhones)) {
+        phones.push(...phoneNumbers.additionalPhones);
+      }
+      return phones.join(', ');
+    }
+    
+    // Handle array format (fallback)
+    if (Array.isArray(phoneNumbers)) {
+      if (phoneNumbers.length === 0) return 'Not available';
+      return phoneNumbers.map(phone => phone.number || phone).join(', ');
+    }
+    
+    // Handle single phone number object
+    if (typeof phoneNumbers === 'object') {
+      return phoneNumbers.number || phoneNumbers.toString();
+    }
+    
+    // Handle string or other types
+    return phoneNumbers.toString();
+  };
+
+  const formatHours = (regularHours) => {
+    if (!regularHours) return 'Not available';
+    
+    // Handle weekdayDescriptions format
+    if (regularHours.weekdayDescriptions && Array.isArray(regularHours.weekdayDescriptions)) {
+      return regularHours.weekdayDescriptions.join('\n');
+    }
+    
+    // Handle periods format (like the 24-hour example)
+    if (regularHours.periods && Array.isArray(regularHours.periods)) {
+      return regularHours.periods.map(period => {
+        const openDay = period.openDay || 'Unknown';
+        const closeDay = period.closeDay || 'Unknown';
+        const openTime = period.openTime?.hours || 'Unknown';
+        const closeTime = period.closeTime?.hours || 'Unknown';
+        
+        // Handle 24-hour format
+        if (openTime === 24 || closeTime === 24) {
+          return `${openDay}: 24 Hours`;
+        }
+        
+        // Handle regular hours
+        if (openTime !== 'Unknown' && closeTime !== 'Unknown') {
+          return `${openDay}: ${openTime}:00 - ${closeTime}:00`;
+        }
+        
+        return `${openDay}: ${openTime} - ${closeTime}`;
+      }).join('\n');
+    }
+    
+    return 'Not available';
+  };
+
+  const formatCoordinates = (latlng) => {
+    if (!latlng || typeof latlng !== 'object') return 'Not available';
+    if (latlng.latitude !== undefined && latlng.longitude !== undefined) {
+      return `${latlng.latitude}, ${latlng.longitude}`;
+    }
+    return 'Not available';
+  };
+
+  const formatOpenStatus = (openInfo) => {
+    if (!openInfo) return 'Not available';
+    
+    const status = openInfo.status || 'Unknown';
+    const canReopen = openInfo.canReopen || false;
+    
+    let statusText = status;
+    if (canReopen) {
+      statusText += ' (Can Reopen)';
+    }
+    
+    return statusText;
+  };
+
+  const formatServiceArea = (serviceArea, detailedData = null) => {
+    if (!serviceArea) return 'Not available';
+    
+    // Handle ServiceAreaBusiness object structure
+    if (typeof serviceArea === 'object') {
+      const areas = [];
+      
+      // Check for places with placeInfos (the actual location data)
+      if (serviceArea.places && serviceArea.places.placeInfos && Array.isArray(serviceArea.places.placeInfos)) {
+        const placeNames = serviceArea.places.placeInfos.map(place => place.placeName).filter(Boolean);
+        if (placeNames.length > 0) {
+          areas.push(`Areas served: ${placeNames.join(', ')}`);
+        }
+      }
+      
+      // Check for postal codes
+      if (serviceArea.postalCodes && Array.isArray(serviceArea.postalCodes)) {
+        areas.push(`Postal Codes: ${serviceArea.postalCodes.join(', ')}`);
+      }
+      
+      // Check for regions/cities
+      if (serviceArea.regions && Array.isArray(serviceArea.regions)) {
+        areas.push(`Regions: ${serviceArea.regions.join(', ')}`);
+      }
+      
+      // Check for cities
+      if (serviceArea.cities && Array.isArray(serviceArea.cities)) {
+        areas.push(`Cities: ${serviceArea.cities.join(', ')}`);
+      }
+      
+      // Check for free-form text description
+      if (serviceArea.description) {
+        areas.push(`Description: ${serviceArea.description}`);
+      }
+      
+      // Check for service area name
+      if (serviceArea.name) {
+        areas.push(`Service Area: ${serviceArea.name}`);
+      }
+      
+      // Check for areas array (fallback)
+      if (serviceArea.areas && Array.isArray(serviceArea.areas)) {
+        areas.push(`Areas: ${serviceArea.areas.join(', ')}`);
+      }
+      
+      // Check for single area string
+      if (serviceArea.area && typeof serviceArea.area === 'string') {
+        areas.push(serviceArea.area);
+      }
+      
+      // Check for business type (service area business indicator) - but don't show it as it's not useful
+      // if (serviceArea.businessType) {
+      //   areas.push(`Business Type: ${serviceArea.businessType}`);
+      // }
+      
+      if (areas.length > 0) {
+        return (
+          <div className="space-y-1">
+            {areas.map((area, index) => (
+              <div key={index} className="text-sm">
+                {area}
+              </div>
+            ))}
+          </div>
+        );
+      }
+      
+      // If no specific area data but we have businessType, show a generic message
+      if (serviceArea.businessType === 'CUSTOMER_LOCATION_ONLY' && areas.length === 0) {
+        return 'Service area business - serves customer locations';
+      }
+    }
+    
+    // Handle string format (fallback)
+    if (typeof serviceArea === 'string') {
+      return `Areas served: ${serviceArea}`;
+    }
+    
+    return 'Service area not specified';
+  };
+
+  const formatCategories = (categories) => {
+    if (!categories) return 'Not available';
+    
+    if (typeof categories === 'object') {
+      const categoryInfo = [];
+      
+      // Primary category
+      if (categories.primaryCategory) {
+        const primary = categories.primaryCategory;
+        categoryInfo.push({
+          type: 'Primary',
+          name: primary.displayName || primary.name || 'Unknown',
+          id: primary.categoryId || primary.id || ''
+        });
+      }
+      
+      // Additional categories
+      if (categories.additionalCategories && Array.isArray(categories.additionalCategories)) {
+        categories.additionalCategories.forEach(category => {
+          categoryInfo.push({
+            type: 'Additional',
+            name: category.displayName || category.name || 'Unknown',
+            id: category.categoryId || category.id || ''
+          });
+        });
+      }
+      
+      if (categoryInfo.length > 0) {
+        return (
+          <div className="space-y-2">
+            {categoryInfo.map((category, index) => (
+              <div key={index} className="flex items-center space-x-2">
+                <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${
+                  category.type === 'Primary' 
+                    ? 'bg-blue-100 text-blue-800' 
+                    : 'bg-gray-100 text-gray-800'
+                }`}>
+                  {category.type}
+                </span>
+                <span className="text-sm font-medium">{category.name}</span>
+                {category.id && (
+                  <span className="text-xs text-gray-500 font-mono">{category.id}</span>
+                )}
+              </div>
+            ))}
+          </div>
+        );
+      }
+    }
+    
+    return 'No categories available';
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-hidden">
+        {/* Header */}
+        <div className="flex items-center justify-between p-6 border-b border-gray-200">
+          <div className="flex items-center space-x-3">
+            <AccountProfileImage 
+              profilePicture={profile?.accountProfilePicture}
+              accountName={profile?.businessName}
+            />
+            <div>
+              <h2 className="text-xl font-semibold text-gray-900">
+                {profile?.businessName || 'Business Profile'}
+              </h2>
+              <p className="text-sm text-gray-500">Detailed Information</p>
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-2 hover:bg-gray-100 rounded-full transition-colors"
+          >
+            <X className="h-5 w-5 text-gray-500" />
+          </button>
+        </div>
+
+        {/* Content */}
+        <div className="p-6 overflow-y-auto max-h-[calc(90vh-120px)]">
+          {loading ? (
+            <div className="flex items-center justify-center py-8">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600"></div>
+              <span className="ml-3 text-gray-600">Loading detailed data...</span>
+            </div>
+          ) : error ? (
+            <div className="text-center py-8">
+              <AlertCircle className="h-12 w-12 text-red-400 mx-auto mb-4" />
+              <p className="text-red-600">{error}</p>
+              <button
+                onClick={fetchDetailedProfileData}
+                className="mt-4 px-4 py-2 bg-primary-600 text-white rounded-md hover:bg-primary-700"
+              >
+                Retry
+              </button>
+            </div>
+          ) : detailedData ? (
+            <div className="space-y-6">
+              {/* Basic Information */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="space-y-4">
+                  <h3 className="text-lg font-semibold text-gray-900 flex items-center">
+                    <Building2 className="h-5 w-5 mr-2 text-primary-600" />
+                    Basic Information
+                  </h3>
+                  
+                  <div className="space-y-3">
+                    <div>
+                      <label className="text-sm font-medium text-gray-500">Business Name</label>
+                      <p className="text-gray-900">{detailedData.locationName || detailedData.title || 'Not available'}</p>
+                    </div>
+                    
+                    <div>
+                      <label className="text-sm font-medium text-gray-500">Store Code</label>
+                      <p className="text-gray-900">{detailedData.storeCode || 'Not available'}</p>
+                    </div>
+                    
+                    <div>
+                      <label className="text-sm font-medium text-gray-500">Business Categories</label>
+                      <div className="text-gray-900">
+                        {formatCategories(detailedData.categories)}
+                      </div>
+                    </div>
+                    
+                    <div>
+                      <label className="text-sm font-medium text-gray-500">Business Labels</label>
+                      <p className="text-gray-900">
+                        {detailedData.labels && Array.isArray(detailedData.labels) 
+                          ? detailedData.labels.join(', ') 
+                          : 'Not available'
+                        }
+                      </p>
+                    </div>
+                    
+                    <div>
+                      <label className="text-sm font-medium text-gray-500">Location ID</label>
+                      <p className="text-gray-900 font-mono text-sm">{detailedData.name?.split('/').pop() || 'Not available'}</p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <h3 className="text-lg font-semibold text-gray-900 flex items-center">
+                    <MapPin className="h-5 w-5 mr-2 text-primary-600" />
+                    Location Details
+                  </h3>
+                  
+                  <div className="space-y-3">
+                    <div>
+                      <label className="text-sm font-medium text-gray-500">Address</label>
+                      <p className="text-gray-900">
+                        {detailedData.address && typeof detailedData.address === 'object' 
+                          ? formatAddress(detailedData.address) 
+                          : detailedData.serviceArea 
+                            ? 'Service-based business (no physical address)'
+                            : 'Not available'
+                        }
+                      </p>
+                    </div>
+                    
+                    {detailedData.serviceArea && (
+                      <div>
+                        <label className="text-sm font-medium text-gray-500">Service Area</label>
+                        <div className="text-gray-900">
+                          {formatServiceArea(detailedData.serviceArea, detailedData)}
+                        </div>
+                      </div>
+                    )}
+                    
+                    <div>
+                      <label className="text-sm font-medium text-gray-500">Coordinates</label>
+                      <p className="text-gray-900 font-mono text-sm">{formatCoordinates(detailedData.latlng)}</p>
+                    </div>
+                    
+                    <div>
+                      <label className="text-sm font-medium text-gray-500">Phone Numbers</label>
+                      <p className="text-gray-900">{formatPhoneNumbers(detailedData.phoneNumbers)}</p>
+                    </div>
+                    
+                    <div>
+                      <label className="text-sm font-medium text-gray-500">Website</label>
+                      {detailedData.websiteUri ? (
+                        <a 
+                          href={detailedData.websiteUri} 
+                          target="_blank" 
+                          rel="noopener noreferrer"
+                          className="text-primary-600 hover:text-primary-700 flex items-center"
+                        >
+                          {detailedData.websiteUri}
+                          <ExternalLink className="h-4 w-4 ml-1" />
+                        </a>
+                      ) : (
+                        <p className="text-gray-900">Not available</p>
+                      )}
+                    </div>
+                    
+                    <div>
+                      <label className="text-sm font-medium text-gray-500">Open Status</label>
+                      <div className="flex items-center space-x-2">
+                        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                          detailedData.openInfo?.status === 'OPEN' 
+                            ? 'bg-green-100 text-green-800' 
+                            : 'bg-red-100 text-red-800'
+                        }`}>
+                          {detailedData.openInfo?.status === 'OPEN' ? '🟢' : '🔴'} {formatOpenStatus(detailedData.openInfo)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Business Hours */}
+              {detailedData.regularHours && (
+                <div className="space-y-4">
+                  <h3 className="text-lg font-semibold text-gray-900 flex items-center">
+                    <Clock className="h-5 w-5 mr-2 text-primary-600" />
+                    Business Hours
+                  </h3>
+                  <div className="bg-gray-50 p-4 rounded-lg">
+                    <pre className="text-sm text-gray-700 whitespace-pre-line">
+                      {formatHours(detailedData.regularHours)}
+                    </pre>
+                  </div>
+                </div>
+              )}
+
+              {/* Profile Information */}
+              {detailedData.profile && (
+                <div className="space-y-4">
+                  <h3 className="text-lg font-semibold text-gray-900 flex items-center">
+                    <Eye className="h-5 w-5 mr-2 text-primary-600" />
+                    Profile Information
+                  </h3>
+                  <div className="bg-gray-50 p-4 rounded-lg space-y-3">
+                    {detailedData.profile.profileImageUri && (
+                      <div>
+                        <label className="text-sm font-medium text-gray-500">Profile Image</label>
+                        <div className="mt-2">
+                          <img 
+                            src={detailedData.profile.profileImageUri} 
+                            alt="Profile" 
+                            className="h-20 w-20 rounded-lg object-cover"
+                          />
+                        </div>
+                      </div>
+                    )}
+                    
+                    {detailedData.profile.description && (
+                      <div>
+                        <label className="text-sm font-medium text-gray-500">Description</label>
+                        <p className="text-gray-900 mt-1">{detailedData.profile.description}</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+
+
+              {/* Labels */}
+              {detailedData.labels && Array.isArray(detailedData.labels) && detailedData.labels.length > 0 && (
+                <div className="space-y-4">
+                  <h3 className="text-lg font-semibold text-gray-900 flex items-center">
+                    <Tag className="h-5 w-5 mr-2 text-primary-600" />
+                    Labels
+                  </h3>
+                  <div className="flex flex-wrap gap-2">
+                    {detailedData.labels.map((label, index) => (
+                      <span 
+                        key={index}
+                        className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-primary-100 text-primary-800"
+                      >
+                        {label}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+
+              {/* Raw Data (for debugging) */}
+              <details className="space-y-4">
+                <summary className="text-lg font-semibold text-gray-900 cursor-pointer hover:text-primary-600">
+                  Raw API Data (Click to expand)
+                </summary>
+                <div className="bg-gray-50 p-4 rounded-lg">
+                  <pre className="text-xs text-gray-700 overflow-x-auto">
+                    {JSON.stringify(detailedData, null, 2)}
+                  </pre>
+                </div>
+              </details>
+            </div>
+          ) : (
+            <div className="text-center py-8">
+              <AlertCircle className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+              <p className="text-gray-600">No detailed data available</p>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="flex justify-end space-x-3 p-6 border-t border-gray-200">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 text-gray-700 bg-gray-100 rounded-md hover:bg-gray-200 transition-colors"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 
 const BusinessProfiles = () => {
   const { isAuthenticated } = useAuth();
   const [profiles, setProfiles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [selectedProfile, setSelectedProfile] = useState(null);
+  const [isPopupOpen, setIsPopupOpen] = useState(false);
 
   useEffect(() => {
     if (isAuthenticated) {
@@ -354,6 +895,16 @@ const BusinessProfiles = () => {
                     <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getStatusColor(profile.state)}`}>
                       {profile.state}
                     </span>
+                    <button
+                      onClick={() => {
+                        setSelectedProfile(profile);
+                        setIsPopupOpen(true);
+                      }}
+                      className="inline-flex items-center px-3 py-1.5 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500"
+                    >
+                      <Eye className="h-4 w-4 mr-1" />
+                      View Details
+                    </button>
                   </div>
                 </div>
               </div>
@@ -399,6 +950,17 @@ const BusinessProfiles = () => {
           </div>
         </div>
       </div>
+
+      {/* Business Profile Popup */}
+      <BusinessProfilePopup
+        isOpen={isPopupOpen}
+        onClose={() => {
+          setIsPopupOpen(false);
+          setSelectedProfile(null);
+        }}
+        profile={selectedProfile}
+        accountId={selectedProfile?.name?.split('/').pop()}
+      />
     </div>
   );
 };

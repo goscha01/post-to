@@ -7,6 +7,7 @@ import BusinessProfiles from './components/BusinessProfiles';
 import Posts from './components/Posts';
 import Reviews from './components/Reviews';
 import Insights from './components/Insights';
+import Services from './components/Services';
 import Layout from './components/Layout';
 import './App.css';
 
@@ -82,6 +83,16 @@ const AppContent = () => {
             <ProtectedRoute>
               <Layout>
                 <Insights />
+              </Layout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/services"
+          element={
+            <ProtectedRoute>
+              <Layout>
+                <Services />
               </Layout>
             </ProtectedRoute>
           }

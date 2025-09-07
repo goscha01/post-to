@@ -120,7 +120,7 @@ router.get('/accounts/:accountId/locations', auth, async (req, res) => {
     console.log(`Fetching locations for account: ${accountName}`);
     
     // Use only valid, proven working fields in readMask
-    const readMask = 'name,title,storeCode,websiteUri,storefrontAddress,phoneNumbers,profile,regularHours,metadata,latlng,openInfo,labels';
+    const readMask = 'name,title,storeCode,websiteUri,storefrontAddress,phoneNumbers,profile,regularHours,metadata,latlng,openInfo,labels,serviceArea,categories';
     
     // Get locations for the account with correct readMask parameter
     const locationsResponse = await gmbClient.accounts.locations.list({
@@ -150,7 +150,9 @@ router.get('/accounts/:accountId/locations', auth, async (req, res) => {
       metadata: location.metadata,
       latlng: location.latlng,
       openInfo: location.openInfo,
-      labels: location.labels
+      labels: location.labels,
+      serviceArea: location.serviceArea,
+      categories: location.categories
     }));
     
     res.json({
@@ -833,7 +835,7 @@ router.get('/accounts/:accountId/locations/:locationId/media', auth, async (req,
       // We'll use the locations.list() method and filter for the specific location
       const locationsResponse = await gmbClient.accounts.locations.list({
         parent: `accounts/${accountId}`,
-        readMask: 'name,title,storeCode,websiteUri,storefrontAddress,phoneNumbers,profile,regularHours,metadata,latlng,openInfo,labels'
+        readMask: 'name,title,storeCode,websiteUri,storefrontAddress,phoneNumbers,profile,regularHours,metadata,latlng,openInfo,labels,serviceArea,categories'
       });
       
       console.log('Locations found:', locationsResponse.data.locations?.length || 0);
@@ -1112,6 +1114,7 @@ router.get('/accounts/:accountId/locations/:locationId/media', auth, async (req,
     });
   }
 });
+
 
 // Get account details
 router.get('/accounts/:accountId', auth, async (req, res) => {

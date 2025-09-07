@@ -7,6 +7,7 @@ import {
   FileText,
   MessageSquare,
   BarChart3,
+  Settings,
   Menu,
   X,
   LogOut,
@@ -25,6 +26,7 @@ const Layout = ({ children }) => {
     { name: 'Posts', href: '/posts', icon: FileText },
     { name: 'Reviews', href: '/reviews', icon: MessageSquare },
     { name: 'Insights', href: '/insights', icon: BarChart3 },
+    { name: 'Services', href: '/services', icon: Settings },
   ];
 
   const handleLogout = () => {
