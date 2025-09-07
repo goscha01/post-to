@@ -16,7 +16,9 @@ import {
   Tag,
   ChevronDown,
   ChevronUp,
-  ExternalLink
+  ExternalLink,
+  Edit,
+  Trash2
 } from 'lucide-react';
 
 const Services = () => {
@@ -31,7 +33,6 @@ const Services = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [expandedServices, setExpandedServices] = useState(new Set());
   const [existingServices, setExistingServices] = useState([]);
-  const [isManagingServices, setIsManagingServices] = useState(false);
   const [categorySearchTerm, setCategorySearchTerm] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [isSearchingCategories, setIsSearchingCategories] = useState(false);
@@ -49,6 +50,8 @@ const Services = () => {
   const [editServiceCurrency, setEditServiceCurrency] = useState('No price');
   const [isLoading, setIsLoading] = useState(false);
   const [lastApiCall, setLastApiCall] = useState(0);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [serviceToDelete, setServiceToDelete] = useState(null);
 
   // Rate limiting function to prevent 429 errors
   const rateLimitDelay = async () => {
@@ -688,6 +691,24 @@ const Services = () => {
     setShowEditServiceModal(true);
   };
 
+  const handleDeleteClick = (service) => {
+    setServiceToDelete(service);
+    setShowDeleteConfirm(true);
+  };
+
+  const handleDeleteConfirm = async () => {
+    if (serviceToDelete) {
+      await removeServiceFromLocation(serviceToDelete.id);
+      setShowDeleteConfirm(false);
+      setServiceToDelete(null);
+    }
+  };
+
+  const handleDeleteCancel = () => {
+    setShowDeleteConfirm(false);
+    setServiceToDelete(null);
+  };
+
   const handleUpdateService = async () => {
     if (!editingService || !selectedProfile) return;
     
@@ -1023,23 +1044,15 @@ const Services = () => {
             </div>
           </div>
 
-          {/* Management Toggle */}
+          {/* Services Management Header */}
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-lg font-medium text-gray-900">Services Management</h3>
-            <div className="flex gap-2">
-              <button
-                onClick={() => setShowAddServiceModal(true)}
-                className="inline-flex items-center px-3 py-2 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500"
-              >
-                Add Service
-              </button>
-              <button
-                onClick={() => setIsManagingServices(!isManagingServices)}
-                className="inline-flex items-center px-3 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500"
-              >
-                {isManagingServices ? 'View Only' : 'Manage Services'}
-              </button>
-            </div>
+            <button
+              onClick={() => setShowAddServiceModal(true)}
+              className="inline-flex items-center px-3 py-2 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500"
+            >
+              Add Service
+            </button>
           </div>
 
           {/* Existing Services */}
@@ -1064,172 +1077,64 @@ const Services = () => {
                 {(existingServices || []).map((service) => (
                   <div
                     key={service.id || `existing_${Math.random()}`}
-                    className="flex items-center justify-between p-3 bg-green-50 border border-green-200 rounded-lg"
+                    className="bg-white rounded-lg shadow-sm hover:shadow-md transition-shadow duration-200 overflow-hidden"
                   >
-                    <div className="flex items-center">
-                      <CheckCircle className="h-5 w-5 text-green-500 mr-3" />
-                      <div className="flex-1">
-                        <div className="flex items-center">
-                          <span className="font-medium text-gray-900">{service.name}</span>
-                          <span className="ml-2 text-sm text-gray-500">
-                            ({service.type === 'predefined' ? 'Predefined' : 'Custom'})
-                          </span>
-                        </div>
-                        {service.description && (
-                          <p className="text-sm text-gray-600 mt-1" style={{ 
-                            display: '-webkit-box',
-                            WebkitLineClamp: 2,
-                            WebkitBoxOrient: 'vertical',
-                            overflow: 'hidden'
-                          }}>
-                            {service.description}
-                          </p>
-                        )}
-                        {service.price && (
-                          <p className="text-sm font-medium text-green-600 mt-1">
-                            {service.price.display}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                    {isManagingServices && (
-                      <div className="flex space-x-2">
+                    {/* Service Header with Action Buttons */}
+                    <div className="flex items-center justify-end p-3 bg-gray-50">
+                      {/* Action Buttons */}
+                      <div className="flex items-center space-x-2">
                         <button
                           onClick={() => handleEditService(service)}
-                          className="text-blue-600 hover:text-blue-800 text-sm font-medium"
+                          className="text-gray-400 hover:text-gray-600 p-1 rounded hover:bg-gray-100"
+                          title="Edit service"
                         >
-                          Edit
+                          <Edit className="h-4 w-4" />
                         </button>
                         <button
-                          onClick={() => removeServiceFromLocation(service.id)}
-                          className="text-red-600 hover:text-red-800 text-sm font-medium"
+                          onClick={() => handleDeleteClick(service)}
+                          className="text-red-400 hover:text-red-600 hover:bg-red-50 p-1 rounded transition-colors"
+                          title="Delete service"
                         >
-                          Remove
+                          <Trash2 className="h-4 w-4" />
                         </button>
                       </div>
-                    )}
+                    </div>
+
+                    {/* Service Content */}
+                    <div className="p-4">
+                      <div className="flex items-center">
+                        <CheckCircle className="h-5 w-5 text-green-500 mr-3" />
+                        <div className="flex-1">
+                          <div className="flex items-center">
+                            <span className="font-medium text-gray-900">{service.name}</span>
+                            <span className="ml-2 text-sm text-gray-500">
+                              ({service.type === 'predefined' ? 'Predefined' : 'Custom'})
+                            </span>
+                          </div>
+                          {service.description && (
+                            <p className="text-sm text-gray-600 mt-1" style={{ 
+                              display: '-webkit-box',
+                              WebkitLineClamp: 2,
+                              WebkitBoxOrient: 'vertical',
+                              overflow: 'hidden'
+                            }}>
+                              {service.description}
+                            </p>
+                          )}
+                          {service.price && (
+                            <p className="text-sm font-medium text-green-600 mt-1">
+                              {service.price.display}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 ))}
               </div>
             </div>
           )}
 
-          {/* Available Services */}
-          {selectedCategory && (
-            <div className="mb-6">
-              <div className="flex items-center justify-between mb-3">
-                <h4 className="text-md font-medium text-gray-900">Predefined Services You Can Add</h4>
-                <span className="text-sm text-gray-500 bg-blue-100 px-2 py-1 rounded-full">
-                  {filteredServices.length} available
-                </span>
-              </div>
-              <p className="text-sm text-gray-600 mb-4">
-                These are Google's predefined services for your business category. Click "Add Service" to add them to your Google Business Profile.
-              </p>
-              {loading ? (
-                <div className="flex items-center justify-center py-8">
-                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600"></div>
-                  <span className="ml-3 text-gray-600">Loading services...</span>
-                </div>
-              ) : error ? (
-                <div className="text-center py-8">
-                  <AlertCircle className="h-12 w-12 text-red-400 mx-auto mb-4" />
-                  <p className="text-red-600">{error}</p>
-                </div>
-              ) : filteredServices.length > 0 ? (
-            <div className="space-y-3">
-              {(filteredServices || []).map((service) => {
-                const isAlreadyAdded = (existingServices || []).some(existing => existing.serviceTypeId === service.serviceTypeId);
-                return (
-                  <div
-                    key={service.id || `filtered_${Math.random()}`}
-                    className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow"
-                  >
-                    <div className="flex items-center justify-between">
-                      <div className="flex-1">
-                        <h3 className="text-lg font-semibold text-gray-900 flex items-center">
-                          <CheckCircle className="h-5 w-5 text-green-500 mr-2" />
-                          {service.name}
-                        </h3>
-                        <p className="text-gray-600 mt-1">{service.description}</p>
-                      </div>
-                      <div className="flex items-center space-x-2">
-                        {isManagingServices && (
-                          <button
-                            onClick={() => addServiceToLocation(service)}
-                            disabled={isAlreadyAdded}
-                            className={`px-3 py-1 text-sm font-medium rounded-md ${
-                              isAlreadyAdded
-                                ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                                : 'bg-blue-600 text-white hover:bg-blue-700'
-                            }`}
-                          >
-                            {isAlreadyAdded ? 'Added' : 'Add Service'}
-                          </button>
-                        )}
-                        <button
-                          onClick={() => toggleServiceExpansion(service.id)}
-                          className="p-2 hover:bg-gray-100 rounded-full transition-colors"
-                        >
-                          {expandedServices.has(service.id) ? (
-                            <ChevronUp className="h-4 w-4 text-gray-500" />
-                          ) : (
-                            <ChevronDown className="h-4 w-4 text-gray-500" />
-                          )}
-                        </button>
-                      </div>
-                    </div>
-                  
-                    {expandedServices.has(service.id) && (
-                      <div className="mt-4 pt-4 border-t border-gray-200">
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                          <div>
-                            <h4 className="text-sm font-medium text-gray-700 mb-2">Service Details</h4>
-                            <div className="space-y-2">
-                              <div className="flex items-center text-sm text-gray-600">
-                                <Tag className="h-4 w-4 mr-2" />
-                                Service ID: {service.id}
-                              </div>
-                              <div className="flex items-center text-sm text-gray-600">
-                                <Building2 className="h-4 w-4 mr-2" />
-                                Category: {selectedCategory}
-                              </div>
-                            </div>
-                          </div>
-                          <div>
-                            <h4 className="text-sm font-medium text-gray-700 mb-2">Actions</h4>
-                            <div className="space-y-2">
-                              {isManagingServices && !isAlreadyAdded && (
-                                <button 
-                                  onClick={() => addServiceToLocation(service)}
-                                  className="w-full px-3 py-2 bg-primary-600 text-white text-sm rounded-md hover:bg-primary-700 transition-colors"
-                                >
-                                  Add to Business Profile
-                                </button>
-                              )}
-                              <button className="w-full px-3 py-2 border border-gray-300 text-gray-700 text-sm rounded-md hover:bg-gray-50 transition-colors">
-                                View Details
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-              ) : (
-                <div className="text-center py-8">
-                  <Building2 className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-                  <h3 className="text-lg font-medium text-gray-900 mb-2">No services found</h3>
-                  <p className="text-gray-500">
-                    {searchTerm ? 'Try adjusting your search terms' : 'Select a business category to view available services'}
-                  </p>
-                </div>
-              )}
-            </div>
-          )}
         </div>
       )}
 
@@ -1501,6 +1406,77 @@ const Services = () => {
                   className="px-4 py-2 text-sm font-medium text-white bg-blue-600 border border-transparent rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {isLoading ? 'Updating...' : 'Update Service'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Confirmation Modal */}
+      {showDeleteConfirm && serviceToDelete && (
+        <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50">
+          <div className="relative top-20 mx-auto p-5 border w-96 shadow-lg rounded-md bg-white">
+            <div className="mt-3">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-medium text-gray-900">
+                  Delete Service
+                </h3>
+                <button
+                  onClick={handleDeleteCancel}
+                  className="text-gray-400 hover:text-gray-600"
+                >
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+              
+              <div className="mb-6">
+                <div className="flex items-center mb-4">
+                  <div className="flex-shrink-0">
+                    <div className="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center">
+                      <Trash2 className="h-6 w-6 text-red-600" />
+                    </div>
+                  </div>
+                  <div className="ml-3">
+                    <h4 className="text-sm font-medium text-gray-900">
+                      Are you sure you want to delete this service?
+                    </h4>
+                    <p className="text-sm text-gray-500">
+                      This action cannot be undone.
+                    </p>
+                  </div>
+                </div>
+                
+                <div className="bg-gray-50 rounded-lg p-4">
+                  <div className="flex items-center">
+                    <CheckCircle className="h-5 w-5 text-green-500 mr-3" />
+                    <div>
+                      <p className="font-medium text-gray-900">{serviceToDelete.name}</p>
+                      {serviceToDelete.description && (
+                        <p className="text-sm text-gray-600 mt-1">
+                          {serviceToDelete.description}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex justify-end space-x-3">
+                <button
+                  onClick={handleDeleteCancel}
+                  className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 border border-gray-300 rounded-md hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-gray-500"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleDeleteConfirm}
+                  disabled={isLoading}
+                  className="px-4 py-2 text-sm font-medium text-white bg-red-600 border border-transparent rounded-md hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isLoading ? 'Deleting...' : 'Delete Service'}
                 </button>
               </div>
             </div>
