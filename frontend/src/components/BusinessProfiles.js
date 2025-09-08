@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { useAuth } from '../contexts/AuthContext';
+import { useNavigate } from 'react-router-dom';
 import {
   Building2,
   CheckCircle,
@@ -16,7 +17,8 @@ import {
   ExternalLink,
   Eye,
   Tag,
-  Navigation
+  Navigation,
+  LogOut
 } from 'lucide-react';
 
 // Account Profile Image Component
@@ -607,7 +609,8 @@ const BusinessProfilePopup = ({ isOpen, onClose, profile, accountId }) => {
 
 
 const BusinessProfiles = () => {
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, logout } = useAuth();
+  const navigate = useNavigate();
   const [profiles, setProfiles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -719,6 +722,11 @@ const BusinessProfiles = () => {
     setRefreshing(true);
     await fetchProfiles();
     setRefreshing(false);
+  };
+
+  const handleDisconnect = () => {
+    logout();
+    navigate('/login');
   };
 
   const fetchReviewStats = async (accountId, locationId) => {
@@ -904,6 +912,13 @@ const BusinessProfiles = () => {
                     >
                       <Eye className="h-4 w-4 mr-1" />
                       View Details
+                    </button>
+                    <button
+                      onClick={handleDisconnect}
+                      className="inline-flex items-center px-3 py-1.5 border border-red-300 shadow-sm text-sm font-medium rounded-md text-red-700 bg-white hover:bg-red-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
+                    >
+                      <LogOut className="h-4 w-4 mr-1" />
+                      Disconnect
                     </button>
                   </div>
                 </div>
