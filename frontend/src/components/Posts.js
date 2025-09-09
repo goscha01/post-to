@@ -96,13 +96,6 @@ const Posts = () => {
 
   const [selectedProfile, setSelectedProfile] = useState('');
   
-  // Pagination state
-  const [currentPage, setCurrentPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
-  const [totalPosts, setTotalPosts] = useState(0);
-  const [hasNext, setHasNext] = useState(false);
-  const [hasPrev, setHasPrev] = useState(false);
-  const [loadingMore, setLoadingMore] = useState(false);
   
   // Expanded posts state
   const [expandedPosts, setExpandedPosts] = useState(new Set());
@@ -145,17 +138,11 @@ const Posts = () => {
    });
 
   useEffect(() => {
+    console.log('🔍 Posts useEffect - isAuthenticated:', isAuthenticated, 'isDisconnected:', isDisconnected);
     if (isAuthenticated && !isDisconnected) {
-      // Check if business profiles are connected
-      const businessConnected = localStorage.getItem('gmb_business_connected') === 'true';
-      if (businessConnected) {
-        fetchData();
-      } else {
-        // User is authenticated but business profiles not connected
-        setPosts([]);
-        setProfiles([]);
-        setLoading(false);
-      }
+      // Always fetch data when authenticated (remove business connection check)
+      console.log('🔍 User authenticated, fetching data');
+      fetchData();
     } else if (isDisconnected) {
       // Clear data when disconnected
       setPosts([]);
@@ -167,7 +154,7 @@ const Posts = () => {
   // Auto-fetch posts when profile is selected
   useEffect(() => {
     if (selectedProfile && !isDisconnected) {
-      fetchPosts(selectedProfile, 1, false);
+      fetchPosts(selectedProfile);
     }
   }, [selectedProfile, isDisconnected]);
 
@@ -223,11 +210,12 @@ const Posts = () => {
       const locationIdOnly = profileParts[profileParts.length - 1];
       const accountId = profileParts[1];
       
-      console.log('Fetching posts for location:', locationIdOnly, 'account:', accountId, 'page:', page);
+      console.log('Fetching posts for location:', locationIdOnly, 'account:', accountId);
       
-      const response = await axios.get(`http://localhost:3001/api/posts/location/${locationIdOnly}?page=${page}&limit=3`, {
+      const response = await axios.get(`http://localhost:3001/api/posts/location/${locationIdOnly}`, {
         headers: {
-          'x-gmb-account-id': accountId
+          'x-gmb-account-id': accountId,
+          'Authorization': `Bearer ${localStorage.getItem('gmb_token')}`
         }
       });
       
@@ -249,30 +237,13 @@ const Posts = () => {
       }
       console.log('=== END FRONTEND POSTS DEBUG ===');
       
-      // Handle pagination response
-      if (response.data.posts && response.data.pagination) {
-        if (append) {
-          // Append posts for load more functionality
-          setPosts(prevPosts => [...prevPosts, ...response.data.posts]);
-        } else {
-          // Replace posts for new page or initial load
-          setPosts(response.data.posts);
-        }
-        
-        // Update pagination state
-        setCurrentPage(response.data.pagination.page);
-        setTotalPages(response.data.pagination.totalPages);
-        setTotalPosts(response.data.pagination.total);
-        setHasNext(response.data.pagination.hasNext);
-        setHasPrev(response.data.pagination.hasPrev);
+      // Handle response - always set posts from response.data.posts
+      if (response.data.posts) {
+        setPosts(response.data.posts);
+        console.log('✅ Posts set successfully:', response.data.posts.length, 'posts');
       } else {
-        // Fallback for old response format
-        setPosts(response.data);
-        setCurrentPage(1);
-        setTotalPages(1);
-        setTotalPosts(response.data.length);
-        setHasNext(false);
-        setHasPrev(false);
+        console.log('❌ No posts in response');
+        setPosts([]);
       }
     } catch (error) {
       console.error('Error fetching posts:', error);
@@ -521,9 +492,10 @@ const Posts = () => {
       setTimeout(async () => {
         try {
           // Fetch fresh posts from GMB
-          const response = await axios.get(`http://localhost:3001/api/posts/location/${locationId}?page=${currentPage}&limit=3`, {
+          const response = await axios.get(`http://localhost:3001/api/posts/location/${locationId}`, {
             headers: {
-              'x-gmb-account-id': accountId
+              'x-gmb-account-id': accountId,
+              'Authorization': `Bearer ${localStorage.getItem('gmb_token')}`
             }
           });
           
@@ -550,12 +522,6 @@ const Posts = () => {
               console.log('New post not yet in GMB, preserved local post');
             }
             
-            // Update pagination state
-            setCurrentPage(response.data.pagination.page);
-            setTotalPages(response.data.pagination.totalPages);
-            setTotalPosts(response.data.pagination.total);
-            setHasNext(response.data.pagination.hasNext);
-            setHasPrev(response.data.pagination.hasPrev);
           }
           
           console.log('=== POSTS REFRESHED IN BACKGROUND ===');
@@ -599,8 +565,8 @@ const Posts = () => {
         }
       });
       
-      // Refresh the current page of posts
-      await fetchPosts(selectedProfile, currentPage, false);
+      // Refresh posts
+      await fetchPosts(selectedProfile);
       showNotification('Post deleted successfully!', 'success');
     } catch (error) {
       console.error('Error deleting post:', error);
@@ -619,25 +585,6 @@ const Posts = () => {
     }
   };
 
-  const handleLoadMore = async () => {
-    if (!hasNext || loadingMore) return;
-    
-    setLoadingMore(true);
-    try {
-      await fetchPosts(selectedProfile, currentPage + 1, true);
-    } catch (error) {
-      console.error('Error loading more posts:', error);
-    } finally {
-      setLoadingMore(false);
-    }
-  };
-
-  const handlePageChange = async (newPage) => {
-    if (newPage < 1 || newPage > totalPages) return;
-    
-    setCurrentPage(newPage);
-    await fetchPosts(selectedProfile, newPage, false);
-  };
 
   // Helper function to truncate text to first sentence
   const truncateToFirstSentence = (text, maxLength = 150) => {
@@ -801,7 +748,7 @@ const Posts = () => {
        // Refresh posts and reset edit state
        console.log('Refreshing posts...');
        try {
-         await fetchPosts(selectedProfile, currentPage, false);
+         await fetchPosts(selectedProfile);
          console.log('Posts refreshed successfully');
        } catch (fetchError) {
          console.log('Error refreshing posts:', fetchError);
@@ -968,9 +915,8 @@ const Posts = () => {
           value={selectedProfile}
           onChange={(e) => {
             setSelectedProfile(e.target.value);
-            setCurrentPage(1); // Reset to first page when changing profiles
             setExpandedPosts(new Set()); // Reset expanded posts when changing profiles
-            fetchPosts(e.target.value, 1, false);
+            fetchPosts(e.target.value);
           }}
           className="block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
         >
@@ -1343,9 +1289,8 @@ const Posts = () => {
             <h2 className="text-lg font-medium text-gray-900">Posts</h2>
             <button
               onClick={() => {
-                setCurrentPage(1);
                 setExpandedPosts(new Set()); // Reset expanded posts when refreshing
-                fetchPosts(selectedProfile, 1, false);
+                fetchPosts(selectedProfile);
               }}
               className="inline-flex items-center px-3 py-1 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50"
             >
@@ -1355,6 +1300,7 @@ const Posts = () => {
           </div>
           </div>
           <div className="p-6">
+            {console.log('🔍 Rendering posts - posts.length:', posts.length, 'selectedProfile:', selectedProfile)}
             {posts.length > 0 ? (
               <>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6">
@@ -1533,35 +1479,6 @@ const Posts = () => {
                    })}
                 </div>
                 
-                {/* Load More Section */}
-                <div className="px-6 py-4 border-t border-gray-200 mt-6">
-                  <div className="flex items-center justify-between">
-                    <div className="text-sm text-gray-700">
-                      <span>Showing {posts.length} of {totalPosts} posts</span>
-                    </div>
-                    
-                    {/* Load More Button */}
-                    {hasNext && (
-                      <button
-                        onClick={handleLoadMore}
-                        disabled={loadingMore}
-                        className="inline-flex items-center px-4 py-2 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-primary-600 hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                      >
-                        {loadingMore ? (
-                          <>
-                            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
-                            Loading...
-                          </>
-                        ) : (
-                          <>
-                            <Plus className="h-4 w-4 mr-2" />
-                            Load More
-                          </>
-                        )}
-                      </button>
-                    )}
-                  </div>
-                </div>
               </>
             ) : (
               <div className="col-span-full px-6 py-12 text-center">
