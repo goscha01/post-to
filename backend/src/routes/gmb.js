@@ -158,6 +158,167 @@ const saveServiceToDatabase = async (userId, serviceData) => {
   }
 };
 
+// Helper function to save review to database
+const saveReviewToDatabase = async (userId, reviewData) => {
+  try {
+    console.log('=== SAVE REVIEW TO DATABASE DEBUG ===');
+    console.log('User ID:', userId);
+    console.log('Review data:', reviewData);
+
+    const insertData = {
+      user_id: userId,
+      location_id: reviewData.locationId || null,
+      review_id: reviewData.reviewId || reviewData.gmbReviewId || null,
+      reviewer_name: reviewData.reviewerName || reviewData.reviewer?.displayName || null,
+      reviewer_photo_url: reviewData.reviewerPhotoUrl || reviewData.reviewer?.photoUrl || null,
+      star_rating: reviewData.starRating || reviewData.rating || null,
+      comment: reviewData.comment || null,
+      create_time: reviewData.createTime || reviewData.reviewTime || new Date().toISOString(),
+      update_time: reviewData.updateTime || null,
+      reply_comment: reviewData.reviewReply?.comment || reviewData.replyText || null,
+      reply_update_time: reviewData.reviewReply?.updateTime || reviewData.replyTime || null
+    };
+
+    console.log('Insert data:', insertData);
+
+    const { data, error } = await supabase
+      .from('gmb_reviews')
+      .insert(insertData)
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Error saving review to database:', error);
+      console.error('Error details:', JSON.stringify(error, null, 2));
+      return null;
+    }
+
+    console.log('Review saved to database successfully:', data.id);
+    return data;
+  } catch (error) {
+    console.error('Error in saveReviewToDatabase:', error);
+    console.error('Error stack:', error.stack);
+    return null;
+  }
+};
+
+// Helper function to save existing reviews from API to database
+const saveExistingReviewsToDatabase = async (userId, reviews, locationId, platform = 'google') => {
+  try {
+    console.log(`=== SAVE EXISTING REVIEWS DEBUG ===`);
+    console.log(`User ID: ${userId}`);
+    console.log(`Location ID: ${locationId}`);
+    console.log(`Platform: ${platform}`);
+    console.log(`Number of reviews: ${reviews.length}`);
+    
+    // Check if location exists, if not create it
+    let { data: existingLocation } = await supabase
+      .from('gmb_locations')
+      .select('location_id')
+      .eq('location_id', locationId)
+      .single();
+
+    if (!existingLocation) {
+      console.log(`Location ${locationId} not found, creating it...`);
+      
+      // Get an existing GMB account to use
+      const { data: gmbAccount } = await supabase
+        .from('gmb_accounts')
+        .select('account_id')
+        .limit(1)
+        .single();
+
+      if (!gmbAccount) {
+        console.error('No GMB account found, cannot create location');
+        return [];
+      }
+
+      // Create the location
+      const { data: newLocation, error: locationError } = await supabase
+        .from('gmb_locations')
+        .insert({
+          user_id: userId,
+          account_id: gmbAccount.account_id,
+          location_id: locationId,
+          location_name: `GMB Location ${locationId}`,
+          address: 'Google My Business Location'
+        })
+        .select()
+        .single();
+
+      if (locationError) {
+        console.error('Error creating location:', locationError);
+        return [];
+      }
+
+      console.log(`Location ${locationId} created successfully`);
+      existingLocation = newLocation;
+    }
+    
+    const savedReviews = [];
+    
+    for (const review of reviews) {
+      // Convert star rating from string to number
+      let starRating = 0;
+      if (review.starRating) {
+        const ratingMap = {
+          'ONE': 1,
+          'TWO': 2,
+          'THREE': 3,
+          'FOUR': 4,
+          'FIVE': 5
+        };
+        starRating = ratingMap[review.starRating] || parseInt(review.starRating) || 0;
+      } else if (review.rating) {
+        starRating = parseInt(review.rating) || 0;
+      }
+
+      // Extract review information
+      const reviewData = {
+        locationId: locationId,
+        reviewId: review.reviewId || review.name?.split('/').pop() || `review-${Date.now()}-${Math.random()}`,
+        gmbReviewId: review.reviewId || review.name?.split('/').pop(),
+        reviewerName: review.reviewer?.displayName || review.reviewerName || 'Anonymous',
+        reviewerPhotoUrl: review.reviewer?.profilePhotoUrl || review.reviewer?.photoUrl || review.reviewerPhotoUrl || null,
+        starRating: starRating,
+        comment: review.comment || '',
+        createTime: review.createTime || review.reviewTime || new Date().toISOString(),
+        updateTime: review.updateTime || null,
+        reviewReply: review.reviewReply || null,
+        replyText: review.replyText || review.reviewReply?.comment || null,
+        replyTime: review.replyTime || review.reviewReply?.updateTime || null
+      };
+
+      // Check if review already exists in database
+      console.log(`Checking if review ${reviewData.gmbReviewId} already exists...`);
+      const { data: existingReview } = await supabase
+        .from('gmb_reviews')
+        .select('id')
+        .eq('review_id', reviewData.gmbReviewId)
+        .single();
+
+      if (existingReview) {
+        console.log(`Review ${reviewData.gmbReviewId} already exists in database, skipping...`);
+        continue;
+      }
+
+      console.log(`Review ${reviewData.gmbReviewId} not found, proceeding to save...`);
+
+      // Save to database
+      const savedReview = await saveReviewToDatabase(userId, reviewData);
+      if (savedReview) {
+        savedReviews.push(savedReview);
+      }
+    }
+
+    console.log(`Successfully saved ${savedReviews.length} new reviews to database`);
+    return savedReviews;
+  } catch (error) {
+    console.error('Error saving existing reviews to database:', error);
+    return [];
+  }
+};
+
 // Helper function to save existing services from API to database
 const saveExistingServicesToDatabase = async (userId, services, platform = 'google') => {
   try {
@@ -513,9 +674,14 @@ router.get('/accounts/:accountId/locations/:locationId/reviews', auth, async (re
         reviewReply: review.reviewReply
       }));
       
+      // Save reviews to database
+      const savedReviews = await saveExistingReviewsToDatabase(req.user.userId, reviews, locationId, 'google');
+      console.log(`Saved ${savedReviews.length} reviews to database`);
+      
       res.json({
         success: true,
-        reviews: reviews
+        reviews: reviews,
+        savedToDatabase: savedReviews.length
       });
       
     } catch (gmbV4Error) {
@@ -552,11 +718,16 @@ router.get('/accounts/:accountId/locations/:locationId/reviews', auth, async (re
               reviewReply: review.reply ? { comment: review.reply, updateTime: review.replyTime } : null
             }));
             
+            // Save reviews to database
+            const savedReviews = await saveExistingReviewsToDatabase(req.user.userId, reviews, locationId, 'google');
+            console.log(`Saved ${savedReviews.length} reviews to database`);
+            
             return res.json({
               success: true,
               reviews: reviews,
               message: `Found ${reviews.length} reviews from Business Profile API`,
-              source: 'business_profile_v1'
+              source: 'business_profile_v1',
+              savedToDatabase: savedReviews.length
             });
           }
         }
@@ -587,11 +758,16 @@ router.get('/accounts/:accountId/locations/:locationId/reviews', auth, async (re
               reviewReply: null // Places API doesn't have business replies
             }));
             
+            // Save reviews to database
+            const savedReviews = await saveExistingReviewsToDatabase(req.user.userId, reviews, locationId, 'google');
+            console.log(`Saved ${savedReviews.length} reviews to database`);
+            
             return res.json({
               success: true,
               reviews: reviews,
               message: `Found ${reviews.length} reviews from Places API`,
-              source: 'places_api'
+              source: 'places_api',
+              savedToDatabase: savedReviews.length
             });
           }
         }
@@ -811,7 +987,7 @@ router.get('/accounts/:accountId/locations/:locationId/posts', auth, async (req,
       // Save existing posts to database
       const savedPosts = await saveExistingPostsToDatabase(req.user.userId, posts, 'google');
       console.log(`Saved ${savedPosts.length} posts to database`);
-
+      
       res.json({
         success: true,
         posts: posts,
@@ -1736,6 +1912,121 @@ router.post('/test-create-service', async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'Test service creation failed',
+      details: error.message,
+      stack: error.stack
+    });
+  }
+});
+
+// Test endpoint to create a review without authentication (for testing)
+router.post('/test-create-review', async (req, res) => {
+  try {
+    console.log('=== TEST CREATE REVIEW DEBUG ===');
+    console.log('Request body:', req.body);
+    
+    // First, create or get a test user
+    console.log('Creating test user...');
+    const testId = Date.now();
+    const { data: testUser, error: userError } = await supabase
+      .from('users')
+      .upsert({
+        google_id: `test-google-id-${testId}`,
+        email: `test-${testId}@example.com`,
+        name: 'Test User'
+      })
+      .select()
+      .single();
+
+    if (userError) {
+      console.error('Error creating test user:', userError);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to create test user',
+        details: userError.message
+      });
+    }
+
+    console.log('Test user created/found:', testUser.id);
+
+    // Use an existing GMB account
+    console.log('Getting existing GMB account...');
+    const { data: existingAccount, error: accountError } = await supabase
+      .from('gmb_accounts')
+      .select('account_id, account_name')
+      .limit(1)
+      .single();
+
+    if (accountError || !existingAccount) {
+      console.error('Error getting existing GMB account:', accountError);
+      return res.status(500).json({
+        success: false,
+        error: 'No GMB account found - please create one first',
+        details: accountError?.message || 'No accounts available'
+      });
+    }
+
+    console.log('Using existing GMB account:', existingAccount.account_id);
+
+    // Create a test location
+    console.log('Creating test location...');
+    const { data: testLocation, error: locationError } = await supabase
+      .from('gmb_locations')
+      .insert({
+        user_id: testUser.id,
+        account_id: existingAccount.account_id, // Use the existing GMB account_id
+        location_id: `test-location-${testId}`,
+        location_name: 'Test Location',
+        address: '123 Test Street, Test City, TC 12345'
+      })
+      .select()
+      .single();
+
+    if (locationError) {
+      console.error('Error creating test location:', locationError);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to create test location',
+        details: locationError.message
+      });
+    }
+
+    console.log('Test location created:', testLocation.location_id);
+
+    const reviewData = {
+      locationId: testLocation.location_id,
+      reviewId: `test-review-${testId}`,
+      gmbReviewId: `test-review-${testId}`,
+      reviewerName: req.body.reviewerName || 'Test Reviewer',
+      starRating: req.body.starRating || 5,
+      comment: req.body.comment || 'This is a test review',
+      createTime: new Date().toISOString(),
+      replyText: req.body.replyText || null,
+      replyTime: req.body.replyTime || null
+    };
+
+    console.log('Review data prepared:', reviewData);
+
+    const savedReview = await saveReviewToDatabase(testUser.id, reviewData);
+
+    console.log('Save result:', savedReview);
+
+    if (savedReview) {
+      res.json({
+        success: true,
+        message: 'Test review created successfully',
+        review: savedReview
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        error: 'Failed to save test review - check server logs'
+      });
+    }
+  } catch (error) {
+    console.error('Error creating test review:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Test review creation failed',
       details: error.message,
       stack: error.stack
     });
