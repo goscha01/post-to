@@ -82,12 +82,18 @@ export const AuthProvider = ({ children }) => {
 
   const loginForBusiness = async () => {
     try {
-      const response = await axios.get('http://localhost:3001/auth/google/business');
+      if (!user?.id) {
+        throw new Error('User must be authenticated to connect business profile');
+      }
+      const response = await axios.get(`http://localhost:3001/auth/google/business?user_id=${user.id}`);
       window.location.href = response.data.authUrl;
     } catch (error) {
       if (error.response?.status === 429) {
         const retryAfter = error.response.data.retryAfter || 2;
         alert(`Too many requests. Please wait ${retryAfter} seconds and try again.`);
+      } else {
+        console.error('Business authentication error:', error);
+        alert('Failed to initiate business authentication. Please try again.');
       }
     }
   };
@@ -100,8 +106,14 @@ export const AuthProvider = ({ children }) => {
     
     setToken(newToken);
     localStorage.setItem('gmb_token', newToken);
-    localStorage.setItem('gmb_google_access_token', googleAccessToken);
-    localStorage.setItem('gmb_refresh_token', googleRefreshToken);
+    
+    // Only store Google tokens if they exist (for business authentication)
+    if (googleAccessToken) {
+      localStorage.setItem('gmb_google_access_token', googleAccessToken);
+    }
+    if (googleRefreshToken) {
+      localStorage.setItem('gmb_refresh_token', googleRefreshToken);
+    }
     
     // Store business connection status
     if (isBusinessConnection) {

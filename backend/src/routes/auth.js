@@ -10,11 +10,18 @@ const supabase = createClient(
   process.env.SUPABASE_ANON_KEY
 );
 
-// Initialize Google OAuth2 client
+// Initialize Google OAuth2 client for user authentication
 const oauth2Client = new google.auth.OAuth2(
   process.env.GOOGLE_CLIENT_ID,
   process.env.GOOGLE_CLIENT_SECRET,
   process.env.GOOGLE_CALLBACK_URL
+);
+
+// Initialize separate OAuth2 client for business authentication
+const businessOAuth2Client = new google.auth.OAuth2(
+  process.env.GOOGLE_CLIENT_ID,
+  process.env.GOOGLE_CLIENT_SECRET,
+  `${process.env.BACKEND_URL || 'http://localhost:3001'}/auth/google/business/callback`
 );
 
 // Google OAuth scopes - only for user authentication (no business access)
@@ -32,6 +39,13 @@ const BUSINESS_SCOPES = [
 
 // Cache for auth URLs to reduce Google API calls
 let authUrlCache = {
+  url: null,
+  expiry: 0,
+  lastRequestTime: 0
+};
+
+// Cache for business auth URLs
+let businessAuthUrlCache = {
   url: null,
   expiry: 0,
   lastRequestTime: 0
@@ -148,7 +162,8 @@ router.get('/google/oauth/callback', async (req, res) => {
     const oauth2 = google.oauth2({ version: 'v2', auth: oauth2Client });
     const userInfo = await oauth2.userinfo.get();
 
-    // Check if user exists in database
+    // For business authentication, we need to find the existing user
+    // Business auth should only add business access to an existing user
     let { data: user, error: userError } = await supabase
       .from('users')
       .select('*')
@@ -160,40 +175,27 @@ router.get('/google/oauth/callback', async (req, res) => {
     }
 
     if (!user) {
-      // Create new user
-      const { data: newUser, error: createError } = await supabase
-        .from('users')
-        .insert({
-          google_id: userInfo.data.id,
-          email: userInfo.data.email,
-          name: userInfo.data.name,
-          picture_url: userInfo.data.picture,
-          access_token: tokens.access_token,
-          refresh_token: tokens.refresh_token,
-          token_expiry: tokens.expiry_date ? new Date(tokens.expiry_date) : null
-        })
-        .select()
-        .single();
-
-      if (createError) throw createError;
-      user = newUser;
-    } else {
-      // Update existing user's tokens
-      const { error: updateError } = await supabase
-        .from('users')
-        .update({
-          access_token: tokens.access_token,
-          refresh_token: tokens.refresh_token,
-          token_expiry: tokens.expiry_date ? new Date(tokens.expiry_date) : null,
-          name: userInfo.data.name,
-          picture_url: userInfo.data.picture
-        })
-        .eq('id', user.id);
-
-      if (updateError) throw updateError;
+      // If no user exists, this is an error for business auth
+      // Business auth should only work for existing users
+      console.error('Business authentication attempted for non-existent user:', userInfo.data.id);
+      const errorUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/business/callback?error=user_not_authenticated`;
+      return res.redirect(errorUrl);
     }
 
-    // Generate JWT token
+    // Update existing user's business access tokens only
+    const { error: updateError } = await supabase
+      .from('users')
+      .update({
+        access_token: tokens.access_token,
+        refresh_token: tokens.refresh_token,
+        token_expiry: tokens.expiry_date ? new Date(tokens.expiry_date) : null
+        // Don't update name/picture_url as user identity should remain consistent
+      })
+      .eq('id', user.id);
+
+    if (updateError) throw updateError;
+
+    // Generate JWT token using existing user data (maintains user identity consistency)
     const jwtToken = jwt.sign(
       { 
         userId: user.id, 
@@ -208,16 +210,108 @@ router.get('/google/oauth/callback', async (req, res) => {
     
     console.log('JWT token generated for user:', user.id);
 
-    // Determine if this is a business OAuth callback based on state
-    const isBusinessOAuth = state && state.startsWith('business_');
-    
-    // Redirect to frontend with both JWT and Google tokens
-    const redirectUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/callback?token=${jwtToken}&google_access_token=${tokens.access_token}&google_refresh_token=${tokens.refresh_token}${isBusinessOAuth ? '&business_connected=true' : ''}`;
-    console.log('OAuth callback successful, redirecting to:', redirectUrl);
+    // This is user authentication only - redirect to regular callback with only JWT token
+    const redirectUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/callback?token=${jwtToken}`;
+    console.log('User OAuth callback successful, redirecting to:', redirectUrl);
     res.redirect(redirectUrl);
     
   } catch (error) {
     console.error('OAuth callback error:', error);
+    res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/error`);
+  }
+});
+
+// Business OAuth callback (separate endpoint for business profile access)
+router.get('/google/business/callback', async (req, res) => {
+  console.log('Business OAuth callback received with query params:', req.query);
+  try {
+    const { code, state, user_id } = req.query;
+    
+    if (!code) {
+      console.log('No authorization code provided for business auth');
+      return res.status(400).json({ error: 'Authorization code not provided' });
+    }
+
+    // Extract user_id from state parameter (format: business_{user_id}_{timestamp})
+    let extractedUserId = null;
+    if (state && state.startsWith('business_')) {
+      const parts = state.split('_');
+      if (parts.length >= 3) {
+        extractedUserId = parts[1]; // Extract user_id from state
+      }
+    }
+
+    // We need the current user ID to add business access to their account
+    if (!extractedUserId) {
+      console.error('No user_id found in state parameter for business authentication');
+      const errorUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/business/callback?error=user_not_authenticated`;
+      return res.redirect(errorUrl);
+    }
+
+    // Clear business auth URL cache since we're processing a callback
+    businessAuthUrlCache = { url: null, expiry: 0, lastRequestTime: 0 };
+
+    // Exchange code for tokens using business OAuth client
+    const { tokens } = await businessOAuth2Client.getToken(code);
+    businessOAuth2Client.setCredentials(tokens);
+
+    // Get user info from Google using business OAuth client
+    const oauth2 = google.oauth2({ version: 'v2', auth: businessOAuth2Client });
+    const userInfo = await oauth2.userinfo.get();
+
+    // Find the existing user by ID (not by google_id from business account)
+    let { data: user, error: userError } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', extractedUserId)
+      .single();
+
+    if (userError && userError.code !== 'PGRST116') {
+      throw userError;
+    }
+
+    if (!user) {
+      // If no user exists, this is an error for business auth
+      console.error('Business authentication attempted for non-existent user:', extractedUserId);
+      const errorUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/business/callback?error=user_not_authenticated`;
+      return res.redirect(errorUrl);
+    }
+
+    // Update existing user's business access tokens only
+    const { error: updateError } = await supabase
+      .from('users')
+      .update({
+        access_token: tokens.access_token,
+        refresh_token: tokens.refresh_token,
+        token_expiry: tokens.expiry_date ? new Date(tokens.expiry_date) : null
+        // Don't update name/picture_url as user identity should remain consistent
+      })
+      .eq('id', user.id);
+
+    if (updateError) throw updateError;
+
+    // Generate JWT token using existing user data (maintains user identity consistency)
+    const jwtToken = jwt.sign(
+      { 
+        userId: user.id, 
+        email: user.email,
+        googleId: user.google_id,
+        name: user.name,
+        picture_url: user.picture_url
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: process.env.JWT_EXPIRES_IN }
+    );
+    
+    console.log('JWT token generated for business user:', user.id);
+
+    // Redirect to frontend with business connection flag
+    const redirectUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/business/callback?token=${jwtToken}&google_access_token=${tokens.access_token}&google_refresh_token=${tokens.refresh_token}&business_connected=true`;
+    console.log('Business OAuth callback successful, redirecting to:', redirectUrl);
+    res.redirect(redirectUrl);
+    
+  } catch (error) {
+    console.error('Business OAuth callback error:', error);
     res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/error`);
   }
 });
@@ -283,19 +377,26 @@ router.post('/logout', async (req, res) => {
 // Generate OAuth URL for business profile connection
 router.get('/google/business', rateLimitMiddleware, (req, res) => {
   try {
+    const { user_id } = req.query;
+    
+    if (!user_id) {
+      return res.status(400).json({ error: 'User ID required for business authentication' });
+    }
+
     const now = Date.now();
     const cacheExpiry = 5 * 60 * 1000; // Cache for 5 minutes
     const minRequestInterval = 2000; // Minimum 2 seconds between requests
 
-    // Check if we have a valid cached URL
-    if (authUrlCache.url && now < authUrlCache.expiry) {
+    // Check if we have a valid cached URL for this user
+    const cacheKey = `business_${user_id}`;
+    if (businessAuthUrlCache.url && now < businessAuthUrlCache.expiry) {
       console.log('Returning cached business auth URL');
-      return res.json({ authUrl: authUrlCache.url });
+      return res.json({ authUrl: businessAuthUrlCache.url });
     }
 
     // Check minimum request interval to prevent rapid successive calls
-    if (now - authUrlCache.lastRequestTime < minRequestInterval) {
-      const waitTime = minRequestInterval - (now - authUrlCache.lastRequestTime);
+    if (now - businessAuthUrlCache.lastRequestTime < minRequestInterval) {
+      const waitTime = minRequestInterval - (now - businessAuthUrlCache.lastRequestTime);
       console.log(`Rate limiting: requests too frequent, waiting ${waitTime}ms`);
       return res.status(429).json({ 
         error: 'Requests too frequent. Please wait a moment.',
@@ -303,24 +404,24 @@ router.get('/google/business', rateLimitMiddleware, (req, res) => {
       });
     }
 
-    authUrlCache.lastRequestTime = now;
+    businessAuthUrlCache.lastRequestTime = now;
 
-    // Generate new auth URL with business scopes
-    const authUrl = oauth2Client.generateAuthUrl({
+    // Generate new auth URL with business scopes using business OAuth client
+    const authUrl = businessOAuth2Client.generateAuthUrl({
       access_type: 'offline',
       scope: BUSINESS_SCOPES,
       prompt: 'consent', // Force consent screen for business access
-      state: 'business_' + Date.now()
+      state: `business_${user_id}_${Date.now()}` // Include user_id in state
     });
 
     // Cache the URL
-    authUrlCache = {
+    businessAuthUrlCache = {
       url: authUrl,
       expiry: now + cacheExpiry,
       lastRequestTime: now
     };
 
-    console.log('Generated new business auth URL');
+    console.log('Generated new business auth URL for user:', user_id);
     res.json({ authUrl });
 
   } catch (error) {

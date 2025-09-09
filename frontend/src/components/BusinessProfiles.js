@@ -621,6 +621,21 @@ const BusinessProfiles = () => {
   const [isDisconnected, setIsDisconnected] = useState(false);
 
   useEffect(() => {
+    // Check for error parameters in URL
+    const urlParams = new URLSearchParams(window.location.search);
+    const error = urlParams.get('error');
+    if (error) {
+      if (error === 'user_not_authenticated') {
+        setConnectError('Please sign in first before connecting business profiles.');
+      } else if (error === 'missing_tokens') {
+        setConnectError('Authentication failed. Please try again.');
+      } else {
+        setConnectError('An error occurred during business profile connection.');
+      }
+      // Clean up URL
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+
     if (authDisconnected) {
       // If user is disconnected globally, set the local state and don't fetch profiles
       setIsDisconnected(true);
@@ -761,6 +776,12 @@ const BusinessProfiles = () => {
 
   const handleConnect = async () => {
     try {
+      // Check if user is authenticated first
+      if (!isAuthenticated) {
+        setConnectError('Please sign in first before connecting business profiles.');
+        return;
+      }
+
       setIsConnecting(true);
       setConnectError('');
       setIsDisconnected(false);
