@@ -2,8 +2,122 @@ const express = require('express');
 const router = express.Router();
 const auth = require('../middleware/auth');
 const { google } = require('googleapis');
+const { createClient } = require('@supabase/supabase-js');
 
+// Initialize Supabase client
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_ANON_KEY
+);
 
+// Helper function to save post to database
+const savePostToDatabase = async (userId, postData) => {
+  try {
+    const { data, error } = await supabase
+      .from('social_media_posts')
+      .insert({
+        user_id: userId,
+        content: postData.content,
+        media: postData.media || [],
+        platforms: postData.platforms || [],
+        results: postData.results || [],
+        posted_at: postData.posted_at || new Date().toISOString(),
+        engagement_metrics: postData.engagement_metrics || {}
+      })
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Error saving post to database:', error);
+      return null;
+    }
+
+    console.log('Post saved to database successfully:', data.id);
+    return data;
+  } catch (error) {
+    console.error('Error in savePostToDatabase:', error);
+    return null;
+  }
+};
+
+// Helper function to save existing posts from API to database
+const saveExistingPostsToDatabase = async (userId, posts, platform = 'google') => {
+  try {
+    console.log(`Saving ${posts.length} existing posts to database...`);
+    
+    // First, get or create a social media account for this user and platform
+    const { data: account, error: accountError } = await supabase
+      .from('social_media_accounts')
+      .select('id')
+      .eq('user_id', userId)
+      .eq('platform', platform)
+      .single();
+
+    let accountId;
+    if (accountError || !account) {
+      // Create a new account if it doesn't exist
+      const { data: newAccount, error: createAccountError } = await supabase
+        .from('social_media_accounts')
+        .insert({
+          user_id: userId,
+          platform: platform,
+          account_id: `${platform}-account-${Date.now()}`,
+          account_name: `${platform.charAt(0).toUpperCase() + platform.slice(1)} Account`,
+          is_active: true
+        })
+        .select()
+        .single();
+
+      if (createAccountError) {
+        console.error('Error creating account:', createAccountError);
+        return [];
+      }
+      accountId = newAccount.id;
+    } else {
+      accountId = account.id;
+    }
+    
+    const savedPosts = [];
+    
+    for (const post of posts) {
+      // Check if post already exists in database
+      const { data: existingPost } = await supabase
+        .from('social_media_posts')
+        .select('id')
+        .eq('user_id', userId)
+        .eq('platform', platform)
+        .eq('post_id', post.postId || post.id)
+        .single();
+
+      if (existingPost) {
+        console.log(`Post ${post.postId || post.id} already exists in database, skipping...`);
+        continue;
+      }
+
+      // Prepare post data for database
+      const postData = {
+        content: post.summary || post.content,
+        media: post.media || [],
+        platforms: [platform],
+        postId: post.postId || post.id,
+        posted_at: post.createTime || post.createdAt || new Date().toISOString(),
+        accountId: accountId
+      };
+
+      // Save to database
+      const savedPost = await savePostToDatabase(userId, postData);
+      if (savedPost) {
+        savedPosts.push(savedPost);
+      }
+    }
+
+    console.log(`Successfully saved ${savedPosts.length} new posts to database`);
+    return savedPosts;
+  } catch (error) {
+    console.error('Error saving existing posts to database:', error);
+    return [];
+  }
+};
 
 function getGmbAccountClient(accessToken) {
   const oauth2Client = new google.auth.OAuth2();
@@ -518,9 +632,14 @@ router.get('/accounts/:accountId/locations/:locationId/posts', auth, async (req,
         media: post.media
       }));
       
+      // Save existing posts to database
+      const savedPosts = await saveExistingPostsToDatabase(req.user.userId, posts, 'google');
+      console.log(`Saved ${savedPosts.length} posts to database`);
+
       res.json({
         success: true,
-        posts: posts
+        posts: posts,
+        savedToDatabase: savedPosts.length
       });
       
     } catch (gmbV4Error) {
@@ -647,10 +766,27 @@ router.post('/accounts/:accountId/locations/:locationId/posts', auth, async (req
         media: createResponse.data.media
       };
       
+      // Save post to database
+      const dbPostData = {
+        content: summary,
+        media: media || [],
+        platforms: ['google'],
+        results: [{
+          platform: 'google',
+          postId: createResponse.data.name.split('/').pop(),
+          success: true,
+          response: createResponse.data
+        }],
+        posted_at: new Date().toISOString()
+      };
+      
+      const savedPost = await savePostToDatabase(req.user.userId, dbPostData);
+      
       res.json({
         success: true,
         message: 'Post created successfully on Google My Business',
-        post: createdPost
+        post: createdPost,
+        databaseId: savedPost?.id
       });
       
     } catch (gmbV4Error) {

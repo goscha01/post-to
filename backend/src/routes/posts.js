@@ -2,7 +2,15 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const auth = require('../middleware/auth');
 const axios = require('axios');
+const { createClient } = require('@supabase/supabase-js');
+const jwt = require('jsonwebtoken');
 const router = express.Router();
+
+// Initialize Supabase client
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_ANON_KEY
+);
 
 // Post type mapping functions
 const mapPostTypeToTopicType = (postType) => {
@@ -28,6 +36,134 @@ const mapTopicTypeToPostType = (topicType) => {
       return 'OFFER';
     default:
       return 'UPDATE';
+  }
+};
+
+// Helper function to save post to database
+const savePostToDatabase = async (userId, postData) => {
+  try {
+    console.log('=== SAVE POST TO DATABASE DEBUG ===');
+    console.log('User ID:', userId);
+    console.log('Post data:', postData);
+    
+    // Convert platforms array to single platform for this schema
+    const platform = Array.isArray(postData.platforms) ? postData.platforms[0] : postData.platforms || 'unknown';
+    
+    // Convert media array to media_urls array
+    const mediaUrls = Array.isArray(postData.media) 
+      ? postData.media.map(item => item.sourceUrl || item.url || item).filter(Boolean)
+      : [];
+
+    const insertData = {
+      user_id: userId,
+      account_id: postData.accountId || null,
+      platform: platform,
+      post_id: postData.postId || null,
+      content: postData.content,
+      media_urls: mediaUrls,
+      published_at: postData.posted_at || new Date().toISOString(),
+      status: 'published'
+    };
+
+    console.log('Insert data:', insertData);
+
+    const { data, error } = await supabase
+      .from('social_media_posts')
+      .insert(insertData)
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Error saving post to database:', error);
+      console.error('Error details:', JSON.stringify(error, null, 2));
+      return null;
+    }
+
+    console.log('Post saved to database successfully:', data.id);
+    return data;
+  } catch (error) {
+    console.error('Error in savePostToDatabase:', error);
+    console.error('Error stack:', error.stack);
+    return null;
+  }
+};
+
+// Helper function to save existing posts from API to database
+const saveExistingPostsToDatabase = async (userId, posts, platform = 'google') => {
+  try {
+    console.log(`Saving ${posts.length} existing posts to database...`);
+    
+    // First, get or create a social media account for this user and platform
+    const { data: account, error: accountError } = await supabase
+      .from('social_media_accounts')
+      .select('id')
+      .eq('user_id', userId)
+      .eq('platform', platform)
+      .single();
+
+    let accountId;
+    if (accountError || !account) {
+      // Create a new account if it doesn't exist
+      const { data: newAccount, error: createAccountError } = await supabase
+        .from('social_media_accounts')
+        .insert({
+          user_id: userId,
+          platform: platform,
+          account_id: `${platform}-account-${Date.now()}`,
+          account_name: `${platform.charAt(0).toUpperCase() + platform.slice(1)} Account`,
+          is_active: true
+        })
+        .select()
+        .single();
+
+      if (createAccountError) {
+        console.error('Error creating account:', createAccountError);
+        return [];
+      }
+      accountId = newAccount.id;
+    } else {
+      accountId = account.id;
+    }
+    
+    const savedPosts = [];
+    
+    for (const post of posts) {
+      // Check if post already exists in database
+      const { data: existingPost } = await supabase
+        .from('social_media_posts')
+        .select('id')
+        .eq('user_id', userId)
+        .eq('platform', platform)
+        .eq('post_id', post.id)
+        .single();
+
+      if (existingPost) {
+        console.log(`Post ${post.id} already exists in database, skipping...`);
+        continue;
+      }
+
+      // Prepare post data for database
+      const postData = {
+        content: post.content,
+        media: post.media || [],
+        platforms: [platform],
+        postId: post.id,
+        posted_at: post.createdAt || new Date().toISOString(),
+        accountId: accountId
+      };
+
+      // Save to database
+      const savedPost = await savePostToDatabase(userId, postData);
+      if (savedPost) {
+        savedPosts.push(savedPost);
+      }
+    }
+
+    console.log(`Successfully saved ${savedPosts.length} new posts to database`);
+    return savedPosts;
+  } catch (error) {
+    console.error('Error saving existing posts to database:', error);
+    return [];
   }
 };
 
@@ -263,8 +399,13 @@ router.get('/location/:locationId', auth, async (req, res) => {
            
            console.log(`Found ${realPosts.length} real GMB posts for location ${locationId}`);
            
+           // Save existing posts to database
+           const savedPosts = await saveExistingPostsToDatabase(req.user.userId, realPosts, 'google');
+           console.log(`Saved ${savedPosts.length} posts to database`);
+           
            return res.json({
-             posts: realPosts
+             posts: realPosts,
+             savedToDatabase: savedPosts.length
            });
          }
        } catch (v4Error) {
@@ -363,8 +504,13 @@ router.get('/location/:locationId', auth, async (req, res) => {
            
            console.log(`Found ${realPosts.length} real GMB posts for location ${locationId}`);
            
+           // Save existing posts to database
+           const savedPosts = await saveExistingPostsToDatabase(req.user.userId, realPosts, 'google');
+           console.log(`Saved ${savedPosts.length} posts to database`);
+           
            return res.json({
-             posts: realPosts
+             posts: realPosts,
+             savedToDatabase: savedPosts.length
            });
          }
        }
@@ -1308,12 +1454,29 @@ router.post('/', auth, [
            
            console.log('Real GMB post created successfully:', gmbResponse.data);
            
+           // Save post to database
+           const postData = {
+             content: content,
+             media: media || [],
+             platforms: platforms,
+             results: [{
+               platform: 'google',
+               postId: gmbResponse.data.name.split('/').pop(),
+               success: true,
+               response: gmbResponse.data
+             }],
+             posted_at: new Date().toISOString()
+           };
+           
+           const savedPost = await savePostToDatabase(req.user.userId, postData);
+           
            return res.json({
              success: true,
              message: 'Post created successfully on Google My Business',
              platform: 'google',
              postId: gmbResponse.data.name.split('/').pop(),
-             gmbPost: gmbResponse.data
+             gmbPost: gmbResponse.data,
+             databaseId: savedPost?.id
            });
            
          } catch (gmbError) {
@@ -1344,12 +1507,30 @@ router.post('/', auth, [
            
            console.log('Fallback GMB post creation successful');
            
+           // Save post to database even for fallback
+           const postData = {
+             content: content,
+             media: media || [],
+             platforms: platforms,
+             results: [{
+               platform: 'google',
+               postId: mockGmbResponse.data.name.split('/').pop(),
+               success: true,
+               response: mockGmbResponse.data,
+               fallback: true
+             }],
+             posted_at: new Date().toISOString()
+           };
+           
+           const savedPost = await savePostToDatabase(req.user.userId, postData);
+           
            return res.json({
              success: true,
              message: 'Post created successfully on Google My Business (fallback)',
              platform: 'google',
              postId: mockGmbResponse.data.name.split('/').pop(),
-             gmbPost: mockGmbResponse.data
+             gmbPost: mockGmbResponse.data,
+             databaseId: savedPost?.id
            });
          }
 
@@ -1366,20 +1547,227 @@ router.post('/', auth, [
       console.log('GMB conditions not met, falling back to generic response');
     }
 
-    // For other platforms or if no GMB data, return success for now
-    // You can integrate with your SocialMediaService here later
-    console.log('Sending generic success response');
+    // For other platforms or if no GMB data, save to database
+    console.log('Saving non-GMB post to database');
+    
+    const postData = {
+      content: content,
+      media: media || [],
+      platforms: platforms,
+      results: [{
+        platform: 'generic',
+        success: true,
+        message: 'Post created successfully (generic)'
+      }],
+      posted_at: scheduledTime ? new Date(scheduledTime).toISOString() : new Date().toISOString()
+    };
+    
+    const savedPost = await savePostToDatabase(req.user.userId, postData);
+    
     res.json({ 
       success: true, 
       message: 'Post created successfully',
       platforms,
       content,
-      scheduledTime: scheduledTime || 'immediate'
+      scheduledTime: scheduledTime || 'immediate',
+      databaseId: savedPost?.id
     });
 
   } catch (error) {
     console.error('Error creating post:', error);
     res.status(500).json({ success: false, error: 'Failed to create post' });
+  }
+});
+
+// Test endpoint to get saved posts from database
+router.get('/saved', auth, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('social_media_posts')
+      .select('*')
+      .eq('user_id', req.user.userId)
+      .order('created_at', { ascending: false })
+      .limit(10);
+
+    if (error) {
+      console.error('Error fetching saved posts:', error);
+      return res.status(500).json({ success: false, error: 'Failed to fetch saved posts' });
+    }
+
+    res.json({ 
+      success: true, 
+      posts: data || [],
+      count: data?.length || 0
+    });
+  } catch (error) {
+    console.error('Error in saved posts endpoint:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch saved posts' });
+  }
+});
+
+// Test endpoint without authentication to verify database connection
+router.get('/test-db', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('social_media_posts')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(5);
+
+    if (error) {
+      console.error('Error fetching posts:', error);
+      return res.status(500).json({ success: false, error: 'Database connection failed', details: error.message });
+    }
+
+    res.json({ 
+      success: true, 
+      message: 'Database connection successful',
+      posts: data || [],
+      count: data?.length || 0
+    });
+  } catch (error) {
+    console.error('Error in test-db endpoint:', error);
+    res.status(500).json({ success: false, error: 'Database test failed', details: error.message });
+  }
+});
+
+// Generate JWT token for existing user
+router.post('/generate-jwt', async (req, res) => {
+  try {
+    const { userId } = req.body;
+    
+    if (!userId) {
+      return res.status(400).json({ error: 'User ID required' });
+    }
+
+    // Get user from database
+    const { data: user, error } = await supabase
+      .from('users')
+      .select('id, email, google_id, access_token')
+      .eq('id', userId)
+      .single();
+
+    if (error || !user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Generate JWT token
+    const jwtToken = jwt.sign(
+      { 
+        userId: user.id, 
+        email: user.email,
+        googleId: user.google_id
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: '24h' }
+    );
+
+    res.json({
+      success: true,
+      jwtToken: jwtToken,
+      user: {
+        id: user.id,
+        email: user.email,
+        hasAccessToken: !!user.access_token
+      }
+    });
+  } catch (error) {
+    console.error('Error generating JWT:', error);
+    res.status(500).json({ error: 'Failed to generate JWT token' });
+  }
+});
+
+// Test endpoint to create a post without authentication (for testing)
+router.post('/test-create', async (req, res) => {
+  try {
+    console.log('=== TEST CREATE POST DEBUG ===');
+    console.log('Request body:', req.body);
+    
+    // First, create or get a test user
+    console.log('Creating test user...');
+    const testId = Date.now();
+    const { data: testUser, error: userError } = await supabase
+      .from('users')
+      .upsert({
+        google_id: `test-google-id-${testId}`,
+        email: `test-${testId}@example.com`,
+        name: 'Test User'
+      })
+      .select()
+      .single();
+
+    if (userError) {
+      console.error('Error creating test user:', userError);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to create test user',
+        details: userError.message
+      });
+    }
+
+    console.log('Test user created/found:', testUser.id);
+    
+    // Then, create or get a test social media account
+    console.log('Creating test social media account...');
+    const { data: testAccount, error: accountError } = await supabase
+      .from('social_media_accounts')
+      .upsert({
+        user_id: testUser.id,
+        platform: 'test',
+        account_id: `test-account-${testId}`,
+        account_name: 'Test Account',
+        is_active: true
+      })
+      .select()
+      .single();
+
+    if (accountError) {
+      console.error('Error creating test account:', accountError);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to create test account',
+        details: accountError.message
+      });
+    }
+
+    console.log('Test account created/found:', testAccount.id);
+    
+    const postData = {
+      content: req.body.content || 'Test post from API',
+      media: req.body.media || [],
+      platforms: req.body.platforms || ['test'],
+      postId: `test-${Date.now()}`,
+      posted_at: new Date().toISOString(),
+      accountId: testAccount.id // Add the account ID
+    };
+
+    console.log('Post data prepared:', postData);
+
+    const savedPost = await savePostToDatabase(testUser.id, postData);
+    
+    console.log('Save result:', savedPost);
+    
+    if (savedPost) {
+      res.json({
+        success: true,
+        message: 'Test post created successfully',
+        post: savedPost,
+        account: testAccount
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        error: 'Failed to save test post - check server logs'
+      });
+    }
+  } catch (error) {
+    console.error('Error creating test post:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Test post creation failed', 
+      details: error.message,
+      stack: error.stack 
+    });
   }
 });
 
