@@ -24,26 +24,115 @@ const SCOPES = [
   'https://www.googleapis.com/auth/userinfo.profile'
 ];
 
-// Generate OAuth URL
-router.get('/google', (req, res) => {
-  const authUrl = oauth2Client.generateAuthUrl({
-    access_type: 'offline',
-    scope: SCOPES,
-    prompt: 'consent'
-  });
-  res.json({ authUrl });
+// Cache for auth URLs to reduce Google API calls
+let authUrlCache = {
+  url: null,
+  expiry: 0,
+  lastRequestTime: 0
+};
+
+// Rate limiting: track requests per IP
+const requestTracker = new Map();
+
+// Rate limiting middleware
+const rateLimitMiddleware = (req, res, next) => {
+  const clientIP = req.ip || req.connection.remoteAddress || 'unknown';
+  const now = Date.now();
+  const windowMs = 60 * 1000; // 1 minute window
+  const maxRequests = 5; // Max 5 requests per minute per IP
+
+  if (!requestTracker.has(clientIP)) {
+    requestTracker.set(clientIP, []);
+  }
+
+  const requests = requestTracker.get(clientIP);
+  
+  // Remove old requests outside the window
+  while (requests.length > 0 && requests[0] < now - windowMs) {
+    requests.shift();
+  }
+
+  if (requests.length >= maxRequests) {
+    return res.status(429).json({ 
+      error: 'Too many requests. Please wait a moment before trying again.' 
+    });
+  }
+
+  requests.push(now);
+  next();
+};
+
+// Generate OAuth URL with caching and rate limiting
+router.get('/google', rateLimitMiddleware, (req, res) => {
+  try {
+    const now = Date.now();
+    const cacheExpiry = 5 * 60 * 1000; // Cache for 5 minutes
+    const minRequestInterval = 2000; // Minimum 2 seconds between requests
+
+    // Check if we have a valid cached URL
+    if (authUrlCache.url && now < authUrlCache.expiry) {
+      console.log('Returning cached auth URL');
+      return res.json({ authUrl: authUrlCache.url });
+    }
+
+    // Check minimum request interval to prevent rapid successive calls
+    if (now - authUrlCache.lastRequestTime < minRequestInterval) {
+      const waitTime = minRequestInterval - (now - authUrlCache.lastRequestTime);
+      console.log(`Rate limiting: requests too frequent, waiting ${waitTime}ms`);
+      return res.status(429).json({ 
+        error: 'Requests too frequent. Please wait a moment.',
+        retryAfter: Math.ceil(waitTime / 1000)
+      });
+    }
+
+    authUrlCache.lastRequestTime = now;
+
+    // Generate new auth URL
+    const authUrl = oauth2Client.generateAuthUrl({
+      access_type: 'offline',
+      scope: SCOPES,
+      // Remove 'prompt: consent' to reduce rate limiting
+      // Only add it when explicitly needed for re-authorization
+      ...(req.query.force_consent === 'true' && { prompt: 'consent' }),
+      // Add state parameter for security
+      state: 'auth_' + Date.now()
+    });
+
+    // Cache the URL
+    authUrlCache = {
+      url: authUrl,
+      expiry: now + cacheExpiry,
+      lastRequestTime: now
+    };
+
+    console.log('Generated new auth URL');
+    res.json({ authUrl });
+
+  } catch (error) {
+    console.error('Error generating auth URL:', error);
+    res.status(500).json({ error: 'Failed to generate authorization URL' });
+  }
 });
 
 // OAuth callback
 router.get('/google/oauth/callback', async (req, res) => {
   console.log('OAuth callback received with query params:', req.query);
   try {
-    const { code } = req.query;
+    const { code, state } = req.query;
     
     if (!code) {
       console.log('No authorization code provided');
       return res.status(400).json({ error: 'Authorization code not provided' });
     }
+
+    // Basic state validation (optional but recommended)
+    if (state && !state.startsWith('auth_')) {
+      console.log('Invalid state parameter');
+      return res.status(400).json({ error: 'Invalid state parameter' });
+    }
+
+    // Clear auth URL cache since we're processing a callback
+    authUrlCache = { url: null, expiry: 0, lastRequestTime: 0 };
 
     // Exchange code for tokens
     const { tokens } = await oauth2Client.getToken(code);
@@ -178,6 +267,18 @@ router.post('/logout', async (req, res) => {
     console.error('Logout error:', error);
     res.status(500).json({ error: 'Logout failed' });
   }
+});
+
+// Endpoint to force consent screen (for re-authorization)
+router.get('/google/reauth', rateLimitMiddleware, (req, res) => {
+  const authUrl = oauth2Client.generateAuthUrl({
+    access_type: 'offline',
+    scope: SCOPES,
+    prompt: 'consent', // Force consent screen
+    state: 'reauth_' + Date.now()
+  });
+  
+  res.json({ authUrl });
 });
 
 module.exports = router;

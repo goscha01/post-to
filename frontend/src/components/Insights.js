@@ -34,7 +34,7 @@ import {
 } from 'lucide-react';
 
 const Insights = () => {
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, isDisconnected } = useAuth();
   const [insights, setInsights] = useState([]);
   const [profiles, setProfiles] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -379,10 +379,15 @@ const transformTimelineDataForChart = () => {
   };
 
   useEffect(() => {
-    if (isAuthenticated) {
+    if (isAuthenticated && !isDisconnected) {
       fetchData();
+    } else if (isDisconnected) {
+      // Clear data when disconnected
+      setInsights([]);
+      setProfiles([]);
+      setLoading(false);
     }
-  }, [isAuthenticated]);
+  }, [isAuthenticated, isDisconnected]);
 
   const fetchData = async () => {
     try {

@@ -16,19 +16,27 @@ export const AuthProvider = ({ children }) => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [loading, setLoading] = useState(true);
   const [token, setToken] = useState(localStorage.getItem('gmb_token'));
+  const [isDisconnected, setIsDisconnected] = useState(false);
 
   // Configure axios defaults
   useEffect(() => {
     console.log('AuthContext: Token changed to:', token ? 'Token exists' : 'No token');
-    if (token) {
+    console.log('AuthContext: isDisconnected:', isDisconnected);
+    
+    if (token && !isDisconnected) {
       axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
       setIsAuthenticated(true);
       console.log('AuthContext: Setting isAuthenticated to true');
       fetchUserProfile();
+    } else if (isDisconnected) {
+      // If disconnected, keep user authenticated for UI but don't set auth headers
+      setIsAuthenticated(true);
+      setLoading(false);
+      console.log('AuthContext: User is disconnected but keeping UI authenticated');
     } else {
       setLoading(false);
     }
-  }, [token]);
+  }, [token, isDisconnected]);
 
   const fetchUserProfile = async () => {
     try {
@@ -42,13 +50,18 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-  const login = async () => {
+  const login = async (forceConsent = false) => {
     try {
-      const response = await axios.get('http://localhost:3001/auth/google');
+      const url = forceConsent 
+        ? 'http://localhost:3001/auth/google?force_consent=true'
+        : 'http://localhost:3001/auth/google';
+      const response = await axios.get(url);
       window.location.href = response.data.authUrl;
     } catch (error) {
-      console.error('Login error:', error);
-      throw error;
+      if (error.response?.status === 429) {
+        const retryAfter = error.response.data.retryAfter || 2;
+        alert(`Too many requests. Please wait ${retryAfter} seconds and try again.`);
+      }
     }
   };
 
@@ -75,6 +88,23 @@ export const AuthProvider = ({ children }) => {
     setIsAuthenticated(false);
     localStorage.removeItem('gmb_token');
     delete axios.defaults.headers.common['Authorization'];
+  };
+
+  const softDisconnect = () => {
+    // Soft disconnect - clear tokens but keep user authenticated for UI purposes
+    localStorage.removeItem('gmb_token');
+    localStorage.removeItem('gmb_google_access_token');
+    localStorage.removeItem('gmb_refresh_token');
+    delete axios.defaults.headers.common['Authorization'];
+    setToken(null);
+    setIsDisconnected(true);
+    console.log('AuthContext: User disconnected (soft disconnect)');
+  };
+
+  const reconnect = () => {
+    // Reset disconnect state to allow reconnection
+    setIsDisconnected(false);
+    console.log('AuthContext: User reconnecting');
   };
 
   const refreshToken = async () => {
@@ -106,7 +136,7 @@ export const AuthProvider = ({ children }) => {
     const interceptor = axios.interceptors.response.use(
       (response) => response,
       async (error) => {
-        if (error.response?.status === 401 && token) {
+        if (error.response?.status === 401 && token && !isDisconnected) {
           try {
             await refreshToken();
             // Retry the original request
@@ -123,15 +153,18 @@ export const AuthProvider = ({ children }) => {
     return () => {
       axios.interceptors.response.eject(interceptor);
     };
-  }, [token]);
+  }, [token, isDisconnected]);
 
   const value = {
     user,
     isAuthenticated,
     loading,
     token,
+    isDisconnected,
     login,
     logout,
+    softDisconnect,
+    reconnect,
     handleAuthCallback,
     refreshToken
   };

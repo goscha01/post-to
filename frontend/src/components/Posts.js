@@ -89,7 +89,7 @@ const PostImage = ({ imageUrl, altText, mediaFormat }) => {
 };
 
 const Posts = () => {
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, isDisconnected } = useAuth();
   const [posts, setPosts] = useState([]);
   const [profiles, setProfiles] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -145,17 +145,22 @@ const Posts = () => {
    });
 
   useEffect(() => {
-    if (isAuthenticated) {
+    if (isAuthenticated && !isDisconnected) {
       fetchData();
+    } else if (isDisconnected) {
+      // Clear data when disconnected
+      setPosts([]);
+      setProfiles([]);
+      setLoading(false);
     }
-  }, [isAuthenticated]);
+  }, [isAuthenticated, isDisconnected]);
 
   // Auto-fetch posts when profile is selected
   useEffect(() => {
-    if (selectedProfile) {
+    if (selectedProfile && !isDisconnected) {
       fetchPosts(selectedProfile, 1, false);
     }
-  }, [selectedProfile]);
+  }, [selectedProfile, isDisconnected]);
 
   const fetchData = async () => {
     try {

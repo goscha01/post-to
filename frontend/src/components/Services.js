@@ -22,7 +22,7 @@ import {
 } from 'lucide-react';
 
 const Services = () => {
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, isDisconnected } = useAuth();
   const [profiles, setProfiles] = useState([]);
   const [selectedProfile, setSelectedProfile] = useState(null);
   const [businessCategories, setBusinessCategories] = useState([]);
@@ -70,17 +70,25 @@ const Services = () => {
 
 
   useEffect(() => {
-    if (isAuthenticated) {
+    if (isAuthenticated && !isDisconnected) {
       fetchProfiles();
+    } else if (isDisconnected) {
+      // Clear data when disconnected
+      setProfiles([]);
+      setSelectedProfile(null);
+      setBusinessCategories([]);
+      setServices([]);
+      setExistingServices([]);
+      setLoading(false);
     }
-  }, [isAuthenticated]);
+  }, [isAuthenticated, isDisconnected]);
 
   useEffect(() => {
-    if (selectedProfile) {
+    if (selectedProfile && !isDisconnected) {
       fetchBusinessCategories();
       fetchExistingServices();
     }
-  }, [selectedProfile]);
+  }, [selectedProfile, isDisconnected]);
 
   useEffect(() => {
     if (selectedCategory) {
@@ -450,6 +458,12 @@ const Services = () => {
   const addServiceToLocation = async (service) => {
     if (!selectedProfile) return;
     
+    // Check if user is disconnected
+    if (isDisconnected) {
+      console.log('Cannot add service: user is disconnected');
+      return;
+    }
+    
     try {
       setIsLoading(true);
       await rateLimitDelay(); // Add rate limiting
@@ -562,6 +576,12 @@ const Services = () => {
   const removeServiceFromLocation = async (serviceId) => {
     if (!selectedProfile) return;
     
+    // Check if user is disconnected
+    if (isDisconnected) {
+      console.log('Cannot remove service: user is disconnected');
+      return;
+    }
+    
     try {
       const locationId = selectedProfile.name.split('/').pop();
       const remainingServices = existingServices.filter(service => service.id !== serviceId);
@@ -596,6 +616,12 @@ const Services = () => {
   const searchCategories = async (searchTerm) => {
     if (!searchTerm.trim()) {
       setSearchResults([]);
+      return;
+    }
+    
+    // Check if user is disconnected
+    if (isDisconnected) {
+      console.log('Cannot search categories: user is disconnected');
       return;
     }
     
@@ -683,6 +709,13 @@ const Services = () => {
   };
 
   const handleEditService = (service) => {
+    // Check if this is a structured service that cannot be edited
+    if (service.type === 'predefined' && service.serviceTypeId) {
+      setError('Predefined services cannot be edited. You can only edit custom services.');
+      setTimeout(() => setError(null), 3000);
+      return;
+    }
+    
     setEditingService(service);
     setEditServiceName(service.name);
     setEditServiceDescription(service.description || '');
@@ -712,6 +745,26 @@ const Services = () => {
   const handleUpdateService = async () => {
     if (!editingService || !selectedProfile) return;
     
+    // Check if user is disconnected
+    if (isDisconnected) {
+      console.log('Cannot update service: user is disconnected');
+      return;
+    }
+    
+    // Validate input
+    const trimmedName = editServiceName.trim();
+    const trimmedDescription = editServiceDescription.trim();
+    
+    if (!trimmedName) {
+      setError('Service name is required');
+      return;
+    }
+    
+    if (trimmedDescription && trimmedDescription.length > 1000) {
+      setError('Service description must be less than 1000 characters');
+      return;
+    }
+    
     try {
       setIsLoading(true);
       await rateLimitDelay(); // Add rate limiting
@@ -728,44 +781,69 @@ const Services = () => {
       
       // Find and update the specific service
       const updatedServiceItems = currentServiceItems.map(item => {
-        if (item.freeFormServiceItem?.label?.displayName === editingService.name) {
-          // Update the service
-          const updatedItem = {
-            ...item,
-            freeFormServiceItem: {
-              ...item.freeFormServiceItem,
-              label: {
-                ...item.freeFormServiceItem.label,
-                displayName: editServiceName,
-                description: editServiceDescription
+        // Check if this is the service we're editing by comparing with the original item
+        const isTargetService = editingService.originalItem && 
+          JSON.stringify(item) === JSON.stringify(editingService.originalItem);
+        
+        if (isTargetService) {
+          // Update the service - handle both freeForm and structured services
+          if (item.freeFormServiceItem) {
+            // Update free-form service
+            const updatedItem = {
+              ...item,
+              freeFormServiceItem: {
+                ...item.freeFormServiceItem,
+                label: {
+                  ...item.freeFormServiceItem.label,
+                  displayName: trimmedName,
+                  description: trimmedDescription
+                }
               }
-            }
-          };
+            };
           
-          // Add price if provided and currency is not "No price"
-          if (editServicePrice && editServicePrice.trim() && editServiceCurrency !== 'No price') {
-            const priceAmount = parseFloat(editServicePrice);
-            if (!isNaN(priceAmount)) {
-              const units = Math.floor(priceAmount).toString();
-              const nanos = Math.round((priceAmount - Math.floor(priceAmount)) * 1000000000);
-              
-              updatedItem.price = {
-                currencyCode: editServiceCurrency,
-                units: units,
-                nanos: nanos
-              };
+            // Add price if provided and currency is not "No price"
+            if (editServicePrice && editServicePrice.trim() && editServiceCurrency !== 'No price') {
+              const priceAmount = parseFloat(editServicePrice);
+              if (!isNaN(priceAmount)) {
+                const units = Math.floor(priceAmount).toString();
+                const nanos = Math.round((priceAmount - Math.floor(priceAmount)) * 1000000000);
+                
+                updatedItem.price = {
+                  currencyCode: editServiceCurrency,
+                  units: units,
+                  nanos: nanos
+                };
+              }
+            } else {
+              // Remove price if empty or "No price" selected
+              delete updatedItem.price;
             }
-          } else {
-            // Remove price if empty or "No price" selected
-            delete updatedItem.price;
+            
+            return updatedItem;
+          } else if (item.structuredServiceItem) {
+            // For structured services, we cannot edit them directly
+            // Instead, we should probably just update the description if possible
+            // But for now, let's return the item unchanged to avoid API errors
+            console.warn('Cannot edit structured service:', item.structuredServiceItem.serviceTypeId);
+            return item;
           }
-          
-          return updatedItem;
         }
         return item;
       });
       
       // Send updated services to Google
+      console.log('Sending service update request:', {
+        locationId,
+        serviceItems: updatedServiceItems
+      });
+      
+      // Log each service item for debugging
+      console.log(`Total services to send: ${updatedServiceItems.length}`);
+      updatedServiceItems.forEach((item, index) => {
+        const serviceName = item.freeFormServiceItem?.label?.displayName || item.structuredServiceItem?.serviceTypeId || 'Unknown';
+        console.log(`Service item ${index}: ${serviceName}`);
+      });
+      
       const response = await axios.patch(`http://localhost:3001/api/gmb/locations/${locationId}/services`, {
         serviceItems: updatedServiceItems
       });
@@ -778,6 +856,17 @@ const Services = () => {
       }
     } catch (error) {
       console.error('Error updating service:', error);
+      console.error('Error details:', {
+        message: error.message,
+        status: error.response?.status,
+        data: error.response?.data,
+        config: error.config
+      });
+      
+      // Log the full error response for debugging
+      if (error.response?.data) {
+        console.error('Full error response:', JSON.stringify(error.response.data, null, 2));
+      }
       
       if (error.response?.status === 429) {
         setError('Rate limit exceeded. Please wait a moment before trying again.');
@@ -785,6 +874,8 @@ const Services = () => {
         setTimeout(() => {
           setError(null);
         }, 5000);
+      } else if (error.response?.status === 500) {
+        setError(`Server error: ${error.response?.data?.details || error.message}`);
       } else {
         setError('Failed to update service');
       }
@@ -795,6 +886,12 @@ const Services = () => {
 
   const addCustomServiceToLocation = async (serviceName, serviceDescription, servicePrice, serviceCurrency) => {
     if (!selectedProfile) return;
+    
+    // Check if user is disconnected
+    if (isDisconnected) {
+      console.log('Cannot add custom service: user is disconnected');
+      return;
+    }
     
     try {
       setIsLoading(true);

@@ -10,7 +10,7 @@ const Login = () => {
     try {
       setIsLoading(true);
       setError('');
-      await login();
+      await login(true); // Force consent screens for initial login
     } catch (error) {
       setError('Failed to initiate login. Please try again.');
       setIsLoading(false);

@@ -68,7 +68,7 @@ const ProfileImage = ({ profilePhotoUrl, displayName }) => {
 };
 
 const Reviews = () => {
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, isDisconnected } = useAuth();
   const [reviews, setReviews] = useState([]);
   const [profiles, setProfiles] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -77,17 +77,22 @@ const Reviews = () => {
   const [replyingTo, setReplyingTo] = useState(null);
 
   useEffect(() => {
-    if (isAuthenticated) {
+    if (isAuthenticated && !isDisconnected) {
       fetchData();
+    } else if (isDisconnected) {
+      // Clear data when disconnected
+      setReviews([]);
+      setProfiles([]);
+      setLoading(false);
     }
-  }, [isAuthenticated]);
+  }, [isAuthenticated, isDisconnected]);
 
   // Fetch reviews when selectedProfile changes
   useEffect(() => {
-    if (selectedProfile) {
+    if (selectedProfile && !isDisconnected) {
       fetchReviews(selectedProfile);
     }
-  }, [selectedProfile]);
+  }, [selectedProfile, isDisconnected]);
 
   const fetchData = async () => {
     try {
