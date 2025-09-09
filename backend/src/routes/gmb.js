@@ -119,6 +119,182 @@ const saveExistingPostsToDatabase = async (userId, posts, platform = 'google') =
   }
 };
 
+// Helper function to save service to database
+const saveServiceToDatabase = async (userId, serviceData) => {
+  try {
+    console.log('=== SAVE SERVICE TO DATABASE DEBUG ===');
+    console.log('User ID:', userId);
+    console.log('Service data:', serviceData);
+
+    const insertData = {
+      business_profile_id: serviceData.businessProfileId || null,
+      gmb_service_id: serviceData.gmbServiceId || serviceData.serviceId || null,
+      service_name: serviceData.serviceName,
+      price_range: serviceData.priceRange || null,
+      description: serviceData.description || serviceData.serviceDescription || null,
+      is_active: serviceData.isActive !== undefined ? serviceData.isActive : true
+    };
+
+    console.log('Insert data:', insertData);
+
+    const { data, error } = await supabase
+      .from('services')
+      .insert(insertData)
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Error saving service to database:', error);
+      console.error('Error details:', JSON.stringify(error, null, 2));
+      return null;
+    }
+
+    console.log('Service saved to database successfully:', data.id);
+    return data;
+  } catch (error) {
+    console.error('Error in saveServiceToDatabase:', error);
+    console.error('Error stack:', error.stack);
+    return null;
+  }
+};
+
+// Helper function to save existing services from API to database
+const saveExistingServicesToDatabase = async (userId, services, platform = 'google') => {
+  try {
+    console.log(`Saving ${services.length} existing services to database...`);
+    
+    const savedServices = [];
+    
+    for (const service of services) {
+      // Extract service information from different service item types
+      let serviceInfo = {};
+      
+      if (service.structuredServiceItem) {
+        // Handle structured service items
+        serviceInfo = {
+          gmbServiceId: service.structuredServiceItem.serviceTypeId || `structured-${Date.now()}-${Math.random()}`,
+          serviceName: service.structuredServiceItem.displayName || 'Structured Service',
+          description: service.structuredServiceItem.description || 'Structured service from GMB',
+          priceRange: service.structuredServiceItem.priceRange || null,
+          isActive: true
+        };
+      } else if (service.freeFormServiceItem) {
+        // Handle free-form service items
+        console.log('=== FREE FORM SERVICE ITEM DEBUG ===');
+        console.log('Raw freeFormServiceItem:', JSON.stringify(service.freeFormServiceItem, null, 2));
+        
+        const category = service.freeFormServiceItem.category || '';
+        const label = service.freeFormServiceItem.label || '';
+        
+        console.log('Label type:', typeof label);
+        console.log('Label value:', label);
+        console.log('Label is object:', typeof label === 'object');
+        console.log('Label is string:', typeof label === 'string');
+        console.log('Label stringified:', JSON.stringify(label));
+        
+        // Check if label is actually a JSON string
+        let serviceName = 'Free Form Service';
+        let description = `Free form service: ${category}`;
+        
+        if (typeof label === 'object' && label !== null) {
+          // Label is already an object, extract directly
+          console.log('Label is an object, extracting directly...');
+          serviceName = label.displayName || label.name || 'Free Form Service';
+          description = label.description || `Free form service: ${category}`;
+          console.log('Extracted from object - service name:', serviceName);
+          console.log('Extracted from object - description:', description);
+        } else if (typeof label === 'string' && label.length > 0) {
+          // Try to parse as JSON first
+          if (label.startsWith('{') && label.endsWith('}')) {
+            try {
+              console.log('Attempting to parse label as JSON...');
+              const parsed = JSON.parse(label);
+              console.log('Parsed JSON:', parsed);
+              serviceName = parsed.displayName || parsed.name || 'Free Form Service';
+              description = parsed.description || `Free form service: ${category}`;
+              console.log('Successfully parsed JSON - service name:', serviceName);
+              console.log('Successfully parsed JSON - description:', description);
+            } catch (e) {
+              console.log('Failed to parse label as JSON:', e.message);
+              console.log('Label that failed to parse:', label);
+              // Fall back to regex extraction
+              const nameMatch = label.match(/"displayName":"([^"]+)"/);
+              const descMatch = label.match(/"description":"([^"]+)"/);
+              serviceName = nameMatch ? nameMatch[1] : 'Free Form Service';
+              description = descMatch ? descMatch[1] : `Free form service: ${category}`;
+              console.log('Used regex extraction - service name:', serviceName);
+              console.log('Used regex extraction - description:', description);
+            }
+          } else {
+            // Use regex extraction for non-JSON strings
+            console.log('Using regex extraction for non-JSON string...');
+            const nameMatch = label.match(/"displayName":"([^"]+)"/);
+            const descMatch = label.match(/"description":"([^"]+)"/);
+            serviceName = nameMatch ? nameMatch[1] : 'Free Form Service';
+            description = descMatch ? descMatch[1] : `Free form service: ${category}`;
+            console.log('Used regex extraction - service name:', serviceName);
+            console.log('Used regex extraction - description:', description);
+          }
+        } else if (category) {
+          // Extract service name from category path
+          const categoryParts = category.split('/');
+          const lastPart = categoryParts[categoryParts.length - 1];
+          serviceName = lastPart.replace(/gcid:|_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+          description = `Free form service: ${category}`;
+        }
+        
+        console.log('Final service name:', serviceName);
+        console.log('Final description:', description);
+        console.log('=== END FREE FORM SERVICE DEBUG ===');
+        
+        serviceInfo = {
+          gmbServiceId: `freeform-${Date.now()}-${Math.random()}`,
+          serviceName: serviceName || 'Free Form Service',
+          description: description,
+          priceRange: null,
+          isActive: true
+        };
+        
+        console.log('Final service info:', serviceInfo);
+        console.log('=== END FREE FORM SERVICE DEBUG ===');
+      } else {
+        // Handle other service types
+        serviceInfo = {
+          gmbServiceId: service.serviceId || service.id || `service-${Date.now()}-${Math.random()}`,
+          serviceName: service.serviceName || service.displayName || service.name || 'Unknown Service',
+          description: service.description || service.serviceDescription || 'Service from GMB',
+          priceRange: service.priceRange || service.price || null,
+          isActive: service.isActive !== undefined ? service.isActive : true
+        };
+      }
+
+      // Check if service already exists in database
+      const { data: existingService } = await supabase
+        .from('services')
+        .select('id')
+        .eq('gmb_service_id', serviceInfo.gmbServiceId)
+        .single();
+
+      if (existingService) {
+        console.log(`Service ${serviceInfo.gmbServiceId} already exists in database, skipping...`);
+        continue;
+      }
+
+      // Save to database
+      const savedService = await saveServiceToDatabase(userId, serviceInfo);
+      if (savedService) {
+        savedServices.push(savedService);
+      }
+    }
+
+    console.log(`Successfully saved ${savedServices.length} new services to database`);
+    return savedServices;
+  } catch (error) {
+    console.error('Error saving existing services to database:', error);
+    return [];
+  }
+};
+
 function getGmbAccountClient(accessToken) {
   const oauth2Client = new google.auth.OAuth2();
   oauth2Client.setCredentials({
@@ -1415,10 +1591,15 @@ router.get('/locations/:locationId/services', auth, async (req, res) => {
         }
       });
     }
+
+    // Save services to database
+    const savedServices = await saveExistingServicesToDatabase(req.user.userId, response.data.serviceItems || [], 'google');
+    console.log(`Saved ${savedServices.length} services to database`);
     
     res.json({
       success: true,
-      serviceItems: response.data.serviceItems || []
+      serviceItems: response.data.serviceItems || [],
+      savedToDatabase: savedServices.length
     });
   } catch (error) {
     console.error('Error fetching location services:', error);
@@ -1490,6 +1671,73 @@ router.patch('/locations/:locationId/services', auth, async (req, res) => {
       error: 'Failed to update location services',
       details: error.message,
       googleError: error.response?.data
+    });
+  }
+});
+
+// Test endpoint to create a service without authentication (for testing)
+router.post('/test-create-service', async (req, res) => {
+  try {
+    console.log('=== TEST CREATE SERVICE DEBUG ===');
+    console.log('Request body:', req.body);
+    
+    // First, create or get a test user
+    console.log('Creating test user...');
+    const testId = Date.now();
+    const { data: testUser, error: userError } = await supabase
+      .from('users')
+      .upsert({
+        google_id: `test-google-id-${testId}`,
+        email: `test-${testId}@example.com`,
+        name: 'Test User'
+      })
+      .select()
+      .single();
+
+    if (userError) {
+      console.error('Error creating test user:', userError);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to create test user',
+        details: userError.message
+      });
+    }
+
+    console.log('Test user created/found:', testUser.id);
+
+    const serviceData = {
+      gmbServiceId: `test-service-${testId}`,
+      serviceName: req.body.serviceName || 'Test Service',
+      description: req.body.description || 'Test service description',
+      priceRange: req.body.priceRange || '$50-100',
+      isActive: true
+    };
+
+    console.log('Service data prepared:', serviceData);
+
+    const savedService = await saveServiceToDatabase(testUser.id, serviceData);
+
+    console.log('Save result:', savedService);
+
+    if (savedService) {
+      res.json({
+        success: true,
+        message: 'Test service created successfully',
+        service: savedService
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        error: 'Failed to save test service - check server logs'
+      });
+    }
+  } catch (error) {
+    console.error('Error creating test service:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Test service creation failed',
+      details: error.message,
+      stack: error.stack
     });
   }
 });
