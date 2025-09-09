@@ -15,10 +15,13 @@ import {
 } from 'lucide-react';
 
 const Layout = ({ children }) => {
-  const { logout } = useAuth();
+  const { logout, user } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  // Debug user data
+  console.log('Layout - User data:', user);
 
   const navigation = [
     { name: 'Dashboard', href: '/dashboard', icon: Home },
@@ -72,6 +75,31 @@ const Layout = ({ children }) => {
             })}
           </nav>
           <div className="border-t border-gray-200 p-4">
+            {/* User Info */}
+            <div className="flex items-center px-2 py-3 mb-3">
+              <div className="flex-shrink-0">
+                {user?.picture_url ? (
+                  <img
+                    className="h-8 w-8 rounded-full"
+                    src={user.picture_url}
+                    alt={user.name || 'User'}
+                  />
+                ) : (
+                  <div className="h-8 w-8 rounded-full bg-gray-300 flex items-center justify-center">
+                    <User className="h-5 w-5 text-gray-600" />
+                  </div>
+                )}
+              </div>
+              <div className="ml-3">
+                <p className="text-sm font-medium text-gray-900">
+                  {user?.name || 'User'}
+                </p>
+                <p className="text-xs text-gray-500">
+                  {user?.email || ''}
+                </p>
+              </div>
+            </div>
+            
             <button
               onClick={handleLogout}
               className="flex w-full items-center px-2 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50 hover:text-gray-900 rounded-md"
@@ -109,6 +137,31 @@ const Layout = ({ children }) => {
             })}
           </nav>
           <div className="border-t border-gray-200 p-4">
+            {/* User Info */}
+            <div className="flex items-center px-2 py-3 mb-3">
+              <div className="flex-shrink-0">
+                {user?.picture_url ? (
+                  <img
+                    className="h-8 w-8 rounded-full"
+                    src={user.picture_url}
+                    alt={user.name || 'User'}
+                  />
+                ) : (
+                  <div className="h-8 w-8 rounded-full bg-gray-300 flex items-center justify-center">
+                    <User className="h-5 w-5 text-gray-600" />
+                  </div>
+                )}
+              </div>
+              <div className="ml-3">
+                <p className="text-sm font-medium text-gray-900">
+                  {user?.name || 'User'}
+                </p>
+                <p className="text-xs text-gray-500">
+                  {user?.email || ''}
+                </p>
+              </div>
+            </div>
+            
             <button
               onClick={handleLogout}
               className="flex w-full items-center px-2 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50 hover:text-gray-900 rounded-md"
@@ -134,12 +187,6 @@ const Layout = ({ children }) => {
 
           <div className="flex flex-1 gap-x-4 self-stretch lg:gap-x-6">
             <div className="flex flex-1"></div>
-            <div className="flex items-center gap-x-4 lg:gap-x-6">
-              <div className="flex items-center gap-x-2">
-                <User className="h-5 w-5 text-gray-400" />
-                <span className="text-sm text-gray-700">User</span>
-              </div>
-            </div>
           </div>
         </div>
 

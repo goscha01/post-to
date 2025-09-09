@@ -71,7 +71,19 @@ const Services = () => {
 
   useEffect(() => {
     if (isAuthenticated && !isDisconnected) {
-      fetchProfiles();
+      // Check if business profiles are connected
+      const businessConnected = localStorage.getItem('gmb_business_connected') === 'true';
+      if (businessConnected) {
+        fetchProfiles();
+      } else {
+        // User is authenticated but business profiles not connected
+        setProfiles([]);
+        setSelectedProfile(null);
+        setBusinessCategories([]);
+        setServices([]);
+        setExistingServices([]);
+        setLoading(false);
+      }
     } else if (isDisconnected) {
       // Clear data when disconnected
       setProfiles([]);

@@ -198,7 +198,9 @@ router.get('/google/oauth/callback', async (req, res) => {
       { 
         userId: user.id, 
         email: user.email,
-        googleId: user.google_id 
+        googleId: user.google_id,
+        name: user.name,
+        picture_url: user.picture_url
       },
       process.env.JWT_SECRET,
       { expiresIn: process.env.JWT_EXPIRES_IN }

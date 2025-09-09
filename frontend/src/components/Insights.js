@@ -380,7 +380,16 @@ const transformTimelineDataForChart = () => {
 
   useEffect(() => {
     if (isAuthenticated && !isDisconnected) {
-      fetchData();
+      // Check if business profiles are connected
+      const businessConnected = localStorage.getItem('gmb_business_connected') === 'true';
+      if (businessConnected) {
+        fetchData();
+      } else {
+        // User is authenticated but business profiles not connected
+        setInsights([]);
+        setProfiles([]);
+        setLoading(false);
+      }
     } else if (isDisconnected) {
       // Clear data when disconnected
       setInsights([]);

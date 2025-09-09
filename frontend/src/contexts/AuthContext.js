@@ -40,9 +40,24 @@ export const AuthProvider = ({ children }) => {
 
   const fetchUserProfile = async () => {
     try {
-      // You can add an endpoint to fetch user profile if needed
-      // const response = await axios.get('/api/user/profile');
-      // setUser(response.data);
+      // Extract user info from JWT token
+      if (token) {
+        try {
+          const payload = JSON.parse(atob(token.split('.')[1]));
+          console.log('JWT payload:', payload);
+          const userData = {
+            id: payload.userId,
+            email: payload.email,
+            googleId: payload.googleId,
+            name: payload.name || payload.email?.split('@')[0] || 'User',
+            picture_url: payload.picture_url
+          };
+          console.log('Setting user data:', userData);
+          setUser(userData);
+        } catch (jwtError) {
+          console.error('Error parsing JWT token:', jwtError);
+        }
+      }
       setLoading(false);
     } catch (error) {
       console.error('Error fetching user profile:', error);
@@ -91,6 +106,20 @@ export const AuthProvider = ({ children }) => {
     // Store business connection status
     if (isBusinessConnection) {
       localStorage.setItem('gmb_business_connected', 'true');
+    }
+    
+    // Extract user info from JWT token
+    try {
+      const payload = JSON.parse(atob(newToken.split('.')[1]));
+      setUser({
+        id: payload.userId,
+        email: payload.email,
+        googleId: payload.googleId,
+        name: payload.name || payload.email?.split('@')[0] || 'User',
+        picture_url: payload.picture_url
+      });
+    } catch (jwtError) {
+      console.error('Error parsing JWT token:', jwtError);
     }
     
     axios.defaults.headers.common['Authorization'] = `Bearer ${newToken}`;
