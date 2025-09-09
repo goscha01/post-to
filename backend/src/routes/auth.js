@@ -17,8 +17,14 @@ const oauth2Client = new google.auth.OAuth2(
   process.env.GOOGLE_CALLBACK_URL
 );
 
-// Google OAuth scopes - using the correct scopes for My Business APIs
+// Google OAuth scopes - only for user authentication (no business access)
 const SCOPES = [
+  'https://www.googleapis.com/auth/userinfo.email',
+  'https://www.googleapis.com/auth/userinfo.profile'
+];
+
+// Business OAuth scopes - for business profile connection
+const BUSINESS_SCOPES = [
   'https://www.googleapis.com/auth/business.manage',
   'https://www.googleapis.com/auth/userinfo.email',
   'https://www.googleapis.com/auth/userinfo.profile'
@@ -126,7 +132,7 @@ router.get('/google/oauth/callback', async (req, res) => {
     }
 
     // Basic state validation (optional but recommended)
-    if (state && !state.startsWith('auth_')) {
+    if (state && !state.startsWith('auth_') && !state.startsWith('business_')) {
       console.log('Invalid state parameter');
       return res.status(400).json({ error: 'Invalid state parameter' });
     }
@@ -200,8 +206,11 @@ router.get('/google/oauth/callback', async (req, res) => {
     
     console.log('JWT token generated for user:', user.id);
 
+    // Determine if this is a business OAuth callback based on state
+    const isBusinessOAuth = state && state.startsWith('business_');
+    
     // Redirect to frontend with both JWT and Google tokens
-    const redirectUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/callback?token=${jwtToken}&google_access_token=${tokens.access_token}&google_refresh_token=${tokens.refresh_token}`;
+    const redirectUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/callback?token=${jwtToken}&google_access_token=${tokens.access_token}&google_refresh_token=${tokens.refresh_token}${isBusinessOAuth ? '&business_connected=true' : ''}`;
     console.log('OAuth callback successful, redirecting to:', redirectUrl);
     res.redirect(redirectUrl);
     
@@ -266,6 +275,55 @@ router.post('/logout', async (req, res) => {
   } catch (error) {
     console.error('Logout error:', error);
     res.status(500).json({ error: 'Logout failed' });
+  }
+});
+
+// Generate OAuth URL for business profile connection
+router.get('/google/business', rateLimitMiddleware, (req, res) => {
+  try {
+    const now = Date.now();
+    const cacheExpiry = 5 * 60 * 1000; // Cache for 5 minutes
+    const minRequestInterval = 2000; // Minimum 2 seconds between requests
+
+    // Check if we have a valid cached URL
+    if (authUrlCache.url && now < authUrlCache.expiry) {
+      console.log('Returning cached business auth URL');
+      return res.json({ authUrl: authUrlCache.url });
+    }
+
+    // Check minimum request interval to prevent rapid successive calls
+    if (now - authUrlCache.lastRequestTime < minRequestInterval) {
+      const waitTime = minRequestInterval - (now - authUrlCache.lastRequestTime);
+      console.log(`Rate limiting: requests too frequent, waiting ${waitTime}ms`);
+      return res.status(429).json({ 
+        error: 'Requests too frequent. Please wait a moment.',
+        retryAfter: Math.ceil(waitTime / 1000)
+      });
+    }
+
+    authUrlCache.lastRequestTime = now;
+
+    // Generate new auth URL with business scopes
+    const authUrl = oauth2Client.generateAuthUrl({
+      access_type: 'offline',
+      scope: BUSINESS_SCOPES,
+      prompt: 'consent', // Force consent screen for business access
+      state: 'business_' + Date.now()
+    });
+
+    // Cache the URL
+    authUrlCache = {
+      url: authUrl,
+      expiry: now + cacheExpiry,
+      lastRequestTime: now
+    };
+
+    console.log('Generated new business auth URL');
+    res.json({ authUrl });
+
+  } catch (error) {
+    console.error('Error generating business auth URL:', error);
+    res.status(500).json({ error: 'Failed to generate business authorization URL' });
   }
 });
 

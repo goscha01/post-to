@@ -609,7 +609,7 @@ const BusinessProfilePopup = ({ isOpen, onClose, profile, accountId }) => {
 
 
 const BusinessProfiles = () => {
-  const { isAuthenticated, logout, login, softDisconnect, reconnect, isDisconnected: authDisconnected } = useAuth();
+  const { isAuthenticated, logout, loginForBusiness, softDisconnect, reconnect, isDisconnected: authDisconnected } = useAuth();
   const navigate = useNavigate();
   const [profiles, setProfiles] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -627,9 +627,19 @@ const BusinessProfiles = () => {
       setProfiles([]);
       setLoading(false);
     } else if (isAuthenticated && !authDisconnected) {
-      // Only fetch profiles if user is authenticated and not disconnected
-      setIsDisconnected(false);
-      fetchProfiles();
+      // Check if business profiles are connected
+      const businessConnected = localStorage.getItem('gmb_business_connected') === 'true';
+      
+      if (businessConnected) {
+        // Business profiles are connected, fetch them
+        setIsDisconnected(false);
+        fetchProfiles();
+      } else {
+        // User is authenticated but business profiles are not connected yet
+        // Don't automatically fetch profiles - wait for user to connect
+        setIsDisconnected(false);
+        setLoading(false);
+      }
     } else {
       // If not authenticated, stop loading
       setLoading(false);
@@ -741,6 +751,9 @@ const BusinessProfiles = () => {
     // Use soft disconnect to clear tokens without affecting authentication state
     softDisconnect();
     
+    // Clear business connection status
+    localStorage.removeItem('gmb_business_connected');
+    
     // Set local disconnected state
     setIsDisconnected(true);
     setProfiles([]);
@@ -755,11 +768,21 @@ const BusinessProfiles = () => {
       // Reset the disconnect state in AuthContext
       reconnect();
       
-      // Redirect to Google OAuth to get fresh tokens with forced consent
-      await login(true);
+      // Redirect to Google OAuth specifically for business profile access
+      await loginForBusiness();
     } catch (error) {
       setConnectError('Failed to connect to Google. Please try again.');
       setIsConnecting(false);
+    }
+  };
+
+  // Function to handle successful business profile connection
+  const handleBusinessConnectionSuccess = async () => {
+    try {
+      setLoading(true);
+      await fetchProfiles();
+    } catch (error) {
+      console.error('Error fetching profiles after connection:', error);
     }
   };
 

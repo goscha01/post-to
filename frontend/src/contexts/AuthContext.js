@@ -65,15 +65,33 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-  const handleAuthCallback = (newToken, googleAccessToken, googleRefreshToken) => {
+  const loginForBusiness = async () => {
+    try {
+      const response = await axios.get('http://localhost:3001/auth/google/business');
+      window.location.href = response.data.authUrl;
+    } catch (error) {
+      if (error.response?.status === 429) {
+        const retryAfter = error.response.data.retryAfter || 2;
+        alert(`Too many requests. Please wait ${retryAfter} seconds and try again.`);
+      }
+    }
+  };
+
+  const handleAuthCallback = (newToken, googleAccessToken, googleRefreshToken, isBusinessConnection = false) => {
     console.log('Handling auth callback with token:', newToken ? 'Token received' : 'No token');
     console.log('Google access token received:', googleAccessToken ? 'Yes' : 'No');
     console.log('Google refresh token received:', googleRefreshToken ? 'Yes' : 'No');
+    console.log('Business connection:', isBusinessConnection);
     
     setToken(newToken);
     localStorage.setItem('gmb_token', newToken);
     localStorage.setItem('gmb_google_access_token', googleAccessToken);
     localStorage.setItem('gmb_refresh_token', googleRefreshToken);
+    
+    // Store business connection status
+    if (isBusinessConnection) {
+      localStorage.setItem('gmb_business_connected', 'true');
+    }
     
     axios.defaults.headers.common['Authorization'] = `Bearer ${newToken}`;
     console.log('AuthContext: Setting isAuthenticated to true in handleAuthCallback');
@@ -87,6 +105,7 @@ export const AuthProvider = ({ children }) => {
     setToken(null);
     setIsAuthenticated(false);
     localStorage.removeItem('gmb_token');
+    localStorage.removeItem('gmb_business_connected');
     delete axios.defaults.headers.common['Authorization'];
   };
 
@@ -95,6 +114,7 @@ export const AuthProvider = ({ children }) => {
     localStorage.removeItem('gmb_token');
     localStorage.removeItem('gmb_google_access_token');
     localStorage.removeItem('gmb_refresh_token');
+    localStorage.removeItem('gmb_business_connected');
     delete axios.defaults.headers.common['Authorization'];
     setToken(null);
     setIsDisconnected(true);
@@ -162,6 +182,7 @@ export const AuthProvider = ({ children }) => {
     token,
     isDisconnected,
     login,
+    loginForBusiness,
     logout,
     softDisconnect,
     reconnect,

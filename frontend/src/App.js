@@ -112,13 +112,15 @@ const AuthCallback = () => {
     const token = urlParams.get('token');
     const googleAccessToken = urlParams.get('google_access_token');
     const googleRefreshToken = urlParams.get('google_refresh_token');
+    const businessConnected = urlParams.get('business_connected');
     
     console.log('AuthCallback: Token from URL:', token ? 'Token received' : 'No token');
     console.log('AuthCallback: Google access token from URL:', googleAccessToken ? 'Token received' : 'No token');
     console.log('AuthCallback: Google refresh token from URL:', googleRefreshToken ? 'Token received' : 'No token');
+    console.log('AuthCallback: Business connected:', businessConnected === 'true');
     
     if (token && googleAccessToken && googleRefreshToken) {
-      handleAuthCallback(token, googleAccessToken, googleRefreshToken);
+      handleAuthCallback(token, googleAccessToken, googleRefreshToken, businessConnected === 'true');
     } else {
       console.error('Missing required tokens:', { token: !!token, googleAccessToken: !!googleAccessToken, googleRefreshToken: !!googleRefreshToken });
     }
@@ -127,8 +129,16 @@ const AuthCallback = () => {
   useEffect(() => {
     console.log('AuthCallback: isAuthenticated changed to:', isAuthenticated);
     if (isAuthenticated) {
-      console.log('AuthCallback: Redirecting to dashboard');
-      navigate('/dashboard');
+      const urlParams = new URLSearchParams(window.location.search);
+      const businessConnected = urlParams.get('business_connected');
+      
+      if (businessConnected === 'true') {
+        console.log('AuthCallback: Business connection successful, redirecting to profiles');
+        navigate('/profiles');
+      } else {
+        console.log('AuthCallback: Regular authentication, redirecting to dashboard');
+        navigate('/dashboard');
+      }
     }
   }, [isAuthenticated, navigate]);
 
