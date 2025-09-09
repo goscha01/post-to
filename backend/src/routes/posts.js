@@ -128,9 +128,6 @@ router.get('/test-gmb/:accountId/:locationId', auth, async (req, res) => {
 router.get('/location/:locationId', auth, async (req, res) => {
   try {
     const { locationId } = req.params;
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 3; // Show only 3 posts initially
-    const offset = (page - 1) * limit;
     
               // Try to fetch real posts from Google My Business first
      try {
@@ -264,22 +261,10 @@ router.get('/location/:locationId', auth, async (req, res) => {
            // Sort by creation date (newest first)
            realPosts.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
            
-           // Apply pagination
-           const totalPosts = realPosts.length;
-           const paginatedPosts = realPosts.slice(offset, offset + limit);
-           
-           console.log(`Found ${totalPosts} real GMB posts for location ${locationId}, returning ${paginatedPosts.length} posts (page ${page})`);
+           console.log(`Found ${realPosts.length} real GMB posts for location ${locationId}`);
            
            return res.json({
-             posts: paginatedPosts,
-             pagination: {
-               page,
-               limit,
-               total: totalPosts,
-               totalPages: Math.ceil(totalPosts / limit),
-               hasNext: page < Math.ceil(totalPosts / limit),
-               hasPrev: page > 1
-             }
+             posts: realPosts
            });
          }
        } catch (v4Error) {
@@ -376,22 +361,10 @@ router.get('/location/:locationId', auth, async (req, res) => {
            // Sort by creation date (newest first)
            realPosts.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
            
-           // Apply pagination
-           const totalPosts = realPosts.length;
-           const paginatedPosts = realPosts.slice(offset, offset + limit);
-           
-           console.log(`Found ${totalPosts} real GMB posts for location ${locationId}, returning ${paginatedPosts.length} posts (page ${page})`);
+           console.log(`Found ${realPosts.length} real GMB posts for location ${locationId}`);
            
            return res.json({
-             posts: paginatedPosts,
-             pagination: {
-               page,
-               limit,
-               total: totalPosts,
-               totalPages: Math.ceil(totalPosts / limit),
-               hasNext: page < Math.ceil(totalPosts / limit),
-               hasPrev: page > 1
-             }
+             posts: realPosts
            });
          }
        }
@@ -615,21 +588,11 @@ router.get('/location/:locationId', auth, async (req, res) => {
       }
     ];
     
-    // Sort mock posts by creation date (newest first) and apply pagination
+    // Sort mock posts by creation date (newest first)
     const sortedMockPosts = mockPosts.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-    const totalPosts = sortedMockPosts.length;
-    const paginatedPosts = sortedMockPosts.slice(offset, offset + limit);
     
     res.json({
-      posts: paginatedPosts,
-      pagination: {
-        page,
-        limit,
-        total: totalPosts,
-        totalPages: Math.ceil(totalPosts / limit),
-        hasNext: page < Math.ceil(totalPosts / limit),
-        hasPrev: page > 1
-      }
+      posts: sortedMockPosts
     });
   } catch (error) {
     console.error('Error fetching posts:', error);
