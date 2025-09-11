@@ -625,7 +625,7 @@ router.get('/accounts/:accountId/locations', async (req, res) => {
     const locations = await mybusiness.accounts.locations.list({
       parent: `accounts/${accountId}`,
       pageSize: 100,
-      readMask: 'name,title,storeCode,storefrontAddress,phoneNumbers,websiteUri,metadata,openInfo,regularHours,labels,languageCode'
+      readMask: 'name,title,storeCode,storefrontAddress,phoneNumbers,websiteUri,metadata,openInfo,regularHours,labels,languageCode,categories,serviceArea'
     });
     
     console.log('Successfully fetched locations:', locations.data.locations?.length || 0);
