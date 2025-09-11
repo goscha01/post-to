@@ -51,7 +51,7 @@ const Insights = () => {
   const [timelineData, setTimelineData] = useState(null);
   const [timelineLoading, setTimelineLoading] = useState(false);
   const [showTimeline, setShowTimeline] = useState(true);
-  const [selectedTimelineMetrics, setSelectedTimelineMetrics] = useState(['VIEWS_MAPS', 'VIEWS_SEARCH', 'ACTIONS_PHONE']);
+  const [selectedTimelineMetrics, setSelectedTimelineMetrics] = useState(['VIEWS_MAPS', 'VIEWS_SEARCH', 'ACTIONS_PHONE', 'ACTIONS_WEBSITE']);
 
   // Helper function to calculate time range start based on period
   const getTimeRangeStart = (period) => {
@@ -194,11 +194,17 @@ const Insights = () => {
 
   // Timeline configuration
   const timelineMetricOptions = [
+    // Core metrics (always visible)
     { value: 'VIEWS_MAPS', label: 'Maps Views', color: '#3B82F6' },
     { value: 'VIEWS_SEARCH', label: 'Search Views', color: '#10B981' },
     { value: 'ACTIONS_PHONE', label: 'Phone Clicks', color: '#F59E0B' },
     { value: 'ACTIONS_WEBSITE', label: 'Website Clicks', color: '#EF4444' },
-    { value: 'ACTIONS_DRIVING_DIRECTIONS', label: 'Directions', color: '#EC4899' }
+    // Additional metrics (hidden by default, shown when user wants more)
+    { value: 'ACTIONS_DRIVING_DIRECTIONS', label: 'Directions', color: '#EC4899', hidden: true },
+    { value: 'BUSINESS_CONVERSATIONS', label: 'Conversations', color: '#8B5CF6', hidden: true },
+    { value: 'BUSINESS_BOOKINGS', label: 'Bookings', color: '#F97316', hidden: true },
+    { value: 'BUSINESS_FOOD_ORDERS', label: 'Food Orders', color: '#DC2626', hidden: true },
+    { value: 'BUSINESS_FOOD_MENU_CLICKS', label: 'Menu Clicks', color: '#059669', hidden: true }
   ];
 
 // Replace your fetchTimelineData function with this version that uses the working date range
@@ -500,8 +506,7 @@ const transformTimelineDataForChart = () => {
           { metric: 'VIEWS_MAPS' },
           { metric: 'VIEWS_SEARCH' },
           { metric: 'ACTIONS_PHONE' },
-          { metric: 'ACTIONS_WEBSITE' },
-          { metric: 'ACTIONS_DRIVING_DIRECTIONS' },
+          { metric: 'ACTIONS_WEBSITE' }
         ],
         timeRange: useCustomTime && customStartDate && customEndDate
           ? {
@@ -523,7 +528,7 @@ const transformTimelineDataForChart = () => {
       );
       
       if (response.data.success) {
-        setInsights(response.data.data.locationMetrics || []); // Use correct path from backend
+        setInsights(response.data.data); // Use full data object from backend
         setError(null); // Clear any previous errors
         console.log('✅ Insights fetched successfully:', response.data.data.locationMetrics);
       } else {
@@ -595,8 +600,7 @@ const transformTimelineDataForChart = () => {
           { metric: 'VIEWS_MAPS' },
           { metric: 'VIEWS_SEARCH' },
           { metric: 'ACTIONS_PHONE' },
-          { metric: 'ACTIONS_WEBSITE' },
-          { metric: 'ACTIONS_DRIVING_DIRECTIONS' },
+          { metric: 'ACTIONS_WEBSITE' }
         ],
         timeRange: useCustomTime && customStartDate && customEndDate
           ? {
@@ -618,7 +622,7 @@ const transformTimelineDataForChart = () => {
       );
       
       if (response.data.success) {
-        setInsights(response.data.data.locationMetrics || []);
+        setInsights(response.data.data);
         console.log('✅ Insights fetched successfully:', response.data.data.locationMetrics);
       } else {
         console.error('❌ Failed to fetch insights:', response.data.error);
@@ -703,7 +707,7 @@ const transformTimelineDataForChart = () => {
       
       // Request ALL available metrics
       const allMetrics = [
-        'VIEWS_MAPS', 'VIEWS_MAPS_DESKTOP', 'VIEWS_MAPS_MOBILE', 'VIEWS_SEARCH_DESKTOP', 'VIEWS_SEARCH_MOBILE',
+        'VIEWS_MAPS', 'VIEWS_SEARCH',
         'ACTIONS_PHONE', 'ACTIONS_WEBSITE', 'ACTIONS_DRIVING_DIRECTIONS', 'BUSINESS_CONVERSATIONS', 'BUSINESS_BOOKINGS',
         'BUSINESS_FOOD_ORDERS', 'BUSINESS_FOOD_MENU_CLICKS'
       ];
@@ -733,7 +737,7 @@ const transformTimelineDataForChart = () => {
       );
       
       if (response.data.success) {
-        setInsights(response.data.data.locationMetrics || []);
+        setInsights(response.data.data);
         console.log('✅ All metrics fetched successfully:', response.data.data.locationMetrics);
       } else {
         console.error('❌ Failed to fetch all metrics:', response.data.error);
@@ -1099,11 +1103,21 @@ const getAuthHeaders = () => {
             <div className="p-6">
               {/* Metric Selection */}
               <div className="mb-6">
-                <label className="block text-sm font-medium text-gray-700 mb-3">
-                  Select Metrics for Timeline
-                </label>
+                <div className="flex items-center justify-between mb-3">
+                  <label className="block text-sm font-medium text-gray-700">
+                    Select Metrics for Timeline
+                  </label>
+                  <button
+                    onClick={() => setShowAllMetrics(!showAllMetrics)}
+                    className="text-sm text-blue-600 hover:text-blue-800 font-medium"
+                  >
+                    {showAllMetrics ? 'Show Less' : 'Show All Metrics'}
+                  </button>
+                </div>
                 <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
-                  {timelineMetricOptions.map((option) => (
+                  {timelineMetricOptions
+                    .filter(option => !option.hidden || showAllMetrics)
+                    .map((option) => (
                     <label key={option.value} className="flex items-center space-x-2 p-2 border rounded-md hover:bg-gray-50 cursor-pointer">
                       <input
                         type="checkbox"
@@ -1253,7 +1267,7 @@ const getAuthHeaders = () => {
                   onClick={() => setShowAllMetrics(!showAllMetrics)}
                   className="inline-flex items-center px-3 py-1 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50"
                 >
-                  {showAllMetrics ? 'Hide Details' : 'Show Details'}
+                  {showAllMetrics ? 'Hide Additional Metrics' : 'Show Additional Metrics'}
                   <ChevronDown className={`h-4 w-4 ml-1 transition-transform ${showAllMetrics ? 'rotate-180' : ''}`} />
                 </button>
                 <button
@@ -1270,59 +1284,33 @@ const getAuthHeaders = () => {
           <div className="p-6">
             {/* Metric Categories */}
             <div className="space-y-6">
-              {/* Views & Impressions */}
+              {/* Core Metrics */}
               <div>
                 <h3 className="text-md font-medium text-gray-900 mb-3 flex items-center">
-                  <Eye className="h-5 w-5 text-blue-600 mr-2" />
-                  Views & Impressions
+                  <BarChart3 className="h-5 w-5 text-blue-600 mr-2" />
+                  Core Business Metrics
                 </h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
                   {[
-                    { metric: 'VIEWS_MAPS', description: 'Total Maps views', color: 'bg-blue-100 text-blue-800' },
-                    { metric: 'VIEWS_SEARCH', description: 'Total Search views', color: 'bg-green-100 text-green-800' },
-                    { metric: 'ACTIONS_PHONE', description: 'Phone number clicks', color: 'bg-yellow-100 text-yellow-800' },
-                    { metric: 'ACTIONS_WEBSITE', description: 'Website clicks', color: 'bg-red-100 text-red-800' },
-                    { metric: 'ACTIONS_DRIVING_DIRECTIONS', description: 'Directions requests', color: 'bg-purple-100 text-purple-800' }
+                    { metric: 'VIEWS_MAPS', description: 'Total Maps views', color: 'bg-blue-100 text-blue-800', icon: Eye },
+                    { metric: 'VIEWS_SEARCH', description: 'Total Search views', color: 'bg-green-100 text-green-800', icon: Eye },
+                    { metric: 'ACTIONS_PHONE', description: 'Phone number clicks', color: 'bg-yellow-100 text-yellow-800', icon: Phone },
+                    { metric: 'ACTIONS_WEBSITE', description: 'Website clicks', color: 'bg-red-100 text-red-800', icon: Globe }
                   ].map((item, index) => {
                     const metricData = insights?.locationMetrics?.find(m => m.metric === item.metric);
                     const value = metricData?.metricValues?.[0]?.value || '0';
+                    const IconComponent = item.icon;
                     return (
-                      <div key={index} className="bg-gray-50 rounded-lg p-3 border-l-4 border-blue-400">
+                      <div key={index} className="bg-gray-50 rounded-lg p-4 border-l-4 border-blue-400">
                         <div className="flex items-center justify-between">
-                          <div>
-                            <div className="text-sm font-medium text-gray-900">{item.metric.replace(/_/g, ' ')}</div>
-                            <div className="text-xs text-gray-600 mt-1">{item.description}</div>
+                          <div className="flex items-center space-x-2">
+                            <IconComponent className="h-5 w-5 text-gray-600" />
+                            <div>
+                              <div className="text-sm font-medium text-gray-900">{item.metric.replace(/_/g, ' ')}</div>
+                              <div className="text-xs text-gray-600 mt-1">{item.description}</div>
+                            </div>
                           </div>
-                          <div className="text-lg font-semibold text-blue-600">{value}</div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Actions */}
-              <div>
-                <h3 className="text-md font-medium text-gray-900 mb-3 flex items-center">
-                  <MousePointer className="h-5 w-5 text-green-600 mr-2" />
-                  Customer Actions
-                </h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                  {[
-                    { metric: 'ACTIONS_PHONE', description: 'Phone number clicks', color: 'bg-green-100 text-green-800' },
-                    { metric: 'ACTIONS_WEBSITE', description: 'Website button clicks', color: 'bg-green-100 text-green-800' },
-                    { metric: 'ACTIONS_DRIVING_DIRECTIONS', description: 'Direction requests', color: 'bg-green-100 text-green-800' }
-                  ].map((item, index) => {
-                    const metricData = insights?.locationMetrics?.find(m => m.metric === item.metric);
-                    const value = metricData?.metricValues?.[0]?.value || '0';
-                    return (
-                      <div key={index} className="bg-gray-50 rounded-lg p-3 border-l-4 border-green-400">
-                        <div className="flex items-center justify-between">
-                          <div>
-                            <div className="text-sm font-medium text-gray-900">{item.metric.replace(/_/g, ' ')}</div>
-                            <div className="text-xs text-gray-600 mt-1">{item.description}</div>
-                          </div>
-                          <div className="text-lg font-semibold text-green-600">{value}</div>
+                          <div className="text-xl font-semibold text-blue-600">{value}</div>
                         </div>
                       </div>
                     );
