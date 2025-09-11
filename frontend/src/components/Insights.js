@@ -196,63 +196,74 @@ const Insights = () => {
   const timelineMetricOptions = [
     { value: 'VIEWS_MAPS', label: 'Maps Views', color: '#3B82F6' },
     { value: 'VIEWS_SEARCH', label: 'Search Views', color: '#10B981' },
-    { value: 'VIEWS_MAPS_DESKTOP', label: 'Maps (Desktop)', color: '#6366F1' },
-    { value: 'VIEWS_MAPS_MOBILE', label: 'Maps (Mobile)', color: '#8B5CF6' },
-    { value: 'VIEWS_SEARCH_DESKTOP', label: 'Search (Desktop)', color: '#06B6D4' },
-    { value: 'VIEWS_SEARCH_MOBILE', label: 'Search (Mobile)', color: '#84CC16' },
     { value: 'ACTIONS_PHONE', label: 'Phone Clicks', color: '#F59E0B' },
     { value: 'ACTIONS_WEBSITE', label: 'Website Clicks', color: '#EF4444' },
-    { value: 'ACTIONS_DRIVING_DIRECTIONS', label: 'Directions', color: '#EC4899' },
-    { value: 'BUSINESS_CONVERSATIONS', label: 'Conversations', color: '#14B8A6' },
-    { value: 'BUSINESS_BOOKINGS', label: 'Bookings', color: '#F97316' },
-    { value: 'BUSINESS_FOOD_ORDERS', label: 'Food Orders', color: '#DC2626' }
+    { value: 'ACTIONS_DRIVING_DIRECTIONS', label: 'Directions', color: '#EC4899' }
   ];
 
 // Replace your fetchTimelineData function with this version that uses the working date range
 
-const fetchTimelineData = async (profileId, period) => {
+const fetchTimelineData = async (profileId, period, profilesData = profiles) => {
   if (!profileId) return;
   
   try {
     console.log('🔍 Fetching timeline for profile:', profileId);
     
-    // Extract locationId (same logic as above)
-    let locationId;
+    // Extract account ID and location ID from the profile
+    let accountId, locationId;
+    
     if (profileId.includes('/')) {
       const profileParts = profileId.split('/');
+      
       if (profileParts[0] === 'locations' && profileParts.length === 2) {
+        // Format: locations/{locationId}
         locationId = profileParts[1];
-      } else if (profileParts.includes('locations')) {
+        // Get account ID from the first profile
+        if (profilesData.length > 0 && profilesData[0].name) {
+          const accountNameParts = profilesData[0].name.split('/');
+          accountId = accountNameParts[accountNameParts.length - 1];
+        }
+      } else if (profileParts.includes('accounts') && profileParts.includes('locations')) {
+        // Format: accounts/{accountId}/locations/{locationId}
+        const accountIndex = profileParts.findIndex(part => part === 'accounts');
         const locationIndex = profileParts.findIndex(part => part === 'locations');
-        if (locationIndex !== -1) {
+        
+        if (accountIndex !== -1 && locationIndex !== -1) {
+          accountId = profileParts[accountIndex + 1];
           locationId = profileParts[locationIndex + 1];
         }
       }
     } else {
+      // Handle simple ID format
       locationId = profileId;
+      // Try to get account ID from the first profile
+      if (profilesData.length > 0 && profilesData[0].name) {
+        const accountNameParts = profilesData[0].name.split('/');
+        accountId = accountNameParts[accountNameParts.length - 1];
+      }
     }
     
-    if (!locationId) {
-      console.error('❌ Failed to extract locationId from profile:', profileId);
+    if (!accountId || !locationId) {
+      console.error('❌ Failed to extract accountId or locationId from profile:', profileId);
       return;
     }
     
     const requestData = {
-      metricRequests: ['BUSINESS_IMPRESSIONS_DESKTOP_SEARCH', 'BUSINESS_IMPRESSIONS_MOBILE_SEARCH', 'CALL_CLICKS'],
+      accountId: accountId,
+      locationId: locationId,
+      metricRequests: ['VIEWS_MAPS', 'VIEWS_SEARCH', 'ACTIONS_PHONE'].map(metric => ({ metric })),
       timeRange: {
         startTime: useCustomTime && customStartDate ? new Date(customStartDate).toISOString() : getTimeRangeStart(period).toISOString(),
         endTime: useCustomTime && customEndDate ? new Date(customEndDate).toISOString() : getTimeRangeEnd(period).toISOString()
-      },
-      locationId: locationId
+      }
     };
     
     console.log('📤 Fetching timeline data with:', requestData);
     
-    // FIXED: Use backticks and JWT headers  
+    // Use the correct insights endpoint
     const response = await axios.post(
-      `http://localhost:3001/api/gmb/locations/${locationId}/insights/timeline`,
-      requestData,
-      { headers: getAuthHeaders() }
+      'http://localhost:3001/api/insights/timeline',
+      requestData
     );
     
     if (response.data.success) {
@@ -425,6 +436,16 @@ const transformTimelineDataForChart = () => {
     if (!profileId) return;
     
     try {
+      // Debug token availability
+      const gmbToken = localStorage.getItem('gmb_token');
+      const gmbRefreshToken = localStorage.getItem('gmb_refresh_token');
+      const gmbGoogleAccessToken = localStorage.getItem('gmb_google_access_token');
+      
+      console.log('🔍 Token Debug:');
+      console.log('🔍 gmb_token:', gmbToken ? 'exists' : 'null');
+      console.log('🔍 gmb_refresh_token:', gmbRefreshToken ? 'exists' : 'null');
+      console.log('🔍 gmb_google_access_token:', gmbGoogleAccessToken ? 'exists' : 'null');
+      
       console.log('🔍 Profile ID received:', profileId);
       console.log('🔍 Profile ID type:', typeof profileId);
       
@@ -471,22 +492,16 @@ const transformTimelineDataForChart = () => {
         return;
       }
       
-      // FIXED: Correct request structure for your backend
+      // Use the correct insights endpoint with proper request structure
       const requestData = {
+        accountId: accountId,
+        locationId: locationId,
         metricRequests: [
           { metric: 'VIEWS_MAPS' },
-          { metric: 'VIEWS_MAPS_DESKTOP' },
-          { metric: 'VIEWS_MAPS_MOBILE' },
-          { metric: 'VIEWS_SEARCH_DESKTOP' },
-          { metric: 'VIEWS_SEARCH_MOBILE' },
           { metric: 'VIEWS_SEARCH' },
           { metric: 'ACTIONS_PHONE' },
           { metric: 'ACTIONS_WEBSITE' },
           { metric: 'ACTIONS_DRIVING_DIRECTIONS' },
-          { metric: 'BUSINESS_CONVERSATIONS' },
-          { metric: 'BUSINESS_BOOKINGS' },
-          { metric: 'BUSINESS_FOOD_ORDERS' },
-          { metric: 'BUSINESS_FOOD_MENU_CLICKS' }
         ],
         timeRange: useCustomTime && customStartDate && customEndDate
           ? {
@@ -497,16 +512,14 @@ const transformTimelineDataForChart = () => {
               startTime: getTimeRangeStart(period).toISOString(),
               endTime: getTimeRangeEnd(period).toISOString()
             }
-        // REMOVED: accessToken, accountId, locationId - these come from JWT and URL
       };
-  
+
       console.log('📤 Fetching insights with data:', requestData);
       
-      // FIXED: Use backticks for template string and JWT headers
+      // Use the correct insights endpoint
       const response = await axios.post(
-        `http://localhost:3001/api/gmb/locations/${locationId}/insights`, 
-        requestData,
-        { headers: getAuthHeaders() }
+        'http://localhost:3001/api/insights/basic', 
+        requestData
       );
       
       if (response.data.success) {
@@ -574,22 +587,16 @@ const transformTimelineDataForChart = () => {
         return;
       }
       
-      // FIXED: Correct request structure
+      // Use the correct insights endpoint with proper request structure
       const requestData = {
+        accountId: accountId,
+        locationId: locationId,
         metricRequests: [
           { metric: 'VIEWS_MAPS' },
-          { metric: 'VIEWS_MAPS_DESKTOP' },
-          { metric: 'VIEWS_MAPS_MOBILE' },
-          { metric: 'VIEWS_SEARCH_DESKTOP' },
-          { metric: 'VIEWS_SEARCH_MOBILE' },
           { metric: 'VIEWS_SEARCH' },
           { metric: 'ACTIONS_PHONE' },
           { metric: 'ACTIONS_WEBSITE' },
           { metric: 'ACTIONS_DRIVING_DIRECTIONS' },
-          { metric: 'BUSINESS_CONVERSATIONS' },
-          { metric: 'BUSINESS_BOOKINGS' },
-          { metric: 'BUSINESS_FOOD_ORDERS' },
-          { metric: 'BUSINESS_FOOD_MENU_CLICKS' }
         ],
         timeRange: useCustomTime && customStartDate && customEndDate
           ? {
@@ -601,19 +608,18 @@ const transformTimelineDataForChart = () => {
               endTime: getTimeRangeEnd(period).toISOString()
             }
       };
-  
+
       console.log('📤 Fetching insights with data:', requestData);
       
-      // FIXED: Use backticks and JWT headers
+      // Use the correct insights endpoint
       const response = await axios.post(
-        `http://localhost:3001/api/gmb/locations/${locationId}/insights`, 
-        requestData,
-        { headers: getAuthHeaders() }
+        'http://localhost:3001/api/insights/basic', 
+        requestData
       );
       
       if (response.data.success) {
-        setInsights(response.data.insights);
-        console.log('✅ Insights fetched successfully:', response.data.insights);
+        setInsights(response.data.data.locationMetrics || []);
+        console.log('✅ Insights fetched successfully:', response.data.data.locationMetrics);
       } else {
         console.error('❌ Failed to fetch insights:', response.data.error);
       }
@@ -702,8 +708,10 @@ const transformTimelineDataForChart = () => {
         'BUSINESS_FOOD_ORDERS', 'BUSINESS_FOOD_MENU_CLICKS'
       ];
       
-      // FIXED: Correct request structure
+      // Use the correct insights endpoint with proper request structure
       const requestData = {
+        accountId: accountId,
+        locationId: locationId,
         metricRequests: allMetrics.map(metric => ({ metric })),
         timeRange: useCustomTime && customStartDate && customEndDate
           ? {
@@ -718,16 +726,15 @@ const transformTimelineDataForChart = () => {
       
       console.log('📤 Fetching ALL metrics with data:', requestData);
       
-      // FIXED: Use backticks and JWT headers
+      // Use the correct insights endpoint
       const response = await axios.post(
-        `http://localhost:3001/api/gmb/locations/${locationId}/insights`, 
-        requestData,
-        { headers: getAuthHeaders() }
+        'http://localhost:3001/api/insights/basic', 
+        requestData
       );
       
       if (response.data.success) {
-        setInsights(response.data.insights);
-        console.log('✅ All metrics fetched successfully:', response.data.insights);
+        setInsights(response.data.data.locationMetrics || []);
+        console.log('✅ All metrics fetched successfully:', response.data.data.locationMetrics);
       } else {
         console.error('❌ Failed to fetch all metrics:', response.data.error);
       }
@@ -1272,12 +1279,11 @@ const getAuthHeaders = () => {
                 </h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                   {[
-                    { metric: 'VIEWS_MAPS', description: 'Total Maps views (desktop + mobile)', color: 'bg-blue-100 text-blue-800' },
-                    { metric: 'VIEWS_SEARCH', description: 'Total Search views (desktop + mobile)', color: 'bg-blue-100 text-blue-800' },
-                    { metric: 'VIEWS_MAPS_DESKTOP', description: 'Maps views on desktop only', color: 'bg-blue-50 text-blue-700' },
-                    { metric: 'VIEWS_MAPS_MOBILE', description: 'Maps views on mobile only', color: 'bg-blue-50 text-blue-700' },
-                    { metric: 'VIEWS_SEARCH_DESKTOP', description: 'Search views on desktop only', color: 'bg-blue-50 text-blue-700' },
-                    { metric: 'VIEWS_SEARCH_MOBILE', description: 'Search views on mobile only', color: 'bg-blue-50 text-blue-700' }
+                    { metric: 'VIEWS_MAPS', description: 'Total Maps views', color: 'bg-blue-100 text-blue-800' },
+                    { metric: 'VIEWS_SEARCH', description: 'Total Search views', color: 'bg-green-100 text-green-800' },
+                    { metric: 'ACTIONS_PHONE', description: 'Phone number clicks', color: 'bg-yellow-100 text-yellow-800' },
+                    { metric: 'ACTIONS_WEBSITE', description: 'Website clicks', color: 'bg-red-100 text-red-800' },
+                    { metric: 'ACTIONS_DRIVING_DIRECTIONS', description: 'Directions requests', color: 'bg-purple-100 text-purple-800' }
                   ].map((item, index) => {
                     const metricData = insights?.locationMetrics?.find(m => m.metric === item.metric);
                     const value = metricData?.metricValues?.[0]?.value || '0';

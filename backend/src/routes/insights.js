@@ -9,7 +9,7 @@ const requireBusinessAuth = require('../middleware/businessAuth');
 const PERFORMANCE_URL = 'https://businessprofileperformance.googleapis.com/v1';
 // Clean timeline endpoint - replace your current timeline implementation
 
-router.post('/timeline', async (req, res) => {
+router.post('/timeline', authMiddleware, requireBusinessAuth, async (req, res) => {
   try {
     const { metricRequests, timeRange, locationId } = req.body;
     
@@ -226,7 +226,7 @@ function generateDailyDistribution(totalValue, startDate, endDate) {
 
 
 // Get basic insights for a location (original aggregated functionality)
-router.post('/basic', async (req, res) => {
+router.post('/basic', authMiddleware, requireBusinessAuth, async (req, res) => {
   try {
     const { metricRequests, timeRange, locationId } = req.body;
     

@@ -13,14 +13,16 @@ const BusinessSuccessCallback = () => {
     if (processedRef.current) return;
     
     const token = searchParams.get('token');
+    const refreshToken = searchParams.get('refreshToken');
     
     console.log('BusinessSuccessCallback: Token from URL:', token ? 'Token received' : 'No token');
+    console.log('BusinessSuccessCallback: Refresh token from URL:', refreshToken ? 'Refresh token received' : 'No refresh token');
     
     if (token) {
       processedRef.current = true;
       
-      // Handle the business success callback
-      handleAuthCallback(token, null, null, true);
+      // Handle the business success callback with refresh token
+      handleAuthCallback(token, null, refreshToken, true);
       
       // Set business connection flag
       localStorage.setItem('gmb_business_connected', 'true');

@@ -139,6 +139,8 @@ export const AuthProvider = ({ children }) => {
     }
     if (googleRefreshToken) {
       localStorage.setItem('gmb_refresh_token', googleRefreshToken);
+      console.log('🔑 Storing refresh token:', googleRefreshToken.substring(0, 20) + '...');
+      console.log('🔑 Refresh token length:', googleRefreshToken.length);
     }
     
     // Store business connection status
@@ -209,19 +211,50 @@ export const AuthProvider = ({ children }) => {
 
   const refreshToken = async () => {
     try {
+      // Prevent multiple simultaneous refresh calls
+      if (window.refreshInProgress) {
+        console.log('🔄 Refresh already in progress, skipping...');
+        return null;
+      }
+      
+      window.refreshInProgress = true;
+      
       const refreshToken = localStorage.getItem('gmb_refresh_token');
+      console.log('🔄 Attempting token refresh...');
+      console.log('🔄 Refresh token available:', !!refreshToken);
+      console.log('🔄 Refresh token length:', refreshToken ? refreshToken.length : 0);
+      console.log('🔄 Refresh token starts with:', refreshToken ? refreshToken.substring(0, 20) + '...' : 'null');
+      
+      // Debug all localStorage items
+      console.log('🔍 All localStorage items:');
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.includes('gmb')) {
+          console.log(`🔍 ${key}:`, localStorage.getItem(key) ? 'exists' : 'null');
+        }
+      }
+      
       if (!refreshToken) {
         throw new Error('No refresh token available');
       }
 
+      console.log('🔄 Sending refresh request to backend...');
       const response = await axios.post('http://localhost:3001/auth/refresh', {
         refreshToken
       });
 
+      console.log('🔄 Refresh response received:', response.status);
+      console.log('🔄 Response data:', response.data);
+      
       const newToken = response.data.access_token;
+      console.log('🔄 New token received:', newToken ? 'exists' : 'null');
+      console.log('🔄 New token length:', newToken ? newToken.length : 0);
+      
       setToken(newToken);
       localStorage.setItem('gmb_token', newToken);
       axios.defaults.headers.common['Authorization'] = `Bearer ${newToken}`;
+      
+      console.log('🔄 Token updated in localStorage and axios headers');
 
       return newToken;
     } catch (error) {
@@ -256,21 +289,53 @@ export const AuthProvider = ({ children }) => {
         logout();
         throw error;
       }
+    } finally {
+      window.refreshInProgress = false;
     }
   };
 
-  // Axios interceptor for automatic token refresh
+  // Axios interceptors for automatic token refresh
   useEffect(() => {
-    const interceptor = axios.interceptors.response.use(
+    // Request interceptor to add token to all requests
+    const requestInterceptor = axios.interceptors.request.use(
+      (config) => {
+        const currentToken = localStorage.getItem('gmb_token');
+        if (currentToken) {
+          config.headers.Authorization = `Bearer ${currentToken}`;
+          console.log('🔑 Adding token to request:', config.url);
+          console.log('🔑 Token length:', currentToken.length);
+          console.log('🔑 Token starts with:', currentToken.substring(0, 20) + '...');
+        } else {
+          console.log('🔑 No token available for request:', config.url);
+        }
+        return config;
+      },
+      (error) => Promise.reject(error)
+    );
+
+    // Response interceptor for automatic token refresh
+    const responseInterceptor = axios.interceptors.response.use(
       (response) => response,
       async (error) => {
         // Handle 401 errors with token refresh
         if (error.response?.status === 401 && token && !isDisconnected) {
           try {
-            await refreshToken();
-            // Retry the original request
-            return axios.request(error.config);
+            console.log('🔄 401 error detected, refreshing token...');
+            const newToken = await refreshToken();
+            
+            if (newToken) {
+              console.log('🔄 Token refreshed, updating request headers...');
+              // Update the original request with the new token
+              error.config.headers.Authorization = `Bearer ${newToken}`;
+              console.log('🔄 Retrying request with new token...');
+              return axios.request(error.config);
+            } else {
+              console.log('🔄 No new token received, logging out...');
+              logout();
+              return Promise.reject(error);
+            }
           } catch (refreshError) {
+            console.log('🔄 Token refresh failed:', refreshError.message);
             // Only logout if it's not a rate limit error
             if (refreshError.response?.status !== 429) {
               logout();
@@ -293,7 +358,8 @@ export const AuthProvider = ({ children }) => {
     );
 
     return () => {
-      axios.interceptors.response.eject(interceptor);
+      axios.interceptors.request.eject(requestInterceptor);
+      axios.interceptors.response.eject(responseInterceptor);
     };
   }, [token, isDisconnected]);
 

@@ -476,8 +476,8 @@ router.get('/google/business/callback', async (req, res) => {
     
     console.log('Business connection successful for user:', user.id);
 
-    // Redirect to frontend with success
-    const redirectUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/business/success?token=${jwtToken}`;
+    // Redirect to frontend with success - include both JWT and Google refresh token
+    const redirectUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/business/success?token=${jwtToken}&refreshToken=${tokens.refresh_token}`;
     console.log('Business OAuth callback successful, redirecting to:', redirectUrl);
     res.redirect(redirectUrl);
     
@@ -490,44 +490,56 @@ router.get('/google/business/callback', async (req, res) => {
 // Refresh token endpoint
 router.post('/refresh', smartRateLimitMiddleware('token_refresh'), async (req, res) => {
   try {
-    const { refreshToken, type = 'user' } = req.body;
+    const { refreshToken } = req.body;
+    
+    console.log('🔄 Refresh endpoint called');
+    console.log('🔄 Refresh token received:', !!refreshToken);
+    console.log('🔄 Refresh token length:', refreshToken ? refreshToken.length : 0);
+    console.log('🔄 Refresh token starts with:', refreshToken ? refreshToken.substring(0, 20) + '...' : 'null');
     
     if (!refreshToken) {
       return res.status(400).json({ error: 'Refresh token required' });
     }
 
-    // Use appropriate OAuth client
-    const client = type === 'business' ? businessOAuth2Client : oauth2Client;
-    client.setCredentials({ refresh_token: refreshToken });
-    
-    const { credentials } = await client.refreshAccessToken();
-
-    // Update tokens in database
-    const updateData = type === 'business' ? {
-      business_access_token: credentials.access_token,
-      business_token_expiry: credentials.expiry_date ? new Date(credentials.expiry_date) : null
-    } : {
-      access_token: credentials.access_token,
-      token_expiry: credentials.expiry_date ? new Date(credentials.expiry_date) : null
-    };
-
-    // Get user info to generate new JWT
+    // Find user by business refresh token (since we're using Google refresh token from business auth)
+    console.log('🔄 Looking up user by business_refresh_token...');
     const { data: user, error: userError } = await supabase
       .from('users')
-      .select('id, email, google_id, name, picture_url, has_business_access')
-      .eq(type === 'business' ? 'business_refresh_token' : 'refresh_token', refreshToken)
+      .select('id, email, google_id, name, picture_url, has_business_access, business_refresh_token')
+      .eq('business_refresh_token', refreshToken)
       .single();
 
-    if (userError) throw userError;
+    if (userError || !user) {
+      console.error('🔄 Token refresh error:', userError);
+      console.error('🔄 User found:', !!user);
+      return res.status(401).json({ error: 'Invalid refresh token' });
+    }
 
-    const { error } = await supabase
+    console.log('🔄 User found:', user.id);
+    console.log('🔄 User has business access:', user.has_business_access);
+    
+    // Use business OAuth client to refresh the Google access token
+    console.log('🔄 Refreshing Google access token...');
+    businessOAuth2Client.setCredentials({ refresh_token: refreshToken });
+    const { credentials } = await businessOAuth2Client.refreshAccessToken();
+    console.log('🔄 Google token refreshed successfully');
+
+    // Update business tokens in database
+    const { error: updateError } = await supabase
       .from('users')
-      .update(updateData)
-      .eq(type === 'business' ? 'business_refresh_token' : 'refresh_token', refreshToken);
+      .update({
+        business_access_token: credentials.access_token,
+        business_token_expiry: credentials.expiry_date ? new Date(credentials.expiry_date) : null
+      })
+      .eq('id', user.id);
 
-    if (error) throw error;
+    if (updateError) {
+      console.error('Error updating business tokens:', updateError);
+      return res.status(500).json({ error: 'Failed to update tokens' });
+    }
 
     // Generate new JWT token instead of returning Google access token
+    console.log('🔄 Generating new JWT token...');
     const jwtToken = jwt.sign(
       { 
         userId: user.id, 
@@ -541,10 +553,13 @@ router.post('/refresh', smartRateLimitMiddleware('token_refresh'), async (req, r
       { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
     );
 
+    console.log('🔄 JWT token generated successfully');
+    console.log('🔄 JWT token length:', jwtToken.length);
+    console.log('🔄 JWT token starts with:', jwtToken.substring(0, 20) + '...');
+
     res.json({
       access_token: jwtToken, // Return JWT instead of Google access token
-      expires_in: credentials.expiry_date ? Math.floor((credentials.expiry_date - Date.now()) / 1000) : null,
-      type: type
+      expires_in: credentials.expiry_date ? Math.floor((credentials.expiry_date - Date.now()) / 1000) : null
     });
 
   } catch (error) {
