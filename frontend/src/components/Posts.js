@@ -492,7 +492,7 @@ const Posts = () => {
       setTimeout(async () => {
         try {
           // Fetch fresh posts from GMB
-          const response = await axios.get(`http://localhost:3001/api/posts/location/${locationId}`, {
+          const response = await axios.get(`http://localhost:3001/api/gmb/accounts/${accountId}/locations/${locationId}/posts`, {
             headers: {
               'x-gmb-account-id': accountId,
               'Authorization': `Bearer ${localStorage.getItem('gmb_token')}`

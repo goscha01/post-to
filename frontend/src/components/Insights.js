@@ -208,77 +208,47 @@ const Insights = () => {
 
 // Replace your fetchTimelineData function with this version that uses the working date range
 
-const fetchTimelineData = async (profileId, period, profilesData = profiles, explicitMetrics = null) => {
+const fetchTimelineData = async (profileId, period) => {
   if (!profileId) return;
   
   try {
-    setTimelineLoading(true);
     console.log('🔍 Fetching timeline for profile:', profileId);
     
-    // Use explicit metrics or fall back to state, but ensure we have some metrics
-    const metricsToUse = explicitMetrics || selectedTimelineMetrics || ['ACTIONS_PHONE'];
-    console.log('🔍 DEBUG: Metrics to use:', metricsToUse);
-    console.log('🔍 DEBUG: selectedTimelineMetrics state:', selectedTimelineMetrics);
-    
-    // Extract account ID and location ID from the profile (same logic as existing functions)
-    let accountId, locationId;
-    
+    // Extract locationId (same logic as above)
+    let locationId;
     if (profileId.includes('/')) {
       const profileParts = profileId.split('/');
-      
       if (profileParts[0] === 'locations' && profileParts.length === 2) {
         locationId = profileParts[1];
-        if (profilesData.length > 0 && profilesData[0].name) {
-          const accountNameParts = profilesData[0].name.split('/');
-          accountId = accountNameParts[accountNameParts.length - 1];
-        }
-      } else if (profileParts.includes('accounts') && profileParts.includes('locations')) {
-        const accountIndex = profileParts.findIndex(part => part === 'accounts');
+      } else if (profileParts.includes('locations')) {
         const locationIndex = profileParts.findIndex(part => part === 'locations');
-        
-        if (accountIndex !== -1 && locationIndex !== -1) {
-          accountId = profileParts[accountIndex + 1];
+        if (locationIndex !== -1) {
           locationId = profileParts[locationIndex + 1];
         }
       }
     } else {
       locationId = profileId;
-      if (profilesData.length > 0 && profilesData[0].name) {
-        const accountNameParts = profilesData[0].name.split('/');
-        accountId = accountNameParts[accountNameParts.length - 1];
-      }
     }
     
-    if (!accountId || !locationId) {
-      console.error('❌ Failed to extract accountId or locationId for timeline');
+    if (!locationId) {
+      console.error('❌ Failed to extract locationId from profile:', profileId);
       return;
     }
     
     const requestData = {
-      accessToken: localStorage.getItem('gmb_google_access_token'),
-      accountId: accountId,
-      locationId: locationId,
-      metricRequests: metricsToUse.map(metric => ({ metric })),
-      timeRange: useCustomTime && customStartDate && customEndDate
-        ? {
-            startTime: new Date(customStartDate).toISOString(),
-            endTime: new Date(customEndDate).toISOString()
-          }
-        : {
-            startTime: getTimeRangeStart(period).toISOString(),
-            endTime: getTimeRangeEnd(period).toISOString()
-          }
+      startDate: useCustomTime && customStartDate ? new Date(customStartDate).toISOString() : getTimeRangeStart(period).toISOString(),
+      endDate: useCustomTime && customEndDate ? new Date(customEndDate).toISOString() : getTimeRangeEnd(period).toISOString(),
+      metrics: ['BUSINESS_IMPRESSIONS_DESKTOP_SEARCH', 'BUSINESS_IMPRESSIONS_MOBILE_SEARCH', 'CALL_CLICKS']
     };
-
-    console.log('📤 Fetching timeline data with:', requestData);
-    console.log('🔍 Timeline date range:', {
-      startTime: requestData.timeRange.startTime,
-      endTime: requestData.timeRange.endTime,
-      period: period
-    });
-    console.log('🔍 DEBUG: Final metricRequests array:', requestData.metricRequests);
     
-    const response = await axios.post('http://localhost:3001/api/insights/timeline', requestData);
+    console.log('📤 Fetching timeline data with:', requestData);
+    
+    // FIXED: Use backticks and JWT headers  
+    const response = await axios.post(
+      `http://localhost:3001/api/gmb/locations/${locationId}/insights/timeline`,
+      requestData,
+      { headers: getAuthHeaders() }
+    );
     
     if (response.data.success) {
       setTimelineData(response.data.data);
@@ -288,8 +258,9 @@ const fetchTimelineData = async (profileId, period, profilesData = profiles, exp
     }
   } catch (error) {
     console.error('Error fetching timeline data:', error);
-  } finally {
-    setTimelineLoading(false);
+    if (error.response?.status === 401) {
+      console.error('❌ Authentication failed - please reconnect your GMB account');
+    }
   }
 };
 
@@ -488,11 +459,8 @@ const transformTimelineDataForChart = () => {
         return;
       }
       
-      // Use the working basic insights endpoint
+      // FIXED: Correct request structure for your backend
       const requestData = {
-        accessToken: localStorage.getItem('gmb_google_access_token'),
-        accountId: accountId,
-        locationId: locationId,
         metricRequests: [
           { metric: 'VIEWS_MAPS' },
           { metric: 'VIEWS_MAPS_DESKTOP' },
@@ -517,23 +485,29 @@ const transformTimelineDataForChart = () => {
               startTime: getTimeRangeStart(period).toISOString(),
               endTime: getTimeRangeEnd(period).toISOString()
             }
+        // REMOVED: accessToken, accountId, locationId - these come from JWT and URL
       };
-
+  
       console.log('📤 Fetching insights with data:', requestData);
       
-      const response = await axios.post('http://localhost:3001/api/insights/basic', requestData);
+      // FIXED: Use backticks for template string and JWT headers
+      const response = await axios.post(
+        `http://localhost:3001/api/gmb/locations/${locationId}/insights`, 
+        requestData,
+        { headers: getAuthHeaders() }
+      );
       
       if (response.data.success) {
-        setInsights(response.data.data);
-        console.log('✅ Insights fetched successfully:', response.data.data);
-        console.log('🔍 Response data structure:', JSON.stringify(response.data, null, 2));
-        console.log('🔍 Insights data structure:', JSON.stringify(response.data.data, null, 2));
-        console.log('🔍 Location metrics:', JSON.stringify(response.data.data?.locationMetrics, null, 2));
+        setInsights(response.data.insights); // Note: changed from .data to .insights
+        console.log('✅ Insights fetched successfully:', response.data.insights);
       } else {
         console.error('❌ Failed to fetch insights:', response.data.error);
       }
     } catch (error) {
       console.error('Error fetching insights:', error);
+      if (error.response?.status === 401) {
+        console.error('❌ Authentication failed - please reconnect your GMB account');
+      }
     }
   };
 
@@ -542,7 +516,6 @@ const transformTimelineDataForChart = () => {
     
     try {
       console.log('🔍 Profile ID received:', profileId);
-      console.log('🔍 Profile ID type:', typeof profileId);
       
       // Extract account ID and location ID from the profile
       let accountId, locationId;
@@ -552,15 +525,12 @@ const transformTimelineDataForChart = () => {
         console.log('🔍 Profile parts:', profileParts);
         
         if (profileParts[0] === 'locations' && profileParts.length === 2) {
-          // Format: locations/{locationId}
           locationId = profileParts[1];
-          // Get account ID from the first profile
           if (profiles.length > 0 && profiles[0].name) {
             const accountNameParts = profiles[0].name.split('/');
             accountId = accountNameParts[accountNameParts.length - 1];
           }
         } else if (profileParts.includes('accounts') && profileParts.includes('locations')) {
-          // Format: accounts/{accountId}/locations/{locationId}
           const accountIndex = profileParts.findIndex(part => part === 'accounts');
           const locationIndex = profileParts.findIndex(part => part === 'locations');
           
@@ -570,9 +540,7 @@ const transformTimelineDataForChart = () => {
           }
         }
       } else {
-        // Handle simple ID format
         locationId = profileId;
-        // Try to get account ID from the first profile
         if (profiles.length > 0 && profiles[0].name) {
           const accountNameParts = profiles[0].name.split('/');
           accountId = accountNameParts[accountNameParts.length - 1];
@@ -587,11 +555,8 @@ const transformTimelineDataForChart = () => {
         return;
       }
       
-      // Use the working basic insights endpoint
+      // FIXED: Correct request structure
       const requestData = {
-        accessToken: localStorage.getItem('gmb_google_access_token'),
-        accountId: accountId,
-        locationId: locationId,
         metricRequests: [
           { metric: 'VIEWS_MAPS' },
           { metric: 'VIEWS_MAPS_DESKTOP' },
@@ -617,22 +582,27 @@ const transformTimelineDataForChart = () => {
               endTime: getTimeRangeEnd(period).toISOString()
             }
       };
-
+  
       console.log('📤 Fetching insights with data:', requestData);
       
-      const response = await axios.post('http://localhost:3001/api/insights/basic', requestData);
+      // FIXED: Use backticks and JWT headers
+      const response = await axios.post(
+        `http://localhost:3001/api/gmb/locations/${locationId}/insights`, 
+        requestData,
+        { headers: getAuthHeaders() }
+      );
       
       if (response.data.success) {
-        setInsights(response.data.data);
-        console.log('✅ Insights fetched successfully:', response.data.data);
-        console.log('🔍 Response data structure:', JSON.stringify(response.data, null, 2));
-        console.log('🔍 Insights data structure:', JSON.stringify(response.data.data, null, 2));
-        console.log('🔍 Location metrics:', JSON.stringify(response.data.data?.locationMetrics, null, 2));
+        setInsights(response.data.insights);
+        console.log('✅ Insights fetched successfully:', response.data.insights);
       } else {
         console.error('❌ Failed to fetch insights:', response.data.error);
       }
     } catch (error) {
       console.error('Error fetching insights:', error);
+      if (error.response?.status === 401) {
+        console.error('❌ Authentication failed - please reconnect your GMB account');
+      }
     }
   };
 
@@ -707,10 +677,8 @@ const transformTimelineDataForChart = () => {
         'BUSINESS_FOOD_ORDERS', 'BUSINESS_FOOD_MENU_CLICKS'
       ];
       
+      // FIXED: Correct request structure
       const requestData = {
-        accessToken: localStorage.getItem('gmb_google_access_token'),
-        accountId: accountId,
-        locationId: locationId,
         metricRequests: allMetrics.map(metric => ({ metric })),
         timeRange: useCustomTime && customStartDate && customEndDate
           ? {
@@ -725,20 +693,29 @@ const transformTimelineDataForChart = () => {
       
       console.log('📤 Fetching ALL metrics with data:', requestData);
       
-      const response = await axios.post('http://localhost:3001/api/insights/basic', requestData);
+      // FIXED: Use backticks and JWT headers
+      const response = await axios.post(
+        `http://localhost:3001/api/gmb/locations/${locationId}/insights`, 
+        requestData,
+        { headers: getAuthHeaders() }
+      );
       
       if (response.data.success) {
-        setInsights(response.data.data);
-        console.log('✅ All metrics fetched successfully:', response.data.data);
+        setInsights(response.data.insights);
+        console.log('✅ All metrics fetched successfully:', response.data.insights);
       } else {
         console.error('❌ Failed to fetch all metrics:', response.data.error);
       }
     } catch (error) {
       console.error('Error fetching all metrics:', error);
+      if (error.response?.status === 401) {
+        console.error('❌ Authentication failed - please reconnect your GMB account');
+      }
     } finally {
       setRefreshing(false);
     }
   };
+  
 
   const exportInsights = async (format = 'json') => {
     if (!selectedProfile) return;
@@ -851,6 +828,15 @@ const transformTimelineDataForChart = () => {
     if (metricName.includes('WEBSITE')) return 'text-orange-600';
     return 'text-gray-600';
   };
+
+  // Get JWT token for authentication
+const getAuthHeaders = () => {
+  const jwtToken = localStorage.getItem('gmb_jwt_token');
+  return {
+    'Authorization': `Bearer ${jwtToken}`,
+    'Content-Type': 'application/json'
+  };
+};
 
   if (!isAuthenticated) {
     return (

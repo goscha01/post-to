@@ -15,7 +15,9 @@ const supabase = createClient(
 router.use(authMiddleware); // First authenticate the user
 router.use(requireBusinessAuth); // Then check business authentication
 
-
+// Mount separate route files
+router.use('/insights', require('./insights')); // Mount insights routes
+router.use('/posts', require('./posts'));       // Mount posts routes
 
 // Helper function to save post to database
 const savePostToDatabase = async (userId, postData) => {
@@ -46,6 +48,23 @@ const savePostToDatabase = async (userId, postData) => {
     return null;
   }
 };
+
+
+// Helper function to format Google's date response
+function formatGoogleDate(googleDate) {
+  if (typeof googleDate === 'string') {
+    return googleDate;
+  }
+  
+  if (googleDate.year && googleDate.month && googleDate.day) {
+    const year = googleDate.year;
+    const month = googleDate.month.toString().padStart(2, '0');
+    const day = googleDate.day.toString().padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+  
+  return new Date().toISOString().split('T')[0];
+}
 
 // Helper function to save existing posts from API to database
 const saveExistingPostsToDatabase = async (userId, posts, platform = 'google') => {
@@ -529,17 +548,48 @@ router.get('/accounts', async (req, res) => {
     
     console.log('Successfully fetched GMB accounts:', accounts.data.accounts?.length || 0);
     
+    // ADD: Save accounts to database for future association
+    if (accounts.data.accounts && accounts.data.accounts.length > 0) {
+      for (const account of accounts.data.accounts) {
+        try {
+          const accountId = account.name.split('/').pop();
+          
+          // Save/update account in database
+          const { error: accountError } = await supabase
+            .from('gmb_accounts')
+            .upsert({
+              user_id: req.user.userId,
+              account_id: accountId,
+              account_name: account.accountName,
+              account_type: account.type || 'PERSONAL',
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString()
+            }, {
+              onConflict: 'user_id,account_id'
+            });
+            
+          if (accountError) {
+            console.error('Error saving account to database:', accountError);
+          } else {
+            console.log('✅ Saved account to database:', accountId);
+          }
+        } catch (dbError) {
+          console.error('Database error for account:', dbError);
+        }
+      }
+    }
+    
     res.json({
       success: true,
       accounts: accounts.data.accounts || []
     });
-
+    
   } catch (error) {
     console.error('Error fetching GMB accounts:', error);
     
     // Handle specific Google API errors
     if (error.code === 403) {
-      return res.status(403).json({ 
+      return res.status(403).json({
         error: 'Insufficient permissions. Please ensure your Google account has access to Google My Business.',
         needsBusinessAuth: true,
         details: error.message
@@ -547,15 +597,15 @@ router.get('/accounts', async (req, res) => {
     }
     
     if (error.code === 401) {
-      return res.status(401).json({ 
+      return res.status(401).json({
         error: 'Business authentication expired. Please reconnect your Google My Business account.',
         needsBusinessAuth: true
       });
     }
     
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Failed to fetch accounts',
-      details: error.message 
+      details: error.message
     });
   }
 });
@@ -602,56 +652,63 @@ router.get('/accounts/:accountId/locations', async (req, res) => {
   }
 });
 
-// Get reviews for a location
 // Get reviews for a location (FIXED VERSION)
 router.get('/accounts/:accountId/locations/:locationId/reviews', async (req, res) => {
   try {
     const { accountId, locationId } = req.params;
     
-    console.log('Fetching reviews for location:', locationId);
+    console.log('✅ Fetching reviews for location:', locationId);
     
-    // Use HTTP request to GMB v4 API instead of Business Information API
     try {
       const axios = require('axios');
       const reviews = await axios.get(
         `https://mybusiness.googleapis.com/v4/accounts/${accountId}/locations/${locationId}/reviews`,
         {
           headers: {
-            'Authorization': `Bearer ${req.businessToken}`, // Use business token
+            'Authorization': `Bearer ${req.businessToken}`, // FIXED: Use business token consistently
             'Content-Type': 'application/json'
           }
         }
       );
       
-      console.log('Successfully fetched reviews:', reviews.data.reviews?.length || 0);
+      console.log('✅ Successfully fetched reviews:', reviews.data.reviews?.length || 0);
+      
+      // Save existing reviews to database
+      if (reviews.data.reviews && reviews.data.reviews.length > 0) {
+        const savedReviews = await saveExistingReviewsToDatabase(
+          req.user.userId, 
+          reviews.data.reviews, 
+          locationId, 
+          'google'
+        );
+        console.log(`✅ Saved ${savedReviews.length} reviews to database`);
+      }
       
       res.json({
         success: true,
-        reviews: reviews.data.reviews || []
+        reviews: reviews.data.reviews || [],
+        source: 'GMB_V4_API'
       });
       
     } catch (gmbV4Error) {
-      console.log('GMB V4 API for reviews not available:', gmbV4Error.message);
+      console.error('❌ GMB V4 API for reviews failed:', gmbV4Error.response?.status, gmbV4Error.message);
       
-      // Fallback to Business Information API if available
-      // Note: Business Information API v1 doesn't have reviews endpoint
-      res.json({
-        success: true,
-        reviews: [],
-        message: 'Reviews not available - GMB V4 API access required'
+      if (gmbV4Error.response?.status === 401) {
+        return res.status(401).json({ 
+          error: 'Business authentication expired for reviews. Please reconnect your Google My Business account.',
+          needsBusinessAuth: true
+        });
+      }
+      
+      res.status(gmbV4Error.response?.status || 500).json({
+        success: false,
+        error: 'Failed to fetch reviews from GMB API',
+        details: gmbV4Error.message
       });
     }
 
   } catch (error) {
     console.error('Error fetching reviews:', error);
-    
-    if (error.code === 403 || error.code === 401) {
-      return res.status(error.code).json({ 
-        error: 'Business authentication issue. Please reconnect your Google My Business account.',
-        needsBusinessAuth: true
-      });
-    }
-    
     res.status(500).json({ 
       error: 'Failed to fetch reviews',
       details: error.message 
@@ -659,11 +716,10 @@ router.get('/accounts/:accountId/locations/:locationId/reviews', async (req, res
   }
 });
 
-// Get a specific review
+// Get a specific review (FIXED VERSION)
 router.get('/accounts/:accountId/locations/:locationId/reviews/:reviewId', async (req, res) => {
   try {
     let { accountId, locationId, reviewId } = req.params;
-    const { accessToken } = req.user;
     
     // Remove prefixes if present
     accountId = accountId.replace('accounts/', '');
@@ -678,7 +734,7 @@ router.get('/accounts/:accountId/locations/:locationId/reviews/:reviewId', async
         `https://mybusiness.googleapis.com/v4/accounts/${accountId}/locations/${locationId}/reviews/${reviewId}`,
         {
           headers: {
-            'Authorization': `Bearer ${accessToken}`,
+            'Authorization': `Bearer ${req.businessToken}`, // FIXED: Use business token consistently
             'Content-Type': 'application/json'
           }
         }
@@ -726,11 +782,10 @@ router.get('/accounts/:accountId/locations/:locationId/reviews/:reviewId', async
   }
 });
 
-// Get reviews from multiple locations
+// Get reviews from multiple locations (FIXED VERSION)
 router.post('/accounts/:accountId/locations/batchGetReviews', async (req, res) => {
   try {
     let { accountId } = req.params;
-    const { accessToken } = req.user;
     const { locationNames, pageSize, pageToken, orderBy, ignoreRatingOnlyReviews } = req.body;
     
     // Remove "accounts/" prefix if present
@@ -752,7 +807,7 @@ router.post('/accounts/:accountId/locations/batchGetReviews', async (req, res) =
         },
         {
           headers: {
-            'Authorization': `Bearer ${accessToken}`,
+            'Authorization': `Bearer ${req.businessToken}`, // FIXED: Use business token consistently
             'Content-Type': 'application/json'
           }
         }
@@ -794,34 +849,32 @@ router.post('/accounts/:accountId/locations/batchGetReviews', async (req, res) =
 router.get('/accounts/:accountId/locations/:locationId/posts', async (req, res) => {
   try {
     let { accountId, locationId } = req.params;
-    const { accessToken } = req.user;
     
-    // Remove "accounts/" and "locations/" prefixes if present
+    // Remove prefixes if present
     accountId = accountId.replace('accounts/', '');
     locationId = locationId.replace('locations/', '');
     
-    console.log(`Fetching posts for location: ${locationId} in account: ${accountId}`);
+    console.log(`✅ Fetching posts for location: ${locationId} in account: ${accountId}`);
     
-    // Try to access Google My Business API v4 directly via HTTP request for posts
     try {
-      console.log('Attempting to access GMB V4 API for posts...');
       const axios = require('axios');
       const postsResponse = await axios.get(
         `https://mybusiness.googleapis.com/v4/accounts/${accountId}/locations/${locationId}/localPosts`,
         {
           headers: {
-            'Authorization': `Bearer ${accessToken}`,
+            'Authorization': `Bearer ${req.businessToken}`, // FIXED: Use business token consistently
             'Content-Type': 'application/json'
           }
         }
       );
       
-      console.log('Posts response - Posts found:', postsResponse.data.localPosts?.length || 0);
+      console.log('✅ Real GMB posts fetched successfully:', postsResponse.data.localPosts?.length || 0);
       
       if (!postsResponse.data.localPosts) {
         return res.json({
           success: true,
-          posts: []
+          posts: [],
+          message: 'No posts found for this location'
         });
       }
       
@@ -836,53 +889,54 @@ router.get('/accounts/:accountId/locations/:locationId/posts', async (req, res) 
         author: post.author,
         metrics: post.metrics,
         callToAction: post.callToAction,
-        media: post.media
+        media: post.media,
+        topicType: post.topicType
       }));
       
       // Save existing posts to database
       const savedPosts = await saveExistingPostsToDatabase(req.user.userId, posts, 'google');
-      console.log(`Saved ${savedPosts.length} posts to database`);
+      console.log(`✅ Saved ${savedPosts.length} posts to database`);
       
       res.json({
         success: true,
         posts: posts,
-        savedToDatabase: savedPosts.length
+        savedToDatabase: savedPosts.length,
+        source: 'GMB_V4_API' // Indicate this is real data, not mock
       });
       
     } catch (gmbV4Error) {
-      console.log('GMB V4 API for posts not available:', gmbV4Error.message);
-      if (gmbV4Error.response) {
-        console.log('GMB V4 API error response:', JSON.stringify(gmbV4Error.response.data, null, 2));
+      console.error('❌ GMB V4 API for posts failed:', gmbV4Error.response?.status, gmbV4Error.message);
+      
+      if (gmbV4Error.response?.status === 401) {
+        return res.status(401).json({
+          success: false,
+          error: 'Business authentication expired for posts. Please reconnect your Google My Business account.',
+          needsBusinessAuth: true
+        });
       }
       
-      // Fallback to empty posts if GMB V4 API is not available
-      res.json({
-        success: true,
-        posts: [],
-        message: 'Posts not available - GMB V4 API access required'
+      // Don't fall back to empty - return the actual error
+      res.status(gmbV4Error.response?.status || 500).json({
+        success: false,
+        error: 'Failed to fetch posts from GMB API',
+        details: gmbV4Error.message,
+        apiError: gmbV4Error.response?.data
       });
     }
   } catch (error) {
     console.error('Error fetching posts:', error);
-    
-    if (error.response && error.response.data) {
-      console.error('Full error details:', JSON.stringify(error.response.data, null, 2));
-    }
-    
     res.status(500).json({ 
       success: false, 
       error: 'Failed to fetch posts',
-      details: error.message,
-      apiError: error.response?.data
+      details: error.message
     });
   }
 });
 
-// Create a new Google My Business post
+// Create a new Google My Business post (FIXED VERSION)
 router.post('/accounts/:accountId/locations/:locationId/posts', async (req, res) => {
   try {
     let { accountId, locationId } = req.params;
-    const { accessToken } = req.user;
     const { 
       languageCode = 'en-US',
       summary,
@@ -951,7 +1005,7 @@ router.post('/accounts/:accountId/locations/:locationId/posts', async (req, res)
         postData,
         {
           headers: {
-            'Authorization': `Bearer ${accessToken}`,
+            'Authorization': `Bearer ${req.businessToken}`, // FIXED: Use business token consistently
             'Content-Type': 'application/json'
           }
         }
@@ -1027,11 +1081,10 @@ router.post('/accounts/:accountId/locations/:locationId/posts', async (req, res)
   }
 });
 
-// Reply to a review
+// Reply to a review (FIXED VERSION)
 router.put('/accounts/:accountId/locations/:locationId/reviews/:reviewId/reply', async (req, res) => {
   try {
     let { accountId, locationId, reviewId } = req.params;
-    const { accessToken } = req.user;
     const { comment } = req.body;
     
     // Remove prefixes if present
@@ -1057,7 +1110,7 @@ router.put('/accounts/:accountId/locations/:locationId/reviews/:reviewId/reply',
         { comment },
         {
           headers: {
-            'Authorization': `Bearer ${accessToken}`,
+            'Authorization': `Bearer ${req.businessToken}`, // FIXED: Use business token consistently
             'Content-Type': 'application/json'
           }
         }
@@ -1102,11 +1155,10 @@ router.put('/accounts/:accountId/locations/:locationId/reviews/:reviewId/reply',
   }
 });
 
-// Delete a review reply
+// Delete a review reply (FIXED VERSION)
 router.delete('/accounts/:accountId/locations/:locationId/reviews/:reviewId/reply', async (req, res) => {
   try {
     let { accountId, locationId, reviewId } = req.params;
-    const { accessToken } = req.user;
     
     // Remove prefixes if present
     accountId = accountId.replace('accounts/', '');
@@ -1121,7 +1173,7 @@ router.delete('/accounts/:accountId/locations/:locationId/reviews/:reviewId/repl
         `https://mybusiness.googleapis.com/v4/accounts/${accountId}/locations/${locationId}/reviews/${reviewId}/reply`,
         {
           headers: {
-            'Authorization': `Bearer ${accessToken}`,
+            'Authorization': `Bearer ${req.businessToken}`, // FIXED: Use business token consistently
             'Content-Type': 'application/json'
           }
         }
@@ -1158,28 +1210,26 @@ router.delete('/accounts/:accountId/locations/:locationId/reviews/:reviewId/repl
   }
 });
 
-// Get media (including logos and photos) for a specific location using Business Profile API
-// Get media for a location
+// Get media for a location (FIXED VERSION)
 router.get('/accounts/:accountId/locations/:locationId/media', async (req, res) => {
   try {
     const { accountId, locationId } = req.params;
     
-    console.log('Fetching media for location:', locationId);
+    console.log('✅ Fetching media for location:', locationId);
     
-    // Use HTTP request to GMB v4 API instead of Business Information API
     try {
       const axios = require('axios');
       const media = await axios.get(
         `https://mybusiness.googleapis.com/v4/accounts/${accountId}/locations/${locationId}/media`,
         {
           headers: {
-            'Authorization': `Bearer ${req.businessToken}`, // Use business token
+            'Authorization': `Bearer ${req.businessToken}`, // FIXED: Use business token consistently
             'Content-Type': 'application/json'
           }
         }
       );
       
-      console.log('Successfully fetched media:', media.data.mediaItems?.length || 0);
+      console.log('✅ Successfully fetched media:', media.data.mediaItems?.length || 0);
       
       // Separate logos and profile pictures
       const mediaItems = media.data.mediaItems || [];
@@ -1190,32 +1240,29 @@ router.get('/accounts/:accountId/locations/:locationId/media', async (req, res) 
         success: true,
         mediaItems: mediaItems,
         logos: logos,
-        profilePicture: profilePicture || null
+        profilePicture: profilePicture || null,
+        source: 'GMB_V4_API'
       });
       
     } catch (gmbV4Error) {
-      console.log('GMB V4 API for media not available:', gmbV4Error.message);
+      console.error('❌ GMB V4 API for media failed:', gmbV4Error.response?.status, gmbV4Error.message);
       
-      // Fallback to empty media if GMB V4 API is not available
-      res.json({
-        success: true,
-        mediaItems: [],
-        logos: [],
-        profilePicture: null,
-        message: 'Media not available - GMB V4 API access required'
+      if (gmbV4Error.response?.status === 401) {
+        return res.status(401).json({ 
+          error: 'Business authentication expired for media. Please reconnect your Google My Business account.',
+          needsBusinessAuth: true
+        });
+      }
+      
+      res.status(gmbV4Error.response?.status || 500).json({
+        success: false,
+        error: 'Failed to fetch media from GMB API',
+        details: gmbV4Error.message
       });
     }
 
   } catch (error) {
     console.error('Error fetching media:', error);
-    
-    if (error.code === 403 || error.code === 401) {
-      return res.status(error.code).json({ 
-        error: 'Business authentication issue. Please reconnect your Google My Business account.',
-        needsBusinessAuth: true
-      });
-    }
-    
     res.status(500).json({ 
       error: 'Failed to fetch media',
       details: error.message 
@@ -1413,7 +1460,6 @@ router.get('/locations/:locationId/services', async (req, res) => {
   }
 });
 
-
 // Update services for a location
 router.patch('/locations/:locationId/services', async (req, res) => {
   try {
@@ -1476,6 +1522,384 @@ router.patch('/locations/:locationId/services', async (req, res) => {
       error: 'Failed to update location services',
       details: error.message,
       googleError: error.response?.data
+    });
+  }
+});
+
+// Get account details
+router.get('/accounts/:accountId', async (req, res) => {
+  try {
+    let { accountId } = req.params;
+    
+    const gmbClient = google.mybusinessaccountmanagement({
+      version: 'v1',
+      auth: req.businessOAuth2Client // Use business auth instead of accessToken
+    });
+    
+    // Remove "accounts/" prefix if present
+    accountId = accountId.replace('accounts/', '');
+    
+    // Get specific account details
+    const accountResponse = await gmbClient.accounts.get({
+      name: `accounts/${accountId}`
+    });
+    
+    const account = accountResponse.data;
+    
+    res.json({
+      success: true,
+      account: {
+        name: account.name,
+        accountName: account.accountName,
+        accountNumber: account.accountNumber,
+        type: account.type,
+        role: account.role,
+        state: account.state,
+        permissionLevel: account.permissionLevel
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching GMB account:', error);
+    
+    if (error.response && error.response.data) {
+      console.error('Full error details:', JSON.stringify(error.response.data, null, 2));
+    }
+    
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to fetch GMB account',
+      details: error.message,
+      apiError: error.response?.data
+    });
+  }
+});
+
+// Update account
+router.put('/accounts/:accountId', async (req, res) => {
+  try {
+    let { accountId } = req.params;
+    const updateData = req.body;
+    
+    const gmbClient = google.mybusinessaccountmanagement({
+      version: 'v1',
+      auth: req.businessOAuth2Client // Use business auth instead of accessToken
+    });
+    
+    // Remove "accounts/" prefix if present
+    accountId = accountId.replace('accounts/', '');
+    
+    // Update account
+    const updateResponse = await gmbClient.accounts.patch({
+      name: `accounts/${accountId}`,
+      requestBody: updateData,
+      updateMask: Object.keys(updateData).join(',')
+    });
+    
+    res.json({
+      success: true,
+      message: 'Account updated successfully',
+      accountId: accountId,
+      updatedAccount: updateResponse.data
+    });
+  } catch (error) {
+    console.error('Error updating GMB account:', error);
+    
+    if (error.response && error.response.data) {
+      console.error('Full error details:', JSON.stringify(error.response.data, null, 2));
+    }
+    
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to update GMB account',
+      details: error.message,
+      apiError: error.response?.data
+    });
+  }
+});
+
+// INSIGHTS ENDPOINTS (FIXED VERSIONS)
+router.post('/locations/:locationId/insights', authMiddleware, requireBusinessAuth, async (req, res) => {
+  try {
+    const { locationId } = req.params;
+    const { metricRequests, timeRange } = req.body;
+    
+    console.log('Insights request for location:', locationId);
+    console.log('Metrics requested:', metricRequests);
+    console.log('Time range:', timeRange);
+    
+    if (!metricRequests || !timeRange) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required parameters: metricRequests and timeRange'
+      });
+    }
+
+    const accessToken = req.businessOAuth2Client.credentials.access_token;
+    
+    if (!accessToken) {
+      return res.status(401).json({
+        success: false,
+        error: 'Business authentication required',
+        needsBusinessAuth: true
+      });
+    }
+
+    const startDate = new Date(timeRange.startTime);
+    const endDate = new Date(timeRange.endTime);
+
+    // Metric mapping for Google Business Profile API
+    const metricMap = {
+      'VIEWS_MAPS': ['BUSINESS_IMPRESSIONS_DESKTOP_MAPS', 'BUSINESS_IMPRESSIONS_MOBILE_MAPS'],
+      'VIEWS_SEARCH': ['BUSINESS_IMPRESSIONS_DESKTOP_SEARCH', 'BUSINESS_IMPRESSIONS_MOBILE_SEARCH'],
+      'ACTIONS_PHONE': ['CALL_CLICKS'],
+      'ACTIONS_WEBSITE': ['WEBSITE_CLICKS'],
+      'ACTIONS_DRIVING_DIRECTIONS': ['BUSINESS_DIRECTION_REQUESTS'],
+      'BUSINESS_CONVERSATIONS': ['BUSINESS_CONVERSATIONS'],
+      'BUSINESS_BOOKINGS': ['BUSINESS_BOOKINGS'],
+      'BUSINESS_FOOD_ORDERS': ['BUSINESS_FOOD_ORDERS'],
+      'BUSINESS_FOOD_MENU_CLICKS': ['BUSINESS_FOOD_MENU_CLICKS']
+    };
+
+    const allMetricsData = [];
+    
+    for (const metricRequest of metricRequests) {
+      const gmbMetric = metricRequest.metric;
+      const apiMetrics = metricMap[gmbMetric] || [gmbMetric];
+      
+      let totalValue = 0;
+      
+      for (const apiMetric of apiMetrics) {
+        try {
+          const response = await axios.get(
+            `https://businessprofileperformance.googleapis.com/v1/locations/${locationId}:fetchMultiDailyMetricsTimeSeries`,
+            {
+              headers: {
+                'Authorization': `Bearer ${accessToken}`,
+                'Content-Type': 'application/json'
+              },
+              params: {
+                dailyMetrics: apiMetric,
+                'dailyRange.startDate.year': startDate.getFullYear(),
+                'dailyRange.startDate.month': startDate.getMonth() + 1,
+                'dailyRange.startDate.day': startDate.getDate(),
+                'dailyRange.endDate.year': endDate.getFullYear(),
+                'dailyRange.endDate.month': endDate.getMonth() + 1,
+                'dailyRange.endDate.day': endDate.getDate()
+              }
+            }
+          );
+          
+          // Process response to extract values
+          let metricValue = 0;
+          if (response.data.multiDailyMetricTimeSeries) {
+            response.data.multiDailyMetricTimeSeries.forEach(metricSeries => {
+              if (metricSeries.dailyMetricTimeSeries) {
+                metricSeries.dailyMetricTimeSeries.forEach(dailySeries => {
+                  if (dailySeries.timeSeries && dailySeries.timeSeries.datedValues) {
+                    dailySeries.timeSeries.datedValues.forEach(datedValue => {
+                      if (datedValue.value) {
+                        metricValue += parseInt(datedValue.value) || 0;
+                      }
+                    });
+                  }
+                });
+              }
+            });
+          }
+          
+          totalValue += metricValue;
+          console.log(`✅ ${apiMetric}: ${metricValue}`);
+          
+        } catch (error) {
+          console.error(`❌ Failed to fetch ${apiMetric}:`, error.response?.data || error.message);
+        }
+      }
+      
+      allMetricsData.push({
+        gmbMetric,
+        totalValue
+      });
+    }
+
+    // Format response to match expected frontend structure
+    const locationMetrics = allMetricsData.map(metricData => ({
+      metric: metricData.gmbMetric,
+      metricValues: [{
+        value: metricData.totalValue.toString(),
+        time: new Date().toISOString()
+      }]
+    }));
+
+    console.log('✅ Insights fetched successfully:', locationMetrics.length, 'metrics');
+
+    res.json({
+      success: true,
+      data: { locationMetrics }
+    });
+
+  } catch (error) {
+    console.error('Error fetching insights:', error);
+    
+    if (error.response?.status === 401) {
+      return res.status(401).json({
+        success: false,
+        error: 'Business authentication expired. Please reconnect your Google My Business account.',
+        needsBusinessAuth: true
+      });
+    }
+    
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch insights',
+      message: error.message
+    });
+  }
+});
+
+router.post('/locations/:locationId/insights/timeline', authMiddleware, requireBusinessAuth, async (req, res) => {
+  try {
+    const { locationId } = req.params;
+    const { metricRequests, timeRange } = req.body;
+    
+    console.log('Timeline insights request for location:', locationId);
+    
+    if (!metricRequests || !timeRange) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required parameters: metricRequests and timeRange'
+      });
+    }
+
+    const accessToken = req.businessOAuth2Client.credentials.access_token;
+    
+    if (!accessToken) {
+      return res.status(401).json({
+        success: false,
+        error: 'Business authentication required',
+        needsBusinessAuth: true
+      });
+    }
+
+    const startDate = new Date(timeRange.startTime);
+    const endDate = new Date(timeRange.endTime);
+
+    const metricMap = {
+      'VIEWS_MAPS': ['BUSINESS_IMPRESSIONS_DESKTOP_MAPS', 'BUSINESS_IMPRESSIONS_MOBILE_MAPS'],
+      'VIEWS_SEARCH': ['BUSINESS_IMPRESSIONS_DESKTOP_SEARCH', 'BUSINESS_IMPRESSIONS_MOBILE_SEARCH'],
+      'ACTIONS_PHONE': ['CALL_CLICKS'],
+      'ACTIONS_WEBSITE': ['WEBSITE_CLICKS'],
+      'ACTIONS_DRIVING_DIRECTIONS': ['BUSINESS_DIRECTION_REQUESTS']
+    };
+
+    const timelineMetrics = [];
+    
+    for (const metricRequest of metricRequests) {
+      const gmbMetric = metricRequest.metric;
+      const apiMetrics = metricMap[gmbMetric] || [gmbMetric];
+      
+      const dailyTotals = {};
+      let totalValue = 0;
+      
+      for (const apiMetric of apiMetrics) {
+        try {
+          const response = await axios.get(
+            `https://businessprofileperformance.googleapis.com/v1/locations/${locationId}:fetchMultiDailyMetricsTimeSeries`,
+            {
+              headers: {
+                'Authorization': `Bearer ${accessToken}`,
+                'Content-Type': 'application/json'
+              },
+              params: {
+                dailyMetrics: apiMetric,
+                'dailyRange.startDate.year': startDate.getFullYear(),
+                'dailyRange.startDate.month': startDate.getMonth() + 1,
+                'dailyRange.startDate.day': startDate.getDate(),
+                'dailyRange.endDate.year': endDate.getFullYear(),
+                'dailyRange.endDate.month': endDate.getMonth() + 1,
+                'dailyRange.endDate.day': endDate.getDate()
+              }
+            }
+          );
+          
+          // Process daily timeline data
+          if (response.data.multiDailyMetricTimeSeries) {
+            response.data.multiDailyMetricTimeSeries.forEach(metricSeries => {
+              if (metricSeries.dailyMetricTimeSeries) {
+                metricSeries.dailyMetricTimeSeries.forEach(dailySeries => {
+                  if (dailySeries.timeSeries && dailySeries.timeSeries.datedValues) {
+                    dailySeries.timeSeries.datedValues.forEach(datedValue => {
+                      if (datedValue.value && datedValue.date) {
+                        const dateStr = formatGoogleDate(datedValue.date);
+                        const value = parseInt(datedValue.value) || 0;
+                        
+                        if (!dailyTotals[dateStr]) {
+                          dailyTotals[dateStr] = 0;
+                        }
+                        dailyTotals[dateStr] += value;
+                        totalValue += value;
+                      }
+                    });
+                  }
+                });
+              }
+            });
+          }
+          
+        } catch (error) {
+          console.error(`Failed to fetch timeline data for ${apiMetric}:`, error.response?.data || error.message);
+        }
+      }
+      
+      // Convert to timeline format
+      const timeSeriesData = [];
+      const daysDiff = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24));
+      
+      for (let i = 0; i < daysDiff; i++) {
+        const currentDate = new Date(startDate);
+        currentDate.setDate(currentDate.getDate() + i);
+        const dateStr = currentDate.toISOString().split('T')[0];
+        
+        timeSeriesData.push({
+          date: dateStr,
+          value: dailyTotals[dateStr] || 0,
+          timestamp: currentDate.toISOString()
+        });
+      }
+      
+      timelineMetrics.push({
+        metric: gmbMetric,
+        timeSeriesData,
+        totalValue
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        locationId,
+        dateRange: {
+          startDate: startDate.toISOString().split('T')[0],
+          endDate: endDate.toISOString().split('T')[0]
+        },
+        metrics: timelineMetrics
+      }
+    });
+
+  } catch (error) {
+    console.error('Error fetching timeline data:', error);
+    
+    if (error.response?.status === 401) {
+      return res.status(401).json({
+        success: false,
+        error: 'Business authentication expired. Please reconnect your Google My Business account.',
+        needsBusinessAuth: true
+      });
+    }
+    
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch timeline insights',
+      message: error.message
     });
   }
 });
@@ -1662,136 +2086,6 @@ router.post('/test-create-review', async (req, res) => {
   }
 });
 
-// Get account details
-router.get('/accounts/:accountId', async (req, res) => {
-  try {
-    let { accountId } = req.params;
-    
-    const gmbClient = google.mybusinessaccountmanagement({
-      version: 'v1',
-      auth: req.businessOAuth2Client // Use business auth instead of accessToken
-    });
-    
-    // Remove "accounts/" prefix if present
-    accountId = accountId.replace('accounts/', '');
-    
-    // Get specific account details
-    const accountResponse = await gmbClient.accounts.get({
-      name: `accounts/${accountId}`
-    });
-    
-    const account = accountResponse.data;
-    
-    res.json({
-      success: true,
-      account: {
-        name: account.name,
-        accountName: account.accountName,
-        accountNumber: account.accountNumber,
-        type: account.type,
-        role: account.role,
-        state: account.state,
-        permissionLevel: account.permissionLevel
-      }
-    });
-  } catch (error) {
-    console.error('Error fetching GMB account:', error);
-    
-    if (error.response && error.response.data) {
-      console.error('Full error details:', JSON.stringify(error.response.data, null, 2));
-    }
-    
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to fetch GMB account',
-      details: error.message,
-      apiError: error.response?.data
-    });
-  }
-});
-
-// Update account
-router.put('/accounts/:accountId', async (req, res) => {
-  try {
-    let { accountId } = req.params;
-    const updateData = req.body;
-    
-    const gmbClient = google.mybusinessaccountmanagement({
-      version: 'v1',
-      auth: req.businessOAuth2Client // Use business auth instead of accessToken
-    });
-    
-    // Remove "accounts/" prefix if present
-    accountId = accountId.replace('accounts/', '');
-    
-    // Update account
-    const updateResponse = await gmbClient.accounts.patch({
-      name: `accounts/${accountId}`,
-      requestBody: updateData,
-      updateMask: Object.keys(updateData).join(',')
-    });
-    
-    res.json({
-      success: true,
-      message: 'Account updated successfully',
-      accountId: accountId,
-      updatedAccount: updateResponse.data
-    });
-  } catch (error) {
-    console.error('Error updating GMB account:', error);
-    
-    if (error.response && error.response.data) {
-      console.error('Full error details:', JSON.stringify(error.response.data, null, 2));
-    }
-    
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to update GMB account',
-      details: error.message,
-      apiError: error.response?.data
-    });
-  }
-});
-
-
-// Get insights for an account
-router.get('/accounts/:accountId/insights', async (req, res) => {
-  try {
-    let { accountId } = req.params;
-    const { startDate, endDate, locationNames } = req.query;
-    const { accessToken } = req.user;
-    
-    // Remove "accounts/" prefix if present
-    accountId = accountId.replace('accounts/', '');
-    
-    // For insights, we need to use the Business Profile API
-    // Note: Insights are not directly available in Business Profile API v1
-    // We'll return a placeholder response for now
-    console.log('Insights endpoint not available in Business Profile API v1');
-    
-    res.json({
-      success: true,
-      insights: {
-        message: 'Insights endpoint not available in Business Profile API v1',
-        note: 'This feature requires additional API access or different API version'
-      }
-    });
-  } catch (error) {
-    console.error('Error fetching GMB insights:', error);
-    
-    if (error.response && error.response.data) {
-      console.error('Full error details:', JSON.stringify(error.response.data, null, 2));
-    }
-    
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to fetch GMB insights',
-      details: error.message,
-      apiError: error.response?.data
-    });
-  }
-});
-
 // Test endpoint (no auth required) - remove this in production
 router.get('/test', (req, res) => {
   res.json({
@@ -1808,14 +2102,14 @@ router.get('/test', (req, res) => {
       posts: 'GET /api/gmb/accounts/:accountId/locations/:locationId/posts',
       'create-post': 'POST /api/gmb/accounts/:accountId/locations/:locationId/posts',
       media: 'GET /api/gmb/accounts/:accountId/locations/:locationId/media',
-      'media-v4': 'GET /api/gmb/accounts/:accountId/locations/:locationId/media-v4',
-      'media-item': 'GET /api/gmb/accounts/:accountId/locations/:locationId/media/:mediaId'
+      'insights': 'POST /api/gmb/locations/:locationId/insights',
+      'insights-timeline': 'POST /api/gmb/locations/:locationId/insights/timeline'
     },
     testData: {
       accountId: '109194636448236279020',
       locationId: '2141374650782668963'
     },
-    note: 'Posts and media now use GMB V4 API directly via HTTP requests',
+    note: 'All endpoints now use consistent business authentication',
     troubleshooting: {
       reviews: 'If reviews are empty, check Google Cloud Console to enable Google My Business API v4',
       oauth: 'Ensure OAuth scopes include https://www.googleapis.com/auth/business.manage',
@@ -2136,6 +2430,32 @@ router.get('/test-public', (req, res) => {
     timestamp: new Date().toISOString(),
     note: 'Use this to verify the server is running'
   });
+});
+
+// Debug authentication status endpoint
+router.get('/debug/auth-status', async (req, res) => {
+  try {
+    res.json({
+      success: true,
+      authStatus: {
+        hasUser: !!req.user,
+        hasUserId: !!req.user?.userId,
+        hasBusinessToken: !!req.businessToken,
+        hasBusinessOAuth2Client: !!req.businessOAuth2Client,
+        
+        // Show first few characters for debugging (don't expose full tokens)
+        businessTokenPreview: req.businessToken ? `${req.businessToken.substring(0, 10)}...` : null,
+        userIdPreview: req.user?.userId || null
+      },
+      message: 'Authentication status check completed'
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to check auth status',
+      details: error.message
+    });
+  }
 });
 
 module.exports = router;
