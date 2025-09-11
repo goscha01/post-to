@@ -205,6 +205,13 @@ router.get('/accounts/:accountId/locations/:locationId/media', async (req, res) 
         loc.name === `accounts/${accountId}/locations/${locationId}`
       );
       
+      console.log(`Media endpoint: Found location for ${accountId}/${locationId}:`, !!location);
+      if (location) {
+        console.log('Location profile:', location.profile);
+        console.log('Location metadata:', location.metadata);
+        console.log('Location photos:', location.photos);
+      }
+      
       let mediaItems = [];
       
       if (location?.profile?.profileImageUri) {
@@ -255,11 +262,26 @@ router.get('/accounts/:accountId/locations/:locationId/media', async (req, res) 
       const logos = mediaItems.filter(item => item.category === 'LOGO' || item.category === 'PROFILE');
       const photos = mediaItems.filter(item => item.category === 'PHOTO' || item.category === 'COVER');
       
+      // Set profile picture (prioritize PROFILE category, then LOGO, then first available)
+      let profilePicture = null;
+      if (logos.length > 0) {
+        const profileMedia = logos.find(item => item.category === 'PROFILE');
+        profilePicture = profileMedia || logos[0];
+      } else if (mediaItems.length > 0) {
+        profilePicture = mediaItems[0];
+      }
+      
+      console.log(`Media endpoint: Found ${mediaItems.length} total media items`);
+      console.log(`Media endpoint: Found ${logos.length} logos`);
+      console.log(`Media endpoint: Found ${photos.length} photos`);
+      console.log(`Media endpoint: Profile picture set to:`, profilePicture);
+      
       res.json({
         success: true,
         media: mediaItems,
         logos: logos,
         photos: photos,
+        profilePicture: profilePicture,
         message: mediaItems.length > 0 ? `Found ${mediaItems.length} media items` : 'No media available'
       });
       

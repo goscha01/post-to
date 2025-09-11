@@ -35,6 +35,11 @@ const AccountProfileImage = ({ profilePicture, accountName }) => {
         setLoading(true);
         setError(false);
         
+        if (!profilePicture.googleUrl) {
+          setError(true);
+          return;
+        }
+        
         const response = await axios.get(`http://localhost:3001/api/gmb/proxy-image?url=${encodeURIComponent(profilePicture.googleUrl)}`);
         
         if (response.data.success && response.data.dataUrl) {
@@ -708,14 +713,27 @@ const BusinessProfiles = () => {
               let accountProfilePicture = null;
               try {
                 const accountMediaResponse = await axios.get(
-                  `http://localhost:3001/api/gmb/accounts/${accountId}/locations/${locationId}/media`
+                  `http://localhost:3001/api/posts/accounts/${accountId}/locations/${locationId}/media`
                 );
                 
                 if (accountMediaResponse.data.success) {
-                  if (accountMediaResponse.data.logos && accountMediaResponse.data.logos.length > 0) {
-                    accountProfilePicture = accountMediaResponse.data.logos[0];
-                  } else if (accountMediaResponse.data.profilePicture) {
+                  // Try to get profile picture first
+                  if (accountMediaResponse.data.profilePicture) {
                     accountProfilePicture = accountMediaResponse.data.profilePicture;
+                  } else if (accountMediaResponse.data.logos && accountMediaResponse.data.logos.length > 0) {
+                    // Use the first logo as profile picture
+                    accountProfilePicture = accountMediaResponse.data.logos[0];
+                  } else if (accountMediaResponse.data.media && accountMediaResponse.data.media.length > 0) {
+                    // Look for any media item that could be a profile picture
+                    const profileMedia = accountMediaResponse.data.media.find(item => 
+                      item.category === 'PROFILE' || item.category === 'LOGO'
+                    );
+                    if (profileMedia) {
+                      accountProfilePicture = profileMedia;
+                    } else {
+                      // Use the first available media item
+                      accountProfilePicture = accountMediaResponse.data.media[0];
+                    }
                   }
                 }
               } catch (accountMediaError) {

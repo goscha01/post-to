@@ -5,6 +5,7 @@ const requireBusinessAuth = require('../middleware/businessAuth');
 const axios = require('axios');
 const { createClient } = require('@supabase/supabase-js');
 const jwt = require('jsonwebtoken');
+const { google } = require('googleapis');
 const router = express.Router();
 
 // Initialize Supabase client
@@ -15,6 +16,45 @@ const supabase = createClient(
 
 router.use(authMiddleware);      // User auth
 router.use(requireBusinessAuth); // Business auth
+
+// Initialize Google Business Profile API clients
+function getBusinessProfileClient(accessToken) {
+  const oauth2Client = new google.auth.OAuth2();
+  oauth2Client.setCredentials({
+    access_token: accessToken
+  });
+  
+  return google.mybusinessbusinessinformation({
+    version: 'v1',
+    auth: oauth2Client
+  });
+}
+
+// Initialize Google Places API for additional media access
+function getPlacesClient(accessToken) {
+  const oauth2Client = new google.auth.OAuth2();
+  oauth2Client.setCredentials({
+    access_token: accessToken
+  });
+  
+  return google.places({
+    version: 'v1',
+    auth: oauth2Client
+  });
+}
+
+// Initialize Google Drive API for business media access
+function getDriveClient(accessToken) {
+  const oauth2Client = new google.auth.OAuth2();
+  oauth2Client.setCredentials({
+    access_token: accessToken
+  });
+  
+  return google.drive({
+    version: 'v3',
+    auth: oauth2Client
+  });
+}
 
 // Media upload endpoint
 router.post('/media', async (req, res) => {
@@ -952,6 +992,260 @@ router.delete('/:postId', async (req, res) => {
       success: false, 
       error: 'Failed to delete post',
       details: error.message 
+    });
+  }
+});
+
+// Get media (including logos and photos) for a specific location using Business Profile API
+router.get('/accounts/:accountId/locations/:locationId/media', async (req, res) => {
+  try {
+    let { accountId, locationId } = req.params;
+    const accessToken = req.businessToken;
+    
+    // Remove "accounts/" and "locations/" prefixes if present
+    accountId = accountId.replace('accounts/', '');
+    locationId = locationId.replace('locations/', '');
+    
+    console.log(`Fetching media for location: ${locationId} in account: ${accountId}`);
+    
+    // Use Business Profile API for media (photos, logos, videos)
+    const gmbClient = getBusinessProfileClient(accessToken);
+    
+    try {
+      // Business Profile API v1 doesn't have direct location.get() method
+      // We'll use the locations.list() method and filter for the specific location
+      const locationsResponse = await gmbClient.accounts.locations.list({
+        parent: `accounts/${accountId}`,
+        readMask: 'name,title,storeCode,websiteUri,storefrontAddress,phoneNumbers,profile,regularHours,metadata,latlng,openInfo,labels,serviceArea,categories'
+      });
+      
+      // Find the specific location
+      const location = locationsResponse.data.locations?.find(loc => 
+        loc.name === `accounts/${accountId}/locations/${locationId}`
+      );
+      
+      let profilePicture = null;
+      
+      // Try to get profile picture from location data
+      if (location?.profile && location.profile.profileImageUri) {
+        profilePicture = {
+          name: `locations/${locationId}/profile`,
+          mediaId: 'profile',
+          googleUrl: location.profile.profileImageUri,
+          mediaFormat: 'PHOTO',
+          category: 'PROFILE'
+        };
+      }
+      
+      // Try to get additional media information from the location
+      let mediaItems = [];
+      
+      // Add profile picture if available
+      if (profilePicture) {
+        mediaItems.push(profilePicture);
+      }
+      
+      // Try to get logo from location metadata
+      if (location?.metadata?.logoUri) {
+        mediaItems.push({
+          name: `locations/${locationId}/logo`,
+          mediaId: 'logo',
+          googleUrl: location.metadata.logoUri,
+          mediaFormat: 'PHOTO',
+          category: 'LOGO'
+        });
+      }
+      
+      // Try to get cover photo from location metadata
+      if (location?.metadata?.coverPhotoUri) {
+        mediaItems.push({
+          name: `locations/${locationId}/cover`,
+          mediaId: 'cover',
+          googleUrl: location.metadata.coverPhotoUri,
+          mediaFormat: 'PHOTO',
+          category: 'COVER'
+        });
+      }
+      
+      // Try to get additional photos from location data
+      if (location?.photos && Array.isArray(location.photos)) {
+        location.photos.forEach((photo, index) => {
+          if (photo.uri) {
+            mediaItems.push({
+              name: `locations/${locationId}/photo/${index}`,
+              mediaId: `photo_${index}`,
+              googleUrl: photo.uri,
+              mediaFormat: 'PHOTO',
+              category: 'PHOTO',
+              dimensions: photo.dimensions
+            });
+          }
+        });
+      }
+      
+      // Try to get additional media using different approaches
+      try {
+        // Try to access media through the location's media endpoint (if available)
+        const mediaResponse = await gmbClient.accounts.locations.media.list({
+          parent: `accounts/${accountId}/locations/${locationId}`
+        });
+        
+        if (mediaResponse.data.mediaItems && mediaResponse.data.mediaItems.length > 0) {
+          mediaResponse.data.mediaItems.forEach((item, index) => {
+            mediaItems.push({
+              name: item.name,
+              mediaId: item.name.split('/').pop(),
+              googleUrl: item.googleUrl,
+              mediaFormat: item.mediaFormat || 'PHOTO',
+              category: item.locationAssociation?.category || 'PHOTO',
+              dimensions: item.dimensions,
+              attribution: item.attribution
+            });
+          });
+        }
+      } catch (mediaError) {
+        console.log('Media endpoint not available:', mediaError.message);
+      }
+      
+      // Try to access Google My Business API v4 directly via HTTP request
+      try {
+        const axios = require('axios');
+        const mediaV4Response = await axios.get(
+          `https://mybusiness.googleapis.com/v4/accounts/${accountId}/locations/${locationId}/media`,
+          {
+            headers: {
+              'Authorization': `Bearer ${accessToken}`,
+              'Content-Type': 'application/json'
+            }
+          }
+        );
+        
+        if (mediaV4Response.data.mediaItems && mediaV4Response.data.mediaItems.length > 0) {
+          mediaV4Response.data.mediaItems.forEach((item, index) => {
+            mediaItems.push({
+              name: item.name,
+              mediaId: item.name.split('/').pop(),
+              googleUrl: item.googleUrl,
+              mediaFormat: item.mediaFormat || 'PHOTO',
+              category: item.locationAssociation?.category || 'PHOTO',
+              dimensions: item.dimensions,
+              attribution: item.attribution,
+              source: 'GMB_V4_API'
+            });
+          });
+        }
+      } catch (gmbV4Error) {
+        console.log('GMB V4 API not available:', gmbV4Error.message);
+      }
+      
+      // Try to get media from Places API if we have a place ID
+      if (location?.metadata?.placeId) {
+        try {
+          const placesClient = getPlacesClient(accessToken);
+          const placeResponse = await placesClient.places.get({
+            name: `places/${location.metadata.placeId}`,
+            fields: 'photos,editorialSummary,priceLevel,rating,userRatingCount,websiteUri,formattedPhoneNumber,internationalPhoneNumber'
+          });
+          
+          if (placeResponse.data.photos && placeResponse.data.photos.length > 0) {
+            placeResponse.data.photos.forEach((photo, index) => {
+              mediaItems.push({
+                name: `places/${location.metadata.placeId}/photo/${index}`,
+                mediaId: `place_photo_${index}`,
+                googleUrl: photo.name,
+                mediaFormat: 'PHOTO',
+                category: 'PLACE_PHOTO',
+                dimensions: photo.width && photo.height ? { width: photo.width, height: photo.height } : null,
+                attribution: photo.attributions
+              });
+            });
+          }
+        } catch (placesError) {
+          console.log('Places API not available:', placesError.message);
+        }
+      }
+      
+      // Try to get media from Google Drive (business-related images)
+      try {
+        const driveClient = getDriveClient(accessToken);
+        
+        // Search for images that might be related to the business
+        const businessName = location?.title || 'business';
+        const searchQuery = `name contains '${businessName}' and (mimeType contains 'image/' or mimeType contains 'photo/')`;
+        
+        const driveResponse = await driveClient.files.list({
+          q: searchQuery,
+          fields: 'files(id,name,mimeType,webViewLink,thumbnailLink,size)',
+          pageSize: 10
+        });
+        
+        if (driveResponse.data.files && driveResponse.data.files.length > 0) {
+          driveResponse.data.files.forEach((file, index) => {
+            mediaItems.push({
+              name: `drive/${file.id}`,
+              mediaId: `drive_${index}`,
+              googleUrl: file.webViewLink,
+              thumbnailUrl: file.thumbnailLink,
+              mediaFormat: 'DRIVE_IMAGE',
+              category: 'BUSINESS_IMAGE',
+              source: 'GOOGLE_DRIVE',
+              fileName: file.name,
+              fileSize: file.size
+            });
+          });
+        }
+      } catch (driveError) {
+        console.log('Google Drive API not available:', driveError.message);
+      }
+      
+      // Categorize media items
+      const logos = mediaItems.filter(item => item.category === 'LOGO' || item.category === 'PROFILE');
+      const photos = mediaItems.filter(item => item.category === 'PHOTO' || item.category === 'COVER' || item.category === 'PLACE_PHOTO');
+      const businessImages = mediaItems.filter(item => item.category === 'BUSINESS_IMAGE' || item.source === 'GOOGLE_DRIVE');
+      const allMedia = [...logos, ...photos, ...businessImages];
+      
+      
+      res.json({
+        success: true,
+        media: mediaItems,
+        logos: logos,
+        photos: photos,
+        businessImages: businessImages,
+        allMedia: allMedia,
+        profilePicture: profilePicture,
+        message: mediaItems.length > 0 ? `Found ${mediaItems.length} media items` : 'No media available',
+        sources: {
+          businessProfile: logos.length + photos.length,
+          gmbV4: mediaItems.filter(item => item.source === 'GMB_V4_API').length,
+          places: mediaItems.filter(item => item.category === 'PLACE_PHOTO').length,
+          drive: mediaItems.filter(item => item.source === 'GOOGLE_DRIVE').length
+        }
+      });
+      
+    } catch (apiError) {
+      console.error('Business Profile API error:', apiError);
+      
+      // If the location endpoint fails, return empty results
+      console.log('Location endpoint not available, returning empty results');
+      res.json({
+        success: true,
+        media: [],
+        logos: [],
+        message: 'Location endpoint not available'
+      });
+    }
+  } catch (error) {
+    console.error('Error fetching media:', error);
+    
+    if (error.response && error.response.data) {
+      console.error('Full error details:', JSON.stringify(error.response.data, null, 2));
+    }
+    
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to fetch media',
+      details: error.message,
+      apiError: error.response?.data
     });
   }
 });
