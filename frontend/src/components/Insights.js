@@ -794,7 +794,6 @@ const transformTimelineDataForChart = () => {
       
       // Use the working export endpoint
       const requestData = {
-        accessToken: localStorage.getItem('gmb_google_access_token'),
         accountId: accountId,
         locationId: locationId,
         format: format,

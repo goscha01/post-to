@@ -11,30 +11,39 @@ const PERFORMANCE_URL = 'https://businessprofileperformance.googleapis.com/v1';
 
 router.post('/timeline', authMiddleware, requireBusinessAuth, async (req, res) => {
   try {
-    const { metricRequests, timeRange, locationId } = req.body;
+    const { accountId, locationId, metricRequests, timeRange } = req.body;
     
     console.log('Timeline insights request received for location:', locationId);
+    console.log('Fetching real timeline data from Google API');
     
-    // Use tokens from middleware instead of request body
-    const accessToken = req.businessToken; // From middleware
-    
-    if (!accessToken || !locationId || !metricRequests || !timeRange) {
+    if (!locationId || !metricRequests || !timeRange) {
       return res.status(400).json({
         success: false,
         error: 'Missing required parameters: locationId, metricRequests, timeRange'
       });
     }
 
+    // Use access token from middleware (req.businessToken)
+    const accessToken = req.businessToken;
+
     const startDate = new Date(timeRange.startTime);
     const endDate = new Date(timeRange.endTime);
 
-    // Rest of your timeline logic stays the same...
-    // (keeping existing metric mapping and processing logic)
-    
+    // Use the same metric mapping as your basic endpoint
     const metricMap = {
       'VIEWS_MAPS': ['BUSINESS_IMPRESSIONS_DESKTOP_MAPS', 'BUSINESS_IMPRESSIONS_MOBILE_MAPS'],
       'VIEWS_SEARCH': ['BUSINESS_IMPRESSIONS_DESKTOP_SEARCH', 'BUSINESS_IMPRESSIONS_MOBILE_SEARCH'],
-      // ... rest of your mapping
+      'VIEWS_MAPS_DESKTOP': ['BUSINESS_IMPRESSIONS_DESKTOP_MAPS'],
+      'VIEWS_MAPS_MOBILE': ['BUSINESS_IMPRESSIONS_MOBILE_MAPS'],
+      'VIEWS_SEARCH_DESKTOP': ['BUSINESS_IMPRESSIONS_DESKTOP_SEARCH'],
+      'VIEWS_SEARCH_MOBILE': ['BUSINESS_IMPRESSIONS_MOBILE_SEARCH'],
+      'ACTIONS_PHONE': ['CALL_CLICKS'],
+      'ACTIONS_WEBSITE': ['WEBSITE_CLICKS'],
+      'ACTIONS_DRIVING_DIRECTIONS': ['BUSINESS_DIRECTION_REQUESTS'],
+      'BUSINESS_CONVERSATIONS': ['BUSINESS_CONVERSATIONS'],
+      'BUSINESS_BOOKINGS': ['BUSINESS_BOOKINGS'],
+      'BUSINESS_FOOD_ORDERS': ['BUSINESS_FOOD_ORDERS'],
+      'BUSINESS_FOOD_MENU_CLICKS': ['BUSINESS_FOOD_MENU_CLICKS']
     };
 
     const timelineMetrics = [];
@@ -43,16 +52,22 @@ router.post('/timeline', authMiddleware, requireBusinessAuth, async (req, res) =
       const gmbMetric = metricRequest.metric;
       const apiMetrics = metricMap[gmbMetric] || [gmbMetric];
       
+      console.log(`Fetching timeline data for: ${gmbMetric} -> ${apiMetrics.join(', ')}`);
+      
+      // Store daily values - key is date string, value is total for that date
       const dailyTotals = {};
       let totalValue = 0;
       
+      // Fetch data for each API metric that maps to this dashboard metric
       for (const apiMetric of apiMetrics) {
         try {
+          console.log(`Making timeline API call for: ${gmbMetric} -> ${apiMetric}`);
+          
           const response = await axios.get(
             `${PERFORMANCE_URL}/locations/${locationId}:fetchMultiDailyMetricsTimeSeries`,
             {
               headers: {
-                'Authorization': `Bearer ${accessToken}`, // Use middleware token
+                'Authorization': `Bearer ${accessToken}`,
                 'Content-Type': 'application/json'
               },
               params: {
@@ -67,7 +82,9 @@ router.post('/timeline', authMiddleware, requireBusinessAuth, async (req, res) =
             }
           );
           
-          // Process response data...
+          console.log(`Timeline API response for ${apiMetric}:`, JSON.stringify(response.data, null, 2));
+          
+          // Parse the timeline data from Google's response
           if (response.data.multiDailyMetricTimeSeries) {
             response.data.multiDailyMetricTimeSeries.forEach(metricSeries => {
               if (metricSeries.dailyMetricTimeSeries) {
@@ -78,11 +95,14 @@ router.post('/timeline', authMiddleware, requireBusinessAuth, async (req, res) =
                         const dateStr = formatGoogleDate(datedValue.date);
                         const value = parseInt(datedValue.value) || 0;
                         
+                        // Aggregate values by date (for metrics that combine multiple API metrics)
                         if (!dailyTotals[dateStr]) {
                           dailyTotals[dateStr] = 0;
                         }
                         dailyTotals[dateStr] += value;
                         totalValue += value;
+                        
+                        console.log(`Found timeline value ${value} for ${apiMetric} on ${dateStr}`);
                       }
                     });
                   }
@@ -93,10 +113,11 @@ router.post('/timeline', authMiddleware, requireBusinessAuth, async (req, res) =
           
         } catch (error) {
           console.error(`Failed to fetch timeline data for ${apiMetric}:`, error.response?.data || error.message);
+          console.error(`Error status:`, error.response?.status);
         }
       }
       
-      // Convert to timeline format
+      // Convert daily totals to timeline format
       const timeSeriesData = [];
       const daysDiff = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24));
       
@@ -112,6 +133,8 @@ router.post('/timeline', authMiddleware, requireBusinessAuth, async (req, res) =
         });
       }
       
+      console.log(`Timeline data for ${gmbMetric}: ${totalValue} total, ${timeSeriesData.length} days`);
+      
       timelineMetrics.push({
         metric: gmbMetric,
         timeSeriesData,
@@ -119,42 +142,37 @@ router.post('/timeline', authMiddleware, requireBusinessAuth, async (req, res) =
       });
     }
 
+    const transformedData = {
+      locationId: locationId,
+      dateRange: {
+        startDate: startDate.toISOString().split('T')[0],
+        endDate: endDate.toISOString().split('T')[0]
+      },
+      metrics: timelineMetrics
+    };
+    
+    console.log('Real timeline data fetched successfully');
+    console.log(`Fetched ${timelineMetrics.length} metrics with real daily data`);
+
     res.json({
       success: true,
-      data: {
-        locationId,
-        dateRange: {
-          startDate: startDate.toISOString().split('T')[0],
-          endDate: endDate.toISOString().split('T')[0]
-        },
-        metrics: timelineMetrics
-      }
+      data: transformedData
     });
 
   } catch (error) {
-    console.error('Error fetching timeline data:', error);
-    
-    if (error.response?.status === 401) {
-      return res.status(401).json({
-        success: false,
-        error: 'Business authentication expired. Please reconnect your Google My Business account.',
-        needsBusinessAuth: true
-      });
-    }
-    
+    console.error('Error fetching real timeline data:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to fetch timeline insights',
+      error: 'Failed to fetch timeline insights from Google API',
       message: error.message
     });
   }
 });
 
-
 // Helper function to format Google's date response to YYYY-MM-DD format
 function formatGoogleDate(googleDate) {
   if (typeof googleDate === 'string') {
-    return googleDate;
+    return googleDate; // Already in correct format
   }
   
   if (googleDate.year && googleDate.month && googleDate.day) {
@@ -164,7 +182,7 @@ function formatGoogleDate(googleDate) {
     return `${year}-${month}-${day}`;
   }
   
-  return new Date().toISOString().split('T')[0];
+  return new Date().toISOString().split('T')[0]; // Fallback
 }
 
 function generateDailyDistribution(totalValue, startDate, endDate) {
@@ -228,29 +246,48 @@ function generateDailyDistribution(totalValue, startDate, endDate) {
 // Get basic insights for a location (original aggregated functionality)
 router.post('/basic', authMiddleware, requireBusinessAuth, async (req, res) => {
   try {
-    const { metricRequests, timeRange, locationId } = req.body;
+    const { accountId, locationId, metricRequests, timeRange } = req.body;
     
-    // Use tokens from middleware
-    const accessToken = req.businessToken;
+    console.log('📥 Insights request received for location:', locationId);
+    console.log('🔍 Metric requests:', JSON.stringify(metricRequests, null, 2));
     
-    if (!accessToken || !locationId || !metricRequests || !timeRange) {
+    if (!locationId || !metricRequests || !timeRange) {
       return res.status(400).json({
         success: false,
-        error: 'Missing required parameters'
+        error: 'Missing required parameters: locationId, metricRequests, timeRange'
       });
     }
+
+    // Use access token from middleware (req.businessToken)
+    const accessToken = req.businessToken;
 
     const startDate = new Date(timeRange.startTime);
     const endDate = new Date(timeRange.endTime);
 
-    // Your existing metric mapping logic...
+    // Map dashboard metrics to actual Performance API DailyMetric enum values
     const metricMap = {
+      // Aggregated View Metrics (combine desktop + mobile)
       'VIEWS_MAPS': ['BUSINESS_IMPRESSIONS_DESKTOP_MAPS', 'BUSINESS_IMPRESSIONS_MOBILE_MAPS'],
       'VIEWS_SEARCH': ['BUSINESS_IMPRESSIONS_DESKTOP_SEARCH', 'BUSINESS_IMPRESSIONS_MOBILE_SEARCH'],
+      
+      // Detailed View Metrics (individual platform metrics)
+      'VIEWS_MAPS_DESKTOP': ['BUSINESS_IMPRESSIONS_DESKTOP_MAPS'],
+      'VIEWS_MAPS_MOBILE': ['BUSINESS_IMPRESSIONS_MOBILE_MAPS'],
+      'VIEWS_SEARCH_DESKTOP': ['BUSINESS_IMPRESSIONS_DESKTOP_SEARCH'],
+      'VIEWS_SEARCH_MOBILE': ['BUSINESS_IMPRESSIONS_MOBILE_SEARCH'],
+      
+      // Action Metrics
       'ACTIONS_PHONE': ['CALL_CLICKS'],
       'ACTIONS_WEBSITE': ['WEBSITE_CLICKS'],
       'ACTIONS_DRIVING_DIRECTIONS': ['BUSINESS_DIRECTION_REQUESTS'],
-      // ... rest of mapping
+      
+      // Communication Metrics
+      'BUSINESS_CONVERSATIONS': ['BUSINESS_CONVERSATIONS'],
+      
+      // Booking & Order Metrics
+      'BUSINESS_BOOKINGS': ['BUSINESS_BOOKINGS'],
+      'BUSINESS_FOOD_ORDERS': ['BUSINESS_FOOD_ORDERS'],
+      'BUSINESS_FOOD_MENU_CLICKS': ['BUSINESS_FOOD_MENU_CLICKS']
     };
 
     const allMetricsData = [];
@@ -261,13 +298,16 @@ router.post('/basic', authMiddleware, requireBusinessAuth, async (req, res) => {
       
       let totalValue = 0;
       
+      // Fetch data for each API metric that maps to this dashboard metric
       for (const apiMetric of apiMetrics) {
         try {
+          console.log(`🚀 Making API call for: ${gmbMetric} -> ${apiMetric}`);
+          console.log(`📅 Date range: ${startDate.toISOString()} to ${endDate.toISOString()}`);
+          
           const response = await axios.get(
-            `${PERFORMANCE_URL}/locations/${locationId}:fetchMultiDailyMetricsTimeSeries`,
-            {
+`${PERFORMANCE_URL}/locations/${locationId}:fetchMultiDailyMetricsTimeSeries`,            {
               headers: {
-                'Authorization': `Bearer ${accessToken}`, // Use middleware token
+                'Authorization': `Bearer ${accessToken}`,
                 'Content-Type': 'application/json'
               },
               params: {
@@ -282,7 +322,9 @@ router.post('/basic', authMiddleware, requireBusinessAuth, async (req, res) => {
             }
           );
           
-          // Process response...
+          console.log(`✅ API response for ${apiMetric}:`, JSON.stringify(response.data, null, 2));
+          
+          // Sum up values from this API metric
           let metricValue = 0;
           if (response.data.multiDailyMetricTimeSeries) {
             response.data.multiDailyMetricTimeSeries.forEach(metricSeries => {
@@ -291,7 +333,9 @@ router.post('/basic', authMiddleware, requireBusinessAuth, async (req, res) => {
                   if (dailySeries.timeSeries && dailySeries.timeSeries.datedValues) {
                     dailySeries.timeSeries.datedValues.forEach(datedValue => {
                       if (datedValue.value) {
-                        metricValue += parseInt(datedValue.value) || 0;
+                        const value = parseInt(datedValue.value) || 0;
+                        metricValue += value;
+                        console.log(`📊 Found value ${value} for ${apiMetric} on ${datedValue.date}`);
                       }
                     });
                   }
@@ -300,19 +344,26 @@ router.post('/basic', authMiddleware, requireBusinessAuth, async (req, res) => {
             });
           }
           
+          console.log(`💰 Total value for ${apiMetric}: ${metricValue}`);
           totalValue += metricValue;
           
         } catch (error) {
-          console.error(`Failed to fetch ${apiMetric}:`, error.response?.data || error.message);
+          console.error(`❌ Failed to fetch ${apiMetric}:`, error.response?.data || error.message);
+          console.error(`❌ Error status:`, error.response?.status);
         }
       }
       
+      // Store the aggregated result for this dashboard metric
+      console.log(`🎯 Final aggregated value for ${gmbMetric}: ${totalValue}`);
       allMetricsData.push({
-        gmbMetric,
-        totalValue
+        gmbMetric: gmbMetric,
+        totalValue: totalValue
       });
     }
 
+    console.log('✅ All metrics fetched successfully');
+    
+    // Create response in expected format
     const locationMetrics = allMetricsData.map(metricData => ({
       metric: metricData.gmbMetric,
       metricValues: [{
@@ -320,23 +371,17 @@ router.post('/basic', authMiddleware, requireBusinessAuth, async (req, res) => {
         time: new Date().toISOString()
       }]
     }));
+    
+    const transformedData = { locationMetrics };
+    console.log('✨ Final transformed data:', JSON.stringify(transformedData, null, 2));
 
     res.json({
       success: true,
-      data: { locationMetrics }
+      data: transformedData
     });
 
   } catch (error) {
-    console.error('Error fetching basic insights:', error);
-    
-    if (error.response?.status === 401) {
-      return res.status(401).json({
-        success: false,
-        error: 'Business authentication expired. Please reconnect your Google My Business account.',
-        needsBusinessAuth: true
-      });
-    }
-    
+    console.error('🚨 Error fetching basic insights:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to fetch insights',
