@@ -1,6 +1,7 @@
 const express = require('express');
 const { body, validationResult } = require('express-validator');
-const auth = require('../middleware/auth');
+const authMiddleware = require('../middleware/authMiddleware');
+const requireBusinessAuth = require('../middleware/businessAuth');
 const axios = require('axios');
 const { createClient } = require('@supabase/supabase-js');
 const jwt = require('jsonwebtoken');
@@ -11,6 +12,9 @@ const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_ANON_KEY
 );
+
+router.use(authMiddleware);      // User auth
+router.use(requireBusinessAuth); // Business auth
 
 // Post type mapping functions
 const mapPostTypeToTopicType = (postType) => {
@@ -173,7 +177,7 @@ const saveExistingPostsToDatabase = async (userId, posts, platform = 'google') =
 // This provides the best of both worlds: real data when possible, reliability when needed
 
 // Test endpoint to verify GMB API connection
-router.get('/test-gmb/:accountId/:locationId', auth, async (req, res) => {
+router.get('/test-gmb/:accountId/:locationId', async (req, res) => {
   try {
     const { accountId, locationId } = req.params;
     
@@ -261,7 +265,7 @@ router.get('/test-gmb/:accountId/:locationId', auth, async (req, res) => {
 });
 
 // Get posts for a specific location (GET /location/:locationId endpoint)
-router.get('/location/:locationId', auth, async (req, res) => {
+router.get('/location/:locationId', async (req, res) => {
   try {
     const { locationId } = req.params;
     
@@ -747,7 +751,7 @@ router.get('/location/:locationId', auth, async (req, res) => {
 });
 
 // Upload media to Google My Business (POST /media endpoint)
-router.post('/media', auth, [
+router.post('/media', [
   body('mediaFormat').isIn(['PHOTO', 'VIDEO']),
   body('gmbAccountId').notEmpty(),
   body('gmbLocationId').notEmpty(),
@@ -1012,7 +1016,7 @@ router.post('/media', auth, [
 });
 
 // Delete a post (DELETE /:postId endpoint)
-router.delete('/:postId', auth, async (req, res) => {
+router.delete('/:postId', async (req, res) => {
   try {
     const { postId } = req.params;
     const { gmbAccountId, gmbLocationId } = req.query;
@@ -1070,7 +1074,7 @@ router.delete('/:postId', auth, async (req, res) => {
 });
 
 // Update a post (PATCH /:postId endpoint)
-router.patch('/:postId', auth, async (req, res) => {
+router.patch('/:postId', async (req, res) => {
   try {
     console.log('=== BACKEND UPDATE POST STARTED ===');
     console.log('Post ID:', req.params.postId);
@@ -1214,7 +1218,7 @@ router.patch('/:postId', auth, async (req, res) => {
 });
 
 // Create a new post (POST / endpoint)
-router.post('/', auth, [
+router.post('/', [
   body('platforms').isArray({ min: 1 }),
   body('content').notEmpty(),
   body('media').optional().isArray(),
@@ -1580,7 +1584,7 @@ router.post('/', auth, [
 });
 
 // Test endpoint to get saved posts from database
-router.get('/saved', auth, async (req, res) => {
+router.get('/saved', async (req, res) => {
   try {
     const { data, error } = await supabase
       .from('social_media_posts')

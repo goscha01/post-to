@@ -33,99 +33,198 @@ const SCOPES = [
 // Business OAuth scopes - for business profile connection
 const BUSINESS_SCOPES = [
   'https://www.googleapis.com/auth/business.manage',
+  'https://www.googleapis.com/auth/plus.business.manage', // Add this missing scope
   'https://www.googleapis.com/auth/userinfo.email',
   'https://www.googleapis.com/auth/userinfo.profile'
 ];
 
-// Cache for auth URLs to reduce Google API calls
-let authUrlCache = {
-  url: null,
-  expiry: 0,
-  lastRequestTime: 0
-};
-
-// Cache for business auth URLs
-let businessAuthUrlCache = {
-  url: null,
-  expiry: 0,
-  lastRequestTime: 0
-};
-
-// Rate limiting: track requests per IP
-const requestTracker = new Map();
-
-// Rate limiting middleware
-const rateLimitMiddleware = (req, res, next) => {
-  const clientIP = req.ip || req.connection.remoteAddress || 'unknown';
-  const now = Date.now();
-  const windowMs = 60 * 1000; // 1 minute window
-  const maxRequests = 5; // Max 5 requests per minute per IP
-
-  if (!requestTracker.has(clientIP)) {
-    requestTracker.set(clientIP, []);
+// Database Cache Class
+class DatabaseCache {
+  constructor(supabaseClient) {
+    this.supabase = supabaseClient;
+    this.memoryCache = new Map();
+    this.maxMemoryCacheSize = 50;
   }
 
-  const requests = requestTracker.get(clientIP);
-  
-  // Remove old requests outside the window
-  while (requests.length > 0 && requests[0] < now - windowMs) {
-    requests.shift();
-  }
+  async get(key) {
+    try {
+      // Check memory first
+      if (this.memoryCache.has(key)) {
+        const cached = this.memoryCache.get(key);
+        if (cached.expiry > Date.now()) {
+          return cached.data;
+        }
+        this.memoryCache.delete(key);
+      }
 
-  if (requests.length >= maxRequests) {
-    return res.status(429).json({ 
-      error: 'Too many requests. Please wait a moment before trying again.' 
-    });
-  }
+      // Check database
+      const { data, error } = await this.supabase
+        .from('cache_entries')
+        .select('cache_value, expiry')
+        .eq('cache_key', key)
+        .single();
 
-  requests.push(now);
-  next();
-};
+      if (error || !data || new Date(data.expiry) <= new Date()) {
+        return null;
+      }
 
-// Generate OAuth URL with caching and rate limiting
-router.get('/google', rateLimitMiddleware, (req, res) => {
-  try {
-    const now = Date.now();
-    const cacheExpiry = 5 * 60 * 1000; // Cache for 5 minutes
-    const minRequestInterval = 2000; // Minimum 2 seconds between requests
-
-    // Check if we have a valid cached URL
-    if (authUrlCache.url && now < authUrlCache.expiry) {
-      console.log('Returning cached auth URL');
-      return res.json({ authUrl: authUrlCache.url });
-    }
-
-    // Check minimum request interval to prevent rapid successive calls
-    if (now - authUrlCache.lastRequestTime < minRequestInterval) {
-      const waitTime = minRequestInterval - (now - authUrlCache.lastRequestTime);
-      console.log(`Rate limiting: requests too frequent, waiting ${waitTime}ms`);
-      return res.status(429).json({ 
-        error: 'Requests too frequent. Please wait a moment.',
-        retryAfter: Math.ceil(waitTime / 1000)
+      // Store in memory for next access
+      this.memoryCache.set(key, {
+        data: data.cache_value,
+        expiry: new Date(data.expiry).getTime()
       });
+
+      return data.cache_value;
+    } catch (error) {
+      console.error('Cache get error:', error);
+      return null;
+    }
+  }
+
+  async set(key, value, ttlMs = 180000) { // 3 minutes default
+    try {
+      const expiry = new Date(Date.now() + ttlMs);
+      
+      // Store in memory
+      this.memoryCache.set(key, { data: value, expiry: expiry.getTime() });
+      
+      // Cleanup memory if too large
+      if (this.memoryCache.size > this.maxMemoryCacheSize) {
+        const oldestKeys = Array.from(this.memoryCache.keys()).slice(0, 10);
+        oldestKeys.forEach(k => this.memoryCache.delete(k));
+      }
+
+      // Store in database
+      await this.supabase
+        .from('cache_entries')
+        .upsert({
+          cache_key: key,
+          cache_value: value,
+          expiry: expiry
+        });
+
+    } catch (error) {
+      console.error('Cache set error:', error);
+    }
+  }
+
+  async delete(key) {
+    try {
+      this.memoryCache.delete(key);
+      await this.supabase
+        .from('cache_entries')
+        .delete()
+        .eq('cache_key', key);
+    } catch (error) {
+      console.error('Cache delete error:', error);
+    }
+  }
+}
+
+// Smart Rate Limiting Class
+class SmartRateLimit {
+  constructor(cache) {
+    this.cache = cache;
+    this.limits = {
+      oauth_url: { requests: 2, windowMs: 60000 },
+      business_oauth: { requests: 2, windowMs: 60000 },
+      token_refresh: { requests: 3, windowMs: 60000 }
+    };
+  }
+
+  async checkLimit(clientIP, endpoint = 'general') {
+    const limit = this.limits[endpoint] || { requests: 3, windowMs: 60000 };
+    const key = `rate_${endpoint}_${clientIP}`;
+    const now = Date.now();
+    
+    let requests = await this.cache.get(key) || [];
+    requests = requests.filter(time => time > now - limit.windowMs);
+    
+    if (requests.length >= limit.requests) {
+      return {
+        allowed: false,
+        retryAfter: Math.ceil((requests[0] + limit.windowMs - now) / 1000)
+      };
     }
 
-    authUrlCache.lastRequestTime = now;
+    requests.push(now);
+    await this.cache.set(key, requests, limit.windowMs + 5000);
+    return { allowed: true };
+  }
+}
 
-    // Generate new auth URL
+// Initialize instances (after classes are defined)
+const dbCache = new DatabaseCache(supabase);
+const smartRateLimit = new SmartRateLimit(dbCache);
+
+// Enhanced rate limiting middleware
+const smartRateLimitMiddleware = (endpoint = 'general') => {
+  return async (req, res, next) => {
+    try {
+      const clientIP = req.ip || req.connection.remoteAddress || 'unknown';
+      const result = await smartRateLimit.checkLimit(clientIP, endpoint);
+      
+      if (!result.allowed) {
+        return res.status(429).json({ 
+          error: 'Rate limit exceeded. Please wait before trying again.',
+          retryAfter: result.retryAfter,
+          endpoint: endpoint
+        });
+      }
+      
+      next();
+    } catch (error) {
+      console.error('Rate limiting error:', error);
+      next(); // Allow request if rate limiting fails
+    }
+  };
+};
+
+// Clean old cache entries every hour
+setInterval(async () => {
+  try {
+    const { error } = await supabase
+      .from('cache_entries')
+      .delete()
+      .lt('expiry', new Date());
+    
+    if (!error) {
+      console.log('Cache cleanup completed');
+    }
+  } catch (error) {
+    console.error('Cache cleanup error:', error);
+  }
+}, 3600000); // 1 hour
+
+// Generate OAuth URL with enhanced caching and rate limiting
+router.get('/google', smartRateLimitMiddleware('oauth_url'), async (req, res) => {
+  try {
+    const cacheKey = 'oauth_url_general';
+    const forceConsent = req.query.force_consent === 'true';
+    
+    // Check cache first (skip cache if forcing consent)
+    if (!forceConsent) {
+      const cachedUrl = await dbCache.get(cacheKey);
+      if (cachedUrl) {
+        console.log('Returning cached OAuth URL');
+        return res.json({ authUrl: cachedUrl });
+      }
+    }
+
+    // Generate new URL
     const authUrl = oauth2Client.generateAuthUrl({
       access_type: 'offline',
       scope: SCOPES,
-      // Remove 'prompt: consent' to reduce rate limiting
-      // Only add it when explicitly needed for re-authorization
-      ...(req.query.force_consent === 'true' && { prompt: 'consent' }),
-      // Add state parameter for security
+      ...(forceConsent && { prompt: 'consent' }),
       state: 'auth_' + Date.now()
     });
 
-    // Cache the URL
-    authUrlCache = {
-      url: authUrl,
-      expiry: now + cacheExpiry,
-      lastRequestTime: now
-    };
+    // Cache for 3 minutes (skip caching if forcing consent)
+    if (!forceConsent) {
+      await dbCache.set(cacheKey, authUrl, 180000);
+    }
 
-    console.log('Generated new auth URL');
+    console.log('Generated new OAuth URL');
     res.json({ authUrl });
 
   } catch (error) {
@@ -136,7 +235,7 @@ router.get('/google', rateLimitMiddleware, (req, res) => {
 
 // OAuth callback
 router.get('/google/oauth/callback', async (req, res) => {
-  console.log('OAuth callback received with query params:', req.query);
+  console.log('OAuth callback received:', req.query);
   try {
     const { code, state } = req.query;
     
@@ -145,14 +244,14 @@ router.get('/google/oauth/callback', async (req, res) => {
       return res.status(400).json({ error: 'Authorization code not provided' });
     }
 
-    // Basic state validation (optional but recommended)
-    if (state && !state.startsWith('auth_') && !state.startsWith('business_')) {
+    // Validate state parameter for user auth
+    if (state && !state.startsWith('auth_') && !state.startsWith('reauth_')) {
       console.log('Invalid state parameter');
       return res.status(400).json({ error: 'Invalid state parameter' });
     }
 
-    // Clear auth URL cache since we're processing a callback
-    authUrlCache = { url: null, expiry: 0, lastRequestTime: 0 };
+    // Clear general OAuth cache since we're processing a callback
+    await dbCache.delete('oauth_url_general');
 
     // Exchange code for tokens
     const { tokens } = await oauth2Client.getToken(code);
@@ -162,8 +261,7 @@ router.get('/google/oauth/callback', async (req, res) => {
     const oauth2 = google.oauth2({ version: 'v2', auth: oauth2Client });
     const userInfo = await oauth2.userinfo.get();
 
-    // For business authentication, we need to find the existing user
-    // Business auth should only add business access to an existing user
+    // Try to find existing user
     let { data: user, error: userError } = await supabase
       .from('users')
       .select('*')
@@ -175,173 +273,255 @@ router.get('/google/oauth/callback', async (req, res) => {
     }
 
     if (!user) {
-      // If no user exists, this is an error for business auth
-      // Business auth should only work for existing users
-      console.error('Business authentication attempted for non-existent user:', userInfo.data.id);
-      const errorUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/business/callback?error=user_not_authenticated`;
-      return res.redirect(errorUrl);
+      // Create new user
+      console.log('Creating new user:', userInfo.data.email);
+      const { data: newUser, error: createError } = await supabase
+        .from('users')
+        .insert([{
+          google_id: userInfo.data.id,
+          email: userInfo.data.email,
+          name: userInfo.data.name,
+          picture_url: userInfo.data.picture,
+          access_token: tokens.access_token,
+          refresh_token: tokens.refresh_token,
+          token_expiry: tokens.expiry_date ? new Date(tokens.expiry_date) : null,
+          has_business_access: false
+        }])
+        .select()
+        .single();
+
+      if (createError) throw createError;
+      user = newUser;
+    } else {
+      // Update existing user
+      const { error: updateError } = await supabase
+        .from('users')
+        .update({
+          email: userInfo.data.email,
+          name: userInfo.data.name,
+          picture_url: userInfo.data.picture,
+          access_token: tokens.access_token,
+          refresh_token: tokens.refresh_token,
+          token_expiry: tokens.expiry_date ? new Date(tokens.expiry_date) : null
+        })
+        .eq('id', user.id);
+
+      if (updateError) throw updateError;
+      
+      // Update user object for JWT
+      user = {
+        ...user,
+        email: userInfo.data.email,
+        name: userInfo.data.name,
+        picture_url: userInfo.data.picture
+      };
     }
 
-    // Update existing user's business access tokens only
-    const { error: updateError } = await supabase
-      .from('users')
-      .update({
-        access_token: tokens.access_token,
-        refresh_token: tokens.refresh_token,
-        token_expiry: tokens.expiry_date ? new Date(tokens.expiry_date) : null
-        // Don't update name/picture_url as user identity should remain consistent
-      })
-      .eq('id', user.id);
-
-    if (updateError) throw updateError;
-
-    // Generate JWT token using existing user data (maintains user identity consistency)
+    // Generate JWT token
     const jwtToken = jwt.sign(
       { 
         userId: user.id, 
         email: user.email,
         googleId: user.google_id,
         name: user.name,
-        picture_url: user.picture_url
+        picture_url: user.picture_url,
+        has_business_access: user.has_business_access || false
       },
       process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRES_IN }
+      { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
     );
     
     console.log('JWT token generated for user:', user.id);
 
-    // This is user authentication only - redirect to regular callback with only JWT token
+    // Redirect to frontend
     const redirectUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/callback?token=${jwtToken}`;
     console.log('User OAuth callback successful, redirecting to:', redirectUrl);
     res.redirect(redirectUrl);
     
   } catch (error) {
     console.error('OAuth callback error:', error);
-    res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/error`);
+    res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/error?message=${encodeURIComponent(error.message)}`);
+  }
+});
+
+// Generate OAuth URL for business profile connection
+router.get('/google/business', smartRateLimitMiddleware('business_oauth'), async (req, res) => {
+  try {
+    const { user_id } = req.query;
+    
+    if (!user_id) {
+      return res.status(400).json({ error: 'User ID required for business authentication' });
+    }
+
+    // Verify user exists in your database
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('id')
+      .eq('id', user_id)
+      .single();
+
+    if (userError || !user) {
+      return res.status(400).json({ error: 'Invalid user ID' });
+    }
+
+    const cacheKey = `business_oauth_${user_id}`;
+    
+    // Check cache first
+    const cachedUrl = await dbCache.get(cacheKey);
+    if (cachedUrl) {
+      console.log('Returning cached business OAuth URL');
+      return res.json({ authUrl: cachedUrl });
+    }
+
+    // Generate new business auth URL
+    const authUrl = businessOAuth2Client.generateAuthUrl({
+      access_type: 'offline',
+      scope: BUSINESS_SCOPES,
+      prompt: 'consent',
+      state: `business_${user_id}_${Date.now()}`
+    });
+
+    // Cache for 3 minutes
+    await dbCache.set(cacheKey, authUrl, 180000);
+
+    console.log('Generated new business OAuth URL for user:', user_id);
+    res.json({ authUrl });
+
+  } catch (error) {
+    console.error('Error generating business auth URL:', error);
+    res.status(500).json({ error: 'Failed to generate business authorization URL' });
   }
 });
 
 // Business OAuth callback (separate endpoint for business profile access)
 router.get('/google/business/callback', async (req, res) => {
-  console.log('Business OAuth callback received with query params:', req.query);
+  console.log('Business OAuth callback received:', req.query);
   try {
-    const { code, state, user_id } = req.query;
+    const { code, state } = req.query;
     
     if (!code) {
       console.log('No authorization code provided for business auth');
-      return res.status(400).json({ error: 'Authorization code not provided' });
+      return res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/business/error?error=no_code`);
     }
 
-    // Extract user_id from state parameter (format: business_{user_id}_{timestamp})
+    // Extract user_id from state parameter
     let extractedUserId = null;
     if (state && state.startsWith('business_')) {
       const parts = state.split('_');
       if (parts.length >= 3) {
-        extractedUserId = parts[1]; // Extract user_id from state
+        extractedUserId = parts[1];
       }
     }
 
-    // We need the current user ID to add business access to their account
     if (!extractedUserId) {
       console.error('No user_id found in state parameter for business authentication');
-      const errorUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/business/callback?error=user_not_authenticated`;
-      return res.redirect(errorUrl);
+      return res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/business/error?error=invalid_state`);
     }
 
-    // Clear business auth URL cache since we're processing a callback
-    businessAuthUrlCache = { url: null, expiry: 0, lastRequestTime: 0 };
+    // Clear business cache for this user
+    await dbCache.delete(`business_oauth_${extractedUserId}`);
 
     // Exchange code for tokens using business OAuth client
     const { tokens } = await businessOAuth2Client.getToken(code);
     businessOAuth2Client.setCredentials(tokens);
 
-    // Get user info from Google using business OAuth client
+    // Get business user info from Google
     const oauth2 = google.oauth2({ version: 'v2', auth: businessOAuth2Client });
-    const userInfo = await oauth2.userinfo.get();
+    const businessUserInfo = await oauth2.userinfo.get();
 
-    // Find the existing user by ID (not by google_id from business account)
+    // Find the existing user by ID
     let { data: user, error: userError } = await supabase
       .from('users')
       .select('*')
       .eq('id', extractedUserId)
       .single();
 
-    if (userError && userError.code !== 'PGRST116') {
-      throw userError;
-    }
-
-    if (!user) {
-      // If no user exists, this is an error for business auth
+    if (userError || !user) {
       console.error('Business authentication attempted for non-existent user:', extractedUserId);
-      const errorUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/business/callback?error=user_not_authenticated`;
-      return res.redirect(errorUrl);
+      return res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/business/error?error=user_not_found`);
     }
 
-    // Update existing user's business access tokens only
+    // Update user with business tokens and info
     const { error: updateError } = await supabase
       .from('users')
       .update({
-        access_token: tokens.access_token,
-        refresh_token: tokens.refresh_token,
-        token_expiry: tokens.expiry_date ? new Date(tokens.expiry_date) : null
-        // Don't update name/picture_url as user identity should remain consistent
+        business_access_token: tokens.access_token,
+        business_refresh_token: tokens.refresh_token,
+        business_token_expiry: tokens.expiry_date ? new Date(tokens.expiry_date) : null,
+        business_google_id: businessUserInfo.data.id,
+        business_email: businessUserInfo.data.email,
+        has_business_access: true,
+        business_connected_at: new Date()
       })
       .eq('id', user.id);
 
-    if (updateError) throw updateError;
+    if (updateError) {
+      console.error('Error updating user with business tokens:', updateError);
+      return res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/business/error?error=update_failed`);
+    }
 
-    // Generate JWT token using existing user data (maintains user identity consistency)
+    // Generate JWT token with updated user info
     const jwtToken = jwt.sign(
       { 
         userId: user.id, 
         email: user.email,
         googleId: user.google_id,
         name: user.name,
-        picture_url: user.picture_url
+        picture_url: user.picture_url,
+        has_business_access: true
       },
       process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRES_IN }
+      { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
     );
     
-    console.log('JWT token generated for business user:', user.id);
+    console.log('Business connection successful for user:', user.id);
 
-    // Redirect to frontend with business connection flag
-    const redirectUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/business/callback?token=${jwtToken}&google_access_token=${tokens.access_token}&google_refresh_token=${tokens.refresh_token}&business_connected=true`;
+    // Redirect to frontend with success
+    const redirectUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/business/success?token=${jwtToken}`;
     console.log('Business OAuth callback successful, redirecting to:', redirectUrl);
     res.redirect(redirectUrl);
     
   } catch (error) {
     console.error('Business OAuth callback error:', error);
-    res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/error`);
+    res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/business/error?error=callback_failed`);
   }
 });
 
 // Refresh token endpoint
-router.post('/refresh', async (req, res) => {
+router.post('/refresh', smartRateLimitMiddleware('token_refresh'), async (req, res) => {
   try {
-    const { refreshToken } = req.body;
+    const { refreshToken, type = 'user' } = req.body;
     
     if (!refreshToken) {
       return res.status(400).json({ error: 'Refresh token required' });
     }
 
-    oauth2Client.setCredentials({ refresh_token: refreshToken });
-    const { credentials } = await oauth2Client.refreshAccessToken();
+    // Use appropriate OAuth client
+    const client = type === 'business' ? businessOAuth2Client : oauth2Client;
+    client.setCredentials({ refresh_token: refreshToken });
+    
+    const { credentials } = await client.refreshAccessToken();
 
-    // Update user's tokens in database
+    // Update tokens in database
+    const updateData = type === 'business' ? {
+      business_access_token: credentials.access_token,
+      business_token_expiry: credentials.expiry_date ? new Date(credentials.expiry_date) : null
+    } : {
+      access_token: credentials.access_token,
+      token_expiry: credentials.expiry_date ? new Date(credentials.expiry_date) : null
+    };
+
     const { error } = await supabase
       .from('users')
-      .update({
-        access_token: credentials.access_token,
-        token_expiry: credentials.expiry_date ? new Date(credentials.expiry_date) : null
-      })
-      .eq('refresh_token', refreshToken);
+      .update(updateData)
+      .eq(type === 'business' ? 'business_refresh_token' : 'refresh_token', refreshToken);
 
     if (error) throw error;
 
     res.json({
       access_token: credentials.access_token,
-      expires_in: credentials.expiry_date ? Math.floor((credentials.expiry_date - Date.now()) / 1000) : null
+      expires_in: credentials.expiry_date ? Math.floor((credentials.expiry_date - Date.now()) / 1000) : null,
+      type: type
     });
 
   } catch (error) {
@@ -374,64 +554,8 @@ router.post('/logout', async (req, res) => {
   }
 });
 
-// Generate OAuth URL for business profile connection
-router.get('/google/business', rateLimitMiddleware, (req, res) => {
-  try {
-    const { user_id } = req.query;
-    
-    if (!user_id) {
-      return res.status(400).json({ error: 'User ID required for business authentication' });
-    }
-
-    const now = Date.now();
-    const cacheExpiry = 5 * 60 * 1000; // Cache for 5 minutes
-    const minRequestInterval = 2000; // Minimum 2 seconds between requests
-
-    // Check if we have a valid cached URL for this user
-    const cacheKey = `business_${user_id}`;
-    if (businessAuthUrlCache.url && now < businessAuthUrlCache.expiry) {
-      console.log('Returning cached business auth URL');
-      return res.json({ authUrl: businessAuthUrlCache.url });
-    }
-
-    // Check minimum request interval to prevent rapid successive calls
-    if (now - businessAuthUrlCache.lastRequestTime < minRequestInterval) {
-      const waitTime = minRequestInterval - (now - businessAuthUrlCache.lastRequestTime);
-      console.log(`Rate limiting: requests too frequent, waiting ${waitTime}ms`);
-      return res.status(429).json({ 
-        error: 'Requests too frequent. Please wait a moment.',
-        retryAfter: Math.ceil(waitTime / 1000)
-      });
-    }
-
-    businessAuthUrlCache.lastRequestTime = now;
-
-    // Generate new auth URL with business scopes using business OAuth client
-    const authUrl = businessOAuth2Client.generateAuthUrl({
-      access_type: 'offline',
-      scope: BUSINESS_SCOPES,
-      prompt: 'consent', // Force consent screen for business access
-      state: `business_${user_id}_${Date.now()}` // Include user_id in state
-    });
-
-    // Cache the URL
-    businessAuthUrlCache = {
-      url: authUrl,
-      expiry: now + cacheExpiry,
-      lastRequestTime: now
-    };
-
-    console.log('Generated new business auth URL for user:', user_id);
-    res.json({ authUrl });
-
-  } catch (error) {
-    console.error('Error generating business auth URL:', error);
-    res.status(500).json({ error: 'Failed to generate business authorization URL' });
-  }
-});
-
 // Endpoint to force consent screen (for re-authorization)
-router.get('/google/reauth', rateLimitMiddleware, (req, res) => {
+router.get('/google/reauth', smartRateLimitMiddleware('oauth_url'), (req, res) => {
   const authUrl = oauth2Client.generateAuthUrl({
     access_type: 'offline',
     scope: SCOPES,

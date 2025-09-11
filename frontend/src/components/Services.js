@@ -141,7 +141,31 @@ const Services = () => {
       }
     } catch (error) {
       console.error('Error fetching profiles:', error);
-      setError('Failed to load business profiles');
+      
+      // Handle business authentication errors
+      if (error.response?.data?.needsBusinessAuth) {
+        // Business authentication required/expired
+        console.log('Business authentication required in Services');
+        setError('Business authentication required. Please go to Business Profiles and reconnect your Google My Business account.');
+        setProfiles([]); // Clear any existing profiles
+      } else if (error.response?.status === 403) {
+        // Permission/scope error
+        console.log('Insufficient permissions for business access in Services');
+        setError('Insufficient permissions. Please go to Business Profiles and reconnect your Google My Business account with all required permissions.');
+        setProfiles([]);
+      } else if (error.response?.status === 401) {
+        // Authentication expired
+        console.log('Authentication expired in Services');
+        setError('Authentication expired. Please sign in again.');
+      } else if (error.response?.status === 429) {
+        // Rate limit error
+        console.log('Rate limit exceeded in Services');
+        setError('Too many requests. Please wait a moment and try again.');
+      } else {
+        // Other errors
+        console.log('General error fetching profiles in Services:', error.message);
+        setError('Failed to load business profiles. Please try again.');
+      }
     } finally {
       setLoading(false);
     }

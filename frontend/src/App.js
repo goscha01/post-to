@@ -9,6 +9,7 @@ import Reviews from './components/Reviews';
 import Insights from './components/Insights';
 import Services from './components/Services';
 import Layout from './components/Layout';
+import BusinessSuccessCallback from './components/BusinessSuccessCallback'; 
 import './App.css';
 
 // Protected Route Component
@@ -36,6 +37,7 @@ const AppContent = () => {
         <Route path="/login" element={!isAuthenticated ? <Login /> : <Navigate to="/dashboard" />} />
         <Route path="/auth/callback" element={<AuthCallback />} />
         <Route path="/auth/business/callback" element={<BusinessAuthCallback />} />
+        <Route path="/auth/business/success" element={<BusinessSuccessCallback />} />
         <Route path="/auth/error" element={<AuthError />} />
         <Route path="/" element={<Navigate to="/dashboard" />} />
         <Route

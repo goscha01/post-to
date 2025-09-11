@@ -751,6 +751,38 @@ const BusinessProfiles = () => {
       }
     } catch (error) {
       console.error('Error fetching profiles:', error);
+      
+      // Clear any existing error first
+      setConnectError('');
+      
+      // Handle business authentication errors
+      if (error.response?.data?.needsBusinessAuth) {
+        // Business authentication required/expired
+        console.log('Business authentication required');
+        setIsDisconnected(true);
+        setConnectError(error.response.data.error || 'Business authentication required. Please reconnect your Google My Business account.');
+        localStorage.removeItem('gmb_business_connected');
+        setProfiles([]);
+      } else if (error.response?.status === 403) {
+        // Permission/scope error
+        console.log('Insufficient permissions for business access');
+        setIsDisconnected(true);
+        setConnectError('Insufficient permissions. Please disconnect and reconnect your Google My Business account with all required permissions.');
+        localStorage.removeItem('gmb_business_connected');
+        setProfiles([]);
+      } else if (error.response?.status === 401) {
+        // Authentication expired
+        console.log('Authentication expired');
+        setConnectError('Authentication expired. Please sign in again.');
+      } else if (error.response?.status === 429) {
+        // Rate limit error
+        console.log('Rate limit exceeded');
+        setConnectError('Too many requests. Please wait a moment and try again.');
+      } else {
+        // Other errors
+        console.log('General error fetching profiles:', error.message);
+        setConnectError('Failed to fetch business profiles. Please try again.');
+      }
     } finally {
       setLoading(false);
     }
