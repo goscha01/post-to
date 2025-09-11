@@ -16,6 +16,41 @@ const supabase = createClient(
 router.use(authMiddleware);      // User auth
 router.use(requireBusinessAuth); // Business auth
 
+// Media upload endpoint
+router.post('/media', async (req, res) => {
+  try {
+    const { mediaFormat, sourceUrl } = req.body;
+    
+    if (!mediaFormat || !sourceUrl) {
+      return res.status(400).json({
+        success: false,
+        error: 'mediaFormat and sourceUrl are required'
+      });
+    }
+    
+    // For now, just return the source URL as-is
+    // In a real implementation, you might want to upload to a CDN or process the image
+    res.json({
+      success: true,
+      media: {
+        id: `media-${Date.now()}`,
+        mediaFormat: mediaFormat,
+        sourceUrl: sourceUrl,
+        thumbnailUrl: sourceUrl,
+        altText: 'Uploaded image'
+      }
+    });
+    
+  } catch (error) {
+    console.error('Error processing media:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to process media',
+      details: error.message
+    });
+  }
+});
+
 // Post type mapping functions
 const mapPostTypeToTopicType = (postType) => {
   switch (postType) {

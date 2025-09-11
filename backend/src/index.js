@@ -7,9 +7,10 @@ require('dotenv').config();
 
 const authRoutes = require('./routes/auth');
 const gmbRoutes = require('./routes/gmb');
-const socialMediaRoutes = require('./routes/social-media');
 const postsRoutes = require('./routes/posts');
 const insightsRoutes = require('./routes/insights');
+const reviewsRoutes = require('./routes/reviews');
+const servicesRoutes = require('./routes/services');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -37,9 +38,10 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 // Routes
 app.use('/auth', authRoutes);
 app.use('/api/gmb', gmbRoutes);
-app.use('/api/social-media', socialMediaRoutes);
 app.use('/api/posts', postsRoutes);
 app.use('/api/insights', insightsRoutes);
+app.use('/api/reviews', reviewsRoutes);
+app.use('/api/services', servicesRoutes);
 
 // Health check endpoint
 app.get('/health', (req, res) => {
