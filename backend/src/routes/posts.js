@@ -6,6 +6,8 @@ const axios = require('axios');
 const { createClient } = require('@supabase/supabase-js');
 const jwt = require('jsonwebtoken');
 const { google } = require('googleapis');
+const { cacheMiddleware, invalidateCacheMiddleware } = require('../middleware/cacheMiddleware');
+const { generateCacheKey } = require('../utils/cacheUtils');
 const router = express.Router();
 
 // Initialize Supabase client
@@ -57,7 +59,7 @@ function getDriveClient(accessToken) {
 }
 
 // Media upload endpoint
-router.post('/media', async (req, res) => {
+router.post('/media', invalidateCacheMiddleware({ pattern: 'user:*:media*' }), async (req, res) => {
   try {
     const { mediaFormat, sourceUrl } = req.body;
     
@@ -247,7 +249,7 @@ const saveExistingPostsToDatabase = async (userId, posts, platform = 'google') =
 };
 
 // Get posts for a specific location (GET /location/:locationId endpoint)
-router.get('/location/:locationId', async (req, res) => {
+router.get('/location/:locationId', cacheMiddleware({ ttl: 180 }), async (req, res) => {
   try {
     const { locationId } = req.params;
     const accessToken = req.businessToken; // Get access token from middleware
@@ -558,7 +560,7 @@ router.post('/', [
   body('event').optional(),
   body('callToAction').optional(),
   body('offer').optional()
-], async (req, res) => {
+], invalidateCacheMiddleware({ pattern: 'user:*:posts*' }), async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
     console.log('Validation errors:', errors.array());
@@ -831,7 +833,7 @@ router.post('/', [
 });
 
 // Update a post (PATCH /:postId endpoint)
-router.patch('/:postId', async (req, res) => {
+router.patch('/:postId', invalidateCacheMiddleware({ pattern: 'user:*:posts*' }), async (req, res) => {
   try {
     console.log('=== BACKEND UPDATE POST STARTED ===');
     console.log('Post ID:', req.params.postId);
@@ -945,7 +947,7 @@ router.patch('/:postId', async (req, res) => {
 });
 
 // Delete a post (DELETE /:postId endpoint)
-router.delete('/:postId', async (req, res) => {
+router.delete('/:postId', invalidateCacheMiddleware({ pattern: 'user:*:posts*' }), async (req, res) => {
   try {
     const { postId } = req.params;
     const { gmbAccountId, gmbLocationId } = req.query;
@@ -997,7 +999,7 @@ router.delete('/:postId', async (req, res) => {
 });
 
 // Get media (including logos and photos) for a specific location using Business Profile API
-router.get('/accounts/:accountId/locations/:locationId/media', async (req, res) => {
+router.get('/accounts/:accountId/locations/:locationId/media', cacheMiddleware({ ttl: 86400 }), async (req, res) => {
   try {
     let { accountId, locationId } = req.params;
     const accessToken = req.businessToken;

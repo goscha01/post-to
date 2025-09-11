@@ -11,6 +11,7 @@ const postsRoutes = require('./routes/posts');
 const insightsRoutes = require('./routes/insights');
 const reviewsRoutes = require('./routes/reviews');
 const servicesRoutes = require('./routes/services');
+const cacheRoutes = require('./routes/cache');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -42,6 +43,7 @@ app.use('/api/posts', postsRoutes);
 app.use('/api/insights', insightsRoutes);
 app.use('/api/reviews', reviewsRoutes);
 app.use('/api/services', servicesRoutes);
+app.use('/api/cache', cacheRoutes);
 
 // Health check endpoint
 app.get('/health', (req, res) => {
