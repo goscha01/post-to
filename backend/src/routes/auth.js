@@ -128,7 +128,7 @@ class SmartRateLimit {
     this.limits = {
       oauth_url: { requests: 2, windowMs: 60000 },
       business_oauth: { requests: 2, windowMs: 60000 },
-      token_refresh: { requests: 3, windowMs: 60000 }
+      token_refresh: { requests: 10, windowMs: 60000 } // Increased from 3 to 10 requests per minute
     };
   }
 
@@ -511,6 +511,15 @@ router.post('/refresh', smartRateLimitMiddleware('token_refresh'), async (req, r
       token_expiry: credentials.expiry_date ? new Date(credentials.expiry_date) : null
     };
 
+    // Get user info to generate new JWT
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('id, email, google_id, name, picture_url, has_business_access')
+      .eq(type === 'business' ? 'business_refresh_token' : 'refresh_token', refreshToken)
+      .single();
+
+    if (userError) throw userError;
+
     const { error } = await supabase
       .from('users')
       .update(updateData)
@@ -518,8 +527,22 @@ router.post('/refresh', smartRateLimitMiddleware('token_refresh'), async (req, r
 
     if (error) throw error;
 
+    // Generate new JWT token instead of returning Google access token
+    const jwtToken = jwt.sign(
+      { 
+        userId: user.id, 
+        email: user.email,
+        googleId: user.google_id,
+        name: user.name,
+        picture_url: user.picture_url,
+        has_business_access: user.has_business_access || false
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+    );
+
     res.json({
-      access_token: credentials.access_token,
+      access_token: jwtToken, // Return JWT instead of Google access token
       expires_in: credentials.expiry_date ? Math.floor((credentials.expiry_date - Date.now()) / 1000) : null,
       type: type
     });

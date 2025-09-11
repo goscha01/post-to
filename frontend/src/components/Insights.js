@@ -30,7 +30,8 @@ import {
   ShoppingCart,
   Info,
   LineChart,
-  Activity
+  Activity,
+  AlertCircle
 } from 'lucide-react';
 
 const Insights = () => {
@@ -38,6 +39,7 @@ const Insights = () => {
   const [insights, setInsights] = useState([]);
   const [profiles, setProfiles] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [selectedProfile, setSelectedProfile] = useState('');
   const [selectedPeriod, setSelectedPeriod] = useState('30d');
   const [refreshing, setRefreshing] = useState(false);
@@ -236,9 +238,12 @@ const fetchTimelineData = async (profileId, period) => {
     }
     
     const requestData = {
-      startDate: useCustomTime && customStartDate ? new Date(customStartDate).toISOString() : getTimeRangeStart(period).toISOString(),
-      endDate: useCustomTime && customEndDate ? new Date(customEndDate).toISOString() : getTimeRangeEnd(period).toISOString(),
-      metrics: ['BUSINESS_IMPRESSIONS_DESKTOP_SEARCH', 'BUSINESS_IMPRESSIONS_MOBILE_SEARCH', 'CALL_CLICKS']
+      metricRequests: ['BUSINESS_IMPRESSIONS_DESKTOP_SEARCH', 'BUSINESS_IMPRESSIONS_MOBILE_SEARCH', 'CALL_CLICKS'],
+      timeRange: {
+        startTime: useCustomTime && customStartDate ? new Date(customStartDate).toISOString() : getTimeRangeStart(period).toISOString(),
+        endTime: useCustomTime && customEndDate ? new Date(customEndDate).toISOString() : getTimeRangeEnd(period).toISOString()
+      },
+      locationId: locationId
     };
     
     console.log('📤 Fetching timeline data with:', requestData);
@@ -252,6 +257,7 @@ const fetchTimelineData = async (profileId, period) => {
     
     if (response.data.success) {
       setTimelineData(response.data.data);
+      setError(null); // Clear any previous errors
       console.log('✅ Timeline data fetched successfully:', response.data.data);
     } else {
       console.error('❌ Failed to fetch timeline data:', response.data.error);
@@ -260,6 +266,12 @@ const fetchTimelineData = async (profileId, period) => {
     console.error('Error fetching timeline data:', error);
     if (error.response?.status === 401) {
       console.error('❌ Authentication failed - please reconnect your GMB account');
+      setError('Authentication failed. Please reconnect your GMB account.');
+    } else if (error.response?.status === 429) {
+      console.error('❌ Rate limited - please wait before retrying');
+      setError('Too many requests. Please wait a moment and try again.');
+    } else {
+      setError('Failed to fetch timeline data. Please try again.');
     }
   }
 };
@@ -498,8 +510,9 @@ const transformTimelineDataForChart = () => {
       );
       
       if (response.data.success) {
-        setInsights(response.data.insights); // Note: changed from .data to .insights
-        console.log('✅ Insights fetched successfully:', response.data.insights);
+        setInsights(response.data.data.locationMetrics || []); // Use correct path from backend
+        setError(null); // Clear any previous errors
+        console.log('✅ Insights fetched successfully:', response.data.data.locationMetrics);
       } else {
         console.error('❌ Failed to fetch insights:', response.data.error);
       }
@@ -507,6 +520,12 @@ const transformTimelineDataForChart = () => {
       console.error('Error fetching insights:', error);
       if (error.response?.status === 401) {
         console.error('❌ Authentication failed - please reconnect your GMB account');
+        setError('Authentication failed. Please reconnect your GMB account.');
+      } else if (error.response?.status === 429) {
+        console.error('❌ Rate limited - please wait before retrying');
+        setError('Too many requests. Please wait a moment and try again.');
+      } else {
+        setError('Failed to fetch insights. Please try again.');
       }
     }
   };
@@ -602,6 +621,12 @@ const transformTimelineDataForChart = () => {
       console.error('Error fetching insights:', error);
       if (error.response?.status === 401) {
         console.error('❌ Authentication failed - please reconnect your GMB account');
+        setError('Authentication failed. Please reconnect your GMB account.');
+      } else if (error.response?.status === 429) {
+        console.error('❌ Rate limited - please wait before retrying');
+        setError('Too many requests. Please wait a moment and try again.');
+      } else {
+        setError('Failed to fetch insights. Please try again.');
       }
     }
   };
@@ -831,7 +856,7 @@ const transformTimelineDataForChart = () => {
 
   // Get JWT token for authentication
 const getAuthHeaders = () => {
-  const jwtToken = localStorage.getItem('gmb_jwt_token');
+  const jwtToken = localStorage.getItem('gmb_token');
   return {
     'Authorization': `Bearer ${jwtToken}`,
     'Content-Type': 'application/json'
@@ -852,6 +877,28 @@ const getAuthHeaders = () => {
     return (
       <div className="flex items-center justify-center h-64">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600"></div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="text-center">
+          <div className="bg-red-50 border border-red-200 rounded-lg p-6 max-w-md">
+            <div className="flex items-center justify-center w-12 h-12 mx-auto mb-4 bg-red-100 rounded-full">
+              <AlertCircle className="w-6 h-6 text-red-600" />
+            </div>
+            <h3 className="text-lg font-medium text-red-800 mb-2">Error</h3>
+            <p className="text-red-700 mb-4">{error}</p>
+            <button
+              onClick={() => setError(null)}
+              className="px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 transition-colors"
+            >
+              Try Again
+            </button>
+          </div>
+        </div>
       </div>
     );
   }

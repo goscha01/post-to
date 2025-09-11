@@ -15,7 +15,24 @@ export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [token, setToken] = useState(localStorage.getItem('gmb_token'));
+  const [token, setToken] = useState(() => {
+    const storedToken = localStorage.getItem('gmb_token');
+    
+    // Validate token format on initialization
+    if (storedToken) {
+      // Check if it's a Google access token (starts with ya29.) or invalid JWT
+      if (storedToken.startsWith('ya29.') || storedToken.split('.').length !== 3) {
+        console.error('Invalid token format found in localStorage (Google access token or malformed JWT), clearing it');
+        localStorage.removeItem('gmb_token');
+        localStorage.removeItem('gmb_business_connected');
+        localStorage.removeItem('gmb_google_access_token');
+        localStorage.removeItem('gmb_refresh_token');
+        return null;
+      }
+    }
+    
+    return storedToken;
+  });
   const [isDisconnected, setIsDisconnected] = useState(false);
 
   // Configure axios defaults
@@ -43,8 +60,19 @@ export const AuthProvider = ({ children }) => {
       // Extract user info from JWT token
       if (token) {
         try {
-          const payload = JSON.parse(atob(token.split('.')[1]));
-          console.log('JWT payload:', payload);
+          // Check if it's a Google access token (not a JWT)
+          if (token.startsWith('ya29.')) {
+            throw new Error('Google access token found instead of JWT - clearing invalid token');
+          }
+          
+          // Validate JWT token format before parsing
+          const tokenParts = token.split('.');
+          if (tokenParts.length !== 3) {
+            throw new Error('Invalid JWT token format');
+          }
+          
+          // Decode base64 payload safely
+          const payload = JSON.parse(atob(tokenParts[1]));
           const userData = {
             id: payload.userId,
             email: payload.email,
@@ -52,10 +80,12 @@ export const AuthProvider = ({ children }) => {
             name: payload.name || payload.email?.split('@')[0] || 'User',
             picture_url: payload.picture_url
           };
-          console.log('Setting user data:', userData);
           setUser(userData);
         } catch (jwtError) {
           console.error('Error parsing JWT token:', jwtError);
+          // Clear invalid token and logout
+          logout();
+          return;
         }
       }
       setLoading(false);
@@ -99,10 +129,6 @@ export const AuthProvider = ({ children }) => {
   };
 
   const handleAuthCallback = (newToken, googleAccessToken, googleRefreshToken, isBusinessConnection = false) => {
-    console.log('Handling auth callback with token:', newToken ? 'Token received' : 'No token');
-    console.log('Google access token received:', googleAccessToken ? 'Yes' : 'No');
-    console.log('Google refresh token received:', googleRefreshToken ? 'Yes' : 'No');
-    console.log('Business connection:', isBusinessConnection);
     
     setToken(newToken);
     localStorage.setItem('gmb_token', newToken);
@@ -122,7 +148,18 @@ export const AuthProvider = ({ children }) => {
     
     // Extract user info from JWT token
     try {
-      const payload = JSON.parse(atob(newToken.split('.')[1]));
+      // Check if it's a Google access token (not a JWT)
+      if (newToken.startsWith('ya29.')) {
+        throw new Error('Google access token received instead of JWT - this should not happen');
+      }
+      
+      // Validate JWT token format before parsing
+      const tokenParts = newToken.split('.');
+      if (tokenParts.length !== 3) {
+        throw new Error('Invalid JWT token format');
+      }
+      
+      const payload = JSON.parse(atob(tokenParts[1]));
       setUser({
         id: payload.userId,
         email: payload.email,
@@ -132,13 +169,14 @@ export const AuthProvider = ({ children }) => {
       });
     } catch (jwtError) {
       console.error('Error parsing JWT token:', jwtError);
+      // Clear invalid token
+      localStorage.removeItem('gmb_token');
+      setToken(null);
     }
     
     axios.defaults.headers.common['Authorization'] = `Bearer ${newToken}`;
-    console.log('AuthContext: Setting isAuthenticated to true in handleAuthCallback');
     setIsAuthenticated(true);
     setLoading(false);
-    console.log('Authentication state updated');
   };
 
   const logout = () => {
@@ -147,6 +185,8 @@ export const AuthProvider = ({ children }) => {
     setIsAuthenticated(false);
     localStorage.removeItem('gmb_token');
     localStorage.removeItem('gmb_business_connected');
+    localStorage.removeItem('gmb_google_access_token');
+    localStorage.removeItem('gmb_refresh_token');
     delete axios.defaults.headers.common['Authorization'];
   };
 
@@ -165,7 +205,6 @@ export const AuthProvider = ({ children }) => {
   const reconnect = () => {
     // Reset disconnect state to allow reconnection
     setIsDisconnected(false);
-    console.log('AuthContext: User reconnecting');
   };
 
   const refreshToken = async () => {
@@ -187,8 +226,36 @@ export const AuthProvider = ({ children }) => {
       return newToken;
     } catch (error) {
       console.error('Token refresh failed:', error);
-      logout();
-      throw error;
+      
+      // Handle rate limiting specifically
+      if (error.response?.status === 429) {
+        const retryAfter = error.response.data.retryAfter || 5;
+        
+        // Wait before retrying (but don't logout immediately)
+        await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
+        
+        // Try once more
+        try {
+          const response = await axios.post('http://localhost:3001/auth/refresh', {
+            refreshToken: localStorage.getItem('gmb_refresh_token')
+          });
+          
+          const newToken = response.data.access_token;
+          setToken(newToken);
+          localStorage.setItem('gmb_token', newToken);
+          axios.defaults.headers.common['Authorization'] = `Bearer ${newToken}`;
+          
+          return newToken;
+        } catch (retryError) {
+          console.error('Token refresh retry failed:', retryError);
+          logout();
+          throw retryError;
+        }
+      } else {
+        // For other errors, logout immediately
+        logout();
+        throw error;
+      }
     }
   };
 
@@ -197,16 +264,30 @@ export const AuthProvider = ({ children }) => {
     const interceptor = axios.interceptors.response.use(
       (response) => response,
       async (error) => {
+        // Handle 401 errors with token refresh
         if (error.response?.status === 401 && token && !isDisconnected) {
           try {
             await refreshToken();
             // Retry the original request
             return axios.request(error.config);
           } catch (refreshError) {
-            logout();
+            // Only logout if it's not a rate limit error
+            if (refreshError.response?.status !== 429) {
+              logout();
+            }
             return Promise.reject(refreshError);
           }
         }
+        
+        // Handle 429 errors with better messaging
+        if (error.response?.status === 429) {
+          const retryAfter = error.response.data.retryAfter || 5;
+          
+          // Wait and retry once
+          await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
+          return axios.request(error.config);
+        }
+        
         return Promise.reject(error);
       }
     );
