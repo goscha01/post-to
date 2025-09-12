@@ -49,6 +49,10 @@ const AccountProfileImage = ({ profilePicture, accountName }) => {
         }
       } catch (err) {
         console.error('Error fetching account profile image:', err);
+        // If it's a 400 error (likely expired URL), try to refresh the profile data
+        if (err.response?.status === 400) {
+          console.log('Profile image URL may have expired, consider refreshing profile data');
+        }
         setError(true);
       } finally {
         setLoading(false);

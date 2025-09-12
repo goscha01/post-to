@@ -1132,7 +1132,7 @@ router.delete('/:postId', invalidateCacheMiddleware({ pattern: 'user:*:posts*' }
 });
 
 // Get media (including logos and photos) for a specific location using Business Profile API
-router.get('/accounts/:accountId/locations/:locationId/media', cacheMiddleware({ ttl: 86400 }), async (req, res) => {
+router.get('/accounts/:accountId/locations/:locationId/media', cacheMiddleware({ ttl: 1800 }), async (req, res) => {
   try {
     let { accountId, locationId } = req.params;
     const accessToken = req.businessToken;
