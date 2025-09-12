@@ -1239,7 +1239,7 @@ router.get('/accounts/:accountId/locations/:locationId/media', cacheMiddleware({
           });
         }
       } catch (mediaError) {
-        console.log('Media endpoint not available:', mediaError.message);
+        console.log('Business Profile API media endpoint not available (this is normal for some account types):', mediaError.message);
       }
       
       // Try to access Google My Business API v4 directly via HTTP request
@@ -1330,7 +1330,7 @@ router.get('/accounts/:accountId/locations/:locationId/media', cacheMiddleware({
           });
         }
       } catch (driveError) {
-        console.log('Google Drive API not available:', driveError.message);
+        console.log('Google Drive API not available (this is normal if Drive integration is not configured):', driveError.message);
       }
       
       // Categorize media items

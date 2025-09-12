@@ -1,7 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import axios from 'axios';
 import { useAuth } from '../contexts/AuthContext';
 import ImageUploader from './react_imgbb_uploader.js';
+import imageService from '../services/imageService';
+import businessProfileService from '../services/businessProfileService';
 import {
   FileText,
   Plus,
@@ -26,22 +28,21 @@ const PostImage = ({ imageUrl, altText, mediaFormat }) => {
 
   useEffect(() => {
     const fetchImage = async () => {
+      if (!imageUrl) {
+        setLoading(false);
+        return;
+      }
+
       try {
         setLoading(true);
         setError(false);
 
-        // Check if it's a Google Photos URL that needs proxying
-        if (imageUrl && imageUrl.includes('lh3.googleusercontent.com')) {
-          const response = await axios.get(`http://localhost:3001/api/gmb/proxy-image?url=${encodeURIComponent(imageUrl)}`);
-          
-          if (response.data.success && response.data.dataUrl) {
-            setImageSrc(response.data.dataUrl);
-          } else {
-            setError(true);
-          }
+        const result = await imageService.getImage(imageUrl);
+        
+        if (result.success) {
+          setImageSrc(result.dataUrl);
         } else {
-          // For non-Google URLs, use directly
-          setImageSrc(imageUrl);
+          setError(true);
         }
       } catch (err) {
         console.error('Error fetching post image:', err);
@@ -51,9 +52,7 @@ const PostImage = ({ imageUrl, altText, mediaFormat }) => {
       }
     };
 
-    if (imageUrl) {
-      fetchImage();
-    }
+    fetchImage();
   }, [imageUrl]);
 
   if (loading) {
@@ -140,71 +139,23 @@ const Posts = () => {
      mediaUrls: ['']
    });
 
-  useEffect(() => {
-    console.log('🔍 Posts useEffect - isAuthenticated:', isAuthenticated, 'isDisconnected:', isDisconnected);
-    if (isAuthenticated && !isDisconnected) {
-      // Always fetch data when authenticated (remove business connection check)
-      console.log('🔍 User authenticated, fetching data');
-      fetchData();
-    } else if (isDisconnected) {
-      // Clear data when disconnected
-      setPosts([]);
-      setProfiles([]);
-      setLoading(false);
-    }
-  }, [isAuthenticated, isDisconnected]);
-
-  // Auto-fetch posts when profile is selected
-  useEffect(() => {
-    if (selectedProfile && !isDisconnected) {
-      fetchPosts(selectedProfile);
-    }
-  }, [selectedProfile, isDisconnected]);
-
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     try {
       setLoading(true);
-      // Fetch business profiles first
-      const profilesResponse = await axios.get('http://localhost:3001/api/gmb/accounts');
-      if (profilesResponse.data.accounts) {
-        const profilesWithLocations = await Promise.all(
-          profilesResponse.data.accounts.map(async (account) => {
-            try {
-              // Extract account ID from the full name
-              const accountId = account.name.split('/').pop();
-              const locationsResponse = await axios.get(
-                `http://localhost:3001/api/gmb/accounts/${accountId}/locations`
-              );
-              
-              // Add account ID to each location and create full path
-              const locationsWithAccount = (locationsResponse.data.locations || []).map(location => ({
-                ...location,
-                accountId: accountId,
-                fullPath: `accounts/${accountId}/locations/${location.name.split('/').pop()}`
-              }));
-              
-              return {
-                ...account,
-                locations: locationsWithAccount
-              };
-            } catch (error) {
-              return { ...account, locations: [] };
-            }
-          })
-        );
-        setProfiles(profilesWithLocations);
-        if (profilesWithLocations.length > 0 && profilesWithLocations[0].locations.length > 0) {
-          setSelectedProfile(profilesWithLocations[0].locations[0].fullPath);
-        }
+      // Use centralized business profile service with caching
+      const profilesWithLocations = await businessProfileService.getAccounts();
+      setProfiles(profilesWithLocations);
+      if (profilesWithLocations.length > 0 && profilesWithLocations[0].locations.length > 0) {
+        setSelectedProfile(profilesWithLocations[0].locations[0].fullPath);
       }
     } catch (error) {
       console.error('Error fetching data:', error);
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
-  const fetchPosts = async (locationId, page = 1, append = false) => {
+  const fetchPosts = useCallback(async (locationId, page = 1, append = false) => {
     if (!locationId) return;
     
     try {
@@ -251,7 +202,28 @@ const Posts = () => {
     } catch (error) {
       console.error('Error fetching posts:', error);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    console.log('🔍 Posts useEffect - isAuthenticated:', isAuthenticated, 'isDisconnected:', isDisconnected);
+    if (isAuthenticated && !isDisconnected) {
+      // Always fetch data when authenticated (remove business connection check)
+      console.log('🔍 User authenticated, fetching data');
+      fetchData();
+    } else if (isDisconnected) {
+      // Clear data when disconnected
+      setPosts([]);
+      setProfiles([]);
+      setLoading(false);
+    }
+  }, [isAuthenticated, isDisconnected, fetchData]);
+
+  // Auto-fetch posts when profile is selected
+  useEffect(() => {
+    if (selectedProfile && !isDisconnected) {
+      fetchPosts(selectedProfile);
+    }
+  }, [selectedProfile, isDisconnected, fetchPosts]);
 
   const handleCreatePost = async (e) => {
     e.preventDefault();

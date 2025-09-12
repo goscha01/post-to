@@ -69,7 +69,7 @@ const saveExistingReviewsToDatabase = async (userId, reviews, locationId, platfo
         .single();
 
       if (!gmbAccount) {
-        console.error('No GMB account found, cannot create location');
+        console.log('No GMB account found in database, skipping location creation');
         return [];
       }
 

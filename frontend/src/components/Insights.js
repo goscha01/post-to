@@ -296,35 +296,31 @@ const fetchTimelineData = async (profileId, period, profilesData = profiles) => 
   // Transform timeline data for chart
 // Add this debug code to your transformTimelineDataForChart function
 const transformTimelineDataForChart = () => {
-  console.log('🔍 DEBUG: Starting timeline transform');
-  console.log('🔍 DEBUG: timelineData:', timelineData);
+  console.log('🔍 Starting timeline transform');
   
   if (!timelineData || !timelineData.metrics) {
-    console.log('❌ DEBUG: No timeline data or metrics found');
+    console.log('❌ No timeline data or metrics found');
     return [];
   }
   
-  console.log('🔍 DEBUG: Found metrics:', timelineData.metrics.length);
+  console.log('🔍 Found metrics:', timelineData.metrics.length);
   
   // Get all unique dates from all metrics
   const allDates = new Set();
   timelineData.metrics.forEach(metric => {
-    console.log('🔍 DEBUG: Processing metric:', metric.metric);
-    console.log('🔍 DEBUG: Time series data length:', metric.timeSeriesData?.length || 0);
+    console.log('🔍 Processing metric:', metric.metric, 'with', metric.timeSeriesData?.length || 0, 'data points');
     
     if (metric.timeSeriesData) {
       metric.timeSeriesData.forEach(dataPoint => {
-        console.log('🔍 DEBUG: Found data point:', dataPoint);
         allDates.add(dataPoint.date);
       });
     }
   });
   
-  console.log('🔍 DEBUG: All unique dates:', Array.from(allDates));
+  console.log('🔍 Timeline data processed:', timelineData.metrics.length, 'metrics,', allDates.size, 'unique dates');
   
   // Sort dates
   const sortedDates = Array.from(allDates).sort();
-  console.log('🔍 DEBUG: Sorted dates:', sortedDates);
   
   // Transform data into chart format
   const chartData = sortedDates.map(date => {
@@ -340,26 +336,11 @@ const transformTimelineDataForChart = () => {
     return dataPoint;
   });
   
-  console.log('🔍 DEBUG: Final chart data:', chartData);
-  console.log('🔍 DEBUG: Chart data length:', chartData.length);
-  
-  // ADD THIS NEW DEBUG CODE
-  console.log('🔍 DEBUG: Sample chart data points (first 3):');
-  chartData.slice(0, 3).forEach((point, index) => {
-    console.log(`🔍 DEBUG: Point ${index}:`, point);
-  });
+  console.log('🔍 Chart data generated:', chartData.length, 'data points');
   
   // Check for ACTIONS_PHONE specifically
   const hasPhoneData = chartData.some(point => point.ACTIONS_PHONE > 0);
-  console.log('🔍 DEBUG: Has phone data:', hasPhoneData);
-  
-  // Show metric totals
-  const metricTotals = {};
-  timelineData.metrics.forEach(metric => {
-    const total = metric.timeSeriesData.reduce((sum, point) => sum + point.value, 0);
-    metricTotals[metric.metric] = total;
-  });
-  console.log('🔍 DEBUG: Metric totals:', metricTotals);
+  console.log('🔍 Has phone data:', hasPhoneData);
   
   return chartData;
 };
@@ -1144,8 +1125,7 @@ const getAuthHeaders = () => {
   </div>
 ) : (() => {
   const chartData = transformTimelineDataForChart();
-  console.log('🔍 DEBUG: About to render chart with data:', chartData);
-  console.log('🔍 DEBUG: Selected timeline metrics:', selectedTimelineMetrics);
+  console.log('🔍 Rendering chart with', chartData.length, 'data points for', selectedTimelineMetrics.length, 'metrics');
   
   return chartData.length > 0 ? (
     <div className="h-96">
@@ -1170,7 +1150,7 @@ const getAuthHeaders = () => {
           <Legend />
           {selectedTimelineMetrics.map((metric) => {
             const option = timelineMetricOptions.find(opt => opt.value === metric);
-            console.log('🔍 DEBUG: Rendering area for metric:', metric, 'with color:', option?.color);
+            // Render area for metric
             return (
               <Area
                 key={metric}

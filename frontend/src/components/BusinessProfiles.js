@@ -1,7 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import axios from 'axios';
 import { useAuth } from '../contexts/AuthContext';
 import { useNavigate } from 'react-router-dom';
+import imageService from '../services/imageService';
+import businessProfileService from '../services/businessProfileService';
 import {
   Building2,
   CheckCircle,
@@ -40,10 +42,10 @@ const AccountProfileImage = ({ profilePicture, accountName }) => {
           return;
         }
         
-        const response = await axios.get(`http://localhost:3001/api/gmb/proxy-image?url=${encodeURIComponent(profilePicture.googleUrl)}`);
+        const result = await imageService.getImage(profilePicture.googleUrl);
         
-        if (response.data.success && response.data.dataUrl) {
-          setImageSrc(response.data.dataUrl);
+        if (result.success) {
+          setImageSrc(result.dataUrl);
         } else {
           setError(true);
         }
@@ -673,21 +675,21 @@ const BusinessProfiles = () => {
   const fetchProfiles = async () => {
     try {
       setLoading(true);
-      const response = await axios.get('http://localhost:3001/api/gmb/accounts');
+      // Use centralized business profile service with caching
+      const accounts = await businessProfileService.getAccounts();
       
-      if (response.data.accounts) {
+      if (accounts && accounts.length > 0) {
         // Fetch business data for each account (single card per business)
         const businessProfiles = await Promise.all(
-          response.data.accounts.map(async (account) => {
+          accounts.map(async (account) => {
             try {
               // Extract account ID from the full name (e.g., "accounts/123456789" -> "123456789")
               const accountId = account.name.split('/').pop();
-              const locationsResponse = await axios.get(
-                `http://localhost:3001/api/gmb/accounts/${accountId}/locations`
-              );
+              // Use centralized service for locations (already cached)
+              const locations = account.locations || [];
               
               // Get the first location for business data
-              const firstLocation = locationsResponse.data.locations?.[0];
+              const firstLocation = locations?.[0];
               if (!firstLocation) {
                 return {
                   ...account,
@@ -713,30 +715,28 @@ const BusinessProfiles = () => {
                 businessName = firstLocation.storefrontAddress.addressLines[0];
               }
               
-              // Fetch account-level media (for business icon)
+              // Fetch account-level media (for business icon) using centralized service
               let accountProfilePicture = null;
               try {
-                const accountMediaResponse = await axios.get(
-                  `http://localhost:3001/api/posts/accounts/${accountId}/locations/${locationId}/media`
-                );
+                const accountMediaResponse = await businessProfileService.getMediaForLocation(accountId, locationId);
                 
-                if (accountMediaResponse.data.success) {
+                if (accountMediaResponse.success) {
                   // Try to get profile picture first
-                  if (accountMediaResponse.data.profilePicture) {
-                    accountProfilePicture = accountMediaResponse.data.profilePicture;
-                  } else if (accountMediaResponse.data.logos && accountMediaResponse.data.logos.length > 0) {
+                  if (accountMediaResponse.profilePicture) {
+                    accountProfilePicture = accountMediaResponse.profilePicture;
+                  } else if (accountMediaResponse.logos && accountMediaResponse.logos.length > 0) {
                     // Use the first logo as profile picture
-                    accountProfilePicture = accountMediaResponse.data.logos[0];
-                  } else if (accountMediaResponse.data.media && accountMediaResponse.data.media.length > 0) {
+                    accountProfilePicture = accountMediaResponse.logos[0];
+                  } else if (accountMediaResponse.media && accountMediaResponse.media.length > 0) {
                     // Look for any media item that could be a profile picture
-                    const profileMedia = accountMediaResponse.data.media.find(item => 
+                    const profileMedia = accountMediaResponse.media.find(item => 
                       item.category === 'PROFILE' || item.category === 'LOGO'
                     );
                     if (profileMedia) {
                       accountProfilePicture = profileMedia;
                     } else {
                       // Use the first available media item
-                      accountProfilePicture = accountMediaResponse.data.media[0];
+                      accountProfilePicture = accountMediaResponse.media[0];
                     }
                   }
                 }
@@ -753,7 +753,7 @@ const BusinessProfiles = () => {
                 businessName,
                 totalReviews: reviewStats.totalReviews,
                 averageRating: reviewStats.averageRating,
-                locationCount: locationsResponse.data.locations?.length || 0
+                locationCount: locations?.length || 0
               };
             } catch (error) {
               console.error(`Error fetching business data for ${account.name}:`, error);

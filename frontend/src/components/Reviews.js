@@ -1,6 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import axios from 'axios';
 import { useAuth } from '../contexts/AuthContext';
+import imageService from '../services/imageService';
+import businessProfileService from '../services/businessProfileService';
 import {
   MessageSquare,
   Star,
@@ -20,14 +22,19 @@ const ProfileImage = ({ profilePhotoUrl, displayName }) => {
 
   useEffect(() => {
     const fetchImage = async () => {
+      if (!profilePhotoUrl) {
+        setLoading(false);
+        return;
+      }
+
       try {
         setLoading(true);
         setError(false);
         
-        const response = await axios.get(`http://localhost:3001/api/gmb/proxy-image?url=${encodeURIComponent(profilePhotoUrl)}`);
+        const result = await imageService.getImage(profilePhotoUrl);
         
-        if (response.data.success && response.data.dataUrl) {
-          setImageSrc(response.data.dataUrl);
+        if (result.success) {
+          setImageSrc(result.dataUrl);
         } else {
           setError(true);
         }
@@ -106,35 +113,17 @@ const Reviews = () => {
   const fetchData = async () => {
     try {
       setLoading(true);
-      const profilesResponse = await axios.get('http://localhost:3001/api/gmb/accounts');
-      if (profilesResponse.data.accounts) {
-        const profilesWithLocations = await Promise.all(
-          profilesResponse.data.accounts.map(async (account) => {
-            try {
-                      // Extract account ID from the full name
-        const accountId = account.name.split('/').pop();
-        const locationsResponse = await axios.get(
-          `http://localhost:3001/api/gmb/accounts/${accountId}/locations`
-        );
-              return {
-                ...account,
-                locations: locationsResponse.data.locations || []
-              };
-            } catch (error) {
-              return { ...account, locations: [] };
-            }
-          })
-        );
-        setProfiles(profilesWithLocations);
-        console.log('Profiles with locations loaded:', profilesWithLocations);
-        
-        if (profilesWithLocations.length > 0 && profilesWithLocations[0].locations.length > 0) {
-          const firstLocation = profilesWithLocations[0].locations[0].name;
-          console.log('Setting selected profile to:', firstLocation);
-          setSelectedProfile(firstLocation);
-        } else {
-          console.log('No profiles or locations found');
-        }
+      // Use centralized business profile service with caching
+      const profilesWithLocations = await businessProfileService.getAccounts();
+      setProfiles(profilesWithLocations);
+      console.log('Profiles with locations loaded:', profilesWithLocations);
+      
+      if (profilesWithLocations.length > 0 && profilesWithLocations[0].locations.length > 0) {
+        const firstLocation = profilesWithLocations[0].locations[0].name;
+        console.log('Setting selected profile to:', firstLocation);
+        setSelectedProfile(firstLocation);
+      } else {
+        console.log('No profiles or locations found');
       }
     } catch (error) {
       console.error('Error fetching data:', error);
@@ -182,20 +171,21 @@ const Reviews = () => {
       
       console.log('Extracted IDs - Account:', accountId, 'Location:', locationId);
       
-      const response = await axios.get(`http://localhost:3001/api/gmb/accounts/${accountId}/locations/${locationId}/reviews`);
-      console.log('Reviews API response:', response.data);
+      // Use centralized service for reviews with caching
+      const response = await businessProfileService.getReviewsForLocation(accountId, locationId);
+      console.log('Reviews API response:', response);
       
-      if (response.data.success) {
-        setReviews(response.data.reviews || []);
-        console.log('Reviews set:', response.data.reviews || []);
-        console.log('Total reviews received:', response.data.reviews?.length || 0);
+      if (response.success) {
+        setReviews(response.reviews || []);
+        console.log('Reviews set:', response.reviews || []);
+        console.log('Total reviews received:', response.reviews?.length || 0);
         
         // Debug: Log the first review structure if available
-        if (response.data.reviews && response.data.reviews.length > 0) {
-          console.log('First review structure:', response.data.reviews[0]);
-          console.log('First review has profilePhotoUrl:', !!response.data.reviews[0].reviewer?.profilePhotoUrl);
-          if (response.data.reviews[0].reviewer?.profilePhotoUrl) {
-            console.log('Profile photo URL:', response.data.reviews[0].reviewer.profilePhotoUrl);
+        if (response.reviews && response.reviews.length > 0) {
+          console.log('First review structure:', response.reviews[0]);
+          console.log('First review has profilePhotoUrl:', !!response.reviews[0].reviewer?.profilePhotoUrl);
+          if (response.reviews[0].reviewer?.profilePhotoUrl) {
+            console.log('Profile photo URL:', response.reviews[0].reviewer.profilePhotoUrl);
           }
         }
       } else {
