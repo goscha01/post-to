@@ -8,6 +8,10 @@ const jwt = require('jsonwebtoken');
 const { google } = require('googleapis');
 const { cacheMiddleware, invalidateCacheMiddleware } = require('../middleware/cacheMiddleware');
 const { generateCacheKey } = require('../utils/cacheUtils');
+const { processImages } = require('../utils/imageCache');
+const multer = require('multer');
+const fs = require('fs');
+const path = require('path');
 const router = express.Router();
 
 // Initialize Supabase client
@@ -15,6 +19,41 @@ const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_ANON_KEY
 );
+
+// Configure multer for file uploads
+const storage = multer.memoryStorage();
+const upload = multer({
+  storage: storage,
+  limits: {
+    fileSize: 10 * 1024 * 1024, // 10MB limit
+  },
+  fileFilter: (req, file, cb) => {
+    // Check if file is an image
+    if (file.mimetype.startsWith('image/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only image files are allowed'), false);
+    }
+  }
+});
+
+// Utility function to convert image buffer to base64
+const convertImageToBase64 = (buffer, mimeType) => {
+  return `data:${mimeType};base64,${buffer.toString('base64')}`;
+};
+
+// Utility function to process uploaded images
+const processUploadedImages = (files) => {
+  if (!files || files.length === 0) return [];
+  
+  return files.map(file => ({
+    filename: file.originalname,
+    size: file.size,
+    type: file.mimetype,
+    data: convertImageToBase64(file.buffer, file.mimetype),
+    uploaded_at: new Date().toISOString()
+  }));
+};
 
 router.use(authMiddleware);      // User auth
 router.use(requireBusinessAuth); // Business auth
@@ -130,9 +169,27 @@ const savePostToDatabase = async (userId, postData) => {
     // Convert platforms array to single platform for this schema
     const platform = Array.isArray(postData.platforms) ? postData.platforms[0] : postData.platforms || 'unknown';
     
-    // Convert media array to media_urls array
+    // Convert media array to media_urls array (for backward compatibility)
     const mediaUrls = Array.isArray(postData.media) 
       ? postData.media.map(item => item.sourceUrl || item.url || item).filter(Boolean)
+      : [];
+
+    // Process media data for new image storage
+    const mediaData = postData.mediaData || [];
+    
+    // Extract cached image data from media array
+    const cachedImageData = Array.isArray(postData.media) 
+      ? postData.media
+          .filter(item => item.data) // Only items with base64 data
+          .map(item => ({
+            filename: item.filename || `image_${Date.now()}.jpg`,
+            size: item.size || 0,
+            type: item.type || 'image/jpeg',
+            data: item.data,
+            uploaded_at: item.uploaded_at || new Date().toISOString(),
+            source_url: item.sourceUrl,
+            cached: item.cached || false
+          }))
       : [];
 
     const insertData = {
@@ -141,7 +198,8 @@ const savePostToDatabase = async (userId, postData) => {
       platform: platform,
       post_id: postData.postId || null,
       content: postData.content,
-      media_urls: mediaUrls,
+      media_urls: mediaUrls, // Keep for backward compatibility
+      media_data: [...mediaData, ...cachedImageData], // Combine uploaded files and cached images
       published_at: postData.posted_at || new Date().toISOString(),
       status: 'published'
     };
@@ -322,34 +380,65 @@ router.get('/location/:locationId', cacheMiddleware({ ttl: 180 }), async (req, r
                 });
                 console.log('=== END ALL MEDIA ITEM FIELDS ===');
                 
-                // Extract media information from the post
-                media = post.media.map(mediaItem => {
-                  const extracted = {
-                    id: mediaItem.name?.split('/').pop() || `media-${Date.now()}`,
-                    mediaFormat: mediaItem.mediaFormat || 'PHOTO',
-                    sourceUrl: mediaItem.googleUrl || mediaItem.sourceUrl || mediaItem.url || mediaItem.mediaUrl || null,
-                    thumbnailUrl: mediaItem.thumbnailUrl || mediaItem.thumbnail || null,
-                    altText: mediaItem.altText || 'Post image'
-                  };
+                // Extract media URLs first
+                const mediaUrls = post.media.map(mediaItem => {
+                  let sourceUrl = mediaItem.googleUrl || mediaItem.sourceUrl || mediaItem.url || mediaItem.mediaUrl || null;
                   
                   // Ensure Google Photos URLs have the proper format with query parameters
-                  if (extracted.sourceUrl && extracted.sourceUrl.includes('lh3.googleusercontent.com')) {
+                  if (sourceUrl && sourceUrl.includes('lh3.googleusercontent.com')) {
                     // If the URL doesn't have parameters, add them
-                    if (!extracted.sourceUrl.includes('=')) {
-                      extracted.sourceUrl = `${extracted.sourceUrl}=h305-no`;
-                      console.log(`Fixed Google Photos URL: ${extracted.sourceUrl}`);
+                    if (!sourceUrl.includes('=')) {
+                      sourceUrl = `${sourceUrl}=h305-no`;
+                      console.log(`Fixed Google Photos URL: ${sourceUrl}`);
                     } else {
                       // If it already has parameters, ensure it has the right format
-                      if (!extracted.sourceUrl.includes('h305-no')) {
-                        extracted.sourceUrl = `${extracted.sourceUrl}=h305-no`;
-                        console.log(`Enhanced Google Photos URL: ${extracted.sourceUrl}`);
+                      if (!sourceUrl.includes('h305-no')) {
+                        sourceUrl = `${sourceUrl}=h305-no`;
+                        console.log(`Enhanced Google Photos URL: ${sourceUrl}`);
                       }
                     }
                   }
                   
-                  console.log('Extracted media item:', extracted);
-                  return extracted;
-                });
+                  return sourceUrl;
+                }).filter(Boolean);
+
+                console.log('Media URLs to process:', mediaUrls);
+
+                // Process images using caching system
+                if (mediaUrls.length > 0) {
+                  try {
+                    console.log('Processing images with caching system...');
+                    const processedImages = await processImages(mediaUrls);
+                    
+                    media = processedImages.map((imageData, index) => ({
+                      id: post.media[index]?.name?.split('/').pop() || `media-${Date.now()}`,
+                      mediaFormat: post.media[index]?.mediaFormat || 'PHOTO',
+                      sourceUrl: imageData.source_url,
+                      thumbnailUrl: post.media[index]?.thumbnailUrl || post.media[index]?.thumbnail || null,
+                      altText: post.media[index]?.altText || 'Post image',
+                      cached: imageData.cached,
+                      filename: imageData.filename,
+                      size: imageData.size,
+                      type: imageData.type,
+                      data: imageData.data, // Base64 data for database storage
+                      uploaded_at: imageData.uploaded_at
+                    }));
+                    
+                    console.log('Processed images:', media.length);
+                  } catch (error) {
+                    console.error('Error processing images:', error);
+                    // Fallback to original method if caching fails
+                    media = post.media.map(mediaItem => ({
+                      id: mediaItem.name?.split('/').pop() || `media-${Date.now()}`,
+                      mediaFormat: mediaItem.mediaFormat || 'PHOTO',
+                      sourceUrl: mediaItem.googleUrl || mediaItem.sourceUrl || mediaItem.url || mediaItem.mediaUrl || null,
+                      thumbnailUrl: mediaItem.thumbnailUrl || mediaItem.thumbnail || null,
+                      altText: mediaItem.altText || 'Post image'
+                    }));
+                  }
+                } else {
+                  media = [];
+                }
                 
                 console.log('Final processed media array:', media);
                 console.log('=== END MEDIA PROCESSING DEBUG ===');
@@ -548,8 +637,47 @@ router.get('/location/:locationId', cacheMiddleware({ ttl: 180 }), async (req, r
   }
 });
 
+// Upload images endpoint (POST /upload-images)
+router.post('/upload-images', upload.array('images', 10), async (req, res) => {
+  try {
+    console.log('=== IMAGE UPLOAD ENDPOINT ===');
+    console.log('Files received:', req.files?.length || 0);
+    
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'No images provided' 
+      });
+    }
+
+    // Process uploaded images
+    const processedImages = processUploadedImages(req.files);
+    
+    console.log('Processed images:', processedImages.length);
+    console.log('Image sizes:', processedImages.map(img => `${img.filename}: ${img.size} bytes`));
+
+    res.json({
+      success: true,
+      message: `${processedImages.length} images uploaded successfully`,
+      images: processedImages.map(img => ({
+        filename: img.filename,
+        size: img.size,
+        type: img.type,
+        uploaded_at: img.uploaded_at
+      }))
+    });
+
+  } catch (error) {
+    console.error('Error uploading images:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to upload images' 
+    });
+  }
+});
+
 // Create a new post (POST / endpoint)
-router.post('/', [
+router.post('/', upload.array('images', 10), [
   body('platforms').isArray({ min: 1 }),
   body('content').notEmpty(),
   body('media').optional().isArray(),
@@ -584,6 +712,9 @@ router.post('/', [
       callToAction,
       offer
     } = req.body;
+
+    // Process uploaded images if any
+    const uploadedImages = req.files ? processUploadedImages(req.files) : [];
     
     const accessToken = req.businessToken; // Get access token from middleware
     
@@ -765,6 +896,7 @@ router.post('/', [
           const postData = {
             content: content,
             media: media || [],
+            mediaData: uploadedImages, // Include uploaded image data
             platforms: platforms,
             results: [{
               platform: 'google',
@@ -806,6 +938,7 @@ router.post('/', [
     const postData = {
       content: content,
       media: media || [],
+      mediaData: uploadedImages, // Include uploaded image data
       platforms: platforms,
       results: [{
         platform: 'generic',

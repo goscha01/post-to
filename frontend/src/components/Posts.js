@@ -112,6 +112,9 @@ const Posts = () => {
    // Image upload loading state
    const [uploadingImages, setUploadingImages] = useState(false);
    
+   // File upload state
+   const [uploadedFiles, setUploadedFiles] = useState([]);
+   
    // Edit post state
    const [editingPost, setEditingPost] = useState(null);
        const [editFormData, setEditFormData] = useState({
@@ -442,7 +445,44 @@ const Posts = () => {
        console.log('postData.callToAction:', postData.callToAction);
        console.log('=== END FRONTEND CTA DEBUG ===');
       
-      const response = await axios.post('http://localhost:3001/api/posts', postData);
+      // Create FormData for file uploads
+      const formDataToSend = new FormData();
+      
+      // Add text fields
+      formDataToSend.append('platforms', JSON.stringify(postData.platforms));
+      formDataToSend.append('content', postData.content);
+      formDataToSend.append('gmbAccountId', postData.gmbAccountId);
+      formDataToSend.append('gmbLocationId', postData.gmbLocationId);
+      formDataToSend.append('postType', postData.postType);
+      
+      // Add optional fields
+      if (postData.callToAction) {
+        formDataToSend.append('callToAction', JSON.stringify(postData.callToAction));
+      }
+      if (postData.event) {
+        formDataToSend.append('event', JSON.stringify(postData.event));
+      }
+      if (postData.offer) {
+        formDataToSend.append('offer', JSON.stringify(postData.offer));
+      }
+      
+      // Add media URLs (for backward compatibility)
+      if (postData.media && postData.media.length > 0) {
+        formDataToSend.append('media', JSON.stringify(postData.media));
+      }
+      
+      // Add uploaded files
+      if (uploadedFiles && uploadedFiles.length > 0) {
+        uploadedFiles.forEach(file => {
+          formDataToSend.append('images', file);
+        });
+      }
+
+      const response = await axios.post('http://localhost:3001/api/posts', formDataToSend, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+      });
       console.log('=== POST CREATION RESPONSE ===');
       console.log('Response status:', response.status);
       console.log('Response data:', response.data);
@@ -808,9 +848,20 @@ const Posts = () => {
            mediaUrls: newUrls.length === 0 ? [''] : newUrls
          };
        });
-     }
-     showNotification('Image removed from preview', 'success');
-   };
+    }
+    showNotification('Image removed from preview', 'success');
+  };
+
+  // Handle file upload
+  const handleFileUpload = (event) => {
+    const files = Array.from(event.target.files);
+    setUploadedFiles(prev => [...prev, ...files]);
+  };
+
+  // Handle remove uploaded file
+  const removeUploadedFile = (index) => {
+    setUploadedFiles(prev => prev.filter((_, i) => i !== index));
+  };
   
   // Toggle expanded state for a post
   const toggleExpanded = (postId) => {
@@ -1017,42 +1068,86 @@ const Posts = () => {
                <div>
                  <label className="block text-sm font-medium text-gray-700 mb-2">Add Pictures</label>
                  
-                 {/* Hidden ImgBB Image Uploader with Simple Button */}
-                 <div className="mb-4">
-                   <div className="hidden">
-                     <ImageUploader 
-                       onImageUploaded={handleImageUploaded}
+                 {/* File Upload Section */}
+                 <div className="mb-4 space-y-4">
+                   {/* Direct File Upload */}
+                   <div>
+                     <label className="block text-sm font-medium text-gray-700 mb-2">
+                       Upload Image Files (Direct to Database)
+                     </label>
+                     <input
+                       type="file"
+                       multiple
+                       accept="image/*"
+                       onChange={handleFileUpload}
+                       className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-primary-50 file:text-primary-700 hover:file:bg-primary-100"
                      />
-                   </div>
-                   <button
-                     type="button"
-                     disabled={uploadingImages}
-                     onClick={() => {
-                       setUploadingImages(true);
-                       // Trigger the hidden file input from ImageUploader
-                       const fileInput = document.querySelector('input[type="file"]');
-                       if (fileInput) {
-                         fileInput.click();
-                       }
-                     }}
-                     className={`inline-flex items-center px-4 py-3 border border-primary-300 shadow-sm text-sm font-medium rounded-md transition-colors duration-200 ${
-                       uploadingImages
-                         ? 'text-primary-500 bg-primary-25 cursor-not-allowed'
-                         : 'text-primary-700 bg-primary-50 hover:bg-primary-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500'
-                     }`}
-                   >
-                     {uploadingImages ? (
-                       <>
-                         <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-primary-500 mr-2"></div>
-                         Uploading Images...
-                       </>
-                     ) : (
-                       <>
-                         <Plus className="h-5 w-5 mr-2" />
-                         Upload Images
-                       </>
+                     {uploadedFiles.length > 0 && (
+                       <div className="mt-2">
+                         <p className="text-sm text-gray-600">
+                           Selected files: {uploadedFiles.length}
+                         </p>
+                         <div className="flex flex-wrap gap-2 mt-1">
+                           {uploadedFiles.map((file, index) => (
+                             <span
+                               key={index}
+                               className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800"
+                             >
+                               {file.name}
+                               <button
+                                 type="button"
+                                 onClick={() => removeUploadedFile(index)}
+                                 className="ml-1 text-green-600 hover:text-green-800"
+                               >
+                                 ×
+                               </button>
+                             </span>
+                           ))}
+                         </div>
+                       </div>
                      )}
-                   </button>
+                   </div>
+
+                   {/* ImgBB URL Upload (for backward compatibility) */}
+                   <div>
+                     <label className="block text-sm font-medium text-gray-700 mb-2">
+                       Upload via URL (ImgBB Service)
+                     </label>
+                     <div className="hidden">
+                       <ImageUploader 
+                         onImageUploaded={handleImageUploaded}
+                       />
+                     </div>
+                     <button
+                       type="button"
+                       disabled={uploadingImages}
+                       onClick={() => {
+                         setUploadingImages(true);
+                         // Trigger the hidden file input from ImageUploader
+                         const fileInput = document.querySelector('input[type="file"]');
+                         if (fileInput) {
+                           fileInput.click();
+                         }
+                       }}
+                       className={`inline-flex items-center px-4 py-3 border border-primary-300 shadow-sm text-sm font-medium rounded-md transition-colors duration-200 ${
+                         uploadingImages
+                           ? 'text-primary-500 bg-primary-25 cursor-not-allowed'
+                           : 'text-primary-700 bg-primary-50 hover:bg-primary-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500'
+                       }`}
+                     >
+                       {uploadingImages ? (
+                         <>
+                           <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-primary-500 mr-2"></div>
+                           Uploading Images...
+                         </>
+                       ) : (
+                         <>
+                           <Plus className="h-5 w-5 mr-2" />
+                           Upload Images via URL
+                         </>
+                       )}
+                     </button>
+                   </div>
                  </div>
                  
 
