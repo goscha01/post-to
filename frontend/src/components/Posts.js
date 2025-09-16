@@ -4,6 +4,7 @@ import { useAuth } from '../contexts/AuthContext';
 import ImageUploader from './react_imgbb_uploader.js';
 import imageService from '../services/imageService';
 import businessProfileService from '../services/businessProfileService';
+import postsService from '../services/postsService';
 import {
   FileText,
   Plus,
@@ -17,7 +18,8 @@ import {
   BarChart3,
   Heart,
   MessageCircle,
-  Share
+  Share,
+  RefreshCw
 } from 'lucide-react';
 
 // Post Image Component
@@ -154,7 +156,7 @@ const Posts = () => {
     }
   }, []);
 
-  const fetchPosts = useCallback(async (locationId, page = 1, append = false) => {
+  const fetchPosts = useCallback(async (locationId, page = 1, append = false, forceRefresh = false) => {
     if (!locationId) return;
     
     try {
@@ -163,55 +165,75 @@ const Posts = () => {
       const locationIdOnly = profileParts[profileParts.length - 1];
       const accountId = profileParts[1];
       
+      console.log(`🔄 [DEBUG] fetchPosts called for locationId: ${locationIdOnly}, accountId: ${accountId}, forceRefresh: ${forceRefresh}`);
 
+      // Use centralized posts service with caching
+      const posts = await postsService.getPostsForLocation(locationIdOnly, accountId, forceRefresh);
       
-      // STEP 1: Load cached data first for instant UI
-      try {
-        const cachedResponse = await axios.get(`http://localhost:3001/api/posts/location/${locationIdOnly}?cached_only=true`, {
-          headers: {
-            'x-gmb-account-id': accountId,
-            'Authorization': `Bearer ${localStorage.getItem('gmb_token')}`
-          }
-        });
-
-        if (cachedResponse.data.posts && cachedResponse.data.posts.length > 0) {
-          setPosts(cachedResponse.data.posts);
-          setLoading(false); // Show cached data immediately
-          setRefreshing(true); // Indicate we're refreshing with fresh data
-        }
-      } catch (cacheError) {
-        // No cached data available
-      }
-
-      // STEP 2: Fetch fresh data in background
-      const response = await axios.get(`http://localhost:3001/api/posts/location/${locationIdOnly}`, {
-        headers: {
-          'x-gmb-account-id': accountId,
-          'Authorization': `Bearer ${localStorage.getItem('gmb_token')}`
-        }
-      });
+      console.log(`📋 Received ${posts?.length || 0} posts:`, posts);
       
-
-
-
-      if (response.data.posts && response.data.posts.length > 0) {
-
-
-
-
-        if (response.data.posts[0].media && response.data.posts[0].media.length > 0) {
-
-
-
-
-
+      if (posts && posts.length > 0) {
+        // Process media for posts
+        const postsWithMedia = await postsService.getMediaForPosts(posts);
+        
+        console.log(`📄 Created ${postsWithMedia.length} posts with processed media`);
+        setPosts(postsWithMedia);
+        
+        // Background refresh: check for updates and refresh UI if needed
+        if (!forceRefresh) {
+          console.log(`🔄 [DEBUG] Starting background refresh to check for updates`);
+          setTimeout(async () => {
+            try {
+              console.log(`🔄 [DEBUG] Background refresh: fetching fresh posts`);
+              const freshPosts = await postsService.getPostsForLocation(locationIdOnly, accountId, true);
+              
+              // Check if data has changed
+              let hasChanges = false;
+              console.log(`🔍 [DEBUG] Background refresh: comparing ${freshPosts.length} fresh posts vs ${postsWithMedia.length} cached posts`);
+              
+              if (freshPosts.length !== postsWithMedia.length) {
+                hasChanges = true;
+                console.log(`🔍 [DEBUG] Background refresh: post count changed`);
+              } else {
+                for (let i = 0; i < freshPosts.length; i++) {
+                  const freshPost = freshPosts[i];
+                  const cachedPost = postsWithMedia[i];
+                  
+                  console.log(`🔍 [DEBUG] Background refresh: comparing post ${i}:`, {
+                    freshContent: freshPost.content?.substring(0, 50),
+                    cachedContent: cachedPost.content?.substring(0, 50),
+                    freshMedia: freshPost.media?.length || 0,
+                    cachedMedia: cachedPost.media?.length || 0
+                  });
+                  
+                  if (freshPost.content !== cachedPost.content ||
+                      (freshPost.media?.length || 0) !== (cachedPost.media?.length || 0)) {
+                    hasChanges = true;
+                    console.log(`🔍 [DEBUG] Background refresh: changes detected for post ${i}`);
+                    break;
+                  }
+                }
+              }
+              
+              if (hasChanges) {
+                console.log(`🔄 [DEBUG] Background refresh: data changed, updating UI`);
+                // Process media for fresh posts
+                const freshPostsWithMedia = await postsService.getMediaForPosts(freshPosts);
+                
+                console.log(`📄 Background refresh: Updated ${freshPostsWithMedia.length} posts`);
+                setPosts(freshPostsWithMedia);
+                
+                // Update the cached data with the fresh data
+                console.log(`💾 [DEBUG] Background refresh: updating cached posts data`);
+                postsService.setCachedData(`posts_${locationIdOnly}`, freshPosts);
+              } else {
+                console.log(`📄 Background refresh: no changes detected`);
+              }
+            } catch (error) {
+              console.error('Error in background refresh:', error);
+            }
+          }, 1000); // Wait 1 second after initial render
         }
-      }
-
-      
-      // Handle response - always set posts from response.data.posts
-      if (response.data.posts) {
-        setPosts(response.data.posts);
       } else {
         setPosts([]);
       }
@@ -924,6 +946,48 @@ const Posts = () => {
           <p className="mt-1 text-sm text-gray-500">
             Create and manage posts for your business profiles
           </p>
+        </div>
+        <div className="flex space-x-3">
+          <button
+            onClick={() => fetchPosts(selectedProfile, 1, false, false)}
+            disabled={refreshing}
+            className="inline-flex items-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 disabled:opacity-50"
+          >
+            <RefreshCw className={`h-4 w-4 mr-2 ${refreshing ? 'animate-spin' : ''}`} />
+            Refresh Posts
+          </button>
+          <button
+            onClick={async () => {
+              console.log(`🔄 [DEBUG] Manual refresh all posts triggered`);
+              try {
+                setRefreshing(true);
+                // Clear all caches to get fresh data
+                postsService.clearPostsCache();
+                postsService.clearMediaCache();
+                
+                // Force refresh posts for current location
+                if (selectedProfile) {
+                  const profileParts = selectedProfile.split('/');
+                  const locationIdOnly = profileParts[profileParts.length - 1];
+                  const accountId = profileParts[1];
+                  
+                  console.log(`🔄 [DEBUG] Force refreshing posts for ${locationIdOnly}`);
+                  await postsService.getPostsForLocation(locationIdOnly, accountId, true);
+                  await fetchPosts(selectedProfile, 1, false, true);
+                }
+                console.log(`✅ [DEBUG] Manual refresh completed`);
+              } catch (error) {
+                console.error(`❌ [DEBUG] Manual refresh failed:`, error);
+              } finally {
+                setRefreshing(false);
+              }
+            }}
+            disabled={refreshing}
+            className="inline-flex items-center px-4 py-2 border border-blue-300 shadow-sm text-sm font-medium rounded-md text-blue-700 bg-blue-50 hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50"
+          >
+            <RefreshCw className={`h-4 w-4 mr-2 ${refreshing ? 'animate-spin' : ''}`} />
+            Refresh All Posts
+          </button>
         </div>
       </div>
 

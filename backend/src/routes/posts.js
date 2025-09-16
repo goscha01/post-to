@@ -271,12 +271,6 @@ const saveExistingPostsToDatabase = async (userId, posts, platform = 'google') =
     const savedPosts = [];
 
     for (const post of posts) {
-      console.log(`🔍 Processing post:`, {
-        id: post.id,
-        content: post.content?.substring(0, 50) + '...',
-        gmbAccountId: post.accountId,
-        locationId: post.locationId
-      });
 
       // Check if post already exists in database
       const { data: existingPost } = await supabase
@@ -288,7 +282,14 @@ const saveExistingPostsToDatabase = async (userId, posts, platform = 'google') =
         .single();
 
       if (existingPost) {
-        console.log(`⏭️ Post ${post.id} already exists, skipping`);
+        // Update existing post with correct location_id and gmb_account_id
+        await supabase
+          .from('social_media_posts')
+          .update({
+            location_id: post.locationId,
+            gmb_account_id: post.accountId
+          })
+          .eq('id', existingPost.id);
         continue;
       }
 
@@ -304,19 +305,26 @@ const saveExistingPostsToDatabase = async (userId, posts, platform = 'google') =
         locationId: post.locationId // GMB location ID
       };
 
-      console.log(`💾 Saving post ${post.id} with locationId: ${post.locationId}, gmbAccountId: ${post.accountId}`);
+      // Debug: Check if accountId and locationId are being passed correctly
+      if (!post.accountId || !post.locationId) {
+        console.log(`🔍 Post ${post.id} missing data:`, {
+          accountId: post.accountId,
+          locationId: post.locationId,
+          postKeys: Object.keys(post)
+        });
+      }
 
       // Save to database
       const savedPost = await savePostToDatabase(userId, postData);
       if (savedPost) {
-        console.log(`✅ Successfully saved post ${post.id}`);
         savedPosts.push(savedPost);
-      } else {
-        console.log(`❌ Failed to save post ${post.id}`);
       }
     }
 
-    console.log(`📊 Final result: ${savedPosts.length} out of ${posts.length} posts saved successfully`);
+    console.log(`💾 Posts: ${savedPosts.length}/${posts.length} saved`);
+    if (savedPosts.length === 0 && posts.length > 0) {
+      console.log(`🔍 All posts already exist in database`);
+    }
     return savedPosts;
   } catch (error) {
     console.log(`❌ Error in saveExistingPostsToDatabase:`, error);
@@ -327,8 +335,6 @@ const saveExistingPostsToDatabase = async (userId, posts, platform = 'google') =
 // Get cached posts from database
 async function getCachedPosts(locationId, userId, accountId) {
   try {
-    console.log(`🗃️ Looking for cached posts - locationId: ${locationId}, userId: ${userId}, accountId: ${accountId}`);
-
     const { data: cachedPosts, error } = await supabase
       .from('social_media_posts')
       .select('*')
@@ -342,16 +348,24 @@ async function getCachedPosts(locationId, userId, accountId) {
       return [];
     }
 
-    console.log(`📦 Found ${cachedPosts.length} cached posts`);
     if (cachedPosts.length === 0) {
-      // Let's check what posts actually exist for this user
+      // Check what posts actually exist for this user
       const { data: allUserPosts } = await supabase
         .from('social_media_posts')
         .select('post_id, location_id, gmb_account_id, platform')
         .eq('user_id', userId)
-        .limit(5);
-
-      console.log(`🔍 Debug: Found ${allUserPosts?.length || 0} total posts for user, first 5:`, allUserPosts);
+        .limit(3);
+        
+      if (allUserPosts && allUserPosts.length > 0) {
+        console.log(`🔍 User has ${allUserPosts.length} posts, sample:`, {
+          post_id: allUserPosts[0].post_id,
+          location_id: allUserPosts[0].location_id,
+          gmb_account_id: allUserPosts[0].gmb_account_id
+        });
+        console.log(`🔍 Querying for: location_id=${locationId}, gmb_account_id=${accountId}`);
+      } else {
+        console.log(`🔍 No posts found for location ${locationId}, account ${accountId}`);
+      }
     }
 
     return cachedPosts.map(post => ({
@@ -361,8 +375,8 @@ async function getCachedPosts(locationId, userId, accountId) {
       platform: post.platform,
       createdAt: post.created_at,
       status: 'published',
-      media: post.media_data ? JSON.parse(post.media_data) : [],
-      callToAction: post.call_to_action ? JSON.parse(post.call_to_action) : null,
+      media: post.media_data || [],
+      callToAction: post.call_to_action || null,
       cached: true
     }));
   } catch (error) {
@@ -384,6 +398,7 @@ router.get('/location/:locationId', async (req, res) => {
       const accountId = req.headers['x-gmb-account-id'] || '109194636448236279020';
       const cachedPosts = await getCachedPosts(locationId, userId, accountId);
       return res.json({
+        success: true,
         posts: cachedPosts,
         cached: true,
         message: 'Cached data only'
@@ -401,8 +416,6 @@ router.get('/location/:locationId', async (req, res) => {
       
       // Try direct API call first
       try {
-        console.log(`🔍 Fetching GMB posts from: https://mybusiness.googleapis.com/v4/accounts/${accountId}/locations/${locationId}/localPosts`);
-
         const gmbResponse = await axios.get(
           `https://mybusiness.googleapis.com/v4/accounts/${accountId}/locations/${locationId}/localPosts`,
           {
@@ -413,11 +426,7 @@ router.get('/location/:locationId', async (req, res) => {
           }
         );
 
-        console.log(`📊 GMB posts response:`, {
-          status: gmbResponse.status,
-          postsCount: gmbResponse.data.localPosts?.length || 0,
-          data: gmbResponse.data
-        });
+        console.log(`📊 GMB: ${gmbResponse.data.localPosts?.length || 0} posts`);
 
         if (gmbResponse.data.localPosts && gmbResponse.data.localPosts.length > 0) {
           // Processing GMB posts
