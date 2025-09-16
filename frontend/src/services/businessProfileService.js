@@ -195,13 +195,19 @@ class BusinessProfileService {
   }
 
   // Fetch business accounts with caching
-  async getAccounts() {
+  async getAccounts(forceRefresh = false) {
     const cacheKey = 'accounts';
     
-    // Check cache first
-    const cachedData = this.getCachedData(cacheKey);
-    if (cachedData) {
-      return cachedData;
+    // Check cache first (unless force refresh)
+    if (!forceRefresh) {
+      const cachedData = this.getCachedData(cacheKey);
+      if (cachedData) {
+        return cachedData;
+      }
+    } else {
+      console.log(`🔄 [DEBUG] Force refresh requested, clearing cache for ${cacheKey}`);
+      this.cache.delete(cacheKey);
+      this.cacheExpiry.delete(cacheKey);
     }
 
     // Check if request is already in progress
@@ -210,7 +216,7 @@ class BusinessProfileService {
     }
 
     // Create new request
-    const requestPromise = this.fetchAccountsFromAPI();
+    const requestPromise = this.fetchAccountsFromAPI(forceRefresh);
     this.pendingRequests.set(cacheKey, requestPromise);
 
     try {
@@ -223,19 +229,30 @@ class BusinessProfileService {
   }
 
   // Helper function to process accounts response and fetch locations
-  async processAccountsResponse(accounts, fromCache = false) {
+  async processAccountsResponse(accounts, fromCache = false, forceRefresh = false) {
     if (!accounts || accounts.length === 0) {
       return [];
     }
 
-    console.log(`🔄 Processing ${accounts.length} accounts (from ${fromCache ? 'cache' : 'API'})`);
+    console.log(`🔄 Processing ${accounts.length} accounts (from ${fromCache ? 'cache' : 'API'})${forceRefresh ? ' (force refresh)' : ''}`);
 
     // Fetch locations for each account
     const profilesWithLocations = await Promise.all(
       accounts.map(async (account) => {
         try {
           const accountId = account.name.split('/').pop();
-          const locations = await this.getLocationsForAccount(accountId);
+          console.log(`🔍 [DEBUG] Fetching locations for account ${accountId} (${account.accountName})`);
+          const locations = await this.getLocationsForAccount(accountId, forceRefresh);
+          
+          console.log(`🔍 [DEBUG] Locations fetched for ${account.accountName}:`, locations.map(loc => ({
+            name: loc.name,
+            locationName: loc.locationName,
+            title: loc.title,
+            businessName: loc.businessName,
+            profile: loc.profile,
+            profileBusinessName: loc.profile?.businessName,
+            fullLocation: loc
+          })));
 
           const locationsWithAccount = locations.map(location => ({
             ...location,
@@ -255,15 +272,22 @@ class BusinessProfileService {
     );
 
     if (!fromCache) {
-      this.storeInCache('business_accounts', profilesWithLocations);
+      this.setCachedData('business_accounts', profilesWithLocations);
     }
 
     return profilesWithLocations;
   }
 
   // Fetch accounts from API with cache-first loading
-  async fetchAccountsFromAPI() {
+  async fetchAccountsFromAPI(forceRefresh = false) {
     try {
+      // If force refresh, skip cache and go directly to API
+      if (forceRefresh) {
+        console.log(`🔄 [DEBUG] Force refresh requested, fetching fresh accounts from API`);
+        const response = await axios.get('/api/gmb/accounts');
+        return await this.processAccountsResponse(response.data.accounts || [], false, true);
+      }
+
       // First try to get cached data
       try {
         const cachedResponse = await axios.get('/api/gmb/accounts?cached_only=true');
@@ -274,7 +298,7 @@ class BusinessProfileService {
             console.log('💾 Cached accounts data is empty, falling back to API');
             throw new Error('Empty cache, falling back to API');
           }
-          return await this.processAccountsResponse(accounts, true);
+          return await this.processAccountsResponse(accounts, true, false);
         }
       } catch (cacheError) {
         console.log('💾 No cached accounts available, fetching from API');
@@ -282,7 +306,7 @@ class BusinessProfileService {
 
       // If no cached data, fetch from API
       const response = await axios.get('/api/gmb/accounts');
-      return await this.processAccountsResponse(response.data.accounts || [], false);
+      return await this.processAccountsResponse(response.data.accounts || [], false, false);
     } catch (error) {
       console.error('Error fetching accounts:', error);
       throw error;
@@ -290,27 +314,36 @@ class BusinessProfileService {
   }
 
   // Fetch locations for a specific account with caching
-  async getLocationsForAccount(accountId) {
+  async getLocationsForAccount(accountId, forceRefresh = false) {
     const cacheKey = `locations_${accountId}`;
     
-    // Check cache first
-    const cachedData = this.getCachedData(cacheKey);
-    if (cachedData) {
-      return cachedData;
+    // Check cache first (unless force refresh)
+    if (!forceRefresh) {
+      const cachedData = this.getCachedData(cacheKey);
+      if (cachedData) {
+        console.log(`📦 [DEBUG] Using cached locations for ${accountId}: ${cachedData.length} locations`);
+        return cachedData;
+      }
+    } else {
+      console.log(`🔄 [DEBUG] Force refresh requested, clearing cache for ${cacheKey}`);
+      this.cache.delete(cacheKey);
+      this.cacheExpiry.delete(cacheKey);
     }
 
     // Check if request is already in progress
     if (this.pendingRequests.has(cacheKey)) {
+      console.log(`⏳ [DEBUG] Request already in progress for ${cacheKey}`);
       return this.pendingRequests.get(cacheKey);
     }
 
     // Create new request
-    const requestPromise = this.fetchLocationsFromAPI(accountId);
+    const requestPromise = this.fetchLocationsFromAPI(accountId, forceRefresh);
     this.pendingRequests.set(cacheKey, requestPromise);
 
     try {
       const result = await requestPromise;
       this.setCachedData(cacheKey, result);
+      console.log(`💾 [DEBUG] Cached locations data for ${accountId}: ${result.length} locations`);
       return result;
     } finally {
       this.pendingRequests.delete(cacheKey);
@@ -318,20 +351,38 @@ class BusinessProfileService {
   }
 
   // Fetch locations from API with cache-first loading
-  async fetchLocationsFromAPI(accountId) {
+  async fetchLocationsFromAPI(accountId, forceRefresh = false) {
     try {
-      // First try to get cached data
+      // If force refresh, skip cache and go directly to API
+      if (forceRefresh) {
+        console.log(`🔄 [DEBUG] Force refresh requested, fetching fresh locations from API for account ${accountId}`);
+        const response = await axios.get(`/api/gmb/accounts/${accountId}/locations`);
+        return response.data.locations || [];
+      }
+
+      console.log(`🔍 [DEBUG] fetchLocationsFromAPI called for account ${accountId} (forceRefresh: ${forceRefresh})`);
+      console.trace(`🔍 [DEBUG] Call stack for fetchLocationsFromAPI:`);
+
+      // Check if we have fresh data in frontend cache first
+      const frontendCacheKey = `locations_${accountId}`;
+      const frontendCachedData = this.getCachedData(frontendCacheKey);
+      if (frontendCachedData) {
+        console.log(`📦 Using frontend cached locations data for account ${accountId} (${frontendCachedData.length} locations)`);
+        return frontendCachedData;
+      }
+
+      // If no frontend cache, try to get cached data from backend
       try {
         const cachedResponse = await axios.get(`/api/gmb/accounts/${accountId}/locations?cached_only=true`);
         if (cachedResponse.data.success && cachedResponse.data.cached &&
             cachedResponse.data.locations && cachedResponse.data.locations.length > 0) {
-          console.log(`📦 Using cached locations data for account ${accountId} (${cachedResponse.data.locations.length} locations)`);
+          console.log(`📦 Using backend cached locations data for account ${accountId} (${cachedResponse.data.locations.length} locations)`);
           return cachedResponse.data.locations;
         } else {
-          console.log(`💾 Cached locations data is empty for account ${accountId}, fetching from API`);
+          console.log(`💾 Backend cached locations data is empty for account ${accountId}, fetching from API`);
         }
       } catch (cacheError) {
-        console.log(`💾 No cached locations available for account ${accountId}, fetching from API`);
+        console.log(`💾 No backend cached locations available for account ${accountId}, fetching from API`);
       }
 
       // If no cached data, fetch from API
@@ -384,9 +435,77 @@ class BusinessProfileService {
 
   // Clear all cache
   clearCache() {
+    console.log(`🧹 [DEBUG] Clearing all cache (${this.cache.size} entries)`);
     this.cache.clear();
     this.cacheExpiry.clear();
     this.pendingRequests.clear();
+  }
+
+  // Clear reviews cache specifically
+  clearReviewsCache() {
+    console.log(`🧹 [DEBUG] Clearing reviews cache`);
+    const reviewsKeys = Array.from(this.cache.keys()).filter(key => key.startsWith('reviews_'));
+    reviewsKeys.forEach(key => {
+      this.cache.delete(key);
+      this.cacheExpiry.delete(key);
+      console.log(`🗑️ [DEBUG] Cleared cache entry: ${key}`);
+    });
+    console.log(`🧹 [DEBUG] Cleared ${reviewsKeys.length} reviews cache entries`);
+  }
+
+  // Clear locations cache specifically
+  clearLocationsCache() {
+    console.log(`🧹 [DEBUG] Clearing locations cache`);
+    const locationsKeys = Array.from(this.cache.keys()).filter(key => key.startsWith('locations_'));
+    locationsKeys.forEach(key => {
+      this.cache.delete(key);
+      this.cacheExpiry.delete(key);
+      console.log(`🗑️ [DEBUG] Cleared cache entry: ${key}`);
+    });
+    console.log(`🧹 [DEBUG] Cleared ${locationsKeys.length} locations cache entries`);
+  }
+
+  // Clear accounts cache specifically
+  clearAccountsCache() {
+    console.log(`🧹 [DEBUG] Clearing accounts cache`);
+    console.log(`🔍 [DEBUG] All cache keys:`, Array.from(this.cache.keys()));
+    const accountsKeys = Array.from(this.cache.keys()).filter(key => key === 'accounts' || key.startsWith('accounts_'));
+    console.log(`🔍 [DEBUG] Found accounts keys:`, accountsKeys);
+    accountsKeys.forEach(key => {
+      this.cache.delete(key);
+      this.cacheExpiry.delete(key);
+      console.log(`🗑️ [DEBUG] Cleared cache entry: ${key}`);
+    });
+    console.log(`🧹 [DEBUG] Cleared ${accountsKeys.length} accounts cache entries`);
+  }
+
+  // Force refresh reviews for all locations
+  async refreshAllReviews(accounts) {
+    console.log(`🔄 [DEBUG] Force refreshing reviews for ${accounts.length} accounts`);
+    
+    // Clear reviews cache first
+    this.clearReviewsCache();
+    
+    // Refresh reviews for each account's first location
+    const refreshPromises = accounts.map(async (account) => {
+      try {
+        const accountId = account.name.split('/').pop();
+        const locations = account.locations || [];
+        
+        if (locations.length > 0) {
+          const locationId = locations[0].name.split('/').pop();
+          console.log(`🔄 [DEBUG] Refreshing reviews for ${account.accountName} (${accountId}/${locationId})`);
+          return await this.getReviewsForLocation(accountId, locationId, true);
+        }
+      } catch (error) {
+        console.error(`❌ [DEBUG] Error refreshing reviews for account ${account.name}:`, error);
+        return null;
+      }
+    });
+    
+    const results = await Promise.all(refreshPromises);
+    console.log(`🔄 [DEBUG] Completed refresh for ${results.filter(r => r).length} accounts`);
+    return results;
   }
 
   // Force clear corrupted cache (one-time cleanup)
@@ -421,27 +540,43 @@ class BusinessProfileService {
   }
 
   // Get reviews for a specific location with caching
-  async getReviewsForLocation(accountId, locationId) {
+  async getReviewsForLocation(accountId, locationId, forceRefresh = false) {
     const cacheKey = `reviews_${accountId}_${locationId}`;
     
-    // Check cache first
-    const cachedData = this.getCachedData(cacheKey);
-    if (cachedData) {
-      return cachedData;
+    // Check cache first (unless force refresh)
+    if (!forceRefresh) {
+      const cachedData = this.getCachedData(cacheKey);
+      if (cachedData) {
+        console.log(`📦 [DEBUG] Using cached reviews for ${accountId}/${locationId}: ${cachedData.reviews?.length || 0} reviews`);
+        return cachedData;
+      }
+    } else {
+      console.log(`🔄 [DEBUG] Force refresh requested, clearing cache for ${cacheKey}`);
+      this.cache.delete(cacheKey);
+      this.cacheExpiry.delete(cacheKey);
     }
 
     // Check if request is already in progress
     if (this.pendingRequests.has(cacheKey)) {
+      console.log(`⏳ [DEBUG] Request already in progress for ${cacheKey}`);
       return this.pendingRequests.get(cacheKey);
     }
 
     // Create new request
-    const requestPromise = this.fetchReviewsFromAPI(accountId, locationId);
+    const requestPromise = this.fetchReviewsFromAPI(accountId, locationId, forceRefresh);
     this.pendingRequests.set(cacheKey, requestPromise);
 
     try {
       const result = await requestPromise;
-      this.setCachedData(cacheKey, result);
+      
+      // Only cache if we got valid data
+      if (result && result.success !== false) {
+        this.setCachedData(cacheKey, result);
+        console.log(`💾 [DEBUG] Cached reviews data for ${accountId}/${locationId}: ${result.reviews?.length || 0} reviews`);
+      } else {
+        console.log(`⚠️ [DEBUG] Not caching invalid result for ${accountId}/${locationId}:`, result);
+      }
+      
       return result;
     } finally {
       this.pendingRequests.delete(cacheKey);
@@ -449,24 +584,68 @@ class BusinessProfileService {
   }
 
   // Fetch reviews from API with cache-first loading
-  async fetchReviewsFromAPI(accountId, locationId) {
+  async fetchReviewsFromAPI(accountId, locationId, forceRefresh = false) {
+    console.log(`🔍 [DEBUG] fetchReviewsFromAPI called for accountId: ${accountId}, locationId: ${locationId}, forceRefresh: ${forceRefresh}`);
+    
     try {
-      // First try to get cached data
-      try {
-        const cachedResponse = await axios.get(`/api/gmb/accounts/${accountId}/locations/${locationId}/reviews?cached_only=true`);
-        if (cachedResponse.data.success && cachedResponse.data.cached) {
-          console.log(`📦 Using cached reviews data for location ${locationId} (${cachedResponse.data.reviews?.length || 0} reviews)`);
-          return cachedResponse.data;
+      // Skip cache if forceRefresh is true
+      if (!forceRefresh) {
+        // First try to get cached data
+        try {
+          console.log(`🔍 [DEBUG] Attempting to fetch cached reviews from: /api/reviews/accounts/${accountId}/locations/${locationId}/reviews?cached_only=true`);
+          const cachedResponse = await axios.get(`/api/reviews/accounts/${accountId}/locations/${locationId}/reviews?cached_only=true`);
+          
+          console.log(`🔍 [DEBUG] Cached response received:`, {
+            success: cachedResponse.data?.success,
+            cached: cachedResponse.data?.cached,
+            hasReviews: !!cachedResponse.data?.reviews,
+            reviewsLength: cachedResponse.data?.reviews?.length || 0,
+            status: cachedResponse.status,
+            fullResponse: cachedResponse.data
+          });
+          
+          if (cachedResponse.data.success && cachedResponse.data.cached) {
+            console.log(`📦 [DEBUG] Using cached reviews data for location ${locationId} (${cachedResponse.data.reviews?.length || 0} reviews)`);
+            return cachedResponse.data;
+          } else {
+            console.log(`💾 [DEBUG] Cached data not available or invalid, will fetch from API`);
+          }
+        } catch (cacheError) {
+          console.log(`💾 [DEBUG] No cached reviews available for location ${locationId}, fetching from API. Error:`, {
+            message: cacheError.message,
+            status: cacheError.response?.status,
+            statusText: cacheError.response?.statusText,
+            data: cacheError.response?.data
+          });
         }
-      } catch (cacheError) {
-        console.log(`💾 No cached reviews available for location ${locationId}, fetching from API`);
+      } else {
+        console.log(`🔄 [DEBUG] Force refresh requested, skipping cache`);
       }
 
-      // If no cached data, fetch from API
-      const response = await axios.get(`/api/gmb/accounts/${accountId}/locations/${locationId}/reviews`);
+      // If no cached data or force refresh, fetch from API
+      console.log(`🔍 [DEBUG] Fetching reviews from API: /api/reviews/accounts/${accountId}/locations/${locationId}/reviews`);
+      const response = await axios.get(`/api/reviews/accounts/${accountId}/locations/${locationId}/reviews`);
+      
+      console.log(`🔍 [DEBUG] API response received:`, {
+        success: response.data?.success,
+        hasReviews: !!response.data?.reviews,
+        reviewsLength: response.data?.reviews?.length || 0,
+        status: response.status,
+        statusText: response.statusText,
+        fullResponse: response.data
+      });
+      
       return response.data;
     } catch (error) {
-      console.error(`Error fetching reviews for location ${locationId}:`, error);
+      console.error(`❌ [DEBUG] Error fetching reviews for location ${locationId}:`, error);
+      console.error(`❌ [DEBUG] Error details:`, {
+        message: error.message,
+        status: error.response?.status,
+        statusText: error.response?.statusText,
+        data: error.response?.data,
+        url: error.config?.url,
+        method: error.config?.method
+      });
       return { reviews: [], totalReviews: 0, averageRating: 0 };
     }
   }

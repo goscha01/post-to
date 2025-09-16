@@ -201,6 +201,9 @@ router.get('/accounts/:accountId/locations/:locationId/reviews', async (req, res
     // If cached_only=true, return only cached data
     if (cached_only === 'true') {
       const cachedReviews = await getCachedReviews(locationId, userId);
+      
+      console.log(`📦 [DEBUG] Using cached reviews for ${accountId}/${locationId}: ${cachedReviews.length} reviews`);
+      
       return res.json({
         success: true,
         reviews: cachedReviews,
@@ -211,15 +214,19 @@ router.get('/accounts/:accountId/locations/:locationId/reviews', async (req, res
     
     try {
       const axios = require('axios');
-      const reviews = await axios.get(
-        `https://mybusiness.googleapis.com/v4/accounts/${accountId}/locations/${locationId}/reviews`,
-        {
-          headers: {
-            'Authorization': `Bearer ${req.businessToken}`,
-            'Content-Type': 'application/json'
-          }
+      const gmbUrl = `https://mybusiness.googleapis.com/v4/accounts/${accountId}/locations/${locationId}/reviews`;
+      
+      console.log(`🔍 [DEBUG] Making GMB API call to: ${gmbUrl}`);
+      console.log(`🔍 [DEBUG] Using business token: ${req.businessToken ? 'Present' : 'Missing'}`);
+      
+      const reviews = await axios.get(gmbUrl, {
+        headers: {
+          'Authorization': `Bearer ${req.businessToken}`,
+          'Content-Type': 'application/json'
         }
-      );
+      });
+      
+      console.log(`🔍 [DEBUG] GMB API response: ${reviews.status} ${reviews.statusText}, ${reviews.data?.reviews?.length || 0} reviews`);
       
       // Save existing reviews to database
       if (reviews.data.reviews && reviews.data.reviews.length > 0) {
@@ -232,12 +239,16 @@ router.get('/accounts/:accountId/locations/:locationId/reviews', async (req, res
         );
       }
       
-      res.json({
+      const responseData = {
         success: true,
         reviews: reviews.data.reviews || [],
         cached: false,
         source: 'GMB_V4_API'
-      });
+      };
+      
+      console.log(`🔍 [DEBUG] Reviews API response for ${accountId}/${locationId}: ${responseData.reviews.length} reviews from ${responseData.source}`);
+      
+      res.json(responseData);
       
     } catch (gmbV4Error) {
       if (gmbV4Error.response?.status === 401) {

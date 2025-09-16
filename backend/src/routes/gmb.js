@@ -242,25 +242,43 @@ async function getCachedLocations(accountId, userId) {
     }
 
     console.log(`📦 Found ${cachedLocations.length} cached locations`);
-    return cachedLocations.map(location => ({
-      name: `accounts/${location.account_id}/locations/${location.location_id}`,
-      locationName: location.location_name,
-      businessName: location.business_name,
-      address: location.address ? (() => {
-        try {
-          return JSON.parse(location.address);
-        } catch (parseError) {
-          console.warn(`Invalid JSON in address field for location ${location.location_id}:`, location.address?.substring(0, 50));
-          return null;
-        }
-      })() : null,
-      phoneNumbers: location.phone ? [{ phoneNumber: location.phone }] : [],
-      websiteUri: location.website_url,
-      primaryCategory: location.primary_category,
-      additionalCategories: location.additional_categories || [],
-      storeCode: location.store_code,
-      labels: location.labels || []
-    }));
+    console.log(`🔍 [DEBUG] Cached location data from database:`, cachedLocations.map(loc => ({
+      location_id: loc.location_id,
+      location_name: loc.location_name,
+      business_name: loc.business_name,
+      allKeys: Object.keys(loc)
+    })));
+    
+    return cachedLocations.map(location => {
+      const mappedLocation = {
+        name: `accounts/${location.account_id}/locations/${location.location_id}`,
+        locationName: location.location_name,
+        businessName: location.business_name || location.location_name,
+        address: location.address ? (() => {
+          try {
+            return JSON.parse(location.address);
+          } catch (parseError) {
+            console.warn(`Invalid JSON in address field for location ${location.location_id}:`, location.address?.substring(0, 50));
+            return null;
+          }
+        })() : null,
+        phoneNumbers: location.phone ? [{ phoneNumber: location.phone }] : [],
+        websiteUri: location.website_url,
+        primaryCategory: location.primary_category,
+        additionalCategories: location.additional_categories || [],
+        storeCode: location.store_code,
+        labels: location.labels || []
+      };
+      
+      console.log(`🔍 [DEBUG] Cached location mapped for ${location.location_name}:`, {
+        name: mappedLocation.name,
+        locationName: mappedLocation.locationName,
+        businessName: mappedLocation.businessName,
+        originalBusinessName: location.business_name
+      });
+      
+      return mappedLocation;
+    });
   } catch (error) {
     console.error('Error in getCachedLocations:', error);
     return [];
@@ -298,6 +316,18 @@ router.get('/accounts/:accountId/locations', async (req, res) => {
       readMask: readMask
     });
     
+    console.log(`🔍 [DEBUG] Raw GMB API response for ${accountId}:`, {
+      hasLocations: !!locationsResponse.data.locations,
+      locationsCount: locationsResponse.data.locations?.length || 0,
+      firstLocation: locationsResponse.data.locations?.[0] ? {
+        name: locationsResponse.data.locations[0].name,
+        title: locationsResponse.data.locations[0].title,
+        profile: locationsResponse.data.locations[0].profile,
+        profileBusinessName: locationsResponse.data.locations[0].profile?.businessName,
+        allKeys: Object.keys(locationsResponse.data.locations[0])
+      } : null
+    });
+    
     if (!locationsResponse.data.locations) {
       return res.json({
         success: true,
@@ -305,22 +335,35 @@ router.get('/accounts/:accountId/locations', async (req, res) => {
       });
     }
     
-    const locations = locationsResponse.data.locations.map(location => ({
-      name: location.name,
-      locationName: location.title || location.locationName,
-      storeCode: location.storeCode,
-      address: location.storefrontAddress,
-      phoneNumbers: location.phoneNumbers,
-      websiteUri: location.websiteUri,
-      profile: location.profile,
-      regularHours: location.regularHours,
-      metadata: location.metadata,
-      latlng: location.latlng,
-      openInfo: location.openInfo,
-      labels: location.labels,
-      serviceArea: location.serviceArea,
-      categories: location.categories
-    }));
+    const locations = locationsResponse.data.locations.map(location => {
+      const mappedLocation = {
+        name: location.name,
+        locationName: location.title || location.locationName,
+        businessName: location.profile?.businessName || location.title || location.locationName,
+        storeCode: location.storeCode,
+        address: location.storefrontAddress,
+        phoneNumbers: location.phoneNumbers,
+        websiteUri: location.websiteUri,
+        profile: location.profile,
+        regularHours: location.regularHours,
+        metadata: location.metadata,
+        latlng: location.latlng,
+        openInfo: location.openInfo,
+        labels: location.labels,
+        serviceArea: location.serviceArea,
+        categories: location.categories
+      };
+      
+      console.log(`🔍 [DEBUG] Mapped location for ${location.title}:`, {
+        name: mappedLocation.name,
+        locationName: mappedLocation.locationName,
+        businessName: mappedLocation.businessName,
+        profileBusinessName: mappedLocation.profile?.businessName,
+        hasProfile: !!mappedLocation.profile
+      });
+      
+      return mappedLocation;
+    });
 
     // Save locations to database for caching
     if (userId) {
@@ -336,7 +379,7 @@ router.get('/accounts/:accountId/locations', async (req, res) => {
               account_id: accountId,
               location_id: locationId,
               location_name: location.locationName,
-              business_name: location.profile?.businessName || location.locationName,
+              business_name: location.businessName || location.profile?.businessName || location.locationName,
               address: location.address ? JSON.stringify(location.address) : null,
               phone: location.phoneNumbers?.[0]?.phoneNumber || null,
               website_url: location.websiteUri,
