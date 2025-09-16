@@ -1,7 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import axios from '../utils/axiosConfig';
 import { useAuth } from '../contexts/AuthContext';
 import businessProfileService from '../services/businessProfileService';
+import servicesMediaService from '../services/servicesMediaService';
+import servicesCacheService from '../services/servicesCacheService';
+import existingServicesCacheService from '../services/existingServicesCacheService';
 import {
   Building2,
   Search,
@@ -53,6 +56,8 @@ const Services = () => {
   const [lastApiCall, setLastApiCall] = useState(0);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [serviceToDelete, setServiceToDelete] = useState(null);
+  const [dataLoaded, setDataLoaded] = useState(false);
+  const fetchDataCalled = useRef(false);
 
   // Rate limiting function to prevent 429 errors
   const rateLimitDelay = async () => {
@@ -71,23 +76,38 @@ const Services = () => {
 
 
   useEffect(() => {
+    console.log('🔍 Services useEffect triggered:', { isAuthenticated, isDisconnected, dataLoaded, fetchDataCalled: fetchDataCalled.current, selectedProfile: !!selectedProfile });
+    
     if (isAuthenticated && !isDisconnected) {
-      // Check if business profiles are connected
-      const businessConnected = localStorage.getItem('gmb_business_connected') === 'true';
-      if (businessConnected) {
-        // Note: Business profiles are now managed by BusinessProfiles component
-        // Services component will get profiles from context or props if needed
-        setLoading(false);
+      // Always check if we need to load data (either not loaded yet or no profile selected)
+      if (!dataLoaded || !selectedProfile) {
+        console.log('🔍 Need to load data - checking business connection...');
+        // Check if business profiles are connected
+        const businessConnected = localStorage.getItem('gmb_business_connected') === 'true';
+        console.log('🔍 Business connected:', businessConnected);
+        
+        if (businessConnected) {
+          console.log('🔍 Calling fetchData...');
+          fetchData();
+          setDataLoaded(true);
+          console.log('🔍 Data loaded flag set to true');
+        } else {
+          // User is authenticated but business profiles not connected
+          setProfiles([]);
+          setSelectedProfile(null);
+          setBusinessCategories([]);
+          setServices([]);
+          setExistingServices([]);
+          setLoading(false);
+          setDataLoaded(true);
+          fetchDataCalled.current = true;
+          console.log('🔍 No business connection, data cleared');
+        }
       } else {
-        // User is authenticated but business profiles not connected
-        setProfiles([]);
-        setSelectedProfile(null);
-        setBusinessCategories([]);
-        setServices([]);
-        setExistingServices([]);
-        setLoading(false);
+        console.log('🔍 Data already loaded and profile selected, skipping fetchData');
       }
     } else if (isDisconnected) {
+      console.log('🔍 User disconnected, clearing data...');
       // Clear data when disconnected
       setProfiles([]);
       setSelectedProfile(null);
@@ -95,86 +115,237 @@ const Services = () => {
       setServices([]);
       setExistingServices([]);
       setLoading(false);
+      setDataLoaded(false);
+      fetchDataCalled.current = false;
+    } else {
+      console.log('🔍 Conditions not met, skipping fetchData');
     }
-  }, [isAuthenticated, isDisconnected]);
+  }, [isAuthenticated, isDisconnected, dataLoaded, selectedProfile]);
+
+  const fetchData = async () => {
+    console.log('🔍 fetchData called!', { fetchDataCalled: fetchDataCalled.current, dataLoaded });
+    
+    // Prevent multiple calls
+    if (fetchDataCalled.current) {
+      console.log('🔍 fetchData already called, skipping...');
+      return;
+    }
+    
+    fetchDataCalled.current = true;
+    
+    try {
+      setLoading(true);
+      // Use centralized business profile service with caching
+      const profilesWithLocations = await businessProfileService.getAccounts();
+      setProfiles(profilesWithLocations);
+      console.log('Profiles with locations loaded:', profilesWithLocations);
+      
+      if (profilesWithLocations.length > 0 && profilesWithLocations[0].locations.length > 0) {
+        const firstLocation = profilesWithLocations[0].locations[0];
+        console.log('Setting selected profile to:', firstLocation);
+        setSelectedProfile(firstLocation);
+        
+        // IMMEDIATE: Set business categories from profile data at code level
+        if (firstLocation.categories) {
+          const categories = [];
+          
+          // Add primary category
+          if (firstLocation.categories.primaryCategory) {
+            categories.push({
+              id: firstLocation.categories.primaryCategory.categoryId || firstLocation.categories.primaryCategory.id,
+              name: firstLocation.categories.primaryCategory.displayName || firstLocation.categories.primaryCategory.name,
+              displayName: firstLocation.categories.primaryCategory.displayName || firstLocation.categories.primaryCategory.name
+            });
+          }
+          
+          // Add additional categories
+          if (firstLocation.categories.additionalCategories && Array.isArray(firstLocation.categories.additionalCategories)) {
+            firstLocation.categories.additionalCategories.forEach(cat => {
+              categories.push({
+                id: cat.categoryId || cat.id,
+                name: cat.displayName || cat.name,
+                displayName: cat.displayName || cat.name
+              });
+            });
+          }
+          
+          if (categories.length > 0) {
+            setBusinessCategories(categories);
+            const primaryCategory = categories[0];
+            setSelectedCategory(primaryCategory.id);
+            console.log(`⚡ Immediate business categories set: ${categories.length} categories, selected: ${primaryCategory.displayName}`);
+          } else {
+            // Set default if no categories found
+            const defaultCategory = {
+              id: 'gcid:house_cleaning_service',
+              name: 'House cleaning service',
+              displayName: 'House cleaning service'
+            };
+            setBusinessCategories([defaultCategory]);
+            setSelectedCategory(defaultCategory.id);
+            console.log(`⚡ Immediate default category set: ${defaultCategory.displayName}`);
+          }
+        } else {
+          // Set default if no categories property
+          const defaultCategory = {
+            id: 'gcid:house_cleaning_service',
+            name: 'House cleaning service',
+            displayName: 'House cleaning service'
+          };
+          setBusinessCategories([defaultCategory]);
+          setSelectedCategory(defaultCategory.id);
+          console.log(`⚡ Immediate default category set (no categories): ${defaultCategory.displayName}`);
+        }
+      } else {
+        console.log('No profiles or locations found');
+      }
+    } catch (error) {
+      console.error('Error fetching data:', error);
+      setError('Failed to load business profiles');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    if (selectedProfile && !isDisconnected) {
-      fetchBusinessCategories();
-      fetchExistingServices();
+    if (selectedProfile && !isDisconnected && dataLoaded) {
+      console.log('🔍 Scheduling existing services fetch for profile:', selectedProfile.name);
+      // fetchBusinessCategories() is now called immediately in fetchData()
+      // Delay the existing services fetch to make it truly background
+      setTimeout(() => {
+        console.log('🔍 Timeout: Calling fetchExistingServices...');
+        fetchExistingServices();
+      }, 1000);
+    } else {
+      console.log('🔍 Skipping existing services fetch - conditions not met');
     }
-  }, [selectedProfile, isDisconnected]);
+  }, [selectedProfile, isDisconnected, dataLoaded]);
 
   useEffect(() => {
-    if (selectedCategory) {
-      fetchServicesForCategory(selectedCategory);
+    console.log('🔍 selectedCategory changed to:', selectedCategory);
+    if (selectedCategory && dataLoaded) {
+      console.log('🔍 Scheduling services fetch for category:', selectedCategory);
+      // Delay the services fetch to make it truly background
+      setTimeout(() => {
+        console.log('🔍 Timeout: Calling fetchServicesForCategory...');
+        fetchServicesForCategory(selectedCategory);
+      }, 1500);
+    } else {
+      console.log('🔍 Skipping services fetch - data not loaded yet or no category');
     }
-  }, [selectedCategory]);
+  }, [selectedCategory, dataLoaded]);
 
 
-  const fetchBusinessCategories = async () => {
+  const fetchBusinessCategories = async (forceRefresh = false) => {
+    if (!selectedProfile) return;
+
     try {
       setLoading(true);
       setError(null);
+      console.log('🔍 fetchBusinessCategories called for profile:', selectedProfile?.name);
       
-      // First try to get categories from the selected profile's location data
-      if (selectedProfile) {
-        const accountId = selectedProfile.accountId;
-        const locationId = selectedProfile.name.split('/').pop();
+      const accountId = selectedProfile.accountId;
+      const locationId = selectedProfile.name.split('/').pop();
+
+      // Get current categories for comparison
+      const currentCategories = businessCategories;
+
+      // Fetch fresh location data in background to get updated categories
+      console.log(`🔄 Fetching fresh location data for categories in background`);
+      try {
+        const locationResponse = await axios.get(`http://localhost:3001/api/gmb/accounts/${accountId}/locations`);
         
-        try {
-          const locationResponse = await axios.get(
-            `http://localhost:3001/api/gmb/accounts/${accountId}/locations`
-          );
+        if (locationResponse.data.success && locationResponse.data.locations.length > 0) {
+          const freshLocation = locationResponse.data.locations[0];
           
-          if (locationResponse.data.success && locationResponse.data.locations.length > 0) {
-            const location = locationResponse.data.locations[0];
-            if (location.categories) {
-              const categories = [];
-              
-              // Add primary category
-              if (location.categories.primaryCategory) {
-                categories.push({
-                  id: location.categories.primaryCategory.categoryId || location.categories.primaryCategory.id,
-                  name: location.categories.primaryCategory.displayName || location.categories.primaryCategory.name,
-                  displayName: location.categories.primaryCategory.displayName || location.categories.primaryCategory.name
+          if (freshLocation.categories) {
+            const freshCategories = [];
+            
+            // Add primary category
+            if (freshLocation.categories.primaryCategory) {
+              freshCategories.push({
+                id: freshLocation.categories.primaryCategory.categoryId || freshLocation.categories.primaryCategory.id,
+                name: freshLocation.categories.primaryCategory.displayName || freshLocation.categories.primaryCategory.name,
+                displayName: freshLocation.categories.primaryCategory.displayName || freshLocation.categories.primaryCategory.name
+              });
+            }
+            
+            // Add additional categories
+            if (freshLocation.categories.additionalCategories && Array.isArray(freshLocation.categories.additionalCategories)) {
+              freshLocation.categories.additionalCategories.forEach(cat => {
+                freshCategories.push({
+                  id: cat.categoryId || cat.id,
+                  name: cat.displayName || cat.name,
+                  displayName: cat.displayName || cat.name
                 });
-              }
-              
-              // Add additional categories
-              if (location.categories.additionalCategories && Array.isArray(location.categories.additionalCategories)) {
-                location.categories.additionalCategories.forEach(cat => {
-                  categories.push({
-                    id: cat.categoryId || cat.id,
-                    name: cat.displayName || cat.name,
-                    displayName: cat.displayName || cat.name
-                  });
-                });
-              }
-              
-              if (categories.length > 0) {
-                setBusinessCategories(categories);
-                return;
-              }
+              });
+            }
+            
+            // Compare fresh data with current data and update only if changes are detected
+            const hasChanges = JSON.stringify(freshCategories) !== JSON.stringify(currentCategories);
+            if (hasChanges) {
+              console.log(`🔄 Fresh categories data changed, updating UI`);
+              setBusinessCategories(freshCategories);
+              // Automatically select the primary category as default
+              const primaryCategory = freshCategories[0];
+              setSelectedCategory(primaryCategory.id);
+              console.log(`📋 Updated to fresh primary category: ${primaryCategory.displayName} (ID: ${primaryCategory.id})`);
+            } else {
+              console.log(`📄 No changes detected in fresh categories`);
             }
           }
-        } catch (profileError) {
-          console.log('Could not get categories from profile, using fallback');
         }
+      } catch (freshError) {
+        console.error('Error fetching fresh location data:', freshError);
       }
-      
-      // No categories available
-      setBusinessCategories([]);
     } catch (error) {
       console.error('Error fetching business categories:', error);
-      // No categories available
-      setBusinessCategories([]);
+      // No categories available, set default primary category
+      console.log('🔍 Error occurred, setting default category');
+      const defaultCategory = {
+        id: 'gcid:house_cleaning_service',
+        name: 'House cleaning service',
+        displayName: 'House cleaning service'
+      };
+      setBusinessCategories([defaultCategory]);
+      setSelectedCategory(defaultCategory.id);
+      console.log(`📋 Using default primary category after error: ${defaultCategory.displayName} (ID: ${defaultCategory.id})`);
     } finally {
       setLoading(false);
     }
   };
 
   const fetchServicesForCategory = async (categoryId) => {
+    console.log('🔍 fetchServicesForCategory called for:', categoryId);
+    
+    // STEP 1: Try to get cached services first
+    const cacheKey = `services_${categoryId}`;
+    const cachedServices = servicesCacheService.getCachedData(cacheKey);
+    
+    if (cachedServices) {
+      console.log('📦 Using cached services for category:', categoryId);
+      setServices(cachedServices);
+      return; // Exit early - no need to fetch from API
+    }
+    
+    console.log('🔍 No cached services found, setting fallback and fetching from API');
+    
+    // STEP 2: Set fallback services immediately
+    const fallbackServices = [
+      { id: 'deep_cleaning', name: 'Deep Cleaning', description: 'Comprehensive deep cleaning service', type: 'predefined', serviceTypeId: '' },
+      { id: 'regular_cleaning', name: 'Regular Cleaning', description: 'Standard house cleaning service', type: 'predefined', serviceTypeId: '' },
+      { id: 'move_in_out', name: 'Move-in/Move-out Cleaning', description: 'Cleaning for moving in or out', type: 'predefined', serviceTypeId: '' },
+      { id: 'post_construction', name: 'Post-Construction Cleaning', description: 'Cleaning after construction work', type: 'predefined', serviceTypeId: '' },
+      { id: 'office_cleaning', name: 'Office Cleaning', description: 'Commercial office cleaning', type: 'predefined', serviceTypeId: '' },
+      { id: 'upholstery_cleaning', name: 'Upholstery Cleaning', description: 'Furniture and upholstery cleaning', type: 'predefined', serviceTypeId: '' },
+      { id: 'mattress_cleaning', name: 'Mattress Cleaning', description: 'Specialized mattress cleaning', type: 'predefined', serviceTypeId: '' },
+      { id: 'window_cleaning', name: 'Window Cleaning', description: 'Interior and exterior window cleaning', type: 'predefined', serviceTypeId: '' }
+    ];
+    setServices(fallbackServices);
+    
+    // STEP 3: Fetch fresh services in background
+    console.log('🔄 Fetching fresh services for category:', categoryId);
+    
     // Convert category name to proper Google category ID format
     let googleCategoryId = categoryId;
     console.log('Original categoryId:', categoryId);
@@ -202,9 +373,7 @@ const Services = () => {
     console.log('Using Google category ID:', googleCategoryId);
     
     try {
-      setLoading(true);
-      setError(null);
-      
+      // No loading state - this is background fetch
       console.log('🔍 FETCHING SERVICES for category:', categoryId);
       console.log('Google category ID:', googleCategoryId);
       
@@ -268,6 +437,11 @@ const Services = () => {
                 };
               }
             });
+            
+            // Cache the services
+            servicesCacheService.setCachedData(cacheKey, services);
+            console.log('💾 Cached services for category:', categoryId);
+            
             setServices(services);
           } else {
             // Use fallback services if API returns empty service objects
@@ -282,6 +456,11 @@ const Services = () => {
               { id: 'mattress_cleaning', name: 'Mattress Cleaning', description: 'Specialized mattress cleaning', type: 'predefined', serviceTypeId: '' },
               { id: 'window_cleaning', name: 'Window Cleaning', description: 'Interior and exterior window cleaning', type: 'predefined', serviceTypeId: '' }
             ];
+            
+            // Cache the fallback services
+            servicesCacheService.setCachedData(cacheKey, fallbackServices);
+            console.log('💾 Cached fallback services for category:', categoryId);
+            
             setServices(fallbackServices);
           }
         } else {
@@ -334,8 +513,6 @@ const Services = () => {
       } else {
         setServices([]);
       }
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -348,86 +525,83 @@ const Services = () => {
 
       const locationId = selectedProfile.name.split('/').pop();
 
-      // First try to get cached data
-      let response;
+      // STEP 1: Check frontend cache first
+      const cachedServices = existingServicesCacheService.getCachedData(locationId);
+      if (cachedServices) {
+        console.log(`📦 Using frontend cached existing services for ${locationId}: ${cachedServices.length} items`);
+        const formattedServices = formatExistingServices(cachedServices);
+        setExistingServices(formattedServices);
+        setIsLoading(false);
+        
+        // Still fetch fresh data in background for next time
+        setTimeout(async () => {
+          try {
+            console.log(`🔄 Background: Fetching fresh existing services for ${locationId}`);
+            const response = await axios.get(`http://localhost:3001/api/gmb/locations/${locationId}/services`);
+            if (response.data.success) {
+              const freshServiceItems = response.data.serviceItems || [];
+              existingServicesCacheService.setCachedData(locationId, freshServiceItems);
+              
+              // Update UI if data changed
+              const hasChanges = JSON.stringify(freshServiceItems) !== JSON.stringify(cachedServices);
+              if (hasChanges) {
+                console.log(`🔄 Background: Fresh existing services data changed, updating UI`);
+                const formattedFreshServices = formatExistingServices(freshServiceItems);
+                setExistingServices(formattedFreshServices);
+              } else {
+                console.log(`📄 Background: No changes detected in fresh existing services`);
+              }
+            }
+          } catch (backgroundError) {
+            console.error('Background error fetching fresh existing services:', backgroundError);
+          }
+        }, 1000);
+        return;
+      }
+
+      // STEP 2: No frontend cache, try backend cache first
+      let currentServices = [];
       try {
         const cachedResponse = await axios.get(`http://localhost:3001/api/gmb/locations/${locationId}/services?cached_only=true`);
         if (cachedResponse.data.serviceItems && cachedResponse.data.serviceItems.length > 0) {
-          console.log('📦 Using cached services data');
-          response = cachedResponse;
-        } else {
-          console.log('💾 No cached services available, fetching from API');
-          response = await axios.get(`http://localhost:3001/api/gmb/locations/${locationId}/services`);
+          currentServices = cachedResponse.data.serviceItems || [];
+          console.log(`📦 Displaying ${currentServices.length} backend cached services for ${locationId}`);
+          
+          // Cache in frontend for next time
+          existingServicesCacheService.setCachedData(locationId, currentServices);
         }
       } catch (cacheError) {
-        console.log('💾 Cache error, fetching from API:', cacheError.message);
+        console.log('No backend cached services available');
+      }
+
+      // STEP 3: Fetch fresh data
+      console.log(`🔄 Fetching fresh services for ${locationId}`);
+      let response;
+      try {
         response = await axios.get(`http://localhost:3001/api/gmb/locations/${locationId}/services`);
+      } catch (freshError) {
+        console.error('Error fetching fresh services:', freshError);
+        response = { data: { success: false } };
       }
       
       if (response.data.success) {
-        const serviceItems = response.data.serviceItems || [];
+        const freshServiceItems = response.data.serviceItems || [];
         
-        const formattedServices = serviceItems.map((item, index) => {
+        // Compare fresh data with current data and update only if changes are detected
+        const hasChanges = JSON.stringify(freshServiceItems) !== JSON.stringify(currentServices);
+        let serviceItems;
+        if (hasChanges) {
+          console.log(`🔄 Fresh services data changed, updating UI for ${locationId}`);
+          serviceItems = freshServiceItems;
           
-          if (item.structuredServiceItem) {
-            // Convert structured service to display format
-            return {
-              id: item.structuredServiceItem.serviceTypeId || `service_${Date.now()}_${Math.random()}`,
-              name: item.structuredServiceItem.serviceTypeId ? 
-                item.structuredServiceItem.serviceTypeId.split(':').pop().replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()) : 
-                'Unnamed Service',
-              description: item.structuredServiceItem.description || '',
-              type: 'predefined', // Show as predefined in UI
-              serviceTypeId: item.structuredServiceItem.serviceTypeId || '',
-              isOffered: item.isOffered !== false
-            };
-          } else if (item.freeFormServiceItem) {
-            // Determine if this is a predefined service converted to free-form or truly custom
-            const isPredefined = item.freeFormServiceItem.category === 'gcid:house_cleaning_service' && 
-                                 item.freeFormServiceItem.label?.displayName && 
-                                 !item.freeFormServiceItem.label?.displayName.includes('Custom');
-            
-            // Check for description in multiple possible locations
-            let description = '';
-            if (item.freeFormServiceItem.label?.description) {
-              description = item.freeFormServiceItem.label.description;
-            } else if (item.freeFormServiceItem.description) {
-              description = item.freeFormServiceItem.description;
-            } else if (item.description) {
-              description = item.description;
-            }
-            
-            // Extract price information
-            let price = null;
-            if (item.price) {
-              const units = item.price.units || '0';
-              const nanos = item.price.nanos || 0;
-              const currencyCode = item.price.currencyCode || 'USD';
-              
-              // Convert to decimal format
-              const totalAmount = parseFloat(units) + (nanos / 1000000000);
-              price = {
-                amount: totalAmount,
-                currency: currencyCode,
-                display: `${currencyCode} ${totalAmount.toFixed(2)}`
-              };
-            }
-            
-            return {
-              id: `service_${Date.now()}_${Math.random()}`,
-              name: item.freeFormServiceItem.label?.displayName || 'Custom Service',
-              description: description,
-              price: price,
-              type: isPredefined ? 'predefined' : 'custom', // Show as predefined or custom based on content
-              categoryId: item.freeFormServiceItem.category || item.freeFormServiceItem.categoryId || '',
-              isOffered: item.isOffered !== false,
-              originalItem: item // Keep reference to original data for updates
-            };
-          }
-          return null;
-        }).filter(Boolean);
+          // Cache the fresh data in frontend
+          existingServicesCacheService.setCachedData(locationId, freshServiceItems);
+        } else {
+          console.log(`📄 No changes detected in fresh services for ${locationId}`);
+          serviceItems = currentServices;
+        }
         
-        
+        const formattedServices = formatExistingServices(serviceItems);
         setExistingServices(formattedServices);
       }
     } catch (error) {
@@ -679,6 +853,67 @@ const Services = () => {
       .split('_')
       .map(word => word.charAt(0).toUpperCase() + word.slice(1))
       .join(' ');
+  };
+
+  const formatExistingServices = (serviceItems) => {
+    return serviceItems.map((item, index) => {
+      if (item.structuredServiceItem) {
+        // Convert structured service to display format
+        return {
+          id: item.structuredServiceItem.serviceTypeId || `service_${Date.now()}_${Math.random()}`,
+          name: item.structuredServiceItem.serviceTypeId ? 
+            item.structuredServiceItem.serviceTypeId.split(':').pop().replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()) : 
+            'Unnamed Service',
+          description: item.structuredServiceItem.description || '',
+          type: 'predefined', // Show as predefined in UI
+          serviceTypeId: item.structuredServiceItem.serviceTypeId || '',
+          isOffered: item.isOffered !== false
+        };
+      } else if (item.freeFormServiceItem) {
+        // Determine if this is a predefined service converted to free-form or truly custom
+        const isPredefined = item.freeFormServiceItem.category === 'gcid:house_cleaning_service' && 
+                             item.freeFormServiceItem.label?.displayName && 
+                             !item.freeFormServiceItem.label?.displayName.includes('Custom');
+        
+        // Check for description in multiple possible locations
+        let description = '';
+        if (item.freeFormServiceItem.label?.description) {
+          description = item.freeFormServiceItem.label.description;
+        } else if (item.freeFormServiceItem.description) {
+          description = item.freeFormServiceItem.description;
+        } else if (item.description) {
+          description = item.description;
+        }
+        
+        // Extract price information
+        let price = null;
+        if (item.price) {
+          const units = item.price.units || '0';
+          const nanos = item.price.nanos || 0;
+          const currencyCode = item.price.currencyCode || 'USD';
+          
+          // Convert to decimal format
+          const totalAmount = parseFloat(units) + (nanos / 1000000000);
+          price = {
+            amount: totalAmount,
+            currency: currencyCode,
+            display: `${currencyCode} ${totalAmount.toFixed(2)}`
+          };
+        }
+        
+        return {
+          id: `service_${Date.now()}_${Math.random()}`,
+          name: item.freeFormServiceItem.label?.displayName || 'Custom Service',
+          description: description,
+          price: price,
+          type: isPredefined ? 'predefined' : 'custom', // Show as predefined or custom based on content
+          categoryId: item.freeFormServiceItem.category || item.freeFormServiceItem.categoryId || '',
+          isOffered: item.isOffered !== false,
+          originalItem: item // Keep reference to original data for updates
+        };
+      }
+      return null;
+    }).filter(Boolean);
   };
 
   const handleAddService = () => {
@@ -1011,6 +1246,7 @@ const Services = () => {
             setSelectedProfile(profile);
             setSelectedCategory('');
             setServices([]);
+            // fetchBusinessCategories will be called by useEffect and will auto-select primary category
           }}
           className="block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
         >
@@ -1128,12 +1364,21 @@ const Services = () => {
           {/* Services Management Header */}
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-lg font-medium text-gray-900">Services Management</h3>
-            <button
-              onClick={() => setShowAddServiceModal(true)}
-              className="inline-flex items-center px-3 py-2 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500"
-            >
-              Add Service
-            </button>
+            <div className="flex space-x-2">
+              <button
+                onClick={() => fetchExistingServices(true)}
+                className="inline-flex items-center px-3 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500"
+              >
+                <RefreshCw className="h-4 w-4 mr-2" />
+                Refresh Services
+              </button>
+              <button
+                onClick={() => setShowAddServiceModal(true)}
+                className="inline-flex items-center px-3 py-2 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500"
+              >
+                Add Service
+              </button>
+            </div>
           </div>
 
           {/* Existing Services */}

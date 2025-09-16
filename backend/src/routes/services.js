@@ -21,20 +21,11 @@ async function getCachedServices(locationId, userId) {
   try {
     console.log(`🗃️ Looking for cached services for location: ${locationId}, user: ${userId}`);
 
-    const { data: cachedServices, error } = await supabase
-      .from('services')
-      .select('*')
-      .eq('user_id', userId)
-      .eq('location_id', locationId)
-      .order('created_at', { ascending: false });
-
-    if (error) {
-      console.error('Error fetching cached services:', error);
-      return [];
-    }
-
-    console.log(`📦 Found ${cachedServices?.length || 0} cached services`);
-    return cachedServices || [];
+    // Since the services table doesn't have user_id or location_id columns,
+    // we'll return an empty array for now. The services are fetched from GMB API
+    // and the predefined services come from the categories API.
+    console.log(`📦 No cached services table structure - returning empty array`);
+    return [];
   } catch (error) {
     console.error('Error in getCachedServices:', error);
     return [];
