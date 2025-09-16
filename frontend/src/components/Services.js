@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
+import axios from '../utils/axiosConfig';
 import { useAuth } from '../contexts/AuthContext';
+import businessProfileService from '../services/businessProfileService';
 import {
   Building2,
   Search,
@@ -74,7 +75,9 @@ const Services = () => {
       // Check if business profiles are connected
       const businessConnected = localStorage.getItem('gmb_business_connected') === 'true';
       if (businessConnected) {
-        fetchProfiles();
+        // Note: Business profiles are now managed by BusinessProfiles component
+        // Services component will get profiles from context or props if needed
+        setLoading(false);
       } else {
         // User is authenticated but business profiles not connected
         setProfiles([]);
@@ -108,68 +111,6 @@ const Services = () => {
     }
   }, [selectedCategory]);
 
-  const fetchProfiles = async () => {
-    try {
-      setLoading(true);
-      const response = await axios.get('http://localhost:3001/api/gmb/accounts');
-      
-      if (response.data.accounts) {
-        const profilesWithLocations = await Promise.all(
-          response.data.accounts.map(async (account) => {
-            try {
-              const accountId = account.name.split('/').pop();
-              const locationsResponse = await axios.get(
-                `http://localhost:3001/api/gmb/accounts/${accountId}/locations`
-              );
-              
-              const locationsWithAccount = (locationsResponse.data.locations || []).map(location => ({
-                ...location,
-                accountId: accountId,
-                fullPath: `accounts/${accountId}/locations/${location.name.split('/').pop()}`
-              }));
-              
-              return {
-                ...account,
-                locations: locationsWithAccount
-              };
-            } catch (error) {
-              return { ...account, locations: [] };
-            }
-          })
-        );
-        setProfiles(profilesWithLocations);
-      }
-    } catch (error) {
-      console.error('Error fetching profiles:', error);
-      
-      // Handle business authentication errors
-      if (error.response?.data?.needsBusinessAuth) {
-        // Business authentication required/expired
-        console.log('Business authentication required in Services');
-        setError('Business authentication required. Please go to Business Profiles and reconnect your Google My Business account.');
-        setProfiles([]); // Clear any existing profiles
-      } else if (error.response?.status === 403) {
-        // Permission/scope error
-        console.log('Insufficient permissions for business access in Services');
-        setError('Insufficient permissions. Please go to Business Profiles and reconnect your Google My Business account with all required permissions.');
-        setProfiles([]);
-      } else if (error.response?.status === 401) {
-        // Authentication expired
-        console.log('Authentication expired in Services');
-        setError('Authentication expired. Please sign in again.');
-      } else if (error.response?.status === 429) {
-        // Rate limit error
-        console.log('Rate limit exceeded in Services');
-        setError('Too many requests. Please wait a moment and try again.');
-      } else {
-        // Other errors
-        console.log('General error fetching profiles in Services:', error.message);
-        setError('Failed to load business profiles. Please try again.');
-      }
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const fetchBusinessCategories = async () => {
     try {
@@ -400,13 +341,28 @@ const Services = () => {
 
   const fetchExistingServices = async () => {
     if (!selectedProfile) return;
-    
+
     try {
       setIsLoading(true);
       await rateLimitDelay(); // Add rate limiting
-      
+
       const locationId = selectedProfile.name.split('/').pop();
-      const response = await axios.get(`http://localhost:3001/api/gmb/locations/${locationId}/services`);
+
+      // First try to get cached data
+      let response;
+      try {
+        const cachedResponse = await axios.get(`http://localhost:3001/api/gmb/locations/${locationId}/services?cached_only=true`);
+        if (cachedResponse.data.serviceItems && cachedResponse.data.serviceItems.length > 0) {
+          console.log('📦 Using cached services data');
+          response = cachedResponse;
+        } else {
+          console.log('💾 No cached services available, fetching from API');
+          response = await axios.get(`http://localhost:3001/api/gmb/locations/${locationId}/services`);
+        }
+      } catch (cacheError) {
+        console.log('💾 Cache error, fetching from API:', cacheError.message);
+        response = await axios.get(`http://localhost:3001/api/gmb/locations/${locationId}/services`);
+      }
       
       if (response.data.success) {
         const serviceItems = response.data.serviceItems || [];
@@ -1037,14 +993,6 @@ const Services = () => {
             Manage and filter services based on your business category
           </p>
         </div>
-        <button
-          onClick={fetchProfiles}
-          disabled={loading}
-          className="inline-flex items-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 disabled:opacity-50"
-        >
-          <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
-          Refresh
-        </button>
       </div>
 
       {/* Profile Selection */}

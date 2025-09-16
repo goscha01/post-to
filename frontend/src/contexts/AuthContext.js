@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import axios from 'axios';
+import axios from '../utils/axiosConfig';
+import userProfileService from '../services/userProfileService';
 
 const AuthContext = createContext();
 
@@ -80,7 +81,12 @@ export const AuthProvider = ({ children }) => {
             name: payload.name || payload.email?.split('@')[0] || 'User',
             picture_url: payload.picture_url
           };
-          setUser(userData);
+
+          // Process and cache user profile picture
+          // Small delay to ensure token is properly stored
+          await new Promise(resolve => setTimeout(resolve, 100));
+          const userWithCachedImage = await userProfileService.processUserProfilePicture(userData);
+          setUser(userWithCachedImage);
         } catch (jwtError) {
           console.error('Error parsing JWT token:', jwtError);
           // Clear invalid token and logout
@@ -128,7 +134,7 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-  const handleAuthCallback = (newToken, googleAccessToken, googleRefreshToken, isBusinessConnection = false) => {
+  const handleAuthCallback = async (newToken, googleAccessToken, googleRefreshToken, isBusinessConnection = false) => {
     
     setToken(newToken);
     localStorage.setItem('gmb_token', newToken);
@@ -162,13 +168,19 @@ export const AuthProvider = ({ children }) => {
       }
       
       const payload = JSON.parse(atob(tokenParts[1]));
-      setUser({
+      const userData = {
         id: payload.userId,
         email: payload.email,
         googleId: payload.googleId,
         name: payload.name || payload.email?.split('@')[0] || 'User',
         picture_url: payload.picture_url
-      });
+      };
+
+      // Process and cache user profile picture
+      // Small delay to ensure token is properly stored
+      await new Promise(resolve => setTimeout(resolve, 100));
+      const userWithCachedImage = await userProfileService.processUserProfilePicture(userData);
+      setUser(userWithCachedImage);
     } catch (jwtError) {
       console.error('Error parsing JWT token:', jwtError);
       // Clear invalid token
@@ -182,6 +194,11 @@ export const AuthProvider = ({ children }) => {
   };
 
   const logout = () => {
+    // Clear user profile picture cache before logging out
+    if (user?.id) {
+      userProfileService.clearUserProfileCache(user.id);
+    }
+
     setUser(null);
     setToken(null);
     setIsAuthenticated(false);

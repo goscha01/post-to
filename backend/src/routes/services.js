@@ -16,6 +16,31 @@ const supabase = createClient(
 router.use(authMiddleware); // First authenticate the user
 router.use(requireBusinessAuth); // Then check business authentication
 
+// Helper function to get cached services for a location
+async function getCachedServices(locationId, userId) {
+  try {
+    console.log(`🗃️ Looking for cached services for location: ${locationId}, user: ${userId}`);
+
+    const { data: cachedServices, error } = await supabase
+      .from('services')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('location_id', locationId)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('Error fetching cached services:', error);
+      return [];
+    }
+
+    console.log(`📦 Found ${cachedServices?.length || 0} cached services`);
+    return cachedServices || [];
+  } catch (error) {
+    console.error('Error in getCachedServices:', error);
+    return [];
+  }
+}
+
 // Helper function to save service to database
 const saveServiceToDatabase = async (userId, serviceData) => {
   try {
@@ -266,20 +291,33 @@ router.get('/categories/batchGet', async (req, res) => {
 router.get('/locations/:locationId/services', async (req, res) => {
   try {
     const { locationId } = req.params;
-    
+    const userId = req.user?.userId;
+    const { cached_only } = req.query;
+
+    // If cached_only=true, return only cached data
+    if (cached_only === 'true') {
+      const cachedServices = await getCachedServices(locationId, userId);
+      return res.json({
+        success: true,
+        serviceItems: cachedServices,
+        cached: true,
+        message: `Found ${cachedServices.length} cached services`
+      });
+    }
+
     const gmbClient = google.mybusinessbusinessinformation({
       version: 'v1',
       auth: req.businessOAuth2Client
     });
-    
+
     const response = await gmbClient.locations.get({
       name: `locations/${locationId}`,
       readMask: 'serviceItems'
     });
-    
+
     // Save services to database
     const savedServices = await saveExistingServicesToDatabase(req.user.userId, response.data.serviceItems || [], 'google');
-    
+
     res.json({
       success: true,
       serviceItems: response.data.serviceItems || [],

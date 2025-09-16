@@ -14,7 +14,7 @@ const supabase = createClient(
  */
 async function downloadImageFromUrl(imageUrl) {
   try {
-    console.log(`Downloading image from URL: ${imageUrl}`);
+    // Downloading image from URL
     
     const response = await axios.get(imageUrl, {
       responseType: 'arraybuffer',
@@ -110,11 +110,11 @@ async function storeImageInCache(imageData) {
 async function getOrDownloadImage(imageUrl) {
   try {
     // First, check if image is already cached
-    console.log(`Checking cache for image: ${imageUrl}`);
+    // Checking cache for image
     let cachedImage = await getCachedImage(imageUrl);
     
     if (cachedImage) {
-      console.log(`Found cached image: ${cachedImage.filename}`);
+      // Using cached image
       return {
         filename: cachedImage.filename,
         size: cachedImage.size,

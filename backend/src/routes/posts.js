@@ -14,10 +14,10 @@ const fs = require('fs');
 const path = require('path');
 const router = express.Router();
 
-// Initialize Supabase client
+// Initialize Supabase client with service role for server-side operations
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_ANON_KEY
+  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY
 );
 
 // Configure multer for file uploads
@@ -123,7 +123,6 @@ router.post('/media', invalidateCacheMiddleware({ pattern: 'user:*:media*' }), a
     });
     
   } catch (error) {
-    console.error('Error processing media:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to process media',
@@ -162,9 +161,7 @@ const mapTopicTypeToPostType = (topicType) => {
 // Helper function to save post to database
 const savePostToDatabase = async (userId, postData) => {
   try {
-    console.log('=== SAVE POST TO DATABASE DEBUG ===');
-    console.log('User ID:', userId);
-    console.log('Post data:', postData);
+    // Saving post to database
     
     // Convert platforms array to single platform for this schema
     const platform = Array.isArray(postData.platforms) ? postData.platforms[0] : postData.platforms || 'unknown';
@@ -194,7 +191,9 @@ const savePostToDatabase = async (userId, postData) => {
 
     const insertData = {
       user_id: userId,
-      account_id: postData.accountId || null,
+      account_id: postData.accountId || null, // Keep for existing foreign key relationship
+      gmb_account_id: postData.gmbAccountId || null, // New column for GMB account ID (string)
+      location_id: postData.locationId || null,
       platform: platform,
       post_id: postData.postId || null,
       content: postData.content,
@@ -204,7 +203,15 @@ const savePostToDatabase = async (userId, postData) => {
       status: 'published'
     };
 
-    console.log('Insert data:', insertData);
+    // Inserting post data
+
+    console.log(`🔍 Inserting post data:`, {
+      post_id: insertData.post_id,
+      user_id: insertData.user_id,
+      location_id: insertData.location_id,
+      gmb_account_id: insertData.gmb_account_id,
+      platform: insertData.platform
+    });
 
     const { data, error } = await supabase
       .from('social_media_posts')
@@ -213,16 +220,13 @@ const savePostToDatabase = async (userId, postData) => {
       .single();
 
     if (error) {
-      console.error('Error saving post to database:', error);
-      console.error('Error details:', JSON.stringify(error, null, 2));
+      console.log(`❌ Insert error for post ${insertData.post_id}:`, error);
       return null;
     }
 
-    console.log('Post saved to database successfully:', data.id);
+    // Post saved successfully
     return data;
   } catch (error) {
-    console.error('Error in savePostToDatabase:', error);
-    console.error('Error stack:', error.stack);
     return null;
   }
 };
@@ -230,8 +234,8 @@ const savePostToDatabase = async (userId, postData) => {
 // Helper function to save existing posts from API to database
 const saveExistingPostsToDatabase = async (userId, posts, platform = 'google') => {
   try {
-    console.log(`Saving ${posts.length} existing posts to database...`);
-    
+    console.log(`🔍 saveExistingPostsToDatabase called with ${posts.length} posts for user ${userId}`);
+
     // First, get or create a social media account for this user and platform
     const { data: account, error: accountError } = await supabase
       .from('social_media_accounts')
@@ -240,7 +244,7 @@ const saveExistingPostsToDatabase = async (userId, posts, platform = 'google') =
       .eq('platform', platform)
       .single();
 
-    let accountId;
+    let socialMediaAccountId;
     if (accountError || !account) {
       // Create a new account if it doesn't exist
       const { data: newAccount, error: createAccountError } = await supabase
@@ -256,17 +260,24 @@ const saveExistingPostsToDatabase = async (userId, posts, platform = 'google') =
         .single();
 
       if (createAccountError) {
-        console.error('Error creating account:', createAccountError);
+        console.log(`❌ Failed to create social media account:`, createAccountError);
         return [];
       }
-      accountId = newAccount.id;
+      socialMediaAccountId = newAccount.id;
     } else {
-      accountId = account.id;
+      socialMediaAccountId = account.id;
     }
-    
+
     const savedPosts = [];
-    
+
     for (const post of posts) {
+      console.log(`🔍 Processing post:`, {
+        id: post.id,
+        content: post.content?.substring(0, 50) + '...',
+        gmbAccountId: post.accountId,
+        locationId: post.locationId
+      });
+
       // Check if post already exists in database
       const { data: existingPost } = await supabase
         .from('social_media_posts')
@@ -277,7 +288,7 @@ const saveExistingPostsToDatabase = async (userId, posts, platform = 'google') =
         .single();
 
       if (existingPost) {
-        console.log(`Post ${post.id} already exists in database, skipping...`);
+        console.log(`⏭️ Post ${post.id} already exists, skipping`);
         continue;
       }
 
@@ -288,45 +299,110 @@ const saveExistingPostsToDatabase = async (userId, posts, platform = 'google') =
         platforms: [platform],
         postId: post.id,
         posted_at: post.createdAt || new Date().toISOString(),
-        accountId: accountId
+        accountId: socialMediaAccountId, // UUID for foreign key relationship
+        gmbAccountId: post.accountId, // GMB account ID (string)
+        locationId: post.locationId // GMB location ID
       };
+
+      console.log(`💾 Saving post ${post.id} with locationId: ${post.locationId}, gmbAccountId: ${post.accountId}`);
 
       // Save to database
       const savedPost = await savePostToDatabase(userId, postData);
       if (savedPost) {
+        console.log(`✅ Successfully saved post ${post.id}`);
         savedPosts.push(savedPost);
+      } else {
+        console.log(`❌ Failed to save post ${post.id}`);
       }
     }
 
-    console.log(`Successfully saved ${savedPosts.length} new posts to database`);
+    console.log(`📊 Final result: ${savedPosts.length} out of ${posts.length} posts saved successfully`);
     return savedPosts;
   } catch (error) {
-    console.error('Error saving existing posts to database:', error);
+    console.log(`❌ Error in saveExistingPostsToDatabase:`, error);
     return [];
   }
 };
 
+// Get cached posts from database
+async function getCachedPosts(locationId, userId, accountId) {
+  try {
+    console.log(`🗃️ Looking for cached posts - locationId: ${locationId}, userId: ${userId}, accountId: ${accountId}`);
+
+    const { data: cachedPosts, error } = await supabase
+      .from('social_media_posts')
+      .select('*')
+      .eq('location_id', locationId)
+      .eq('gmb_account_id', accountId)
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.log('❌ Cache query error:', error);
+      return [];
+    }
+
+    console.log(`📦 Found ${cachedPosts.length} cached posts`);
+    if (cachedPosts.length === 0) {
+      // Let's check what posts actually exist for this user
+      const { data: allUserPosts } = await supabase
+        .from('social_media_posts')
+        .select('post_id, location_id, gmb_account_id, platform')
+        .eq('user_id', userId)
+        .limit(5);
+
+      console.log(`🔍 Debug: Found ${allUserPosts?.length || 0} total posts for user, first 5:`, allUserPosts);
+    }
+
+    return cachedPosts.map(post => ({
+      id: post.post_id || post.id,
+      content: post.content,
+      postType: post.post_type || 'UPDATE',
+      platform: post.platform,
+      createdAt: post.created_at,
+      status: 'published',
+      media: post.media_data ? JSON.parse(post.media_data) : [],
+      callToAction: post.call_to_action ? JSON.parse(post.call_to_action) : null,
+      cached: true
+    }));
+  } catch (error) {
+    console.log('❌ Cache function error:', error);
+    return [];
+  }
+}
+
 // Get posts for a specific location (GET /location/:locationId endpoint)
-router.get('/location/:locationId', cacheMiddleware({ ttl: 180 }), async (req, res) => {
+router.get('/location/:locationId', async (req, res) => {
   try {
     const { locationId } = req.params;
-    const accessToken = req.businessToken; // Get access token from middleware
+    const { cached_only } = req.query; // Add query parameter for cache-only requests
+    const accessToken = req.businessToken;
+    const userId = req.user?.userId;
+
+    // If cached_only=true, return only cached data
+    if (cached_only === 'true') {
+      const accountId = req.headers['x-gmb-account-id'] || '109194636448236279020';
+      const cachedPosts = await getCachedPosts(locationId, userId, accountId);
+      return res.json({
+        posts: cachedPosts,
+        cached: true,
+        message: 'Cached data only'
+      });
+    }
     
-    console.log('=== FETCHING POSTS DEBUG ===');
-    console.log('Location ID:', locationId);
-    console.log('Access token exists:', !!accessToken);
-    console.log('Access token length:', accessToken ? accessToken.length : 0);
+    // Fetching posts for location
     
     // Try to fetch real posts from Google My Business first
     try {
       // Extract account ID from the location path (assuming format: accounts/{accountId}/locations/{locationId})
       const accountId = req.headers['x-gmb-account-id'] || '109194636448236279020'; // fallback
       
-      console.log('Attempting to fetch real GMB posts...');
-      console.log('Account ID:', accountId);
+      // Fetching GMB posts
       
       // Try direct API call first
       try {
+        console.log(`🔍 Fetching GMB posts from: https://mybusiness.googleapis.com/v4/accounts/${accountId}/locations/${locationId}/localPosts`);
+
         const gmbResponse = await axios.get(
           `https://mybusiness.googleapis.com/v4/accounts/${accountId}/locations/${locationId}/localPosts`,
           {
@@ -336,21 +412,15 @@ router.get('/location/:locationId', cacheMiddleware({ ttl: 180 }), async (req, r
             }
           }
         );
-        
+
+        console.log(`📊 GMB posts response:`, {
+          status: gmbResponse.status,
+          postsCount: gmbResponse.data.localPosts?.length || 0,
+          data: gmbResponse.data
+        });
+
         if (gmbResponse.data.localPosts && gmbResponse.data.localPosts.length > 0) {
-          console.log('Found real GMB posts:', gmbResponse.data.localPosts.length);
-          console.log('=== COMPLETE GMB RESPONSE DEBUG ===');
-          console.log('Full GMB response:', JSON.stringify(gmbResponse.data, null, 2));
-          console.log('=== FIRST POST DETAILED DEBUG ===');
-          console.log('First post complete object:', JSON.stringify(gmbResponse.data.localPosts[0], null, 2));
-          console.log('First post media array:', gmbResponse.data.localPosts[0].media);
-          console.log('First post media type:', typeof gmbResponse.data.localPosts[0].media);
-          console.log('First post media length:', gmbResponse.data.localPosts[0].media?.length);
-          if (gmbResponse.data.localPosts[0].media && gmbResponse.data.localPosts[0].media.length > 0) {
-            console.log('First media item keys:', Object.keys(gmbResponse.data.localPosts[0].media[0]));
-            console.log('First media item complete:', JSON.stringify(gmbResponse.data.localPosts[0].media[0], null, 2));
-          }
-          console.log('=== END FIRST POST DEBUG ===');
+          // Processing GMB posts
          
           // Convert GMB posts to our format and sort by creation date (newest first)
           const realPosts = await Promise.all(gmbResponse.data.localPosts.map(async (post) => {
@@ -358,27 +428,27 @@ router.get('/location/:locationId', cacheMiddleware({ ttl: 180 }), async (req, r
             let media = [];
             try {
               if (post.media && post.media.length > 0) {
-                console.log('=== MEDIA PROCESSING DEBUG ===');
-                console.log('Post has media:', post.media.length, 'items');
-                console.log('Raw media array:', post.media);
-                console.log('First media item raw:', JSON.stringify(post.media[0], null, 2));
-                console.log('First media item keys:', Object.keys(post.media[0]));
+                
+                
+                
+                
+                
                 
                 // Try to find any URL-like fields
                 const possibleUrlFields = ['sourceUrl', 'url', 'mediaUrl', 'thumbnailUrl', 'thumbnail', 'imageUrl', 'photoUrl', 'media', 'googleUrl'];
-                console.log('Checking for URL fields:', possibleUrlFields);
+                
                 possibleUrlFields.forEach(field => {
                   if (post.media[0][field]) {
-                    console.log(`Found ${field}:`, post.media[0][field]);
+                    
                   }
                 });
                 
                 // Additional debugging - check all fields in the media item
-                console.log('=== ALL MEDIA ITEM FIELDS ===');
+                
                 Object.keys(post.media[0]).forEach(key => {
-                  console.log(`${key}:`, post.media[0][key]);
+                  
                 });
-                console.log('=== END ALL MEDIA ITEM FIELDS ===');
+                
                 
                 // Extract media URLs first
                 const mediaUrls = post.media.map(mediaItem => {
@@ -389,12 +459,12 @@ router.get('/location/:locationId', cacheMiddleware({ ttl: 180 }), async (req, r
                     // If the URL doesn't have parameters, add them
                     if (!sourceUrl.includes('=')) {
                       sourceUrl = `${sourceUrl}=h305-no`;
-                      console.log(`Fixed Google Photos URL: ${sourceUrl}`);
+                      
                     } else {
                       // If it already has parameters, ensure it has the right format
                       if (!sourceUrl.includes('h305-no')) {
                         sourceUrl = `${sourceUrl}=h305-no`;
-                        console.log(`Enhanced Google Photos URL: ${sourceUrl}`);
+                        
                       }
                     }
                   }
@@ -402,12 +472,12 @@ router.get('/location/:locationId', cacheMiddleware({ ttl: 180 }), async (req, r
                   return sourceUrl;
                 }).filter(Boolean);
 
-                console.log('Media URLs to process:', mediaUrls);
+                
 
                 // Process images using caching system
                 if (mediaUrls.length > 0) {
                   try {
-                    console.log('Processing images with caching system...');
+                    
                     const processedImages = await processImages(mediaUrls);
                     
                     media = processedImages.map((imageData, index) => ({
@@ -424,9 +494,8 @@ router.get('/location/:locationId', cacheMiddleware({ ttl: 180 }), async (req, r
                       uploaded_at: imageData.uploaded_at
                     }));
                     
-                    console.log('Processed images:', media.length);
+                    
                   } catch (error) {
-                    console.error('Error processing images:', error);
                     // Fallback to original method if caching fails
                     media = post.media.map(mediaItem => ({
                       id: mediaItem.name?.split('/').pop() || `media-${Date.now()}`,
@@ -440,19 +509,17 @@ router.get('/location/:locationId', cacheMiddleware({ ttl: 180 }), async (req, r
                   media = [];
                 }
                 
-                console.log('Final processed media array:', media);
-                console.log('=== END MEDIA PROCESSING DEBUG ===');
+                
+                
               } else {
-                console.log('Post has no media array');
-                console.log('Post keys:', Object.keys(post));
+                
+                
                 // Check if media might be in a different field
-                if (post.attachments) console.log('Post has attachments:', post.attachments);
-                if (post.photos) console.log('Post has photos:', post.photos);
-                if (post.images) console.log('Post has images:', post.images);
+                // Media could be in attachments, photos, or images fields 
               }
             } catch (mediaError) {
-              console.log('Could not fetch media for post:', mediaError.message);
-              console.log('Media error details:', mediaError);
+              
+              
             }
 
             const processedPost = {
@@ -464,16 +531,18 @@ router.get('/location/:locationId', cacheMiddleware({ ttl: 180 }), async (req, r
               status: 'published',
               media: media,
               callToAction: post.callToAction || null,
+              accountId: accountId, // Add GMB account ID
+              locationId: locationId, // Add location ID
               gmbPost: post
             };
             
-            console.log('=== PROCESSED POST DEBUG ===');
-            console.log('Processed post ID:', processedPost.id);
-            console.log('Processed post media:', processedPost.media);
-            console.log('Processed post callToAction:', processedPost.callToAction);
-            console.log('Processed post has media:', !!processedPost.media);
-            console.log('Processed post has callToAction:', !!processedPost.callToAction);
-            console.log('=== END PROCESSED POST DEBUG ===');
+            
+            
+            
+            
+            
+            
+            
             
             return processedPost;
           }));
@@ -481,11 +550,13 @@ router.get('/location/:locationId', cacheMiddleware({ ttl: 180 }), async (req, r
           // Sort by creation date (newest first)
           realPosts.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
           
-          console.log(`Found ${realPosts.length} real GMB posts for location ${locationId}`);
+          
           
           // Save existing posts to database
+          console.log(`💾 Saving ${realPosts.length} posts to database for user ${req.user.userId}`);
           const savedPosts = await saveExistingPostsToDatabase(req.user.userId, realPosts, 'google');
-          console.log(`Saved ${savedPosts.length} posts to database`);
+          console.log(`✅ Successfully saved ${savedPosts.length} posts to database`);
+          
           
           return res.json({
             posts: realPosts,
@@ -493,7 +564,7 @@ router.get('/location/:locationId', cacheMiddleware({ ttl: 180 }), async (req, r
           });
         }
       } catch (v4Error) {
-        console.log('GMB v4 failed, trying alternative endpoint:', v4Error.message);
+        
         
         // Try alternative endpoint
         const gmbResponse = await axios.get(
@@ -507,7 +578,7 @@ router.get('/location/:locationId', cacheMiddleware({ ttl: 180 }), async (req, r
         );
         
         if (gmbResponse.data.localPosts && gmbResponse.data.localPosts.length > 0) {
-          console.log('Found real GMB posts from alternative endpoint:', gmbResponse.data.localPosts.length);
+          
           
           // Convert GMB posts to our format and sort by creation date (newest first)
           const realPosts = await Promise.all(gmbResponse.data.localPosts.map(async (post) => {
@@ -515,7 +586,7 @@ router.get('/location/:locationId', cacheMiddleware({ ttl: 180 }), async (req, r
             let media = [];
             try {
               if (post.media && post.media.length > 0) {
-                console.log('Post has media:', post.media.length, 'items');
+                
                 
                 // Extract media information from the post
                 media = post.media.map(mediaItem => {
@@ -532,12 +603,12 @@ router.get('/location/:locationId', cacheMiddleware({ ttl: 180 }), async (req, r
                     // If the URL doesn't have query parameters, add them
                     if (!extracted.sourceUrl.includes('=')) {
                       extracted.sourceUrl = `${extracted.sourceUrl}=h305-no`;
-                      console.log(`Fixed Google Photos URL: ${extracted.sourceUrl}`);
+                      
                     } else {
                       // If it already has parameters, ensure it has the right format
                       if (!extracted.sourceUrl.includes('h305-no')) {
                         extracted.sourceUrl = `${extracted.sourceUrl}=h305-no`;
-                        console.log(`Enhanced Google Photos URL: ${extracted.sourceUrl}`);
+                        
                       }
                     }
                   }
@@ -546,7 +617,7 @@ router.get('/location/:locationId', cacheMiddleware({ ttl: 180 }), async (req, r
                 });
               }
             } catch (mediaError) {
-              console.log('Could not fetch media for post:', mediaError.message);
+              
             }
 
             const processedPost = {
@@ -558,6 +629,8 @@ router.get('/location/:locationId', cacheMiddleware({ ttl: 180 }), async (req, r
               status: 'published',
               media: media,
               callToAction: post.callToAction || null,
+              accountId: accountId, // Add GMB account ID
+              locationId: locationId, // Add location ID
               gmbPost: post
             };
             
@@ -567,11 +640,13 @@ router.get('/location/:locationId', cacheMiddleware({ ttl: 180 }), async (req, r
           // Sort by creation date (newest first)
           realPosts.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
           
-          console.log(`Found ${realPosts.length} real GMB posts for location ${locationId}`);
+          
           
           // Save existing posts to database
+          console.log(`💾 Saving ${realPosts.length} posts to database for user ${req.user.userId}`);
           const savedPosts = await saveExistingPostsToDatabase(req.user.userId, realPosts, 'google');
-          console.log(`Saved ${savedPosts.length} posts to database`);
+          console.log(`✅ Successfully saved ${savedPosts.length} posts to database`);
+          
           
           return res.json({
             posts: realPosts,
@@ -580,10 +655,11 @@ router.get('/location/:locationId', cacheMiddleware({ ttl: 180 }), async (req, r
         }
       }
     } catch (gmbError) {
-      console.log('Could not fetch real GMB posts, using mock data:', gmbError.message);
+      
     }
     
     // Fallback to mock data if GMB API fails
+    console.log(`📋 Using fallback mock posts because GMB API didn't return posts`);
     const mockPosts = [
       {
         id: '1',
@@ -627,12 +703,27 @@ router.get('/location/:locationId', cacheMiddleware({ ttl: 180 }), async (req, r
     
     // Sort mock posts by creation date (newest first)
     const sortedMockPosts = mockPosts.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-    
+
+    // Save mock posts to database for caching
+    const accountId = req.headers['x-gmb-account-id'] || '109194636448236279020';
+    console.log(`💾 Saving ${sortedMockPosts.length} mock posts to database for user ${req.user?.userId}, location: ${locationId}, account: ${accountId}`);
+
+    // Add locationId and accountId to mock posts
+    const mockPostsWithIds = sortedMockPosts.map(post => ({
+      ...post,
+      accountId: accountId,
+      locationId: locationId
+    }));
+
+    const savedMockPosts = await saveExistingPostsToDatabase(req.user?.userId, mockPostsWithIds, 'google');
+    console.log(`✅ Successfully saved ${savedMockPosts.length} mock posts to database`);
+
     res.json({
-      posts: sortedMockPosts
+      posts: sortedMockPosts,
+      savedToDatabase: savedMockPosts.length,
+      source: 'mock_fallback'
     });
   } catch (error) {
-    console.error('Error fetching posts:', error);
     res.status(500).json({ error: 'Failed to fetch posts' });
   }
 });
@@ -640,8 +731,8 @@ router.get('/location/:locationId', cacheMiddleware({ ttl: 180 }), async (req, r
 // Upload images endpoint (POST /upload-images)
 router.post('/upload-images', upload.array('images', 10), async (req, res) => {
   try {
-    console.log('=== IMAGE UPLOAD ENDPOINT ===');
-    console.log('Files received:', req.files?.length || 0);
+    
+    
     
     if (!req.files || req.files.length === 0) {
       return res.status(400).json({ 
@@ -653,8 +744,8 @@ router.post('/upload-images', upload.array('images', 10), async (req, res) => {
     // Process uploaded images
     const processedImages = processUploadedImages(req.files);
     
-    console.log('Processed images:', processedImages.length);
-    console.log('Image sizes:', processedImages.map(img => `${img.filename}: ${img.size} bytes`));
+    
+    
 
     res.json({
       success: true,
@@ -668,7 +759,6 @@ router.post('/upload-images', upload.array('images', 10), async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Error uploading images:', error);
     res.status(500).json({ 
       success: false, 
       error: 'Failed to upload images' 
@@ -691,14 +781,14 @@ router.post('/', upload.array('images', 10), [
 ], invalidateCacheMiddleware({ pattern: 'user:*:posts*' }), async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
-    console.log('Validation errors:', errors.array());
+    
     return res.status(400).json({ success: false, errors: errors.array() });
   }
 
   try {
-    console.log('=== POST CREATION DEBUG ===');
-    console.log('Request body:', req.body);
-    console.log('User access token exists:', !!req.businessToken);
+    
+    
+    
     
     const {
       platforms,
@@ -717,15 +807,6 @@ router.post('/', upload.array('images', 10), [
     const uploadedImages = req.files ? processUploadedImages(req.files) : [];
     
     const accessToken = req.businessToken; // Get access token from middleware
-    
-    console.log('Extracted data:', {
-      platforms,
-      content,
-      media,
-      gmbAccountId,
-      gmbLocationId,
-      postType
-    });
 
     // Check if this is a Google My Business post
     if (platforms.includes('google') && gmbAccountId && gmbLocationId) {
@@ -739,7 +820,7 @@ router.post('/', upload.array('images', 10), [
 
         // Handle media upload for Google My Business posts
         if (media && media.length > 0) {
-          console.log('Processing media for GMB post:', media.length, 'items');
+          
           
           // Process media items according to GMB API requirements
           const mediaItems = [];
@@ -831,7 +912,7 @@ router.post('/', upload.array('images', 10), [
           };
         }
 
-        console.log('Creating GMB post with data:', JSON.stringify(gmbPostData, null, 2));
+        
         
         // Try real API first, fallback if needed
         try {
@@ -846,7 +927,7 @@ router.post('/', upload.array('images', 10), [
             }
           );
           
-          console.log('Real GMB post created successfully:', gmbResponse.data);
+          
           
           // Save post to database
           const postData = {
@@ -874,7 +955,7 @@ router.post('/', upload.array('images', 10), [
           });
           
         } catch (gmbError) {
-          console.log('GMB post creation failed, using fallback:', gmbError.message);
+          
           
           // Fallback to mock response
           const mockGmbResponse = {
@@ -890,7 +971,7 @@ router.post('/', upload.array('images', 10), [
             }
           };
           
-          console.log('Fallback GMB post creation successful');
+          
           
           // Save post to database even for fallback
           const postData = {
@@ -921,7 +1002,6 @@ router.post('/', upload.array('images', 10), [
         }
 
       } catch (gmbError) {
-        console.error('Error creating GMB post:', gmbError);
         return res.status(500).json({
           success: false,
           error: 'Failed to create Google My Business post',
@@ -929,11 +1009,11 @@ router.post('/', upload.array('images', 10), [
         });
       }
     } else {
-      console.log('GMB conditions not met, falling back to generic response');
+      
     }
 
     // For other platforms or if no GMB data, save to database
-    console.log('Saving non-GMB post to database');
+    
     
     const postData = {
       content: content,
@@ -960,7 +1040,6 @@ router.post('/', upload.array('images', 10), [
     });
 
   } catch (error) {
-    console.error('Error creating post:', error);
     res.status(500).json({ success: false, error: 'Failed to create post' });
   }
 });
@@ -968,9 +1047,9 @@ router.post('/', upload.array('images', 10), [
 // Update a post (PATCH /:postId endpoint)
 router.patch('/:postId', invalidateCacheMiddleware({ pattern: 'user:*:posts*' }), async (req, res) => {
   try {
-    console.log('=== BACKEND UPDATE POST STARTED ===');
-    console.log('Post ID:', req.params.postId);
-    console.log('Request body:', req.body);
+    
+    
+    
     
     const { postId } = req.params;
     const { gmbAccountId, gmbLocationId } = req.query;
@@ -978,7 +1057,7 @@ router.patch('/:postId', invalidateCacheMiddleware({ pattern: 'user:*:posts*' })
     const accessToken = req.businessToken; // Get access token from middleware
     
     if (!gmbAccountId || !gmbLocationId) {
-      console.log('Missing GMB IDs:', { gmbAccountId, gmbLocationId });
+      
       return res.status(400).json({
         success: false,
         error: 'GMB Account ID and Location ID are required'
@@ -986,7 +1065,7 @@ router.patch('/:postId', invalidateCacheMiddleware({ pattern: 'user:*:posts*' })
     }
 
     if (!content) {
-      console.log('No content provided');
+      
       return res.status(400).json({
         success: false,
         error: 'Content is required'
@@ -995,7 +1074,7 @@ router.patch('/:postId', invalidateCacheMiddleware({ pattern: 'user:*:posts*' })
     
     try {
       // Attempt to update the post in Google My Business API
-      console.log(`Attempting to update GMB post: ${postId} in location: ${gmbLocationId}`);
+      
       
       const updateData = {
         languageCode: 'en-US',
@@ -1029,7 +1108,7 @@ router.patch('/:postId', invalidateCacheMiddleware({ pattern: 'user:*:posts*' })
       if (callToAction && callToAction.actionType && callToAction.url) updateMask += ',callToAction';
       if (req.body.media && req.body.media.length > 0) updateMask += ',media';
       
-      console.log('Update mask:', updateMask);
+      
       
       // Use PATCH with updateMask as per GMB API documentation
       const updateResponse = await axios.patch(
@@ -1043,7 +1122,7 @@ router.patch('/:postId', invalidateCacheMiddleware({ pattern: 'user:*:posts*' })
         }
       );
       
-      console.log('GMB post updated successfully:', updateResponse.status);
+      
       res.json({ 
         success: true, 
         message: 'Post updated successfully in Google My Business',
@@ -1051,7 +1130,7 @@ router.patch('/:postId', invalidateCacheMiddleware({ pattern: 'user:*:posts*' })
       });
       
     } catch (gmbError) {
-      console.log('GMB API update failed, using fallback:', gmbError.message);
+      
       
       // Fallback: return success for now
       res.json({ 
@@ -1068,8 +1147,6 @@ router.patch('/:postId', invalidateCacheMiddleware({ pattern: 'user:*:posts*' })
     }
     
   } catch (error) {
-    console.error('=== BACKEND UPDATE POST ERROR ===');
-    console.error('Error updating post:', error);
     
     res.status(500).json({ 
       success: false, 
@@ -1095,7 +1172,7 @@ router.delete('/:postId', invalidateCacheMiddleware({ pattern: 'user:*:posts*' }
     
     try {
       // Attempt to delete the post from Google My Business API
-      console.log(`Attempting to delete GMB post: ${postId} from location: ${gmbLocationId}`);
+      
       
       const deleteResponse = await axios.delete(
         `https://mybusiness.googleapis.com/v4/accounts/${gmbAccountId}/locations/${gmbLocationId}/localPosts/${postId}`,
@@ -1107,11 +1184,11 @@ router.delete('/:postId', invalidateCacheMiddleware({ pattern: 'user:*:posts*' }
         }
       );
       
-      console.log('GMB post deleted successfully:', deleteResponse.status);
+      
       res.json({ success: true, message: 'Post deleted successfully from Google My Business' });
       
     } catch (gmbError) {
-      console.log('GMB API delete failed, using fallback:', gmbError.message);
+      
       
       // Fallback: return success for now
       res.json({ 
@@ -1122,7 +1199,6 @@ router.delete('/:postId', invalidateCacheMiddleware({ pattern: 'user:*:posts*' }
     }
     
   } catch (error) {
-    console.error('Error deleting post:', error);
     res.status(500).json({ 
       success: false, 
       error: 'Failed to delete post',
@@ -1141,7 +1217,7 @@ router.get('/accounts/:accountId/locations/:locationId/media', cacheMiddleware({
     accountId = accountId.replace('accounts/', '');
     locationId = locationId.replace('locations/', '');
     
-    console.log(`Fetching media for location: ${locationId} in account: ${accountId}`);
+    
     
     // Use Business Profile API for media (photos, logos, videos)
     const gmbClient = getBusinessProfileClient(accessToken);
@@ -1239,7 +1315,7 @@ router.get('/accounts/:accountId/locations/:locationId/media', cacheMiddleware({
           });
         }
       } catch (mediaError) {
-        console.log('Business Profile API media endpoint not available (this is normal for some account types):', mediaError.message);
+        
       }
       
       // Try to access Google My Business API v4 directly via HTTP request
@@ -1270,7 +1346,7 @@ router.get('/accounts/:accountId/locations/:locationId/media', cacheMiddleware({
           });
         }
       } catch (gmbV4Error) {
-        console.log('GMB V4 API not available:', gmbV4Error.message);
+        
       }
       
       // Try to get media from Places API if we have a place ID
@@ -1296,7 +1372,7 @@ router.get('/accounts/:accountId/locations/:locationId/media', cacheMiddleware({
             });
           }
         } catch (placesError) {
-          console.log('Places API not available:', placesError.message);
+          
         }
       }
       
@@ -1330,7 +1406,7 @@ router.get('/accounts/:accountId/locations/:locationId/media', cacheMiddleware({
           });
         }
       } catch (driveError) {
-        console.log('Google Drive API not available (this is normal if Drive integration is not configured):', driveError.message);
+        
       }
       
       // Categorize media items
@@ -1358,10 +1434,9 @@ router.get('/accounts/:accountId/locations/:locationId/media', cacheMiddleware({
       });
       
     } catch (apiError) {
-      console.error('Business Profile API error:', apiError);
       
       // If the location endpoint fails, return empty results
-      console.log('Location endpoint not available, returning empty results');
+      
       res.json({
         success: true,
         media: [],
@@ -1370,10 +1445,8 @@ router.get('/accounts/:accountId/locations/:locationId/media', cacheMiddleware({
       });
     }
   } catch (error) {
-    console.error('Error fetching media:', error);
     
     if (error.response && error.response.data) {
-      console.error('Full error details:', JSON.stringify(error.response.data, null, 2));
     }
     
     res.status(500).json({ 

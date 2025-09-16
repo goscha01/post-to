@@ -12,6 +12,7 @@ const insightsRoutes = require('./routes/insights');
 const reviewsRoutes = require('./routes/reviews');
 const servicesRoutes = require('./routes/services');
 const cacheRoutes = require('./routes/cache');
+const apiLogger = require('./middleware/apiLogger');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -35,6 +36,9 @@ app.use(limiter);
 // Body parsing middleware
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// API logging middleware
+app.use(apiLogger);
 
 // Routes
 app.use('/auth', authRoutes);

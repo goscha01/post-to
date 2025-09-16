@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import axios from 'axios';
+import axios from '../utils/axiosConfig';
 import { useAuth } from '../contexts/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import imageService from '../services/imageService';
@@ -632,6 +632,8 @@ const BusinessProfiles = () => {
   const [isDisconnected, setIsDisconnected] = useState(false);
 
   useEffect(() => {
+    console.log(`📡 BusinessProfiles useEffect triggered - isAuthenticated: ${isAuthenticated}, authDisconnected: ${authDisconnected}`);
+
     // Check for error parameters in URL
     const urlParams = new URLSearchParams(window.location.search);
     const error = urlParams.get('error');
@@ -655,7 +657,8 @@ const BusinessProfiles = () => {
     } else if (isAuthenticated && !authDisconnected) {
       // Check if business profiles are connected
       const businessConnected = localStorage.getItem('gmb_business_connected') === 'true';
-      
+      console.log(`🔗 Business connected: ${businessConnected}`);
+
       if (businessConnected) {
         // Business profiles are connected, fetch them
         setIsDisconnected(false);
@@ -672,19 +675,45 @@ const BusinessProfiles = () => {
     }
   }, [isAuthenticated, authDisconnected]);
 
+  const [isFetching, setIsFetching] = useState(false);
+  const fetchingRef = useRef(false);
+
   const fetchProfiles = async () => {
+    if (isFetching || fetchingRef.current) {
+      console.log(`⏸️ fetchProfiles already in progress, skipping duplicate call`);
+      return;
+    }
+
     try {
+      console.log(`🔄 fetchProfiles called`);
+      setIsFetching(true);
+      fetchingRef.current = true;
       setLoading(true);
+
       // Use centralized business profile service with caching
       const accounts = await businessProfileService.getAccounts();
+      console.log(`📋 Received ${accounts?.length || 0} accounts:`, accounts);
+      console.log(`🔍 Account IDs:`, accounts.map(acc => acc.name));
       
       if (accounts && accounts.length > 0) {
+        // Remove duplicate accounts by ID (normalize account names first)
+        const uniqueAccounts = accounts.filter((account, index, self) => {
+          // Normalize account name by removing double "accounts/" prefix
+          const normalizedName = account.name.replace(/^accounts\/accounts\//, 'accounts/');
+          return index === self.findIndex(a => {
+            const otherNormalizedName = a.name.replace(/^accounts\/accounts\//, 'accounts/');
+            return normalizedName === otherNormalizedName;
+          });
+        });
+        console.log(`🔧 Filtered ${accounts.length} accounts to ${uniqueAccounts.length} unique accounts`);
+
         // Fetch business data for each account (single card per business)
         const businessProfiles = await Promise.all(
-          accounts.map(async (account) => {
+          uniqueAccounts.map(async (account, index) => {
             try {
               // Extract account ID from the full name (e.g., "accounts/123456789" -> "123456789")
               const accountId = account.name.split('/').pop();
+              console.log(`🏢 Processing account ${index + 1}/${uniqueAccounts.length}: ${accountId} (${account.accountName})`);
               // Use centralized service for locations (already cached)
               const locations = account.locations || [];
               
@@ -768,7 +797,8 @@ const BusinessProfiles = () => {
             }
           })
         );
-        
+
+        console.log(`📄 Created ${businessProfiles.length} business profiles:`, businessProfiles.map(p => ({ id: p.accountId, name: p.businessName })));
         setProfiles(businessProfiles);
       }
     } catch (error) {
@@ -807,6 +837,8 @@ const BusinessProfiles = () => {
       }
     } finally {
       setLoading(false);
+      setIsFetching(false);
+      fetchingRef.current = false;
     }
   };
 
@@ -851,39 +883,38 @@ const BusinessProfiles = () => {
     }
   };
 
-  // Function to handle successful business profile connection
-  const handleBusinessConnectionSuccess = async () => {
-    try {
-      setLoading(true);
-      await fetchProfiles();
-    } catch (error) {
-      console.error('Error fetching profiles after connection:', error);
-    }
-  };
 
   const fetchReviewStats = async (accountId, locationId) => {
     try {
-      const response = await axios.get(`http://localhost:3001/api/gmb/accounts/${accountId}/locations/${locationId}/reviews`);
-      
-      if (response.data.success && response.data.reviews) {
-        const reviews = response.data.reviews;
+      // Use centralized business profile service with caching
+      const response = await businessProfileService.getReviewsForLocation(accountId, locationId);
+
+
+      if (response.success && response.reviews) {
+        const reviews = response.reviews;
         const totalReviews = reviews.length;
+
         
         // Calculate average rating
         let totalRating = 0;
         let validRatings = 0;
         
-        reviews.forEach(review => {
+        reviews.forEach((review, index) => {
           let rating = 0;
-          if (typeof review.starRating === 'string') {
+
+          // Check for different possible rating field names
+          const starRating = review.star_rating || review.starRating || review.rating;
+
+          if (typeof starRating === 'string') {
             const ratingMap = {
               'ONE': 1, 'TWO': 2, 'THREE': 3, 'FOUR': 4, 'FIVE': 5
             };
-            rating = ratingMap[review.starRating] || 0;
+            rating = ratingMap[starRating] || 0;
           } else {
-            rating = Number(review.starRating || review.rating) || 0;
+            rating = Number(starRating) || 0;
           }
-          
+
+
           if (rating > 0 && rating <= 5) {
             totalRating += rating;
             validRatings++;
@@ -891,11 +922,14 @@ const BusinessProfiles = () => {
         });
         
         const averageRating = validRatings > 0 ? (totalRating / validRatings).toFixed(1) : 0;
-        
+
+
         return {
           totalReviews,
           averageRating: parseFloat(averageRating)
         };
+      } else {
+        console.log(`⚠️ No reviews data found in response for ${accountId}/${locationId}`);
       }
     } catch (error) {
       console.error('Error fetching review stats:', error);

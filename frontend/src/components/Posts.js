@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import axios from 'axios';
+import axios from '../utils/axiosConfig';
 import { useAuth } from '../contexts/AuthContext';
 import ImageUploader from './react_imgbb_uploader.js';
 import imageService from '../services/imageService';
@@ -45,7 +45,6 @@ const PostImage = ({ imageUrl, altText, mediaFormat }) => {
           setError(true);
         }
       } catch (err) {
-        console.error('Error fetching post image:', err);
         setError(true);
       } finally {
         setLoading(false);
@@ -92,6 +91,7 @@ const Posts = () => {
   const [posts, setPosts] = useState([]);
   const [profiles, setProfiles] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
 
   const [selectedProfile, setSelectedProfile] = useState('');
   
@@ -149,7 +149,6 @@ const Posts = () => {
         setSelectedProfile(profilesWithLocations[0].locations[0].fullPath);
       }
     } catch (error) {
-      console.error('Error fetching data:', error);
     } finally {
       setLoading(false);
     }
@@ -164,8 +163,27 @@ const Posts = () => {
       const locationIdOnly = profileParts[profileParts.length - 1];
       const accountId = profileParts[1];
       
-      console.log('Fetching posts for location:', locationIdOnly, 'account:', accountId);
+
       
+      // STEP 1: Load cached data first for instant UI
+      try {
+        const cachedResponse = await axios.get(`http://localhost:3001/api/posts/location/${locationIdOnly}?cached_only=true`, {
+          headers: {
+            'x-gmb-account-id': accountId,
+            'Authorization': `Bearer ${localStorage.getItem('gmb_token')}`
+          }
+        });
+
+        if (cachedResponse.data.posts && cachedResponse.data.posts.length > 0) {
+          setPosts(cachedResponse.data.posts);
+          setLoading(false); // Show cached data immediately
+          setRefreshing(true); // Indicate we're refreshing with fresh data
+        }
+      } catch (cacheError) {
+        // No cached data available
+      }
+
+      // STEP 2: Fetch fresh data in background
       const response = await axios.get(`http://localhost:3001/api/posts/location/${locationIdOnly}`, {
         headers: {
           'x-gmb-account-id': accountId,
@@ -173,42 +191,44 @@ const Posts = () => {
         }
       });
       
-      console.log('=== FRONTEND POSTS DEBUG ===');
-      console.log('Posts response:', response.data);
-      console.log('Posts array:', response.data.posts);
+
+
+
       if (response.data.posts && response.data.posts.length > 0) {
-        console.log('First post:', response.data.posts[0]);
-        console.log('First post media:', response.data.posts[0].media);
-        console.log('First post media type:', typeof response.data.posts[0].media);
-        console.log('First post media length:', response.data.posts[0].media?.length);
+
+
+
+
         if (response.data.posts[0].media && response.data.posts[0].media.length > 0) {
-          console.log('First media item:', response.data.posts[0].media[0]);
-          console.log('First media item keys:', Object.keys(response.data.posts[0].media[0]));
-          console.log('First media item sourceUrl:', response.data.posts[0].media[0].sourceUrl);
-          console.log('First media item url:', response.data.posts[0].media[0].url);
-          console.log('First media item thumbnailUrl:', response.data.posts[0].media[0].thumbnailUrl);
+
+
+
+
+
         }
       }
-      console.log('=== END FRONTEND POSTS DEBUG ===');
+
       
       // Handle response - always set posts from response.data.posts
       if (response.data.posts) {
         setPosts(response.data.posts);
-        console.log('✅ Posts set successfully:', response.data.posts.length, 'posts');
       } else {
-        console.log('❌ No posts in response');
         setPosts([]);
       }
+
+      setRefreshing(false); // Fresh data loaded
+      setLoading(false);
     } catch (error) {
-      console.error('Error fetching posts:', error);
+      setRefreshing(false);
+      setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    console.log('🔍 Posts useEffect - isAuthenticated:', isAuthenticated, 'isDisconnected:', isDisconnected);
+
     if (isAuthenticated && !isDisconnected) {
       // Always fetch data when authenticated (remove business connection check)
-      console.log('🔍 User authenticated, fetching data');
+
       fetchData();
     } else if (isDisconnected) {
       // Clear data when disconnected
@@ -228,32 +248,32 @@ const Posts = () => {
   const handleCreatePost = async (e) => {
     e.preventDefault();
      setCreatingPost(true);
-    console.log('=== FORM SUBMISSION STARTED ===');
-    console.log('Form data:', formData);
+
+
     
     // Validate media URLs
     const validMediaUrls = formData.mediaUrls.filter(url => url.trim() !== '');
-    console.log('=== URL VALIDATION DEBUG ===');
-    console.log('All media URLs:', formData.mediaUrls);
-    console.log('Valid media URLs:', validMediaUrls);
+
+
+
     
     const invalidUrls = validMediaUrls.filter(url => {
       try {
         new URL(url);
-        console.log('Valid URL:', url);
+
         return false;
       } catch (error) {
-        console.log('Invalid URL:', url, 'Error:', error.message);
+
         return true;
       }
     });
     
     if (invalidUrls.length > 0) {
-      console.log('Invalid URLs found:', invalidUrls);
+
       alert('Please enter valid image URLs for all media files.');
       return;
     }
-    console.log('=== END URL VALIDATION DEBUG ===');
+
     
     try {
       // Extract account and location IDs from selectedProfile
@@ -262,13 +282,12 @@ const Posts = () => {
       const accountId = profileParts[1]; // accounts/{accountId}/locations/{locationId}
       
       // Debug the profile path structure
-      console.log('Selected profile path:', selectedProfile);
-      console.log('Profile parts:', profileParts);
-      console.log('Extracted account ID:', accountId);
-      console.log('Extracted location ID:', locationId);
+
+
+
+
       
       if (!accountId || !locationId) {
-        console.error('Could not extract IDs from path:', selectedProfile);
         alert('Error: Could not determine account or location ID. Please select a different profile.');
         return;
       }
@@ -289,13 +308,13 @@ const Posts = () => {
            actionType: formData.callToAction.type,
            url: formData.callToAction.url.trim()
          };
-         console.log('Added CTA to post data:', postData.callToAction);
+
        } else if (formData.callToAction.type && formData.callToAction.type.trim() !== '') {
          // Warning: CTA type selected but no URL provided
          alert('Warning: You selected a Call to Action type but did not provide a URL. The CTA button will not be displayed.');
-         console.log('CTA type selected but no URL provided, skipping CTA');
+
        } else {
-         console.log('No CTA type selected, skipping CTA');
+
        }
 
       // Add event data for EVENT posts
@@ -335,14 +354,14 @@ const Posts = () => {
       // Upload URLs
       if (formData.mediaUrls.length > 0) {
         try {
-          console.log('=== URL UPLOAD DEBUG ===');
-          console.log('URLs to upload:', formData.mediaUrls);
+
+
           const validUrls = formData.mediaUrls.filter(url => url.trim() !== '');
-          console.log('Valid URLs:', validUrls);
+
           
            if (validUrls.length > 0) {
           const urlPromises = validUrls.map(async (url, index) => {
-            console.log(`Processing URL ${index + 1}:`, url);
+
             try {
               const mediaResponse = await axios.post('http://localhost:3001/api/posts/media', {
                 mediaFormat: 'PHOTO',
@@ -351,34 +370,29 @@ const Posts = () => {
                 gmbLocationId: locationId,
                 category: 'ADDITIONAL'
               });
-              console.log(`URL ${index + 1} upload response:`, mediaResponse.data);
+
               return mediaResponse.data.media;
             } catch (error) {
-              console.error(`URL ${index + 1} upload failed:`, error.response?.data || error.message);
               throw error;
             }
           });
 
           const uploadedUrls = await Promise.all(urlPromises);
-          console.log('=== URL UPLOAD SUCCESS ===');
-          console.log('URLs uploaded successfully:', uploadedUrls);
-          console.log('Uploaded URLs structure:', uploadedUrls.map(u => ({ name: u.name, mediaFormat: u.mediaFormat, sourceUrl: u.sourceUrl })));
+
+
+
           allMedia.push(...uploadedUrls);
-          console.log('=== END URL UPLOAD DEBUG ===');
+
            }
         } catch (urlError) {
-          console.error('=== URL UPLOAD ERROR ===');
-          console.error('Error uploading URLs:', urlError);
-          console.error('Error response:', urlError.response?.data);
-          console.error('Error status:', urlError.response?.status);
           alert('Warning: Some URLs failed to upload. Post will be created without those images.');
         }
       }
 
              // Add all uploaded media to post data
-       console.log('=== FRONTEND MEDIA DEBUG ===');
-       console.log('All media array before mapping:', allMedia);
-       console.log('All media array length:', allMedia.length);
+
+
+
        
        if (allMedia.length > 0) {
          // Use only real media
@@ -387,35 +401,26 @@ const Posts = () => {
               mediaFormat: media.mediaFormat || 'PHOTO',
               sourceUrl: media.sourceUrl || media.url || media.thumbnailUrl
            };
-           console.log('Mapped media item:', mappedMedia);
+
            return mappedMedia;
          });
-         console.log('Final postData.media array:', postData.media);
+
        } else {
          // No media to add
-         console.log('No media to add to post data');
-       }
-       console.log('=== END FRONTEND MEDIA DEBUG ===');
 
-             console.log('Sending post data:', postData);
-       console.log('Post data structure:', {
-         platforms: postData.platforms,
-         content: postData.content,
-         gmbAccountId: postData.gmbAccountId,
-         gmbLocationId: postData.gmbLocationId,
-         postType: postData.postType,
-         hasMedia: !!postData.media,
-         hasCallToAction: !!postData.callToAction,
-         callToAction: postData.callToAction
-       });
+       }
+
+
+
+       // Post data prepared for submission
        
        // Additional CTA debugging
-       console.log('=== FRONTEND CTA DEBUG ===');
-       console.log('formData.callToAction:', formData.callToAction);
-       console.log('formData.callToAction.type:', formData.callToAction.type);
-       console.log('formData.callToAction.url:', formData.callToAction.url);
-       console.log('postData.callToAction:', postData.callToAction);
-       console.log('=== END FRONTEND CTA DEBUG ===');
+
+
+
+
+
+
       
       // Create FormData for file uploads
       const formDataToSend = new FormData();
@@ -455,9 +460,9 @@ const Posts = () => {
           'Content-Type': 'multipart/form-data',
         },
       });
-      console.log('=== POST CREATION RESPONSE ===');
-      console.log('Response status:', response.status);
-      console.log('Response data:', response.data);
+
+
+
       
              // Create a new post object to add to local state immediately
        const newPostId = response.data.postId || `new-post-${Date.now()}`;
@@ -479,9 +484,9 @@ const Posts = () => {
          gmbPost: null // Will be populated when fetched from GMB
        };
       
-      console.log('=== CREATED NEW POST OBJECT ===');
-      console.log('New post object:', newPost);
-      console.log('New post media:', newPost.media);
+
+
+
       
       // Add the new post to the beginning of the posts array
       setPosts(prevPosts => [newPost, ...prevPosts]);
@@ -500,7 +505,7 @@ const Posts = () => {
       showNotification('Post created successfully!', 'success');
       
       // Refresh posts list in background to get the real GMB post data
-      console.log('=== REFRESHING POSTS IN BACKGROUND ===');
+
       setTimeout(async () => {
         try {
           // Fetch fresh posts from GMB
@@ -521,7 +526,7 @@ const Posts = () => {
             if (gmbPostExists) {
               // New post found in GMB, replace local posts with GMB data
               setPosts(response.data.posts);
-              console.log('New post found in GMB, synced successfully');
+
             } else {
               // New post not yet in GMB, keep local post and append GMB posts
               setPosts(prevPosts => {
@@ -531,18 +536,17 @@ const Posts = () => {
                 }
                 return response.data.posts;
               });
-              console.log('New post not yet in GMB, preserved local post');
+
             }
             
           }
           
-          console.log('=== POSTS REFRESHED IN BACKGROUND ===');
+
         } catch (error) {
-          console.log('Background refresh failed:', error);
+
         }
       }, 3000); // Wait 3 seconds for GMB API to index the new post
     } catch (error) {
-      console.error('Error creating post:', error);
       alert('Failed to create post. Please try again.');
      } finally {
        setCreatingPost(false);
@@ -581,7 +585,6 @@ const Posts = () => {
       await fetchPosts(selectedProfile);
       showNotification('Post deleted successfully!', 'success');
     } catch (error) {
-      console.error('Error deleting post:', error);
       if (error.response?.data?.error) {
         showNotification(`Failed to delete post: ${error.response.data.error}`, 'error');
       } else {
@@ -692,18 +695,18 @@ const Posts = () => {
 
      setUpdatingPost(true);
      try {
-       console.log('=== UPDATE POST STARTED ===');
-       console.log('Editing post:', editingPost);
-       console.log('Edit form data:', editFormData);
+
+
+
        
        // Extract account and location IDs from selectedProfile
        const profileParts = selectedProfile.split('/');
        const locationId = profileParts[profileParts.length - 1];
        const accountId = profileParts[1];
 
-       console.log('Profile parts:', profileParts);
-       console.log('Account ID:', accountId);
-       console.log('Location ID:', locationId);
+
+
+
 
        const updateData = {
          content: editFormData.summary,
@@ -733,13 +736,13 @@ const Posts = () => {
          }
        }
 
-       console.log('Update data to send:', updateData);
+
 
        // Use PATCH request as per GMB API documentation
        try {
-         console.log('Making PATCH request to:', `http://localhost:3001/api/posts/${editingPost.id}`);
-         console.log('With data:', updateData);
-         console.log('With params:', { gmbAccountId: accountId, gmbLocationId: locationId });
+
+
+
          
          const response = await axios.patch(`http://localhost:3001/api/posts/${editingPost.id}`, updateData, {
            params: {
@@ -747,26 +750,26 @@ const Posts = () => {
              gmbLocationId: locationId
            }
          });
-         console.log('PATCH request successful:', response.data);
+
        } catch (patchError) {
-         console.log('PATCH request failed:', patchError);
-         console.log('PATCH error details:', patchError.response?.data);
-         console.log('PATCH error status:', patchError.response?.status);
+
+
+
          throw patchError; // Re-throw to be caught by outer catch
        }
 
-       console.log('=== UPDATE POST SUCCESS ===');
+
        
        // Refresh posts and reset edit state
-       console.log('Refreshing posts...');
+
        try {
          await fetchPosts(selectedProfile);
-         console.log('Posts refreshed successfully');
+
        } catch (fetchError) {
-         console.log('Error refreshing posts:', fetchError);
+
        }
        
-       console.log('Resetting edit state...');
+
        setEditingPost(null);
        setEditFormData({
          summary: '',
@@ -775,14 +778,10 @@ const Posts = () => {
          mediaUrls: ['']
        });
        
-       console.log('Showing success notification...');
+
        showNotification('Post updated successfully!', 'success');
-       console.log('=== UPDATE POST COMPLETE ===');
+
      } catch (error) {
-       console.error('=== UPDATE POST ERROR ===');
-       console.error('Error updating post:', error);
-       console.error('Error response:', error.response?.data);
-       console.error('Error status:', error.response?.status);
        showNotification(`Failed to update post: ${error.response?.data?.error || error.message}`, 'error');
      } finally {
        setUpdatingPost(false);
@@ -1353,7 +1352,17 @@ const Posts = () => {
         <div className="bg-white shadow rounded-lg">
           <div className="px-6 py-4 border-b border-gray-200">
             <div className="flex items-center justify-between">
-            <h2 className="text-lg font-medium text-gray-900">Posts</h2>
+              <h2 className="text-lg font-medium text-gray-900">Posts</h2>
+              {refreshing && (
+                <div className="flex items-center text-sm text-blue-600">
+                  <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                  Refreshing...
+                </div>
+              )}
+            </div>
             <button
               onClick={() => {
                 setExpandedPosts(new Set()); // Reset expanded posts when refreshing
@@ -1365,36 +1374,34 @@ const Posts = () => {
               Refresh Posts
             </button>
           </div>
-          </div>
           <div className="p-6">
-            {console.log('🔍 Rendering posts - posts.length:', posts.length, 'selectedProfile:', selectedProfile)}
             {posts.length > 0 ? (
               <>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6">
                                      {posts.map((post) => {
-                     console.log('=== POST DATA DEBUG ===');
-                     console.log('Post ID:', post.id);
-                     console.log('Post content:', post.content);
-                     console.log('Post media:', post.media);
-                     console.log('Post callToAction:', post.callToAction);
-                     console.log('Has callToAction:', !!post.callToAction);
-                     console.log('Has callToAction.url:', !!(post.callToAction && post.callToAction.url));
-                     console.log('Post media length:', post.media ? post.media.length : 'N/A');
+
+
+
+
+
+
+
+
                      if (post.media && post.media.length > 0) {
-                       console.log('First media item:', post.media[0]);
-                       console.log('First media sourceUrl:', post.media[0].sourceUrl);
-                       console.log('First media url:', post.media[0].url);
+
+
+
                      }
                      
                      // Additional CTA debugging
                      if (post.callToAction) {
-                       console.log('CTA Details:');
-                       console.log('  - actionType:', post.callToAction.actionType);
-                       console.log('  - url:', post.callToAction.url);
-                       console.log('  - type:', post.callToAction.type);
-                       console.log('  - All CTA keys:', Object.keys(post.callToAction));
+
+
+
+
+
                      }
-                     console.log('=== END POST DATA DEBUG ===');
+
                      
                      return (
                        <div key={post.id} className="bg-white rounded-lg shadow-sm hover:shadow-md transition-shadow duration-200 overflow-hidden">
@@ -1434,17 +1441,9 @@ const Posts = () => {
                            <div className="grid grid-cols-1 gap-0">
                              {post.media.map((mediaItem, index) => {
                                const imageUrl = mediaItem.sourceUrl || mediaItem.url || mediaItem.thumbnailUrl;
-                               console.log(`Rendering media item ${index}:`, {
-                                 id: mediaItem.id,
-                                 sourceUrl: mediaItem.sourceUrl,
-                                 url: mediaItem.url,
-                                 thumbnailUrl: mediaItem.thumbnailUrl,
-                                 finalUrl: imageUrl,
-                                 isGoogleUrl: imageUrl && imageUrl.includes('lh3.googleusercontent.com')
-                               });
-                               
+
                                if (!imageUrl) {
-                                 console.log('No valid image URL found for media item:', mediaItem);
+
                                  return (
                                    <div key={mediaItem.id || index} className="w-full h-48 bg-gray-200 rounded-t-lg flex items-center justify-center text-sm text-gray-500">
                                      No image available
@@ -1454,7 +1453,7 @@ const Posts = () => {
                                
                                // Additional validation for image URL
                                if (typeof imageUrl !== 'string' || imageUrl.trim() === '') {
-                                 console.log('Invalid image URL format:', imageUrl);
+
                                  return (
                                    <div key={mediaItem.id || index} className="w-full h-48 bg-gray-200 rounded-t-lg flex items-center justify-center text-sm text-gray-500">
                                      Invalid image URL

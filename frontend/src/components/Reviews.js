@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import axios from 'axios';
+import axios from '../utils/axiosConfig';
 import { useAuth } from '../contexts/AuthContext';
 import imageService from '../services/imageService';
 import businessProfileService from '../services/businessProfileService';

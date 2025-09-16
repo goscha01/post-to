@@ -5,10 +5,10 @@ const requireBusinessAuth = require('../middleware/businessAuth');
 const { createClient } = require('@supabase/supabase-js');
 const router = express.Router();
 
-// Initialize Supabase client
+// Initialize Supabase client with service role for server-side operations
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_ANON_KEY
+  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY
 );
 
 // Apply both middlewares to all review routes
@@ -51,7 +51,7 @@ const saveReviewToDatabase = async (userId, reviewData) => {
 };
 
 // Helper function to save existing reviews from API to database
-const saveExistingReviewsToDatabase = async (userId, reviews, locationId, platform = 'google') => {
+const saveExistingReviewsToDatabase = async (userId, reviews, locationId, accountId, platform = 'google') => {
   try {
     // Check if location exists, if not create it
     let { data: existingLocation } = await supabase
@@ -61,15 +61,31 @@ const saveExistingReviewsToDatabase = async (userId, reviews, locationId, platfo
       .single();
 
     if (!existingLocation) {
-      // Get an existing GMB account to use
-      const { data: gmbAccount } = await supabase
+      // Use the specific account ID from the request
+      console.log(`Creating location ${locationId} under account ${accountId}`);
+
+      // Verify the account exists (it should have been created by the /accounts endpoint)
+      console.log(`🔍 Searching for GMB account: ${accountId} for user: ${userId}`);
+
+      const { data: gmbAccount, error: accountError } = await supabase
         .from('gmb_accounts')
         .select('account_id')
-        .limit(1)
+        .eq('account_id', accountId)
+        .eq('user_id', userId)
         .single();
 
+      console.log(`🔍 Account query result:`, { gmbAccount, accountError });
+
       if (!gmbAccount) {
-        console.log('No GMB account found in database, skipping location creation');
+        console.log(`❌ No GMB account ${accountId} found in database for user ${userId}, skipping location creation`);
+
+        // Debug: Let's see what accounts DO exist for this user
+        const { data: allUserAccounts } = await supabase
+          .from('gmb_accounts')
+          .select('account_id')
+          .eq('user_id', userId);
+        console.log(`🔍 All accounts for user ${userId}:`, allUserAccounts);
+
         return [];
       }
 
@@ -78,7 +94,7 @@ const saveExistingReviewsToDatabase = async (userId, reviews, locationId, platfo
         .from('gmb_locations')
         .insert({
           user_id: userId,
-          account_id: gmbAccount.account_id,
+          account_id: accountId,
           location_id: locationId,
           location_name: `GMB Location ${locationId}`,
           address: 'Google My Business Location'
@@ -153,10 +169,45 @@ const saveExistingReviewsToDatabase = async (userId, reviews, locationId, platfo
   }
 };
 
+// Helper function to get cached reviews from database
+async function getCachedReviews(locationId, userId) {
+  try {
+    const { data: cachedReviews, error } = await supabase
+      .from('gmb_reviews')
+      .select('*')
+      .eq('location_id', locationId)
+      .eq('user_id', userId)
+      .order('create_time', { ascending: false });
+
+    if (error) {
+      console.error('Error fetching cached reviews:', error);
+      return [];
+    }
+
+    return cachedReviews || [];
+  } catch (error) {
+    console.error('Error in getCachedReviews:', error);
+    return [];
+  }
+}
+
 // Get reviews for a location
 router.get('/accounts/:accountId/locations/:locationId/reviews', async (req, res) => {
   try {
     const { accountId, locationId } = req.params;
+    const { cached_only } = req.query;
+    const userId = req.user?.userId;
+
+    // If cached_only=true, return only cached data
+    if (cached_only === 'true') {
+      const cachedReviews = await getCachedReviews(locationId, userId);
+      return res.json({
+        success: true,
+        reviews: cachedReviews,
+        cached: true,
+        message: `Found ${cachedReviews.length} cached reviews`
+      });
+    }
     
     try {
       const axios = require('axios');
@@ -173,9 +224,10 @@ router.get('/accounts/:accountId/locations/:locationId/reviews', async (req, res
       // Save existing reviews to database
       if (reviews.data.reviews && reviews.data.reviews.length > 0) {
         await saveExistingReviewsToDatabase(
-          req.user.userId, 
-          reviews.data.reviews, 
-          locationId, 
+          req.user.userId,
+          reviews.data.reviews,
+          locationId,
+          accountId,
           'google'
         );
       }
@@ -183,6 +235,7 @@ router.get('/accounts/:accountId/locations/:locationId/reviews', async (req, res
       res.json({
         success: true,
         reviews: reviews.data.reviews || [],
+        cached: false,
         source: 'GMB_V4_API'
       });
       

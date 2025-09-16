@@ -1,4 +1,4 @@
-import axios from 'axios';
+import axios from '../utils/axiosConfig';
 
 class ImageService {
   constructor() {
@@ -44,9 +44,12 @@ class ImageService {
     try {
       // Check if it's a Google Photos URL that needs proxying
       if (imageUrl && imageUrl.includes('lh3.googleusercontent.com')) {
+        console.log(`🖼️ Processing Google Photos URL: ${imageUrl.substring(0, 50)}...`);
+        
         const response = await axios.get(`http://localhost:3001/api/gmb/proxy-image?url=${encodeURIComponent(imageUrl)}`);
         
         if (response.data.success && response.data.dataUrl) {
+          console.log(`✅ Successfully processed image: ${response.data.size} bytes`);
           return {
             success: true,
             dataUrl: response.data.dataUrl,
@@ -54,10 +57,12 @@ class ImageService {
             size: response.data.size
           };
         } else {
-          throw new Error('Failed to process image');
+          console.error('❌ Backend returned unsuccessful response:', response.data);
+          throw new Error(`Backend processing failed: ${response.data.error || 'Unknown error'}`);
         }
       } else {
         // For non-Google URLs, return directly
+        console.log(`🖼️ Processing non-Google URL: ${imageUrl.substring(0, 50)}...`);
         return {
           success: true,
           dataUrl: imageUrl,
@@ -66,10 +71,19 @@ class ImageService {
         };
       }
     } catch (error) {
-      console.error('Error processing image:', error);
+      console.error('❌ Error processing image:', error);
+      console.error('❌ Image URL:', imageUrl);
+      console.error('❌ Error details:', {
+        message: error.message,
+        status: error.response?.status,
+        statusText: error.response?.statusText,
+        data: error.response?.data
+      });
+      
       return {
         success: false,
-        error: error.message
+        error: error.message,
+        details: error.response?.data || null
       };
     }
   }
