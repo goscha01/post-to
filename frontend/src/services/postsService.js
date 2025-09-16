@@ -207,9 +207,7 @@ class PostsService {
       // Only cache if we got valid data
       if (result && Array.isArray(result) && result.length >= 0) {
         this.setCachedData(cacheKey, result);
-        console.log(`💾 [DEBUG] Cached posts data for ${locationId}: ${result.length} posts`);
       } else {
-        console.log(`⚠️ [DEBUG] Not caching invalid result for ${locationId}:`, result);
       }
       
       return result;
@@ -256,14 +254,6 @@ class PostsService {
         }
       });
       
-      console.log(`🔍 [DEBUG] API response received:`, {
-        success: response.data?.success,
-        hasPosts: !!response.data?.posts,
-        postsLength: response.data?.posts?.length || 0,
-        status: response.status,
-        statusText: response.statusText,
-        fullResponse: response.data
-      });
       
       return response.data.posts || [];
     } catch (error) {

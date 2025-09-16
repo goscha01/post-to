@@ -205,7 +205,6 @@ class BusinessProfileService {
         return cachedData;
       }
     } else {
-      console.log(`🔄 [DEBUG] Force refresh requested, clearing cache for ${cacheKey}`);
       this.cache.delete(cacheKey);
       this.cacheExpiry.delete(cacheKey);
     }
@@ -241,7 +240,6 @@ class BusinessProfileService {
       accounts.map(async (account) => {
         try {
           const accountId = account.name.split('/').pop();
-          console.log(`🔍 [DEBUG] Fetching locations for account ${accountId} (${account.accountName})`);
           const locations = await this.getLocationsForAccount(accountId, forceRefresh);
           
           console.log(`🔍 [DEBUG] Locations fetched for ${account.accountName}:`, locations.map(loc => ({
@@ -283,7 +281,6 @@ class BusinessProfileService {
     try {
       // If force refresh, skip cache and go directly to API
       if (forceRefresh) {
-        console.log(`🔄 [DEBUG] Force refresh requested, fetching fresh accounts from API`);
         const response = await axios.get('/api/gmb/accounts');
         return await this.processAccountsResponse(response.data.accounts || [], false, true);
       }
@@ -321,18 +318,15 @@ class BusinessProfileService {
     if (!forceRefresh) {
       const cachedData = this.getCachedData(cacheKey);
       if (cachedData) {
-        console.log(`📦 [DEBUG] Using cached locations for ${accountId}: ${cachedData.length} locations`);
         return cachedData;
       }
     } else {
-      console.log(`🔄 [DEBUG] Force refresh requested, clearing cache for ${cacheKey}`);
       this.cache.delete(cacheKey);
       this.cacheExpiry.delete(cacheKey);
     }
 
     // Check if request is already in progress
     if (this.pendingRequests.has(cacheKey)) {
-      console.log(`⏳ [DEBUG] Request already in progress for ${cacheKey}`);
       return this.pendingRequests.get(cacheKey);
     }
 
@@ -343,7 +337,6 @@ class BusinessProfileService {
     try {
       const result = await requestPromise;
       this.setCachedData(cacheKey, result);
-      console.log(`💾 [DEBUG] Cached locations data for ${accountId}: ${result.length} locations`);
       return result;
     } finally {
       this.pendingRequests.delete(cacheKey);
@@ -355,13 +348,10 @@ class BusinessProfileService {
     try {
       // If force refresh, skip cache and go directly to API
       if (forceRefresh) {
-        console.log(`🔄 [DEBUG] Force refresh requested, fetching fresh locations from API for account ${accountId}`);
         const response = await axios.get(`/api/gmb/accounts/${accountId}/locations`);
         return response.data.locations || [];
       }
 
-      console.log(`🔍 [DEBUG] fetchLocationsFromAPI called for account ${accountId} (forceRefresh: ${forceRefresh})`);
-      console.trace(`🔍 [DEBUG] Call stack for fetchLocationsFromAPI:`);
 
       // Check if we have fresh data in frontend cache first
       const frontendCacheKey = `locations_${accountId}`;
@@ -547,18 +537,15 @@ class BusinessProfileService {
     if (!forceRefresh) {
       const cachedData = this.getCachedData(cacheKey);
       if (cachedData) {
-        console.log(`📦 [DEBUG] Using cached reviews for ${accountId}/${locationId}: ${cachedData.reviews?.length || 0} reviews`);
         return cachedData;
       }
     } else {
-      console.log(`🔄 [DEBUG] Force refresh requested, clearing cache for ${cacheKey}`);
       this.cache.delete(cacheKey);
       this.cacheExpiry.delete(cacheKey);
     }
 
     // Check if request is already in progress
     if (this.pendingRequests.has(cacheKey)) {
-      console.log(`⏳ [DEBUG] Request already in progress for ${cacheKey}`);
       return this.pendingRequests.get(cacheKey);
     }
 
@@ -572,9 +559,7 @@ class BusinessProfileService {
       // Only cache if we got valid data
       if (result && result.success !== false) {
         this.setCachedData(cacheKey, result);
-        console.log(`💾 [DEBUG] Cached reviews data for ${accountId}/${locationId}: ${result.reviews?.length || 0} reviews`);
       } else {
-        console.log(`⚠️ [DEBUG] Not caching invalid result for ${accountId}/${locationId}:`, result);
       }
       
       return result;
@@ -585,27 +570,16 @@ class BusinessProfileService {
 
   // Fetch reviews from API with cache-first loading
   async fetchReviewsFromAPI(accountId, locationId, forceRefresh = false) {
-    console.log(`🔍 [DEBUG] fetchReviewsFromAPI called for accountId: ${accountId}, locationId: ${locationId}, forceRefresh: ${forceRefresh}`);
     
     try {
       // Skip cache if forceRefresh is true
       if (!forceRefresh) {
         // First try to get cached data
         try {
-          console.log(`🔍 [DEBUG] Attempting to fetch cached reviews from: /api/reviews/accounts/${accountId}/locations/${locationId}/reviews?cached_only=true`);
           const cachedResponse = await axios.get(`/api/reviews/accounts/${accountId}/locations/${locationId}/reviews?cached_only=true`);
           
-          console.log(`🔍 [DEBUG] Cached response received:`, {
-            success: cachedResponse.data?.success,
-            cached: cachedResponse.data?.cached,
-            hasReviews: !!cachedResponse.data?.reviews,
-            reviewsLength: cachedResponse.data?.reviews?.length || 0,
-            status: cachedResponse.status,
-            fullResponse: cachedResponse.data
-          });
           
           if (cachedResponse.data.success && cachedResponse.data.cached) {
-            console.log(`📦 [DEBUG] Using cached reviews data for location ${locationId} (${cachedResponse.data.reviews?.length || 0} reviews)`);
             return cachedResponse.data;
           } else {
             console.log(`💾 [DEBUG] Cached data not available or invalid, will fetch from API`);
@@ -626,14 +600,6 @@ class BusinessProfileService {
       console.log(`🔍 [DEBUG] Fetching reviews from API: /api/reviews/accounts/${accountId}/locations/${locationId}/reviews`);
       const response = await axios.get(`/api/reviews/accounts/${accountId}/locations/${locationId}/reviews`);
       
-      console.log(`🔍 [DEBUG] API response received:`, {
-        success: response.data?.success,
-        hasReviews: !!response.data?.reviews,
-        reviewsLength: response.data?.reviews?.length || 0,
-        status: response.status,
-        statusText: response.statusText,
-        fullResponse: response.data
-      });
       
       return response.data;
     } catch (error) {

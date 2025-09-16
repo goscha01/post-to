@@ -3,6 +3,7 @@ import axios from '../utils/axiosConfig';
 import { useAuth } from '../contexts/AuthContext';
 import imageService from '../services/imageService';
 import businessProfileService from '../services/businessProfileService';
+import reviewsMediaService from '../services/reviewsMediaService';
 import {
   MessageSquare,
   Star,
@@ -11,16 +12,25 @@ import {
   Trash2,
   Clock,
   User,
-  CheckCircle
+  CheckCircle,
+  RefreshCw
 } from 'lucide-react';
 
 // Profile Image Component
-const ProfileImage = ({ profilePhotoUrl, displayName }) => {
-  const [imageSrc, setImageSrc] = useState(null);
-  const [loading, setLoading] = useState(true);
+const ProfileImage = ({ profilePhotoUrl, cachedImageUrl, displayName }) => {
+  const [imageSrc, setImageSrc] = useState(cachedImageUrl || null);
+  const [loading, setLoading] = useState(!cachedImageUrl);
   const [error, setError] = useState(false);
 
   useEffect(() => {
+    // If we have a cached image, use it immediately
+    if (cachedImageUrl) {
+      setImageSrc(cachedImageUrl);
+      setLoading(false);
+      return;
+    }
+
+    // Otherwise fetch the image
     const fetchImage = async () => {
       if (!profilePhotoUrl) {
         setLoading(false);
@@ -47,7 +57,7 @@ const ProfileImage = ({ profilePhotoUrl, displayName }) => {
     };
 
     fetchImage();
-  }, [profilePhotoUrl]);
+  }, [profilePhotoUrl, cachedImageUrl]);
 
   if (loading) {
     return (
@@ -171,26 +181,35 @@ const Reviews = () => {
       
       console.log('Extracted IDs - Account:', accountId, 'Location:', locationId);
       
-      // Use centralized service for reviews with caching
-      const response = await businessProfileService.getReviewsForLocation(accountId, locationId);
-      console.log('Reviews API response:', response);
+      // STEP 1: Load cached data first for instant UI
+      let currentReviews = [];
+      const cachedResponse = await businessProfileService.getReviewsForLocation(accountId, locationId, false);
+      if (cachedResponse && cachedResponse.success && cachedResponse.reviews && cachedResponse.reviews.length > 0) {
+        currentReviews = cachedResponse.reviews;
+        // Process media for cached reviews
+        const reviewsWithMedia = await reviewsMediaService.getMediaForReviews(cachedResponse.reviews);
+        setReviews(reviewsWithMedia);
+        console.log(`📦 Displaying ${cachedResponse.reviews.length} cached reviews for ${locationId}`);
+      }
       
-      if (response.success) {
-        setReviews(response.reviews || []);
-        console.log('Reviews set:', response.reviews || []);
-        console.log('Total reviews received:', response.reviews?.length || 0);
-        
-        // Debug: Log the first review structure if available
-        if (response.reviews && response.reviews.length > 0) {
-          console.log('First review structure:', response.reviews[0]);
-          console.log('First review has profilePhotoUrl:', !!response.reviews[0].reviewer?.profilePhotoUrl);
-          if (response.reviews[0].reviewer?.profilePhotoUrl) {
-            console.log('Profile photo URL:', response.reviews[0].reviewer.profilePhotoUrl);
-          }
+      // STEP 2: Fetch fresh data in background
+      console.log(`🔄 Fetching fresh reviews for ${locationId} in background`);
+      const freshResponse = await businessProfileService.getReviewsForLocation(accountId, locationId, true);
+      
+      if (freshResponse && freshResponse.success) {
+        // Compare fresh data with current data and update only if changes are detected
+        const hasChanges = JSON.stringify(freshResponse.reviews) !== JSON.stringify(currentReviews);
+        if (hasChanges) {
+          console.log(`🔄 Fresh reviews data changed, updating UI for ${locationId}`);
+          // Process media for fresh reviews
+          const freshReviewsWithMedia = await reviewsMediaService.getMediaForReviews(freshResponse.reviews || []);
+          setReviews(freshReviewsWithMedia);
+        } else {
+          console.log(`📄 No changes detected in fresh reviews for ${locationId}`);
         }
       } else {
+        console.log(`⚠️ No fresh reviews found for ${locationId}`);
         setReviews([]);
-        console.log('No reviews found or API error');
       }
     } catch (error) {
       console.error('Error fetching reviews:', error);
@@ -429,11 +448,22 @@ const Reviews = () => {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900">Reviews</h1>
-        <p className="mt-1 text-sm text-gray-500">
-          Monitor and respond to customer reviews for your business profiles
-        </p>
+      <div className="flex justify-between items-start">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Reviews</h1>
+          <p className="mt-1 text-sm text-gray-500">
+            Monitor and respond to customer reviews for your business profiles
+          </p>
+        </div>
+        {selectedProfile && (
+          <button
+            onClick={() => fetchReviews(selectedProfile, true)}
+            className="inline-flex items-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500"
+          >
+            <RefreshCw className="h-4 w-4 mr-2" />
+            Refresh Reviews
+          </button>
+        )}
       </div>
 
       {/* Profile Selector */}
@@ -476,6 +506,7 @@ const Reviews = () => {
                       {review.reviewer?.profilePhotoUrl ? (
                         <ProfileImage 
                           profilePhotoUrl={review.reviewer.profilePhotoUrl}
+                          cachedImageUrl={review.reviewer.cachedImageUrl}
                           displayName={review.reviewer.displayName}
                         />
                       ) : (

@@ -165,7 +165,6 @@ const Posts = () => {
       const locationIdOnly = profileParts[profileParts.length - 1];
       const accountId = profileParts[1];
       
-      console.log(`🔄 [DEBUG] fetchPosts called for locationId: ${locationIdOnly}, accountId: ${accountId}, forceRefresh: ${forceRefresh}`);
 
       // Use centralized posts service with caching
       const posts = await postsService.getPostsForLocation(locationIdOnly, accountId, forceRefresh);
@@ -181,42 +180,30 @@ const Posts = () => {
         
         // Background refresh: check for updates and refresh UI if needed
         if (!forceRefresh) {
-          console.log(`🔄 [DEBUG] Starting background refresh to check for updates`);
           setTimeout(async () => {
             try {
-              console.log(`🔄 [DEBUG] Background refresh: fetching fresh posts`);
               const freshPosts = await postsService.getPostsForLocation(locationIdOnly, accountId, true);
               
               // Check if data has changed
               let hasChanges = false;
-              console.log(`🔍 [DEBUG] Background refresh: comparing ${freshPosts.length} fresh posts vs ${postsWithMedia.length} cached posts`);
               
               if (freshPosts.length !== postsWithMedia.length) {
                 hasChanges = true;
-                console.log(`🔍 [DEBUG] Background refresh: post count changed`);
               } else {
                 for (let i = 0; i < freshPosts.length; i++) {
                   const freshPost = freshPosts[i];
                   const cachedPost = postsWithMedia[i];
                   
-                  console.log(`🔍 [DEBUG] Background refresh: comparing post ${i}:`, {
-                    freshContent: freshPost.content?.substring(0, 50),
-                    cachedContent: cachedPost.content?.substring(0, 50),
-                    freshMedia: freshPost.media?.length || 0,
-                    cachedMedia: cachedPost.media?.length || 0
-                  });
                   
                   if (freshPost.content !== cachedPost.content ||
                       (freshPost.media?.length || 0) !== (cachedPost.media?.length || 0)) {
                     hasChanges = true;
-                    console.log(`🔍 [DEBUG] Background refresh: changes detected for post ${i}`);
                     break;
                   }
                 }
               }
               
               if (hasChanges) {
-                console.log(`🔄 [DEBUG] Background refresh: data changed, updating UI`);
                 // Process media for fresh posts
                 const freshPostsWithMedia = await postsService.getMediaForPosts(freshPosts);
                 
@@ -224,7 +211,6 @@ const Posts = () => {
                 setPosts(freshPostsWithMedia);
                 
                 // Update the cached data with the fresh data
-                console.log(`💾 [DEBUG] Background refresh: updating cached posts data`);
                 postsService.setCachedData(`posts_${locationIdOnly}`, freshPosts);
               } else {
                 console.log(`📄 Background refresh: no changes detected`);
@@ -958,7 +944,6 @@ const Posts = () => {
           </button>
           <button
             onClick={async () => {
-              console.log(`🔄 [DEBUG] Manual refresh all posts triggered`);
               try {
                 setRefreshing(true);
                 // Clear all caches to get fresh data
@@ -971,13 +956,11 @@ const Posts = () => {
                   const locationIdOnly = profileParts[profileParts.length - 1];
                   const accountId = profileParts[1];
                   
-                  console.log(`🔄 [DEBUG] Force refreshing posts for ${locationIdOnly}`);
                   await postsService.getPostsForLocation(locationIdOnly, accountId, true);
                   await fetchPosts(selectedProfile, 1, false, true);
                 }
-                console.log(`✅ [DEBUG] Manual refresh completed`);
               } catch (error) {
-                console.error(`❌ [DEBUG] Manual refresh failed:`, error);
+                console.error(`❌ Manual refresh failed:`, error);
               } finally {
                 setRefreshing(false);
               }

@@ -107,12 +107,10 @@ const BusinessProfilePopup = ({ isOpen, onClose, profile, accountId }) => {
       setError(null);
       
       // Use cached location data instead of making API calls
-      console.log(`🔍 [DEBUG] Using cached location data for profile popup`);
       const locations = await businessProfileService.getLocationsForAccount(accountId, false);
       
       if (locations && locations.length > 0) {
         const location = locations[0];
-        console.log(`📦 [DEBUG] Using cached location data for ${accountId}:`, location);
         setDetailedData(location);
       } else {
         setError('No location data available');
@@ -687,13 +685,11 @@ const BusinessProfiles = () => {
     }
 
     try {
-      console.log(`🔄 fetchProfiles called${forceRefresh ? ' (force refresh)' : ''}`);
       setIsFetching(true);
       fetchingRef.current = true;
       setLoading(true);
 
       // Use cache-first approach: render cached data first, then refresh in background
-      console.log(`📦 [DEBUG] Using cache-first approach: render cached data first`);
       
       // Check if cached data has old business name format and force refresh if needed
       let accounts;
@@ -706,7 +702,6 @@ const BusinessProfiles = () => {
           if (locations.length > 0) {
             const firstLocation = locations[0];
             if (firstLocation.businessName && firstLocation.businessName.includes('GMB Location')) {
-              console.log(`🔄 [DEBUG] Detected old business name format in cached data, forcing refresh`);
               hasOldBusinessName = true;
               break;
             }
@@ -714,13 +709,11 @@ const BusinessProfiles = () => {
         }
         
         if (hasOldBusinessName) {
-          console.log(`🧹 [DEBUG] Clearing caches due to old business name format`);
           businessProfileService.clearReviewsCache();
           businessProfileService.clearLocationsCache();
           businessProfileService.clearAccountsCache();
           
           // Force refresh to get correct business names
-          console.log(`🔄 [DEBUG] Force refreshing to get correct business names`);
           accounts = await businessProfileService.getAccounts(true);
         } else {
           // Use cached data
@@ -731,7 +724,6 @@ const BusinessProfiles = () => {
         accounts = await businessProfileService.getAccounts(true);
       }
       console.log(`📋 Received ${accounts?.length || 0} accounts:`, accounts);
-      console.log(`🔍 Account IDs:`, accounts.map(acc => acc.name));
       
       if (accounts && accounts.length > 0) {
         // Remove duplicate accounts by ID (normalize account names first)
@@ -861,38 +853,25 @@ const BusinessProfiles = () => {
         
         // Background refresh: check for updates and refresh UI if needed
         if (!forceRefresh) {
-          console.log(`🔄 [DEBUG] Starting background refresh to check for updates`);
           setTimeout(async () => {
             try {
-              console.log(`🔄 [DEBUG] Background refresh: fetching fresh data`);
               const freshAccounts = await businessProfileService.getAccounts(true);
               
               // Check if data has changed
               let hasChanges = false;
-              console.log(`🔍 [DEBUG] Background refresh: comparing ${freshAccounts.length} fresh accounts vs ${businessProfiles.length} cached profiles`);
               
               if (freshAccounts.length !== businessProfiles.length) {
                 hasChanges = true;
-                console.log(`🔍 [DEBUG] Background refresh: account count changed`);
               } else {
                 for (let i = 0; i < freshAccounts.length; i++) {
                   const freshAccount = freshAccounts[i];
                   const cachedAccount = businessProfiles[i];
                   
-                  console.log(`🔍 [DEBUG] Background refresh: comparing account ${i}:`, {
-                    freshBusinessName: freshAccount.businessName,
-                    cachedBusinessName: cachedAccount.businessName,
-                    freshReviews: freshAccount.totalReviews,
-                    cachedReviews: cachedAccount.totalReviews,
-                    freshRating: freshAccount.averageRating,
-                    cachedRating: cachedAccount.averageRating
-                  });
                   
                   if (freshAccount.businessName !== cachedAccount.businessName ||
                       freshAccount.totalReviews !== cachedAccount.totalReviews ||
                       freshAccount.averageRating !== cachedAccount.averageRating) {
                     hasChanges = true;
-                    console.log(`🔍 [DEBUG] Background refresh: changes detected for account ${i}`);
                     break;
                   }
                 }
