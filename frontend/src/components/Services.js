@@ -172,8 +172,9 @@ const Services = () => {
           if (categories.length > 0) {
             setBusinessCategories(categories);
             const primaryCategory = categories[0];
-            setSelectedCategory(primaryCategory.id);
+            setSelectedCategory(primaryCategory.id || primaryCategory.name);
             console.log(`⚡ Immediate business categories set: ${categories.length} categories, selected: ${primaryCategory.displayName}`);
+            console.log(`⚡ Setting selectedCategory to: ${primaryCategory.id || primaryCategory.name}`);
           } else {
             // Set default if no categories found
             const defaultCategory = {
@@ -192,9 +193,10 @@ const Services = () => {
             name: 'House cleaning service',
             displayName: 'House cleaning service'
           };
-          setBusinessCategories([defaultCategory]);
-          setSelectedCategory(defaultCategory.id);
-          console.log(`⚡ Immediate default category set (no categories): ${defaultCategory.displayName}`);
+            setBusinessCategories([defaultCategory]);
+            setSelectedCategory(defaultCategory.id);
+            console.log(`⚡ Immediate default category set (no categories): ${defaultCategory.displayName}`);
+            console.log(`⚡ Setting selectedCategory to: ${defaultCategory.id}`);
         }
       } else {
         console.log('No profiles or locations found');
@@ -223,6 +225,8 @@ const Services = () => {
 
   useEffect(() => {
     console.log('🔍 selectedCategory changed to:', selectedCategory);
+    console.log('🔍 businessCategories:', businessCategories);
+    console.log('🔍 dataLoaded:', dataLoaded);
     if (selectedCategory && dataLoaded) {
       console.log('🔍 Scheduling services fetch for category:', selectedCategory);
       // Delay the services fetch to make it truly background
@@ -235,6 +239,10 @@ const Services = () => {
     }
   }, [selectedCategory, dataLoaded]);
 
+  useEffect(() => {
+    console.log('🔍 businessCategories changed:', businessCategories);
+    console.log('🔍 selectedCategory:', selectedCategory);
+  }, [businessCategories]);
 
   const fetchBusinessCategories = async (forceRefresh = false) => {
     if (!selectedProfile) return;
@@ -1268,18 +1276,31 @@ const Services = () => {
             <label htmlFor="category-select" className="block text-sm font-medium text-gray-700 mb-2">
               Select Business Category
             </label>
+            {console.log('🔍 Category dropdown render - selectedCategory:', selectedCategory, 'businessCategories:', businessCategories)}
             <select
               id="category-select"
               value={selectedCategory}
-              onChange={(e) => setSelectedCategory(e.target.value)}
+              onChange={(e) => {
+                console.log('🔍 Category dropdown onChange triggered:', e.target.value);
+                setSelectedCategory(e.target.value);
+              }}
               className="block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
             >
               <option value="">Select a business category...</option>
-              {(businessCategories || []).map((category) => (
-                <option key={category.id || category.name || `category_${Math.random()}`} value={category.id}>
-                  {category.displayName || category.name}
-                </option>
-              ))}
+              {(businessCategories || []).map((category) => {
+                console.log('🔍 Rendering category option:', {
+                  id: category.id,
+                  name: category.name,
+                  displayName: category.displayName,
+                  selectedCategory: selectedCategory,
+                  isSelected: (category.id || category.name) === selectedCategory
+                });
+                return (
+                  <option key={category.id || category.name || `category_${Math.random()}`} value={category.id || category.name}>
+                    {category.displayName || category.name}
+                  </option>
+                );
+              })}
             </select>
           </div>
           
