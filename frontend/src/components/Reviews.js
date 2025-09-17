@@ -25,6 +25,7 @@ const ProfileImage = ({ profilePhotoUrl, cachedImageUrl, displayName }) => {
   useEffect(() => {
     // If we have a cached image, use it immediately
     if (cachedImageUrl) {
+      console.log(`📦 ProfileImage using cached image: ${profilePhotoUrl?.substring(0, 50)}...`);
       setImageSrc(cachedImageUrl);
       setLoading(false);
       return;

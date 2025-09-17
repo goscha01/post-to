@@ -38,7 +38,7 @@ class ReviewsMediaService {
     this.cache.set(url, dataUrl);
     this.cacheExpiry.set(url, Date.now() + ttl);
     
-    console.log(`💾 Cached review image with session-based TTL: ${ttl / 1000 / 60} minutes`);
+    console.log(`💾 Cached review image with session-based TTL: ${Math.round(ttl / 1000 / 60)} minutes`);
   }
 
   // Process media for reviews (profile images)
@@ -54,6 +54,7 @@ class ReviewsMediaService {
         // Check cache first
         const cachedImage = this.getCachedImage(review.reviewer.profilePhotoUrl);
         if (cachedImage) {
+          console.log(`📦 Retrieved review image from reviewsMediaService cache: ${review.reviewer.profilePhotoUrl.substring(0, 50)}...`);
           return {
             ...review,
             reviewer: {

@@ -1,22 +1,30 @@
 import axios from '../utils/axiosConfig';
+import sessionCacheConfig from '../config/sessionCacheConfig';
 
 class ImageService {
   constructor() {
     this.cache = new Map();
+    this.cacheExpiry = new Map();
     this.pendingRequests = new Map();
     this.batchQueue = [];
     this.batchTimeout = null;
     this.batchSize = 5; // Process 5 images at a time
     this.batchDelay = 100; // 100ms delay between batches
+    // Use session-based TTL instead of permanent cache
+    this.sessionCacheConfig = sessionCacheConfig;
   }
 
   // Get image with caching and batching
   async getImage(imageUrl, options = {}) {
     const { useCache = true, priority = 'normal' } = options;
     
-    // Return cached image if available
-    if (useCache && this.cache.has(imageUrl)) {
-      return this.cache.get(imageUrl);
+    // Return cached image if available and not expired
+    if (useCache) {
+      const cachedImage = this.getCachedImage(imageUrl);
+      if (cachedImage) {
+        console.log(`📦 Retrieved image from cache: ${imageUrl.substring(0, 50)}...`);
+        return cachedImage;
+      }
     }
 
     // Return pending request if already in progress
@@ -30,13 +38,45 @@ class ImageService {
 
     try {
       const result = await imagePromise;
-      if (useCache) {
-        this.cache.set(imageUrl, result);
+      if (useCache && result.success) {
+        this.setCachedImage(imageUrl, result);
       }
       return result;
     } finally {
       this.pendingRequests.delete(imageUrl);
     }
+  }
+
+  // Get cached image or return null if expired
+  getCachedImage(imageUrl) {
+    const expiry = this.cacheExpiry.get(imageUrl);
+    if (!expiry || Date.now() > expiry) {
+      this.cache.delete(imageUrl);
+      this.cacheExpiry.delete(imageUrl);
+      return null;
+    }
+    return this.cache.get(imageUrl);
+  }
+
+  // Set cached image with session-based expiry
+  setCachedImage(imageUrl, result) {
+    // Check if we should use cache based on session
+    if (!this.sessionCacheConfig.shouldUseCache('userProfile')) {
+      console.log(`🚫 Skipping cache for image - session expired or cache disabled`);
+      return;
+    }
+
+    // Get session-based TTL for user profile images
+    const ttl = this.sessionCacheConfig.getTTL('userProfile');
+    if (ttl <= 0) {
+      console.log(`🚫 Skipping cache for image - TTL is 0`);
+      return;
+    }
+
+    this.cache.set(imageUrl, result);
+    this.cacheExpiry.set(imageUrl, Date.now() + ttl);
+    
+    console.log(`💾 Cached image with session-based TTL: ${Math.round(ttl / 1000 / 60)} minutes`);
   }
 
   // Process single image
@@ -94,12 +134,12 @@ class ImageService {
     
     // Filter out cached images
     const uncachedUrls = useCache 
-      ? imageUrls.filter(url => !this.cache.has(url))
+      ? imageUrls.filter(url => !this.getCachedImage(url))
       : imageUrls;
 
     if (uncachedUrls.length === 0) {
       // All images are cached
-      return imageUrls.map(url => this.cache.get(url));
+      return imageUrls.map(url => this.getCachedImage(url));
     }
 
     // Process in batches to avoid rate limiting
@@ -125,8 +165,9 @@ class ImageService {
 
     // Combine with cached results
     const allResults = imageUrls.map(url => {
-      if (this.cache.has(url)) {
-        return this.cache.get(url);
+      const cachedImage = this.getCachedImage(url);
+      if (cachedImage) {
+        return cachedImage;
       }
       const index = uncachedUrls.indexOf(url);
       return results[index] || { success: false, error: 'Not processed' };
@@ -138,6 +179,7 @@ class ImageService {
   // Clear cache
   clearCache() {
     this.cache.clear();
+    this.cacheExpiry.clear();
   }
 
   // Get cache stats

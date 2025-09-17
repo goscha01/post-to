@@ -200,8 +200,9 @@ router.get('/categories', async (req, res) => {
 
 // Get predefined services by category ID (MUST be before /categories/:categoryId)
 router.get('/categories/batchGet', async (req, res) => {
+  const { regionCode = 'US', languageCode = 'en', names, view = 'FULL' } = req.query;
+  
   try {
-    const { regionCode = 'US', languageCode = 'en', names, view = 'FULL' } = req.query;
     
     if (!names) {
       return res.status(400).json({
