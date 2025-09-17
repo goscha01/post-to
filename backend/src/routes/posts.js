@@ -389,7 +389,7 @@ async function getCachedPosts(locationId, userId, accountId) {
       .eq('location_id', locationId)
       .eq('gmb_account_id', accountId)
       .eq('user_id', userId)
-      .order('created_at', { ascending: false })
+      .order('created_at', { ascending: true })
 
     if (error) {
       console.log('❌ Cache query error:', error);
@@ -482,7 +482,9 @@ async function getCachedPosts(locationId, userId, accountId) {
     }));
     
     // Posts are already sorted by database query (newest first)
-    
+    if (processedPosts.length > 0) {
+      console.log(`📅 Cached posts order - First: ${processedPosts[0]?.createdAt}, Last: ${processedPosts[processedPosts.length - 1]?.createdAt}`);
+    }
     
     return processedPosts;
   } catch (error) {
@@ -493,14 +495,18 @@ async function getCachedPosts(locationId, userId, accountId) {
 
 // Get posts for a specific location (GET /location/:locationId endpoint)
 router.get('/location/:locationId', async (req, res) => {
+  console.log('🚨 BACKEND ROUTE CALLED - This should appear in backend logs!');
   try {
     const { locationId } = req.params;
     const { cached_only } = req.query; // Add query parameter for cache-only requests
     const accessToken = req.businessToken;
     const userId = req.user?.userId;
+    
+    console.log(`🔍 [BACKEND] Posts route called - locationId: ${locationId}, cached_only: ${cached_only}, userId: ${userId}`);
 
     // If cached_only=true, return only cached data
     if (cached_only === 'true') {
+      console.log(`📦 [BACKEND] Returning cached data only for location ${locationId}`);
       const accountId = req.headers['x-gmb-account-id'] || '109194636448236279020';
       const cachedPosts = await getCachedPosts(locationId, userId, accountId);
       return res.json({
@@ -512,6 +518,7 @@ router.get('/location/:locationId', async (req, res) => {
     }
     
     // Fetching posts for location
+    console.log(`🌐 [BACKEND] Fetching posts from GMB API for location ${locationId}`);
     
     // Try to fetch real posts from Google My Business first
     try {
@@ -533,6 +540,11 @@ router.get('/location/:locationId', async (req, res) => {
         );
 
         console.log(`📊 GMB: ${gmbResponse.data.localPosts?.length || 0} posts`);
+        console.log(`🔍 GMB Response structure:`, {
+          hasLocalPosts: !!gmbResponse.data.localPosts,
+          localPostsLength: gmbResponse.data.localPosts?.length || 0,
+          responseKeys: Object.keys(gmbResponse.data || {})
+        });
 
         if (gmbResponse.data.localPosts && gmbResponse.data.localPosts.length > 0) {
           // Processing GMB posts
@@ -664,13 +676,25 @@ router.get('/location/:locationId', async (req, res) => {
             return processedPost;
           }));
           
-          // Sort by creation date (newest first)
-          realPosts.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+          // Sort by creation date (oldest first)
+          realPosts.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+          
+          if (realPosts.length > 0) {
+            console.log(`📅 Posts sorted by date - First: ${realPosts[0]?.createdAt}, Last: ${realPosts[realPosts.length - 1]?.createdAt}`);
+          }
           
           
           
           // Save existing posts to database
           console.log(`💾 Saving ${realPosts.length} posts to database for user ${req.user.userId}`);
+          console.log(`🔍 Sample post data:`, {
+            firstPostId: realPosts[0]?.id,
+            firstPostContent: realPosts[0]?.content?.substring(0, 50),
+            firstPostCreatedAt: realPosts[0]?.createdAt,
+            accountId: realPosts[0]?.accountId,
+            locationId: realPosts[0]?.locationId
+          });
+          
           const savedPosts = await saveExistingPostsToDatabase(req.user.userId, realPosts, 'google');
           console.log(`✅ Successfully saved ${savedPosts.length} posts to database`);
           
@@ -754,13 +778,25 @@ router.get('/location/:locationId', async (req, res) => {
             return processedPost;
           }));
           
-          // Sort by creation date (newest first)
-          realPosts.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+          // Sort by creation date (oldest first)
+          realPosts.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+          
+          if (realPosts.length > 0) {
+            console.log(`📅 Posts sorted by date - First: ${realPosts[0]?.createdAt}, Last: ${realPosts[realPosts.length - 1]?.createdAt}`);
+          }
           
           
           
           // Save existing posts to database
           console.log(`💾 Saving ${realPosts.length} posts to database for user ${req.user.userId}`);
+          console.log(`🔍 Sample post data:`, {
+            firstPostId: realPosts[0]?.id,
+            firstPostContent: realPosts[0]?.content?.substring(0, 50),
+            firstPostCreatedAt: realPosts[0]?.createdAt,
+            accountId: realPosts[0]?.accountId,
+            locationId: realPosts[0]?.locationId
+          });
+          
           const savedPosts = await saveExistingPostsToDatabase(req.user.userId, realPosts, 'google');
           console.log(`✅ Successfully saved ${savedPosts.length} posts to database`);
           
@@ -818,8 +854,23 @@ router.get('/location/:locationId', async (req, res) => {
       }
     ];
     
-    // Sort mock posts by creation date (newest first)
-    const sortedMockPosts = mockPosts.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    // Sort mock posts by creation date (newest first) - ensure proper date parsing
+    const sortedMockPosts = mockPosts.sort((a, b) => {
+      const dateA = new Date(a.createdAt);
+      const dateB = new Date(b.createdAt);
+      
+      // Handle invalid dates
+      if (isNaN(dateA.getTime()) || isNaN(dateB.getTime())) {
+        console.warn(`⚠️ Invalid date in mock posts`);
+        return 0;
+      }
+      
+      return dateA.getTime() - dateB.getTime(); // Oldest first
+    });
+    
+    if (sortedMockPosts.length > 0) {
+      console.log(`📅 Mock posts sorted - First: ${sortedMockPosts[0]?.createdAt}, Last: ${sortedMockPosts[sortedMockPosts.length - 1]?.createdAt}`);
+    }
 
     // Save mock posts to database for caching
     const accountId = req.headers['x-gmb-account-id'] || '109194636448236279020';

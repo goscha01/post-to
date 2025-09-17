@@ -228,8 +228,15 @@ class PostsService {
           });
           
           if (cachedResponse.data.success && cachedResponse.data.cached) {
-            console.log(`📦 [CACHE] Successfully fetched ${cachedResponse.data.posts?.length || 0} posts from BACKEND cache`);
-            return cachedResponse.data.posts || [];
+            const cachedPosts = cachedResponse.data.posts || [];
+            console.log(`📦 [CACHE] Successfully fetched ${cachedPosts.length} posts from BACKEND cache`);
+            
+            // Only return cached posts if there are actually posts in the cache
+            if (cachedPosts.length > 0) {
+              return cachedPosts;
+            } else {
+              console.log(`📦 [CACHE] Backend cache is empty, will fetch from GMB API`);
+            }
           }
         } catch (cacheError) {
           console.log(`💾 [DEBUG] Backend cache not available for location ${locationId}, will fetch from API. Error:`, {

@@ -180,6 +180,13 @@ const Posts = () => {
       // Use centralized posts service with caching
       const posts = await postsService.getPostsForLocation(locationIdOnly, accountId, forceRefresh);
       
+      // Log posts order for debugging
+      if (posts && posts.length > 0) {
+        console.log(`📅 Posts received from service - Count: ${posts.length}`);
+        console.log(`📅 First post: ${posts[0]?.content?.substring(0, 50)}... (${posts[0]?.createdAt})`);
+        console.log(`📅 Last post: ${posts[posts.length - 1]?.content?.substring(0, 50)}... (${posts[posts.length - 1]?.createdAt})`);
+      }
+      
       if (posts && posts.length > 0) {
         // Process media for posts
         const postsWithMedia = await postsService.getMediaForPosts(posts);
@@ -529,33 +536,28 @@ const Posts = () => {
 
       setTimeout(async () => {
         try {
-          // Fetch fresh posts from GMB
-          const response = await axios.get(`http://localhost:3001/api/gmb/accounts/${accountId}/locations/${locationId}/posts`, {
-            headers: {
-              'x-gmb-account-id': accountId,
-              'Authorization': `Bearer ${localStorage.getItem('gmb_token')}`
-            }
-          });
+          // Fetch fresh posts from GMB using the posts service
+          const freshPosts = await postsService.getPostsForLocation(locationId, accountId, true);
           
-          if (response.data.posts && response.data.pagination) {
+          if (freshPosts && freshPosts.length > 0) {
             // Check if our new post appears in the GMB response
-            const gmbPostExists = response.data.posts.some(gmbPost => 
+            const gmbPostExists = freshPosts.some(gmbPost => 
               gmbPost.content === formData.summary && 
               gmbPost.postType === formData.postType
             );
             
             if (gmbPostExists) {
               // New post found in GMB, replace local posts with GMB data
-              setPosts(response.data.posts);
+              setPosts(freshPosts);
 
             } else {
               // New post not yet in GMB, keep local post and append GMB posts
               setPosts(prevPosts => {
                 const localNewPost = prevPosts.find(p => p.id === newPostId);
                 if (localNewPost) {
-                  return [localNewPost, ...response.data.posts];
+                  return [localNewPost, ...freshPosts];
                 }
-                return response.data.posts;
+                return freshPosts;
               });
 
             }
@@ -948,7 +950,10 @@ const Posts = () => {
         </div>
         <div className="flex space-x-3">
           <button
-            onClick={() => fetchPosts(selectedProfile, 1, false, false)}
+            onClick={() => {
+              console.log('🔄 Refresh Posts clicked (using cache)');
+              fetchPosts(selectedProfile, 1, false, false);
+            }}
             disabled={refreshing}
             className="inline-flex items-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 disabled:opacity-50"
           >
@@ -958,6 +963,7 @@ const Posts = () => {
           <button
             onClick={async () => {
               try {
+                console.log('🔄 Refresh All Posts clicked (force refresh from API)');
                 setRefreshing(true);
                 // Clear all caches to get fresh data
                 postsService.clearPostsCache();
@@ -969,8 +975,10 @@ const Posts = () => {
                   const locationIdOnly = profileParts[profileParts.length - 1];
                   const accountId = profileParts[1];
                   
+                  console.log('🔄 Force refreshing from GMB API...');
                   await postsService.getPostsForLocation(locationIdOnly, accountId, true);
                   await fetchPosts(selectedProfile, 1, false, true);
+                  console.log('✅ Force refresh completed');
                 }
               } catch (error) {
                 console.error(`❌ Manual refresh failed:`, error);
