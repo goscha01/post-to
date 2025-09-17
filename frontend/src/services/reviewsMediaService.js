@@ -1,10 +1,12 @@
 import imageService from './imageService';
+import sessionCacheConfig from '../config/sessionCacheConfig';
 
 class ReviewsMediaService {
   constructor() {
     this.cache = new Map();
     this.cacheExpiry = new Map();
-    this.cacheTimeout = 5 * 60 * 1000; // 5 minutes
+    // Use session-based TTL instead of fixed timeout
+    this.sessionCacheConfig = sessionCacheConfig;
   }
 
   // Get cached image or fetch if expired
@@ -18,10 +20,25 @@ class ReviewsMediaService {
     return this.cache.get(url);
   }
 
-  // Set cached image with expiry
+  // Set cached image with session-based expiry
   setCachedImage(url, dataUrl) {
+    // Check if we should use cache based on session
+    if (!this.sessionCacheConfig.shouldUseCache('reviews')) {
+      console.log(`🚫 Skipping cache for review image - session expired or cache disabled`);
+      return;
+    }
+
+    // Get session-based TTL
+    const ttl = this.sessionCacheConfig.getTTL('reviews');
+    if (ttl <= 0) {
+      console.log(`🚫 Skipping cache for review image - TTL is 0`);
+      return;
+    }
+
     this.cache.set(url, dataUrl);
-    this.cacheExpiry.set(url, Date.now() + this.cacheTimeout);
+    this.cacheExpiry.set(url, Date.now() + ttl);
+    
+    console.log(`💾 Cached review image with session-based TTL: ${ttl / 1000 / 60} minutes`);
   }
 
   // Process media for reviews (profile images)

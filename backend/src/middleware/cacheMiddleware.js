@@ -1,5 +1,6 @@
 const cacheService = require('../services/CacheService');
 const { generateCacheKey } = require('../utils/cacheUtils');
+const sessionCacheUtils = require('../utils/sessionCacheUtils');
 
 /**
  * Cache middleware for API routes
@@ -14,7 +15,9 @@ const cacheMiddleware = (options = {}) => {
     ttl = 5 * 60 * 1000, // 5 minutes default
     usePersistentCache = false,
     keyGenerator = null,
-    skipCacheFor = []
+    skipCacheFor = [],
+    sessionBased = false, // Enable session-based TTL
+    dataType = 'default' // Data type for session-based TTL
   } = options;
 
   return async (req, res, next) => {
@@ -67,8 +70,28 @@ const cacheMiddleware = (options = {}) => {
       res.json = function(data) {
         // Only cache successful responses
         if (data && (data.success !== false)) {
-          cacheService.set(cacheKey, data, userId, Math.floor(ttl / 1000));
-          console.log(`Cached response for ${endpoint}`);
+          let cacheTTL = ttl;
+          
+          // Use session-based TTL if enabled
+          if (sessionBased) {
+            // Check if we should use cache based on session
+            if (!sessionCacheUtils.shouldUseCache(userId, dataType)) {
+              console.log(`🚫 Skipping cache for ${endpoint} - session expired or cache disabled for ${dataType}`);
+              return originalJson(data);
+            }
+            
+            // Get session-based TTL
+            cacheTTL = sessionCacheUtils.getTTL(userId, dataType);
+            if (cacheTTL <= 0) {
+              console.log(`🚫 Skipping cache for ${endpoint} - TTL is 0 for ${dataType}`);
+              return originalJson(data);
+            }
+            
+            console.log(`Using session-based TTL for ${dataType}: ${cacheTTL / 1000 / 60} minutes`);
+          }
+          
+          cacheService.set(cacheKey, data, userId, Math.floor(cacheTTL / 1000));
+          console.log(`Cached response for ${endpoint} with TTL: ${cacheTTL / 1000 / 60} minutes`);
         }
         
         // Call original json method

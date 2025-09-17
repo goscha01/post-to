@@ -1,12 +1,14 @@
 import axios from '../utils/axiosConfig';
 import apiTracker from '../utils/apiTracker';
+import sessionCacheConfig from '../config/sessionCacheConfig';
 
 class BusinessProfileService {
   constructor() {
     this.cache = new Map();
     this.cacheExpiry = new Map();
     this.pendingRequests = new Map();
-    this.cacheTimeout = 5 * 60 * 1000; // 5 minutes
+    // Use session-based TTL instead of fixed timeout
+    this.sessionCacheConfig = sessionCacheConfig;
   }
 
   // Get cached data or fetch if expired
@@ -43,20 +45,35 @@ class BusinessProfileService {
     return cachedData;
   }
 
-  // Set cached data with expiry and validation
+  // Set cached data with session-based expiry and validation
   setCachedData(key, data, dataType = null) {
     // Determine data type from cache key if not provided
     if (!dataType) {
-      if (key === 'accounts') dataType = 'accounts';
-      else if (key.startsWith('locations_')) dataType = 'locations';
-      else if (key.startsWith('reviews_')) dataType = 'reviews_response';
-      else if (key.startsWith('media_')) dataType = 'media';
+      if (key === 'accounts') dataType = 'businessProfiles';
+      else if (key.startsWith('locations_')) dataType = 'businessProfiles';
+      else if (key.startsWith('reviews_')) dataType = 'reviews';
+      else if (key.startsWith('media_')) dataType = 'services';
+    }
+
+    // Check if we should use cache based on session
+    if (!this.sessionCacheConfig.shouldUseCache(dataType)) {
+      console.log(`🚫 Skipping cache for ${key} - session expired or cache disabled for ${dataType}`);
+      return;
+    }
+
+    // Get session-based TTL
+    const ttl = this.sessionCacheConfig.getTTL(dataType);
+    if (ttl <= 0) {
+      console.log(`🚫 Skipping cache for ${key} - TTL is 0 for ${dataType}`);
+      return;
     }
 
     // Validate and clean data before caching
     const cleanedData = this.validateAndCleanData(data, dataType);
     this.cache.set(key, cleanedData);
-    this.cacheExpiry.set(key, Date.now() + this.cacheTimeout);
+    this.cacheExpiry.set(key, Date.now() + ttl);
+    
+    console.log(`💾 Cached ${key} with session-based TTL: ${ttl / 1000 / 60} minutes for ${dataType}`);
   }
 
   // Validate and clean data before caching
