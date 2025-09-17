@@ -326,15 +326,16 @@ const Services = () => {
     console.log('🔄 Background: Fetching fresh services for category:', categoryId);
 
     try {
-      const response = await axios.get(`http://localhost:3001/api/services/categories/${categoryId}`);
+      // Use servicesMediaService with force refresh
+      const freshServices = await servicesMediaService.getServicesForCategory(categoryId, true);
 
-      if (response.data.success && response.data.services && response.data.services.length > 0) {
+      if (freshServices && freshServices.length > 0) {
         // Check if data changed from what we currently have
-        const hasChanges = JSON.stringify(response.data.services) !== JSON.stringify(services);
+        const hasChanges = JSON.stringify(freshServices) !== JSON.stringify(services);
 
         if (hasChanges) {
           console.log('🔄 Background: Fresh services data changed, updating UI');
-          setServices(response.data.services);
+          setServices(freshServices);
         } else {
           console.log('📄 Background: No changes detected in fresh services');
         }
@@ -347,21 +348,20 @@ const Services = () => {
   const fetchServicesForCategory = async (categoryId) => {
     console.log('🔍 fetchServicesForCategory called for:', categoryId);
 
-    // STEP 1: Try to get backend cached services first
+    // Use servicesMediaService for caching
     try {
-      console.log('📦 Trying backend cache for services...');
-      const cachedResponse = await axios.get(`http://localhost:3001/api/services/categories/${categoryId}?cached_only=true`);
-
-      if (cachedResponse.data.success && cachedResponse.data.services && cachedResponse.data.services.length > 0) {
-        console.log('📦 Using backend cached services for category:', categoryId);
-        setServices(cachedResponse.data.services);
-
+      const services = await servicesMediaService.getServicesForCategory(categoryId);
+      
+      if (services && services.length > 0) {
+        console.log(`📦 Using cached services for category ${categoryId}: ${services.length} services`);
+        setServices(services);
+        
         // Fetch fresh data in background for cache update
         setTimeout(() => fetchFreshServicesInBackground(categoryId), 1000);
         return;
       }
-    } catch (cacheError) {
-      console.log('📦 No backend cached services available, proceeding with fresh fetch');
+    } catch (error) {
+      console.log('📦 Error fetching cached services, proceeding with fallback');
     }
 
     console.log('🔍 No cached services found, setting fallback and fetching from API');
@@ -379,7 +379,7 @@ const Services = () => {
     ];
     setServices(fallbackServices);
     
-    // STEP 3: Fetch fresh services in background
+    // STEP 3: Fetch fresh services in background using servicesMediaService
     console.log('🔄 Fetching fresh services for category:', categoryId);
     
     // Convert category name to proper Google category ID format
@@ -409,121 +409,24 @@ const Services = () => {
     console.log('Using Google category ID:', googleCategoryId);
     
     try {
-      // No loading state - this is background fetch
-      console.log('🔍 FETCHING SERVICES for category:', categoryId);
-      console.log('Google category ID:', googleCategoryId);
-      
       // Convert to proper format for Google API
       const properCategoryId = googleCategoryId.startsWith('categories/') 
         ? googleCategoryId 
         : `categories/${googleCategoryId}`;
       
       console.log('Proper category ID for API:', properCategoryId);
-      console.log('Making API call to backend...');
+      console.log('Using servicesMediaService to fetch services...');
       
-      const response = await axios.get(`http://localhost:3001/api/gmb/categories/batchGet`, {
-        params: {
-          names: properCategoryId,
-          regionCode: 'US',
-          languageCode: 'en',
-          view: 'FULL'
-        }
-      });
+      // Use servicesMediaService instead of direct API call
+      const services = await servicesMediaService.getServicesForCategory(properCategoryId, true);
       
-      console.log('✅ API call successful, response received');
+      console.log('✅ Services fetched successfully:', services.length);
       
-      if (response.data.success && response.data.categories.length > 0) {
-        const category = response.data.categories[0];
-        
-        if (category.serviceTypes && Array.isArray(category.serviceTypes) && category.serviceTypes.length > 0) {
-          // Check if services have valid data
-          const hasValidServices = category.serviceTypes.some(service => 
-            service.displayName || service.serviceTypeId
-          );
-          
-          if (hasValidServices) {
-            const services = category.serviceTypes.map(service => {
-              // Handle both structured and free-form services
-              if (service.serviceTypeId) {
-                // Structured service
-                let serviceName = service.displayName;
-                if (!serviceName && service.serviceTypeId) {
-                  serviceName = service.serviceTypeId
-                    .split(':').pop() // Remove 'job_type_id:' prefix
-                    .split('_')
-                    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-                    .join(' ');
-                }
-                
-                return {
-                  id: service.serviceTypeId || `service_${Date.now()}_${Math.random()}`,
-                  name: serviceName || generateServiceName(service.serviceTypeId),
-                  description: service.description || `Predefined service: ${serviceName || generateServiceName(service.serviceTypeId)}`,
-                  type: 'structured',
-                  serviceTypeId: service.serviceTypeId || ''
-                };
-              } else {
-                // Free-form service (fallback) - treat as predefined for display
-                return {
-                  id: `fallback_${Date.now()}_${Math.random()}`,
-                  name: service.displayName || 'Unnamed Service',
-                  description: service.description || `Professional ${service.displayName?.toLowerCase() || 'cleaning'} service`,
-                  type: 'predefined', // Mark as predefined for UI display
-                  serviceTypeId: ''
-                };
-              }
-            });
-            
-            console.log('✅ Fresh services fetched for category:', categoryId);
-            
-            setServices(services);
-          } else {
-            // Use fallback services if API returns empty service objects
-            console.log('API returned empty service objects, using fallback services');
-            const fallbackServices = [
-              { id: 'deep_cleaning', name: 'Deep Cleaning', description: 'Comprehensive deep cleaning service', type: 'predefined', serviceTypeId: '' },
-              { id: 'regular_cleaning', name: 'Regular Cleaning', description: 'Regular house cleaning service', type: 'predefined', serviceTypeId: '' },
-              { id: 'move_in_out', name: 'Move-in/Move-out Cleaning', description: 'Cleaning for moving in or out', type: 'predefined', serviceTypeId: '' },
-              { id: 'post_construction', name: 'Post-Construction Cleaning', description: 'Cleaning after construction work', type: 'predefined', serviceTypeId: '' },
-              { id: 'office_cleaning', name: 'Office Cleaning', description: 'Commercial office cleaning', type: 'predefined', serviceTypeId: '' },
-              { id: 'upholstery_cleaning', name: 'Upholstery Cleaning', description: 'Furniture and upholstery cleaning', type: 'predefined', serviceTypeId: '' },
-              { id: 'mattress_cleaning', name: 'Mattress Cleaning', description: 'Specialized mattress cleaning', type: 'predefined', serviceTypeId: '' },
-              { id: 'window_cleaning', name: 'Window Cleaning', description: 'Interior and exterior window cleaning', type: 'predefined', serviceTypeId: '' }
-            ];
-            
-            console.log('📦 Using fallback services for category:', categoryId);
-            
-            setServices(fallbackServices);
-          }
-        } else {
-          // If no service types found, provide fallback services for house cleaning
-          if (googleCategoryId.includes('house_cleaning') || googleCategoryId.includes('cleaning')) {
-            const fallbackServices = [
-              { id: 'deep_cleaning', name: 'Deep Cleaning', description: 'Comprehensive deep cleaning service', type: 'structured', serviceTypeId: 'job_type_id:deep_cleaning' },
-              { id: 'regular_cleaning', name: 'Regular Cleaning', description: 'Regular house cleaning service', type: 'structured', serviceTypeId: 'job_type_id:regular_cleaning' },
-              { id: 'move_in_out', name: 'Move-in/Move-out Cleaning', description: 'Cleaning for moving in or out', type: 'structured', serviceTypeId: 'job_type_id:move_in_out_cleaning' },
-              { id: 'post_construction', name: 'Post-Construction Cleaning', description: 'Cleaning after construction work', type: 'structured', serviceTypeId: 'job_type_id:post_construction_cleaning' },
-              { id: 'office_cleaning', name: 'Office Cleaning', description: 'Commercial office cleaning', type: 'structured', serviceTypeId: 'job_type_id:office_cleaning' }
-            ];
-            setServices(fallbackServices);
-          } else {
-            setServices([]);
-          }
-        }
+      if (services && services.length > 0) {
+        console.log('✅ Fresh services fetched for category:', categoryId);
+        setServices(services);
       } else {
-        // If API call fails, provide fallback services for house cleaning
-        if (googleCategoryId.includes('house_cleaning') || googleCategoryId.includes('cleaning')) {
-          const fallbackServices = [
-            { id: 'deep_cleaning', name: 'Deep Cleaning', description: 'Comprehensive deep cleaning service', type: 'structured', serviceTypeId: 'job_type_id:deep_cleaning' },
-            { id: 'regular_cleaning', name: 'Regular Cleaning', description: 'Regular house cleaning service', type: 'structured', serviceTypeId: 'job_type_id:regular_cleaning' },
-            { id: 'move_in_out', name: 'Move-in/Move-out Cleaning', description: 'Cleaning for moving in or out', type: 'structured', serviceTypeId: 'job_type_id:move_in_out_cleaning' },
-            { id: 'post_construction', name: 'Post-Construction Cleaning', description: 'Cleaning after construction work', type: 'structured', serviceTypeId: 'job_type_id:post_construction_cleaning' },
-            { id: 'office_cleaning', name: 'Office Cleaning', description: 'Commercial office cleaning', type: 'structured', serviceTypeId: 'job_type_id:office_cleaning' }
-          ];
-          setServices(fallbackServices);
-        } else {
-          setServices([]);
-        }
+        console.log('⚠️ No services returned from servicesMediaService');
       }
     } catch (error) {
       console.error('Error fetching services for category:', error);
@@ -553,11 +456,10 @@ const Services = () => {
     console.log(`🔄 Background: Fetching fresh existing services for ${locationId}`);
 
     try {
-      const response = await axios.get(`http://localhost:3001/api/gmb/locations/${locationId}/services`);
+      // Use servicesMediaService with force refresh
+      const freshServiceItems = await servicesMediaService.getExistingServicesForLocation(locationId, true);
 
-      if (response.data.success) {
-        const freshServiceItems = response.data.serviceItems || [];
-
+      if (freshServiceItems && freshServiceItems.length >= 0) {
         // Check if data changed from cached data
         const hasChanges = JSON.stringify(freshServiceItems) !== JSON.stringify(cachedData);
 
@@ -583,23 +485,22 @@ const Services = () => {
 
       const locationId = selectedProfile.name.split('/').pop();
 
-      // STEP 1: Try backend cache first
+      // Use servicesMediaService for caching
       try {
-        console.log(`📦 Trying backend cache for existing services for ${locationId}`);
-        const cachedResponse = await axios.get(`http://localhost:3001/api/gmb/locations/${locationId}/services?cached_only=true`);
-
-        if (cachedResponse.data.success && cachedResponse.data.serviceItems && cachedResponse.data.serviceItems.length > 0) {
-          console.log(`📦 Using backend cached existing services for ${locationId}: ${cachedResponse.data.serviceItems.length} items`);
-          const formattedServices = formatExistingServices(cachedResponse.data.serviceItems);
+        const existingServices = await servicesMediaService.getExistingServicesForLocation(locationId);
+        
+        if (existingServices && existingServices.length > 0) {
+          console.log(`📦 Using cached existing services for ${locationId}: ${existingServices.length} items`);
+          const formattedServices = formatExistingServices(existingServices);
           setExistingServices(formattedServices);
           setIsLoading(false);
-
+          
           // Fetch fresh data in background for cache update
-          setTimeout(() => fetchFreshExistingServicesInBackground(locationId, cachedResponse.data.serviceItems), 1000);
+          setTimeout(() => fetchFreshExistingServicesInBackground(locationId, existingServices), 1000);
           return;
         }
-      } catch (cacheError) {
-        console.log(`📦 No backend cached existing services available for ${locationId}`);
+      } catch (error) {
+        console.log(`📦 Error fetching cached existing services for ${locationId}, proceeding with fresh fetch`);
       }
 
       // STEP 2: No cache available, fetch fresh data with loading state
