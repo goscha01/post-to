@@ -226,6 +226,52 @@ class CacheUtils {
   }
 
   /**
+   * Cache services for a category
+   * @param {string} userId - User ID
+   * @param {string} categoryId - Category ID
+   * @param {array} services - Services data
+   * @param {number} ttl - Time to live in milliseconds
+   */
+  static cacheServices(userId, categoryId, services, ttl = 5 * 60 * 1000) {
+    const cacheKey = `services_${categoryId}`;
+    cacheService.set(cacheKey, services, userId, Math.floor(ttl / 1000));
+  }
+
+  /**
+   * Get cached services for a category
+   * @param {string} userId - User ID
+   * @param {string} categoryId - Category ID
+   * @returns {array|null} - Cached services or null
+   */
+  static getCachedServices(userId, categoryId) {
+    const cacheKey = `services_${categoryId}`;
+    return cacheService.get(cacheKey, userId);
+  }
+
+  /**
+   * Cache existing services for a location
+   * @param {string} userId - User ID
+   * @param {string} locationId - Location ID
+   * @param {array} services - Services data
+   * @param {number} ttl - Time to live in milliseconds
+   */
+  static cacheExistingServices(userId, locationId, services, ttl = 2 * 60 * 1000) {
+    const cacheKey = `existing_services_${locationId}`;
+    cacheService.set(cacheKey, services, userId, Math.floor(ttl / 1000));
+  }
+
+  /**
+   * Get cached existing services for a location
+   * @param {string} userId - User ID
+   * @param {string} locationId - Location ID
+   * @returns {array|null} - Cached services or null
+   */
+  static getCachedExistingServices(userId, locationId) {
+    const cacheKey = `existing_services_${locationId}`;
+    return cacheService.get(cacheKey, userId);
+  }
+
+  /**
    * Clear all cache for user
    * @param {string} userId - User ID
    */

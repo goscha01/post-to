@@ -3,8 +3,6 @@ import axios from '../utils/axiosConfig';
 import { useAuth } from '../contexts/AuthContext';
 import businessProfileService from '../services/businessProfileService';
 import servicesMediaService from '../services/servicesMediaService';
-import servicesCacheService from '../services/servicesCacheService';
-import existingServicesCacheService from '../services/existingServicesCacheService';
 import {
   Building2,
   Search,
@@ -323,19 +321,49 @@ const Services = () => {
     }
   };
 
+  // Background fetch function for services
+  const fetchFreshServicesInBackground = async (categoryId) => {
+    console.log('🔄 Background: Fetching fresh services for category:', categoryId);
+
+    try {
+      const response = await axios.get(`http://localhost:3001/api/services/categories/${categoryId}`);
+
+      if (response.data.success && response.data.services && response.data.services.length > 0) {
+        // Check if data changed from what we currently have
+        const hasChanges = JSON.stringify(response.data.services) !== JSON.stringify(services);
+
+        if (hasChanges) {
+          console.log('🔄 Background: Fresh services data changed, updating UI');
+          setServices(response.data.services);
+        } else {
+          console.log('📄 Background: No changes detected in fresh services');
+        }
+      }
+    } catch (error) {
+      console.error('Background error fetching fresh services:', error);
+    }
+  };
+
   const fetchServicesForCategory = async (categoryId) => {
     console.log('🔍 fetchServicesForCategory called for:', categoryId);
-    
-    // STEP 1: Try to get cached services first
-    const cacheKey = `services_${categoryId}`;
-    const cachedServices = servicesCacheService.getCachedData(cacheKey);
-    
-    if (cachedServices) {
-      console.log('📦 Using cached services for category:', categoryId);
-      setServices(cachedServices);
-      return; // Exit early - no need to fetch from API
+
+    // STEP 1: Try to get backend cached services first
+    try {
+      console.log('📦 Trying backend cache for services...');
+      const cachedResponse = await axios.get(`http://localhost:3001/api/services/categories/${categoryId}?cached_only=true`);
+
+      if (cachedResponse.data.success && cachedResponse.data.services && cachedResponse.data.services.length > 0) {
+        console.log('📦 Using backend cached services for category:', categoryId);
+        setServices(cachedResponse.data.services);
+
+        // Fetch fresh data in background for cache update
+        setTimeout(() => fetchFreshServicesInBackground(categoryId), 1000);
+        return;
+      }
+    } catch (cacheError) {
+      console.log('📦 No backend cached services available, proceeding with fresh fetch');
     }
-    
+
     console.log('🔍 No cached services found, setting fallback and fetching from API');
     
     // STEP 2: Set fallback services immediately
@@ -446,9 +474,7 @@ const Services = () => {
               }
             });
             
-            // Cache the services
-            servicesCacheService.setCachedData(cacheKey, services);
-            console.log('💾 Cached services for category:', categoryId);
+            console.log('✅ Fresh services fetched for category:', categoryId);
             
             setServices(services);
           } else {
@@ -465,9 +491,7 @@ const Services = () => {
               { id: 'window_cleaning', name: 'Window Cleaning', description: 'Interior and exterior window cleaning', type: 'predefined', serviceTypeId: '' }
             ];
             
-            // Cache the fallback services
-            servicesCacheService.setCachedData(cacheKey, fallbackServices);
-            console.log('💾 Cached fallback services for category:', categoryId);
+            console.log('📦 Using fallback services for category:', categoryId);
             
             setServices(fallbackServices);
           }
@@ -524,6 +548,32 @@ const Services = () => {
     }
   };
 
+  // Background fetch function for existing services
+  const fetchFreshExistingServicesInBackground = async (locationId, cachedData) => {
+    console.log(`🔄 Background: Fetching fresh existing services for ${locationId}`);
+
+    try {
+      const response = await axios.get(`http://localhost:3001/api/gmb/locations/${locationId}/services`);
+
+      if (response.data.success) {
+        const freshServiceItems = response.data.serviceItems || [];
+
+        // Check if data changed from cached data
+        const hasChanges = JSON.stringify(freshServiceItems) !== JSON.stringify(cachedData);
+
+        if (hasChanges) {
+          console.log(`🔄 Background: Fresh existing services data changed, updating UI for ${locationId}`);
+          const formattedServices = formatExistingServices(freshServiceItems);
+          setExistingServices(formattedServices);
+        } else {
+          console.log(`📄 Background: No changes detected in fresh existing services for ${locationId}`);
+        }
+      }
+    } catch (error) {
+      console.error('Background error fetching fresh existing services:', error);
+    }
+  };
+
   const fetchExistingServices = async () => {
     if (!selectedProfile) return;
 
@@ -533,82 +583,31 @@ const Services = () => {
 
       const locationId = selectedProfile.name.split('/').pop();
 
-      // STEP 1: Check frontend cache first
-      const cachedServices = existingServicesCacheService.getCachedData(locationId);
-      if (cachedServices) {
-        console.log(`📦 Using frontend cached existing services for ${locationId}: ${cachedServices.length} items`);
-        const formattedServices = formatExistingServices(cachedServices);
-        setExistingServices(formattedServices);
-        setIsLoading(false);
-        
-        // Still fetch fresh data in background for next time
-        setTimeout(async () => {
-          try {
-            console.log(`🔄 Background: Fetching fresh existing services for ${locationId}`);
-            const response = await axios.get(`http://localhost:3001/api/gmb/locations/${locationId}/services`);
-            if (response.data.success) {
-              const freshServiceItems = response.data.serviceItems || [];
-              existingServicesCacheService.setCachedData(locationId, freshServiceItems);
-              
-              // Update UI if data changed
-              const hasChanges = JSON.stringify(freshServiceItems) !== JSON.stringify(cachedServices);
-              if (hasChanges) {
-                console.log(`🔄 Background: Fresh existing services data changed, updating UI`);
-                const formattedFreshServices = formatExistingServices(freshServiceItems);
-                setExistingServices(formattedFreshServices);
-              } else {
-                console.log(`📄 Background: No changes detected in fresh existing services`);
-              }
-            }
-          } catch (backgroundError) {
-            console.error('Background error fetching fresh existing services:', backgroundError);
-          }
-        }, 1000);
-        return;
-      }
-
-      // STEP 2: No frontend cache, try backend cache first
-      let currentServices = [];
+      // STEP 1: Try backend cache first
       try {
+        console.log(`📦 Trying backend cache for existing services for ${locationId}`);
         const cachedResponse = await axios.get(`http://localhost:3001/api/gmb/locations/${locationId}/services?cached_only=true`);
-        if (cachedResponse.data.serviceItems && cachedResponse.data.serviceItems.length > 0) {
-          currentServices = cachedResponse.data.serviceItems || [];
-          console.log(`📦 Displaying ${currentServices.length} backend cached services for ${locationId}`);
-          
-          // Cache in frontend for next time
-          existingServicesCacheService.setCachedData(locationId, currentServices);
+
+        if (cachedResponse.data.success && cachedResponse.data.serviceItems && cachedResponse.data.serviceItems.length > 0) {
+          console.log(`📦 Using backend cached existing services for ${locationId}: ${cachedResponse.data.serviceItems.length} items`);
+          const formattedServices = formatExistingServices(cachedResponse.data.serviceItems);
+          setExistingServices(formattedServices);
+          setIsLoading(false);
+
+          // Fetch fresh data in background for cache update
+          setTimeout(() => fetchFreshExistingServicesInBackground(locationId, cachedResponse.data.serviceItems), 1000);
+          return;
         }
       } catch (cacheError) {
-        console.log('No backend cached services available');
+        console.log(`📦 No backend cached existing services available for ${locationId}`);
       }
 
-      // STEP 3: Fetch fresh data
-      console.log(`🔄 Fetching fresh services for ${locationId}`);
-      let response;
-      try {
-        response = await axios.get(`http://localhost:3001/api/gmb/locations/${locationId}/services`);
-      } catch (freshError) {
-        console.error('Error fetching fresh services:', freshError);
-        response = { data: { success: false } };
-      }
-      
+      // STEP 2: No cache available, fetch fresh data with loading state
+      console.log(`🔄 Fetching fresh existing services for ${locationId}`);
+      const response = await axios.get(`http://localhost:3001/api/gmb/locations/${locationId}/services`);
+
       if (response.data.success) {
-        const freshServiceItems = response.data.serviceItems || [];
-        
-        // Compare fresh data with current data and update only if changes are detected
-        const hasChanges = JSON.stringify(freshServiceItems) !== JSON.stringify(currentServices);
-        let serviceItems;
-        if (hasChanges) {
-          console.log(`🔄 Fresh services data changed, updating UI for ${locationId}`);
-          serviceItems = freshServiceItems;
-          
-          // Cache the fresh data in frontend
-          existingServicesCacheService.setCachedData(locationId, freshServiceItems);
-        } else {
-          console.log(`📄 No changes detected in fresh services for ${locationId}`);
-          serviceItems = currentServices;
-        }
-        
+        const serviceItems = response.data.serviceItems || [];
         const formattedServices = formatExistingServices(serviceItems);
         setExistingServices(formattedServices);
       }

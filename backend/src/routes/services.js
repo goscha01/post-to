@@ -2,6 +2,8 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const authMiddleware = require('../middleware/authMiddleware');
 const requireBusinessAuth = require('../middleware/businessAuth');
+const { cacheMiddleware } = require('../middleware/cacheMiddleware');
+const { CacheUtils } = require('../utils/cacheUtils');
 const { google } = require('googleapis');
 const { createClient } = require('@supabase/supabase-js');
 const router = express.Router();
@@ -20,12 +22,7 @@ router.use(requireBusinessAuth); // Then check business authentication
 async function getCachedServices(locationId, userId) {
   try {
     console.log(`🗃️ Looking for cached services for location: ${locationId}, user: ${userId}`);
-
-    // Since the services table doesn't have user_id or location_id columns,
-    // we'll return an empty array for now. The services are fetched from GMB API
-    // and the predefined services come from the categories API.
-    console.log(`📦 No cached services table structure - returning empty array`);
-    return [];
+    return CacheUtils.getCachedExistingServices(userId, locationId) || [];
   } catch (error) {
     console.error('Error in getCachedServices:', error);
     return [];
@@ -201,6 +198,113 @@ router.get('/categories', async (req, res) => {
   }
 });
 
+// Get services for a specific category with caching support
+router.get('/categories/:categoryId', async (req, res) => {
+  try {
+    const { categoryId } = req.params;
+    const { cached_only } = req.query;
+    const userId = req.user?.userId;
+
+    // If cached_only=true, return only cached data
+    if (cached_only === 'true') {
+      const cacheKey = `services_${categoryId}`;
+      const cachedServices = CacheUtils.getCachedServices(userId, categoryId);
+
+      if (cachedServices && cachedServices.length > 0) {
+        return res.json({
+          success: true,
+          services: cachedServices,
+          cached: true,
+          message: `Found ${cachedServices.length} cached services for category ${categoryId}`
+        });
+      } else {
+        return res.json({
+          success: false,
+          services: [],
+          cached: true,
+          message: `No cached services found for category ${categoryId}`
+        });
+      }
+    }
+
+    // Fetch fresh data
+    const { regionCode = 'US', languageCode = 'en', view = 'FULL' } = req.query;
+
+    const gmbClient = google.mybusinessbusinessinformation({
+      version: 'v1',
+      auth: req.businessOAuth2Client
+    });
+
+    // Convert category ID to proper format
+    let properCategoryName = categoryId;
+    if (!categoryId.startsWith('categories/')) {
+      if (categoryId.startsWith('gcid:')) {
+        properCategoryName = `categories/${categoryId}`;
+      } else {
+        properCategoryName = `categories/gcid:${categoryId}`;
+      }
+    }
+
+    const response = await gmbClient.categories.batchGet({
+      regionCode,
+      languageCode,
+      names: [properCategoryName],
+      view
+    });
+
+    let services = [];
+
+    if (response.data.categories && response.data.categories.length > 0) {
+      const category = response.data.categories[0];
+
+      if (category.serviceTypes && category.serviceTypes.length > 0) {
+        // Check if service types have actual data
+        const hasValidServices = category.serviceTypes.some(service =>
+          service.displayName || service.serviceTypeId
+        );
+
+        if (hasValidServices) {
+          services = category.serviceTypes.map(service => ({
+            id: service.serviceTypeId || `service_${Date.now()}_${Math.random()}`,
+            name: service.displayName || service.serviceTypeId?.split(':').pop()?.split('_').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ') || 'Unknown Service',
+            description: service.description || `Professional ${service.displayName?.toLowerCase() || 'service'}`,
+            type: service.serviceTypeId ? 'structured' : 'predefined',
+            serviceTypeId: service.serviceTypeId || ''
+          }));
+        } else {
+          // Provide fallback services for house cleaning
+          if (categoryId.includes('house_cleaning') || categoryId.includes('cleaning')) {
+            services = [
+              { id: 'deep_cleaning', name: 'Deep Cleaning', description: 'Comprehensive deep cleaning service', type: 'structured', serviceTypeId: 'job_type_id:deep_cleaning' },
+              { id: 'regular_cleaning', name: 'Regular Cleaning', description: 'Standard house cleaning service', type: 'structured', serviceTypeId: 'job_type_id:regular_cleaning' },
+              { id: 'move_in_out', name: 'Move-in/Move-out Cleaning', description: 'Cleaning for moving situations', type: 'structured', serviceTypeId: 'job_type_id:move_in_out_cleaning' },
+              { id: 'office_cleaning', name: 'Office Cleaning', description: 'Commercial office cleaning', type: 'structured', serviceTypeId: 'job_type_id:office_cleaning' },
+              { id: 'post_construction', name: 'Post-Construction Cleaning', description: 'Cleaning after construction work', type: 'structured', serviceTypeId: 'job_type_id:post_construction_cleaning' }
+            ];
+          }
+        }
+      }
+    }
+
+    // Cache the services
+    CacheUtils.cacheServices(userId, categoryId, services, 5 * 60 * 1000); // 5 minutes TTL
+
+    res.json({
+      success: true,
+      services: services,
+      cached: false,
+      categoryId: categoryId
+    });
+  } catch (error) {
+    console.error('Error fetching services for category:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch services for category',
+      details: error.message
+    });
+  }
+});
+
 // Get predefined services by category ID
 router.get('/categories/batchGet', async (req, res) => {
   try {
@@ -306,13 +410,18 @@ router.get('/locations/:locationId/services', async (req, res) => {
       readMask: 'serviceItems'
     });
 
+    // Cache the fresh services
+    const serviceItems = response.data.serviceItems || [];
+    CacheUtils.cacheExistingServices(userId, locationId, serviceItems, 2 * 60 * 1000); // 2 minutes TTL
+
     // Save services to database
-    const savedServices = await saveExistingServicesToDatabase(req.user.userId, response.data.serviceItems || [], 'google');
+    const savedServices = await saveExistingServicesToDatabase(req.user.userId, serviceItems, 'google');
 
     res.json({
       success: true,
-      serviceItems: response.data.serviceItems || [],
-      savedToDatabase: savedServices.length
+      serviceItems: serviceItems,
+      savedToDatabase: savedServices.length,
+      cached: false
     });
   } catch (error) {
     console.error('Error fetching location services:', error);
