@@ -5,6 +5,7 @@ import businessProfileService from '../services/businessProfileService';
 import postsService from '../services/postsService';
 import reviewsMediaService from '../services/reviewsMediaService';
 import servicesMediaService from '../services/servicesMediaService';
+import insightsService from '../services/insightsService';
 import sessionCacheConfig from '../config/sessionCacheConfig';
 
 const AuthContext = createContext();
@@ -210,6 +211,7 @@ export const AuthProvider = ({ children }) => {
     postsService.clearCache();
     reviewsMediaService.clearCache();
     servicesMediaService.clearCache();
+    insightsService.clearCache();
     
     // Clear user profile picture cache before logging out
     if (user?.id) {
@@ -239,6 +241,7 @@ export const AuthProvider = ({ children }) => {
     postsService.clearCache();
     reviewsMediaService.clearCache();
     servicesMediaService.clearCache();
+    insightsService.clearCache();
     
     // Clear session cache configuration
     sessionCacheConfig.clearSessionCache();

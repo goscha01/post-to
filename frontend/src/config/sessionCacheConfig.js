@@ -12,7 +12,7 @@ class SessionCacheConfig {
 
   /**
    * Get TTL for a specific data type
-   * @param {string} dataType - Type of data (businessProfiles, posts, reviews, services, userProfile)
+   * @param {string} dataType - Type of data (businessProfiles, posts, reviews, services, userProfile, insights)
    * @returns {number} TTL in milliseconds
    */
   getTTL(dataType) {

@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import axios from '../utils/axiosConfig';
 import { useAuth } from '../contexts/AuthContext';
+import insightsService from '../services/insightsService';
+import businessProfileService from '../services/businessProfileService';
 import {
   LineChart as RechartsLineChart,
   Line,
@@ -266,18 +268,22 @@ const fetchTimelineData = async (profileId, period, profilesData = profiles) => 
     
     console.log('📤 Fetching timeline data with:', requestData);
     
-    // Use the correct insights endpoint
-    const response = await axios.post(
-      'http://localhost:3001/api/insights/timeline',
-      requestData
+    // Use cached insights service
+    const timelineData = await insightsService.getTimelineData(
+      accountId, 
+      locationId, 
+      period, 
+      requestData.timeRange,
+      false // forceRefresh
     );
     
-    if (response.data.success) {
-      setTimelineData(response.data.data);
+    if (timelineData && timelineData.success !== false) {
+      setTimelineData(timelineData);
       setError(null); // Clear any previous errors
-      console.log('✅ Timeline data fetched successfully:', response.data.data);
+      console.log('✅ Timeline data fetched successfully:', timelineData);
     } else {
-      console.error('❌ Failed to fetch timeline data:', response.data.error);
+      console.error('❌ Failed to fetch timeline data:', timelineData?.error);
+      setError('Failed to fetch timeline data. Please try again.');
     }
   } catch (error) {
     console.error('Error fetching timeline data:', error);
@@ -382,27 +388,14 @@ const transformTimelineDataForChart = () => {
   const fetchData = async () => {
     try {
       setLoading(true);
-      const profilesResponse = await axios.get('http://localhost:3001/api/gmb/accounts');
-      if (profilesResponse.data.accounts) {
-        const profilesWithLocations = await Promise.all(
-          profilesResponse.data.accounts.map(async (account) => {
-            try {
-                      // Extract account ID from the full name
-        const accountId = account.name.split('/').pop();
-        const locationsResponse = await axios.get(
-          `http://localhost:3001/api/gmb/accounts/${accountId}/locations`
-        );
-              return {
-                ...account,
-                locations: locationsResponse.data.locations || []
-              };
-            } catch (error) {
-              return { ...account, locations: [] };
-            }
-          })
-        );
+      
+      // Use cached business profile service
+      const profilesWithLocations = await businessProfileService.getAccounts(false);
+      
+      if (profilesWithLocations && profilesWithLocations.length > 0) {
         setProfiles(profilesWithLocations);
-        if (profilesWithLocations.length > 0 && profilesWithLocations[0].locations.length > 0) {
+        
+        if (profilesWithLocations[0].locations.length > 0) {
           const firstLocation = profilesWithLocations[0].locations[0].name;
           setSelectedProfile(firstLocation);
           // Automatically fetch insights for the first profile when page loads
@@ -502,18 +495,22 @@ const transformTimelineDataForChart = () => {
 
       console.log('📤 Fetching insights with data:', requestData);
       
-      // Use the correct insights endpoint
-      const response = await axios.post(
-        'http://localhost:3001/api/insights/basic', 
-        requestData
+      // Use cached insights service
+      const insightsData = await insightsService.getInsights(
+        accountId, 
+        locationId, 
+        period, 
+        requestData.timeRange,
+        false // forceRefresh
       );
       
-      if (response.data.success) {
-        setInsights(response.data.data); // Use full data object from backend
+      if (insightsData && insightsData.success !== false) {
+        setInsights(insightsData); // Use full data object from service
         setError(null); // Clear any previous errors
-        console.log('✅ Insights fetched successfully:', response.data.data.locationMetrics);
+        console.log('✅ Insights fetched successfully:', insightsData.locationMetrics);
       } else {
-        console.error('❌ Failed to fetch insights:', response.data.error);
+        console.error('❌ Failed to fetch insights:', insightsData?.error);
+        setError('Failed to fetch insights. Please try again.');
       }
     } catch (error) {
       console.error('Error fetching insights:', error);
@@ -711,17 +708,20 @@ const transformTimelineDataForChart = () => {
       
       console.log('📤 Fetching ALL metrics with data:', requestData);
       
-      // Use the correct insights endpoint
-      const response = await axios.post(
-        'http://localhost:3001/api/insights/basic', 
-        requestData
+      // Use cached insights service with force refresh
+      const insightsData = await insightsService.getInsights(
+        accountId, 
+        locationId, 
+        selectedPeriod, 
+        requestData.timeRange,
+        true // forceRefresh = true for refresh button
       );
       
-      if (response.data.success) {
-        setInsights(response.data.data);
-        console.log('✅ All metrics fetched successfully:', response.data.data.locationMetrics);
+      if (insightsData && insightsData.success !== false) {
+        setInsights(insightsData);
+        console.log('✅ All metrics fetched successfully:', insightsData.locationMetrics);
       } else {
-        console.error('❌ Failed to fetch all metrics:', response.data.error);
+        console.error('❌ Failed to fetch all metrics:', insightsData?.error);
       }
     } catch (error) {
       console.error('Error fetching all metrics:', error);
