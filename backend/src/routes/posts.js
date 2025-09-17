@@ -179,28 +179,51 @@ const savePostToDatabase = async (userId, postData) => {
       ? postData.media
           .filter(item => item.data) // Only items with base64 data
           .map(item => ({
+            id: item.id || `media-${Date.now()}`,
+            mediaFormat: item.mediaFormat || 'PHOTO',
+            sourceUrl: item.sourceUrl,
+            thumbnailUrl: item.thumbnailUrl,
+            altText: item.altText || 'Post image',
             filename: item.filename || `image_${Date.now()}.jpg`,
             size: item.size || 0,
             type: item.type || 'image/jpeg',
-            data: item.data,
+            data: item.data, // Base64 data
             uploaded_at: item.uploaded_at || new Date().toISOString(),
-            source_url: item.sourceUrl,
-            cached: item.cached || false
+            source_url: item.sourceUrl, // For backward compatibility
+            cached: item.cached || false,
+            fromCache: item.fromCache || false // Preserve fromCache flag
           }))
       : [];
+
+    // Debug: Log what we're saving
+    console.log(`🔍 Saving post ${postData.postId} with media:`, {
+      mediaCount: postData.media ? postData.media.length : 0,
+      cachedImageDataCount: cachedImageData.length,
+      hasBase64Data: cachedImageData.some(item => item.data),
+      locationId: postData.locationId,
+      gmbAccountId: postData.gmbAccountId,
+      accountId: postData.accountId
+    });
 
     const insertData = {
       user_id: userId,
       account_id: postData.accountId || null, // Keep for existing foreign key relationship
-      gmb_account_id: postData.gmbAccountId || null, // New column for GMB account ID (string)
+      gmb_account_id: postData.gmbAccountId || postData.accountId || null, // New column for GMB account ID (string)
       location_id: postData.locationId || null,
       platform: platform,
       post_id: postData.postId || null,
       content: postData.content,
+      platforms: [platform], // Required array field
       media_urls: mediaUrls, // Keep for backward compatibility
       media_data: [...mediaData, ...cachedImageData], // Combine uploaded files and cached images
       published_at: postData.posted_at || new Date().toISOString(),
-      status: 'published'
+      status: 'published',
+      // Store additional metadata in the media JSONB field for now
+      media: JSON.stringify({
+        postType: postData.postType || 'UPDATE',
+        callToAction: postData.callToAction || null,
+        originalMedia: [...mediaData, ...cachedImageData]
+      })
     };
 
     // Inserting post data
@@ -210,7 +233,8 @@ const savePostToDatabase = async (userId, postData) => {
       user_id: insertData.user_id,
       location_id: insertData.location_id,
       gmb_account_id: insertData.gmb_account_id,
-      platform: insertData.platform
+      platform: insertData.platform,
+      published_at: insertData.published_at
     });
 
     const { data, error } = await supabase
@@ -272,10 +296,13 @@ const saveExistingPostsToDatabase = async (userId, posts, platform = 'google') =
 
     for (const post of posts) {
 
+      // Debug: Log the post ID we're looking for
+      console.log(`🔍 Looking for existing post with ID: ${post.id} (type: ${typeof post.id})`);
+
       // Check if post already exists in database
       const { data: existingPost } = await supabase
         .from('social_media_posts')
-        .select('id')
+        .select('id, post_id')
         .eq('user_id', userId)
         .eq('platform', platform)
         .eq('post_id', post.id)
@@ -283,20 +310,29 @@ const saveExistingPostsToDatabase = async (userId, posts, platform = 'google') =
 
       if (existingPost) {
         // Update existing post with correct location_id and gmb_account_id
-        await supabase
+        console.log(`🔍 Found existing post ${post.id} (DB ID: ${existingPost.id}), updating with location_id: ${post.locationId}, gmb_account_id: ${post.accountId}`);
+        const { error: updateError } = await supabase
           .from('social_media_posts')
           .update({
             location_id: post.locationId,
             gmb_account_id: post.accountId
           })
           .eq('id', existingPost.id);
+        
+        if (updateError) {
+          console.log(`❌ Error updating post ${post.id}:`, updateError);
+        } else {
+          console.log(`✅ Successfully updated post ${post.id} with location and account IDs`);
+        }
         continue;
+      } else {
+        console.log(`🔍 No existing post found for ID: ${post.id}, will create new post`);
       }
 
       // Prepare post data for database
       const postData = {
         content: post.content,
-        media: post.media || [],
+        media: post.media || [], // This includes the processed media with base64 data
         platforms: [platform],
         postId: post.id,
         posted_at: post.createdAt || new Date().toISOString(),
@@ -304,6 +340,18 @@ const saveExistingPostsToDatabase = async (userId, posts, platform = 'google') =
         gmbAccountId: post.accountId, // GMB account ID (string)
         locationId: post.locationId // GMB location ID
       };
+
+      // Debug: Log media data structure to ensure base64 data is included
+      if (post.media && post.media.length > 0) {
+        console.log(`🔍 Post ${post.id} media structure:`, post.media.map(item => ({
+          id: item.id,
+          sourceUrl: item.sourceUrl,
+          hasData: !!item.data,
+          dataLength: item.data ? item.data.length : 0,
+          cached: item.cached,
+          filename: item.filename
+        })));
+      }
 
       // Debug: Check if accountId and locationId are being passed correctly
       if (!post.accountId || !post.locationId) {
@@ -341,12 +389,14 @@ async function getCachedPosts(locationId, userId, accountId) {
       .eq('location_id', locationId)
       .eq('gmb_account_id', accountId)
       .eq('user_id', userId)
-      .order('created_at', { ascending: false });
+      .order('created_at', { ascending: false })
 
     if (error) {
       console.log('❌ Cache query error:', error);
       return [];
     }
+
+
 
     if (cachedPosts.length === 0) {
       // Check what posts actually exist for this user
@@ -368,17 +418,73 @@ async function getCachedPosts(locationId, userId, accountId) {
       }
     }
 
-    return cachedPosts.map(post => ({
-      id: post.post_id || post.id,
-      content: post.content,
-      postType: post.post_type || 'UPDATE',
-      platform: post.platform,
-      createdAt: post.created_at,
-      status: 'published',
-      media: post.media_data || [],
-      callToAction: post.call_to_action || null,
-      cached: true
+    // Process cached posts and ensure images are properly formatted
+    const processedPosts = await Promise.all(cachedPosts.map(async (post) => {
+      let processedMedia = [];
+      
+      // If post has media data, process it to include cached base64 data
+      if (post.media_data && Array.isArray(post.media_data) && post.media_data.length > 0) {
+        processedMedia = post.media_data.map(mediaItem => {
+          // Ensure the sourceUrl is properly formatted for proxy-image endpoint
+          if (mediaItem.source_url && mediaItem.source_url.includes('lh3.googleusercontent.com')) {
+            // If the URL doesn't have query parameters, add them
+            if (!mediaItem.source_url.includes('=')) {
+              mediaItem.source_url = `${mediaItem.source_url}=h305-no`;
+            } else if (!mediaItem.source_url.includes('h305-no')) {
+              mediaItem.source_url = `${mediaItem.source_url}=h305-no`;
+            }
+          }
+          
+          return {
+            id: mediaItem.id || `media-${Date.now()}`,
+            mediaFormat: mediaItem.mediaFormat || 'PHOTO',
+            sourceUrl: mediaItem.source_url || mediaItem.sourceUrl,
+            thumbnailUrl: mediaItem.thumbnailUrl || mediaItem.thumbnail,
+            altText: mediaItem.altText || 'Post image',
+            // Include cached base64 data if available
+            data: mediaItem.data || null,
+            filename: mediaItem.filename || null,
+            size: mediaItem.size || 0,
+            type: mediaItem.type || 'image/jpeg',
+            uploaded_at: mediaItem.uploaded_at || null,
+            // Mark as cached so frontend knows to use base64 data directly
+            cached: true,
+            fromCache: true
+          };
+        });
+      }
+      
+      // Extract post metadata from the media JSONB field
+      let postType = 'UPDATE';
+      let callToAction = null;
+      
+      try {
+        if (post.media && typeof post.media === 'string') {
+          const mediaMetadata = JSON.parse(post.media);
+          postType = mediaMetadata.postType || 'UPDATE';
+          callToAction = mediaMetadata.callToAction || null;
+        }
+      } catch (error) {
+        console.log(`⚠️ Could not parse media metadata for post ${post.id}:`, error.message);
+      }
+
+      return {
+        id: post.post_id || post.id,
+        content: post.content,
+        postType: postType,
+        platform: post.platform || 'google', // Default platform
+        createdAt: post.created_at || post.posted_at,
+        status: 'published',
+        media: processedMedia,
+        callToAction: callToAction,
+        cached: true
+      };
     }));
+    
+    // Posts are already sorted by database query (newest first)
+    
+    
+    return processedPosts;
   } catch (error) {
     console.log('❌ Cache function error:', error);
     return [];
@@ -500,7 +606,9 @@ router.get('/location/:locationId', async (req, res) => {
                       size: imageData.size,
                       type: imageData.type,
                       data: imageData.data, // Base64 data for database storage
-                      uploaded_at: imageData.uploaded_at
+                      uploaded_at: imageData.uploaded_at,
+                      // Add fromCache flag so frontend knows to use base64 data directly
+                      fromCache: true
                     }));
                     
                     

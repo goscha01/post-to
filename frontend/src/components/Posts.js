@@ -23,7 +23,7 @@ import {
 } from 'lucide-react';
 
 // Post Image Component
-const PostImage = ({ imageUrl, altText, mediaFormat }) => {
+const PostImage = ({ imageUrl, altText, mediaFormat, mediaData }) => {
   const [imageSrc, setImageSrc] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -39,6 +39,14 @@ const PostImage = ({ imageUrl, altText, mediaFormat }) => {
         setLoading(true);
         setError(false);
 
+        // If we have cached base64 data, use it directly
+        if (mediaData && mediaData.data && mediaData.fromCache) {
+          setImageSrc(mediaData.data);
+          setLoading(false);
+          return;
+        }
+
+        // Otherwise, fetch through the image service (which uses proxy-image endpoint)
         const result = await imageService.getImage(imageUrl);
         
         if (result.success) {
@@ -54,7 +62,7 @@ const PostImage = ({ imageUrl, altText, mediaFormat }) => {
     };
 
     fetchImage();
-  }, [imageUrl]);
+  }, [imageUrl, mediaData]);
 
   if (loading) {
     return (
@@ -159,23 +167,24 @@ const Posts = () => {
   const fetchPosts = useCallback(async (locationId, page = 1, append = false, forceRefresh = false) => {
     if (!locationId) return;
     
+    console.log(`🔍 [FLOW] fetchPosts called - forceRefresh: ${forceRefresh}, locationId: ${locationId}`);
+    
     try {
       // Extract IDs from the full path: accounts/{accountId}/locations/{locationId}
       const profileParts = locationId.split('/');
       const locationIdOnly = profileParts[profileParts.length - 1];
       const accountId = profileParts[1];
       
+      console.log(`🔍 [FLOW] Extracted - locationIdOnly: ${locationIdOnly}, accountId: ${accountId}`);
 
       // Use centralized posts service with caching
       const posts = await postsService.getPostsForLocation(locationIdOnly, accountId, forceRefresh);
-      
-      console.log(`📋 Received ${posts?.length || 0} posts:`, posts);
       
       if (posts && posts.length > 0) {
         // Process media for posts
         const postsWithMedia = await postsService.getMediaForPosts(posts);
         
-        console.log(`📄 Created ${postsWithMedia.length} posts with processed media`);
+        
         setPosts(postsWithMedia);
         
         // Background refresh: check for updates and refresh UI if needed
@@ -184,18 +193,22 @@ const Posts = () => {
             try {
               const freshPosts = await postsService.getPostsForLocation(locationIdOnly, accountId, true);
               
-              // Check if data has changed
+              // Check if data has changed by comparing post IDs and content
               let hasChanges = false;
               
               if (freshPosts.length !== postsWithMedia.length) {
                 hasChanges = true;
               } else {
-                for (let i = 0; i < freshPosts.length; i++) {
-                  const freshPost = freshPosts[i];
-                  const cachedPost = postsWithMedia[i];
+                // Create maps for easier comparison by post ID
+                const freshPostsMap = new Map(freshPosts.map(post => [post.id, post]));
+                const cachedPostsMap = new Map(postsWithMedia.map(post => [post.id, post]));
+                
+                // Check if all posts exist and have the same content
+                for (const [postId, freshPost] of freshPostsMap) {
+                  const cachedPost = cachedPostsMap.get(postId);
                   
-                  
-                  if (freshPost.content !== cachedPost.content ||
+                  if (!cachedPost ||
+                      freshPost.content !== cachedPost.content ||
                       (freshPost.media?.length || 0) !== (cachedPost.media?.length || 0)) {
                     hasChanges = true;
                     break;
@@ -207,7 +220,7 @@ const Posts = () => {
                 // Process media for fresh posts
                 const freshPostsWithMedia = await postsService.getMediaForPosts(freshPosts);
                 
-                console.log(`📄 Background refresh: Updated ${freshPostsWithMedia.length} posts`);
+                
                 setPosts(freshPostsWithMedia);
                 
                 // Update the cached data with the fresh data
@@ -1413,7 +1426,7 @@ const Posts = () => {
             <button
               onClick={() => {
                 setExpandedPosts(new Set()); // Reset expanded posts when refreshing
-                fetchPosts(selectedProfile);
+                fetchPosts(selectedProfile, 1, false, false); // Use cache (don't force refresh)
               }}
               className="inline-flex items-center px-3 py-1 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50"
             >
@@ -1425,7 +1438,7 @@ const Posts = () => {
             {posts.length > 0 ? (
               <>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6">
-                                     {posts.map((post) => {
+                  {posts.map((post, index) => {
 
 
 
@@ -1451,7 +1464,7 @@ const Posts = () => {
 
                      
                      return (
-                       <div key={post.id} className="bg-white rounded-lg shadow-sm hover:shadow-md transition-shadow duration-200 overflow-hidden">
+                       <div key={`${post.id}-${post.createdAt}`} className="bg-white rounded-lg shadow-sm hover:shadow-md transition-shadow duration-200 overflow-hidden">
                       {/* Post Header with Action Buttons */}
                       <div className="flex items-center justify-end p-3 bg-gray-50">
                         {/* Action Buttons */}
@@ -1492,7 +1505,7 @@ const Posts = () => {
                                if (!imageUrl) {
 
                                  return (
-                                   <div key={mediaItem.id || index} className="w-full h-48 bg-gray-200 rounded-t-lg flex items-center justify-center text-sm text-gray-500">
+                                   <div key={`${post.id}-media-${index}`} className="w-full h-48 bg-gray-200 rounded-t-lg flex items-center justify-center text-sm text-gray-500">
                                      No image available
                                    </div>
                                  );
@@ -1502,18 +1515,19 @@ const Posts = () => {
                                if (typeof imageUrl !== 'string' || imageUrl.trim() === '') {
 
                                  return (
-                                   <div key={mediaItem.id || index} className="w-full h-48 bg-gray-200 rounded-t-lg flex items-center justify-center text-sm text-gray-500">
+                                   <div key={`${post.id}-media-${index}`} className="w-full h-48 bg-gray-200 rounded-t-lg flex items-center justify-center text-sm text-gray-500">
                                      Invalid image URL
                                    </div>
                                  );
                                }
                                
                                return (
-                                 <div key={mediaItem.id || index} className="relative group">
+                                 <div key={`${post.id}-media-${index}`} className="relative group">
                                    <PostImage
                                      imageUrl={imageUrl}
                                      altText={mediaItem.altText || 'Post image'}
                                      mediaFormat={mediaItem.mediaFormat}
+                                     mediaData={mediaItem}
                                    />
                                  </div>
                                );

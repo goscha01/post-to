@@ -178,14 +178,8 @@ class PostsService {
   async getPostsForLocation(locationId, accountId, forceRefresh = false) {
     const cacheKey = `posts_${locationId}`;
     
-    // Check cache first (unless force refresh)
-    if (!forceRefresh) {
-      const cachedData = this.getCachedData(cacheKey);
-      if (cachedData) {
-        console.log(`📦 [DEBUG] Using cached posts for ${locationId}: ${cachedData.length} posts`);
-        return cachedData;
-      }
-    } else {
+    // Skip frontend cache - always use backend cache for consistency
+    if (forceRefresh) {
       console.log(`🔄 [DEBUG] Force refresh requested, clearing cache for ${cacheKey}`);
       this.cache.delete(cacheKey);
       this.cacheExpiry.delete(cacheKey);
@@ -206,8 +200,10 @@ class PostsService {
       
       // Only cache if we got valid data
       if (result && Array.isArray(result) && result.length >= 0) {
+        console.log(`💾 [CACHE] Storing ${result.length} posts in FRONTEND cache for ${locationId}`);
         this.setCachedData(cacheKey, result);
       } else {
+        console.log(`⚠️ [CACHE] Not caching invalid data for ${locationId}`);
       }
       
       return result;
@@ -221,10 +217,10 @@ class PostsService {
     console.log(`🔍 [DEBUG] fetchPostsFromAPI called for locationId: ${locationId}, accountId: ${accountId}, forceRefresh: ${forceRefresh}`);
     
     try {
-      // Skip cache if forceRefresh is true
+      // Always try backend cache first (unless force refresh)
       if (!forceRefresh) {
-        // First try to get cached data
         try {
+          console.log(`📦 [CACHE] Fetching from backend cache: /api/posts/location/${locationId}?cached_only=true`);
           const cachedResponse = await axios.get(`/api/posts/location/${locationId}?cached_only=true`, {
             headers: {
               'x-gmb-account-id': accountId
@@ -232,10 +228,11 @@ class PostsService {
           });
           
           if (cachedResponse.data.success && cachedResponse.data.cached) {
+            console.log(`📦 [CACHE] Successfully fetched ${cachedResponse.data.posts?.length || 0} posts from BACKEND cache`);
             return cachedResponse.data.posts || [];
           }
         } catch (cacheError) {
-          console.log(`💾 [DEBUG] No cached posts available for location ${locationId}, fetching from API. Error:`, {
+          console.log(`💾 [DEBUG] Backend cache not available for location ${locationId}, will fetch from API. Error:`, {
             message: cacheError.message,
             status: cacheError.response?.status,
             statusText: cacheError.response?.statusText,
@@ -243,18 +240,18 @@ class PostsService {
           });
         }
       } else {
-        console.log(`🔄 [DEBUG] Force refresh requested, skipping cache`);
+        console.log(`🔄 [DEBUG] Force refresh requested, skipping backend cache`);
       }
 
       // If no cached data or force refresh, fetch from API
-      console.log(`🔍 [DEBUG] Fetching posts from API: /api/posts/location/${locationId}`);
+      console.log(`🌐 [API] Fetching posts from GMB API: /api/posts/location/${locationId}`);
       const response = await axios.get(`/api/posts/location/${locationId}`, {
         headers: {
           'x-gmb-account-id': accountId
         }
       });
       
-      
+      console.log(`🌐 [API] Successfully fetched ${response.data.posts?.length || 0} posts from GMB API`);
       return response.data.posts || [];
     } catch (error) {
       console.error(`❌ [DEBUG] Error fetching posts for location ${locationId}:`, error);
@@ -274,23 +271,29 @@ class PostsService {
   async getMediaForPosts(posts, forceRefresh = false) {
     if (!posts || posts.length === 0) return posts;
 
+
     const postsWithMedia = await Promise.all(
       posts.map(async (post) => {
         if (!post.media || post.media.length === 0) {
           return post;
         }
 
-        // Process media URLs to ensure they work properly
+        // Process media URLs to ensure they work properly while preserving all data
         const processedMedia = post.media.map(mediaItem => {
-          if (mediaItem.sourceUrl && mediaItem.sourceUrl.includes('lh3.googleusercontent.com')) {
+          // Create a copy to avoid mutating the original
+          const processedItem = { ...mediaItem };
+          
+          if (processedItem.sourceUrl && processedItem.sourceUrl.includes('lh3.googleusercontent.com')) {
             // Ensure Google Photos URLs have the proper format with query parameters
-            if (!mediaItem.sourceUrl.includes('=')) {
-              mediaItem.sourceUrl = `${mediaItem.sourceUrl}=h305-no`;
-            } else if (!mediaItem.sourceUrl.includes('h305-no')) {
-              mediaItem.sourceUrl = `${mediaItem.sourceUrl}=h305-no`;
+            if (!processedItem.sourceUrl.includes('=')) {
+              processedItem.sourceUrl = `${processedItem.sourceUrl}=h305-no`;
+            } else if (!processedItem.sourceUrl.includes('h305-no')) {
+              processedItem.sourceUrl = `${processedItem.sourceUrl}=h305-no`;
             }
           }
-          return mediaItem;
+          
+          // Preserve all important fields including fromCache and base64 data
+          return processedItem;
         });
 
         return {
@@ -299,6 +302,7 @@ class PostsService {
         };
       })
     );
+
 
     return postsWithMedia;
   }
