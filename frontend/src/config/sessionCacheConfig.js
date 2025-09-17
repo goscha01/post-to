@@ -5,23 +5,9 @@
 
 class SessionCacheConfig {
   constructor() {
-    // TTL configurations for different data types (in milliseconds)
-    this.ttlConfig = {
-      // Business profiles - cache for longer duration
-      businessProfiles: 15 * 60 * 1000, // 15 minutes
-      
-      // Posts - cache for medium duration
-      posts: 10 * 60 * 1000, // 10 minutes
-      
-      // Reviews - cache for medium duration
-      reviews: 15 * 60 * 1000, // 15 minutes
-      
-      // Services/Media - cache for shorter duration
-      services: 8 * 60 * 1000, // 8 minutes
-      
-      // User profile images - cache for longer duration
-      userProfile: 24 * 60 * 60 * 1000 // 24 hours
-    };
+    // Session state - true session-based caching
+    this.isSessionActive = true;
+    this.sessionStartTime = Date.now();
   }
 
   /**
@@ -30,57 +16,62 @@ class SessionCacheConfig {
    * @returns {number} TTL in milliseconds
    */
   getTTL(dataType) {
-    const ttl = this.ttlConfig[dataType];
-    if (!ttl) {
-      console.warn(`Unknown data type: ${dataType}, using default TTL`);
-      return 5 * 60 * 1000; // 5 minutes default
+    // If session is not active, return 0 (no caching)
+    if (!this.isSessionActive) {
+      return 0;
     }
-    return ttl;
+    
+    // Return a very large TTL (effectively infinite) for active session
+    // This represents "until logout" caching
+    return 365 * 24 * 60 * 60 * 1000; // 1 year (effectively infinite for session)
   }
 
   /**
-   * Check if cache should be used (always true unless explicitly disabled)
+   * Check if cache should be used based on session state
    * @param {string} dataType - Type of data
    * @returns {boolean} Whether to use cache
    */
   shouldUseCache(dataType) {
-    return true; // Always use cache, cleared on logout
+    return this.isSessionActive; // Only use cache if session is active
+  }
+
+
+  /**
+   * Clear session cache - called on logout
+   */
+  clearSessionCache() {
+    // End current session
+    this.isSessionActive = false;
+    console.log('🧹 Session ended - cache disabled');
   }
 
   /**
-   * Update TTL configuration for a data type
-   * @param {string} dataType - Type of data
-   * @param {number} ttl - New TTL in milliseconds
+   * Start new session - called on login
    */
-  updateTTLConfig(dataType, ttl) {
-    if (this.ttlConfig.hasOwnProperty(dataType)) {
-      this.ttlConfig[dataType] = ttl;
-      console.log(`⚙️ Updated TTL config for ${dataType}: ${ttl / 1000 / 60} minutes`);
-    } else {
-      console.warn(`Unknown data type: ${dataType}`);
-    }
+  startNewSession() {
+    // Start new session
+    this.isSessionActive = true;
+    this.sessionStartTime = Date.now();
+    console.log('🚀 New session started - cache enabled');
   }
 
   /**
-   * Get all TTL configurations
-   * @returns {object} All TTL configurations
+   * Get session duration in milliseconds
+   * @returns {number} Session duration in milliseconds
    */
-  getAllTTLConfigs() {
-    return { ...this.ttlConfig };
+  getSessionDuration() {
+    return Date.now() - this.sessionStartTime;
   }
 
   /**
-   * Reset to default configurations
+   * Check if cache should be cleared based on session state
+   * @param {boolean} isAuthenticated - Whether user is authenticated
+   * @param {boolean} isDisconnected - Whether user is disconnected
+   * @returns {boolean} Whether cache should be cleared
    */
-  resetToDefaults() {
-    this.ttlConfig = {
-      businessProfiles: 15 * 60 * 1000, // 15 minutes
-      posts: 10 * 60 * 1000, // 10 minutes
-      reviews: 15 * 60 * 1000, // 15 minutes
-      services: 8 * 60 * 1000, // 8 minutes
-      userProfile: 24 * 60 * 60 * 1000 // 24 hours
-    };
-    console.log('🔄 Reset TTL configurations to defaults');
+  shouldClearCache(isAuthenticated, isDisconnected) {
+    // Clear cache if user is disconnected or not authenticated
+    return !isAuthenticated || isDisconnected;
   }
 }
 

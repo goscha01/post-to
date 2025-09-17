@@ -25,7 +25,7 @@ class BusinessProfileService {
     // Re-validate cached data on retrieval to ensure it's clean
     if (cachedData) {
       let dataType = null;
-      if (key === 'accounts') dataType = 'accounts';
+      if (key === 'accounts' || key === 'business_accounts') dataType = 'accounts';
       else if (key.startsWith('locations_')) dataType = 'locations';
       else if (key.startsWith('reviews_')) dataType = 'reviews_response';
       else if (key.startsWith('media_')) dataType = 'media';
@@ -49,7 +49,7 @@ class BusinessProfileService {
   setCachedData(key, data, dataType = null) {
     // Determine data type from cache key if not provided
     if (!dataType) {
-      if (key === 'accounts') dataType = 'businessProfiles';
+      if (key === 'accounts' || key === 'business_accounts') dataType = 'businessProfiles';
       else if (key.startsWith('locations_')) dataType = 'businessProfiles';
       else if (key.startsWith('reviews_')) dataType = 'reviews';
       else if (key.startsWith('media_')) dataType = 'services';
@@ -219,6 +219,7 @@ class BusinessProfileService {
     if (!forceRefresh) {
       const cachedData = this.getCachedData(cacheKey);
       if (cachedData) {
+        console.log(`📦 Retrieved business accounts from cache: ${cachedData.length} accounts`);
         return cachedData;
       }
     } else {
@@ -335,6 +336,7 @@ class BusinessProfileService {
     if (!forceRefresh) {
       const cachedData = this.getCachedData(cacheKey);
       if (cachedData) {
+        console.log(`📦 Retrieved locations from cache for account ${accountId}: ${cachedData.length} locations`);
         return cachedData;
       }
     } else {

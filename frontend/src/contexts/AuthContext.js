@@ -5,6 +5,7 @@ import businessProfileService from '../services/businessProfileService';
 import postsService from '../services/postsService';
 import reviewsMediaService from '../services/reviewsMediaService';
 import servicesMediaService from '../services/servicesMediaService';
+import sessionCacheConfig from '../config/sessionCacheConfig';
 
 const AuthContext = createContext();
 
@@ -49,6 +50,10 @@ export const AuthProvider = ({ children }) => {
       axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
       setIsAuthenticated(true);
       console.log('AuthContext: Setting isAuthenticated to true');
+      
+      // Start new session for caching
+      sessionCacheConfig.startNewSession();
+      
       fetchUserProfile();
     } else if (isDisconnected) {
       // If disconnected, keep user authenticated for UI but don't set auth headers
@@ -211,6 +216,9 @@ export const AuthProvider = ({ children }) => {
       userProfileService.clearUserProfileCache(user.id);
     }
 
+    // Clear session cache configuration
+    sessionCacheConfig.clearSessionCache();
+
     setUser(null);
     setToken(null);
     setIsAuthenticated(false);
@@ -220,7 +228,7 @@ export const AuthProvider = ({ children }) => {
     localStorage.removeItem('gmb_refresh_token');
     delete axios.defaults.headers.common['Authorization'];
     
-    console.log('✅ Frontend cache cleared on logout');
+    console.log('✅ Frontend cache and session cleared on logout');
   };
 
   const softDisconnect = () => {
@@ -232,6 +240,9 @@ export const AuthProvider = ({ children }) => {
     reviewsMediaService.clearCache();
     servicesMediaService.clearCache();
     
+    // Clear session cache configuration
+    sessionCacheConfig.clearSessionCache();
+    
     // Soft disconnect - clear tokens but keep user authenticated for UI purposes
     localStorage.removeItem('gmb_token');
     localStorage.removeItem('gmb_google_access_token');
@@ -240,7 +251,7 @@ export const AuthProvider = ({ children }) => {
     delete axios.defaults.headers.common['Authorization'];
     setToken(null);
     setIsDisconnected(true);
-    console.log('AuthContext: User disconnected (soft disconnect) - frontend cache cleared');
+    console.log('AuthContext: User disconnected (soft disconnect) - frontend cache and session cleared');
   };
 
   const reconnect = () => {
