@@ -39,7 +39,6 @@ async function downloadImageFromUrl(imageUrl) {
       source_url: imageUrl
     };
   } catch (error) {
-    console.error(`Failed to download image from ${imageUrl}:`, error.message);
     throw new Error(`Failed to download image: ${error.message}`);
   }
 }
@@ -58,13 +57,11 @@ async function getCachedImage(imageUrl) {
       .single();
 
     if (error && error.code !== 'PGRST116') { // PGRST116 = no rows found
-      console.error('Error checking cached image:', error);
       return null;
     }
 
     return data;
   } catch (error) {
-    console.error('Error in getCachedImage:', error);
     return null;
   }
 }
@@ -90,14 +87,11 @@ async function storeImageInCache(imageData) {
       .single();
 
     if (error) {
-      console.error('Error storing image in cache:', error);
       throw error;
     }
 
-    console.log(`Image cached successfully: ${imageData.filename}`);
     return data;
   } catch (error) {
-    console.error('Error in storeImageInCache:', error);
     throw error;
   }
 }
@@ -127,7 +121,6 @@ async function getOrDownloadImage(imageUrl) {
     }
 
     // Image not in cache, download it
-    console.log(`Image not cached, downloading: ${imageUrl}`);
     const downloadedImage = await downloadImageFromUrl(imageUrl);
     
     // Store in cache for future use
@@ -138,7 +131,6 @@ async function getOrDownloadImage(imageUrl) {
       cached: false
     };
   } catch (error) {
-    console.error(`Error in getOrDownloadImage for ${imageUrl}:`, error);
     throw error;
   }
 }
@@ -156,7 +148,6 @@ async function processImages(imageUrls) {
       const imageData = await getOrDownloadImage(url);
       results.push(imageData);
     } catch (error) {
-      console.error(`Failed to process image ${url}:`, error.message);
       // Continue with other images even if one fails
       results.push({
         filename: `failed_${Date.now()}.jpg`,

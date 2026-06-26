@@ -109,25 +109,32 @@ const AppContent = () => {
 const AuthCallback = () => {
   const { handleAuthCallback, isAuthenticated } = useAuth();
   const navigate = useNavigate();
-  
+
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
     const token = urlParams.get('token');
-    
-    console.log('AuthCallback: Token from URL:', token ? 'Token received' : 'No token');
-    
+    const errorMsg = urlParams.get('message') || urlParams.get('error');
+
+    const evt = { hasToken: !!token, tokenLen: token?.length || 0, errorMsg, url: window.location.href };
+    // eslint-disable-next-line no-console
+    console.log('[AuthCallback] hit', evt);
+    fetch((process.env.REACT_APP_API_URL || 'http://localhost:3001') + '/api/client-log', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ level: 'info', source: 'AuthCallback', message: 'hit', data: evt, ts: new Date().toISOString() }),
+      keepalive: true
+    }).catch(() => {});
+
     if (token) {
-      // For regular authentication, only pass the JWT token
       handleAuthCallback(token, null, null, false);
     } else {
-      console.error('Missing required token for user auth:', { token: !!token });
+      // eslint-disable-next-line no-console
+      console.error('[AuthCallback] NO TOKEN in URL — backend redirected without one. errorMsg=', errorMsg);
     }
   }, [handleAuthCallback]);
 
   useEffect(() => {
-    console.log('AuthCallback: isAuthenticated changed to:', isAuthenticated);
     if (isAuthenticated) {
-      console.log('AuthCallback: Regular authentication, redirecting to dashboard');
       navigate('/dashboard');
     }
   }, [isAuthenticated, navigate]);
@@ -155,14 +162,8 @@ const BusinessAuthCallback = () => {
     const businessConnected = urlParams.get('business_connected');
     const error = urlParams.get('error');
     
-    console.log('BusinessAuthCallback: Token from URL:', token ? 'Token received' : 'No token');
-    console.log('BusinessAuthCallback: Google access token from URL:', googleAccessToken ? 'Token received' : 'No token');
-    console.log('BusinessAuthCallback: Google refresh token from URL:', googleRefreshToken ? 'Token received' : 'No token');
-    console.log('BusinessAuthCallback: Business connected:', businessConnected === 'true');
-    console.log('BusinessAuthCallback: Error:', error);
     
     if (error) {
-      console.error('Business authentication error:', error);
       // Redirect to profiles page with error
       navigate('/profiles?error=' + encodeURIComponent(error));
       return;
@@ -171,16 +172,13 @@ const BusinessAuthCallback = () => {
     if (token && googleAccessToken && googleRefreshToken) {
       handleAuthCallback(token, googleAccessToken, googleRefreshToken, businessConnected === 'true');
     } else {
-      console.error('Missing required tokens for business auth:', { token: !!token, googleAccessToken: !!googleAccessToken, googleRefreshToken: !!googleRefreshToken });
       // Redirect to profiles page with error
       navigate('/profiles?error=missing_tokens');
     }
   }, [handleAuthCallback, navigate]);
 
   useEffect(() => {
-    console.log('BusinessAuthCallback: isAuthenticated changed to:', isAuthenticated);
     if (isAuthenticated) {
-      console.log('BusinessAuthCallback: Business connection successful, redirecting to profiles');
       navigate('/profiles');
     }
   }, [isAuthenticated, navigate]);
@@ -202,6 +200,20 @@ const BusinessAuthCallback = () => {
 
 // Auth Error Component
 const AuthError = () => {
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const errorMessage = params.get('message') || params.get('error') || '(none)';
+    const data = { errorMessage, url: window.location.href, params: Object.fromEntries(params.entries()) };
+    // eslint-disable-next-line no-console
+    console.error('[AuthError] hit', data);
+    fetch((process.env.REACT_APP_API_URL || 'http://localhost:3001') + '/api/client-log', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ level: 'error', source: 'AuthError', message: 'hit', data, ts: new Date().toISOString() }),
+      keepalive: true
+    }).catch(() => {});
+  }, []);
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50">
       <div className="max-w-md w-full bg-white rounded-lg shadow-md p-6">

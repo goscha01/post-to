@@ -11,7 +11,8 @@
       "Bash(taskkill:*)",
       "Bash(node:*)",
       "Bash(rm:*)",
-      "Bash(npm run dev:*)"
+      "Bash(npm run dev:*)",
+      "Bash(dir:*)"
     ],
     "deny": [],
     "ask": []

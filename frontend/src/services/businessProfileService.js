@@ -35,7 +35,6 @@ class BusinessProfileService {
 
       // If validation changed the data, update the cache
       if (JSON.stringify(validatedData) !== JSON.stringify(cachedData)) {
-        console.log(`🔧 Re-validated and cleaned cached data for key: ${key}`);
         this.cache.set(key, validatedData);
       }
 
@@ -57,14 +56,12 @@ class BusinessProfileService {
 
     // Check if we should use cache based on session
     if (!this.sessionCacheConfig.shouldUseCache(dataType)) {
-      console.log(`🚫 Skipping cache for ${key} - session expired or cache disabled for ${dataType}`);
       return;
     }
 
     // Get session-based TTL
     const ttl = this.sessionCacheConfig.getTTL(dataType);
     if (ttl <= 0) {
-      console.log(`🚫 Skipping cache for ${key} - TTL is 0 for ${dataType}`);
       return;
     }
 
@@ -73,7 +70,6 @@ class BusinessProfileService {
     this.cache.set(key, cleanedData);
     this.cacheExpiry.set(key, Date.now() + ttl);
     
-    console.log(`💾 Cached ${key} with session-based TTL: ${ttl / 1000 / 60} minutes for ${dataType}`);
   }
 
   // Validate and clean data before caching
@@ -107,7 +103,6 @@ class BusinessProfileService {
       });
 
     if (cleanedData.length !== data.length) {
-      console.warn(`🔧 Cleaned ${data.length} ${dataType} items to ${cleanedData.length} (removed duplicates/corrupted data)`);
     }
 
     return cleanedData;
@@ -219,7 +214,6 @@ class BusinessProfileService {
     if (!forceRefresh) {
       const cachedData = this.getCachedData(cacheKey);
       if (cachedData) {
-        console.log(`📦 Retrieved business accounts from cache: ${cachedData.length} accounts`);
         return cachedData;
       }
     } else {
@@ -251,7 +245,6 @@ class BusinessProfileService {
       return [];
     }
 
-    console.log(`🔄 Processing ${accounts.length} accounts (from ${fromCache ? 'cache' : 'API'})${forceRefresh ? ' (force refresh)' : ''}`);
 
     // Fetch locations for each account
     const profilesWithLocations = await Promise.all(
@@ -260,15 +253,6 @@ class BusinessProfileService {
           const accountId = account.name.split('/').pop();
           const locations = await this.getLocationsForAccount(accountId, forceRefresh);
           
-          console.log(`🔍 [DEBUG] Locations fetched for ${account.accountName}:`, locations.map(loc => ({
-            name: loc.name,
-            locationName: loc.locationName,
-            title: loc.title,
-            businessName: loc.businessName,
-            profile: loc.profile,
-            profileBusinessName: loc.profile?.businessName,
-            fullLocation: loc
-          })));
 
           const locationsWithAccount = locations.map(location => ({
             ...location,
@@ -281,7 +265,6 @@ class BusinessProfileService {
             locations: locationsWithAccount
           };
         } catch (error) {
-          console.error(`Error fetching locations for account ${account.name}:`, error);
           return { ...account, locations: [] };
         }
       })
@@ -308,22 +291,18 @@ class BusinessProfileService {
         const cachedResponse = await axios.get('/api/gmb/accounts?cached_only=true');
         if (cachedResponse.data.success && cachedResponse.data.cached) {
           const accounts = cachedResponse.data.accounts || [];
-          console.log(`📦 Using cached accounts data (${accounts.length} accounts)`);
           if (accounts.length === 0) {
-            console.log('💾 Cached accounts data is empty, falling back to API');
             throw new Error('Empty cache, falling back to API');
           }
           return await this.processAccountsResponse(accounts, true, false);
         }
       } catch (cacheError) {
-        console.log('💾 No cached accounts available, fetching from API');
       }
 
       // If no cached data, fetch from API
       const response = await axios.get('/api/gmb/accounts');
       return await this.processAccountsResponse(response.data.accounts || [], false, false);
     } catch (error) {
-      console.error('Error fetching accounts:', error);
       throw error;
     }
   }
@@ -336,7 +315,6 @@ class BusinessProfileService {
     if (!forceRefresh) {
       const cachedData = this.getCachedData(cacheKey);
       if (cachedData) {
-        console.log(`📦 Retrieved locations from cache for account ${accountId}: ${cachedData.length} locations`);
         return cachedData;
       }
     } else {
@@ -376,7 +354,6 @@ class BusinessProfileService {
       const frontendCacheKey = `locations_${accountId}`;
       const frontendCachedData = this.getCachedData(frontendCacheKey);
       if (frontendCachedData) {
-        console.log(`📦 Using frontend cached locations data for account ${accountId} (${frontendCachedData.length} locations)`);
         return frontendCachedData;
       }
 
@@ -385,20 +362,16 @@ class BusinessProfileService {
         const cachedResponse = await axios.get(`/api/gmb/accounts/${accountId}/locations?cached_only=true`);
         if (cachedResponse.data.success && cachedResponse.data.cached &&
             cachedResponse.data.locations && cachedResponse.data.locations.length > 0) {
-          console.log(`📦 Using backend cached locations data for account ${accountId} (${cachedResponse.data.locations.length} locations)`);
           return cachedResponse.data.locations;
         } else {
-          console.log(`💾 Backend cached locations data is empty for account ${accountId}, fetching from API`);
         }
       } catch (cacheError) {
-        console.log(`💾 No backend cached locations available for account ${accountId}, fetching from API`);
       }
 
       // If no cached data, fetch from API
       const response = await axios.get(`/api/gmb/accounts/${accountId}/locations`);
       return response.data.locations || [];
     } catch (error) {
-      console.error(`Error fetching locations for account ${accountId}:`, error);
       return [];
     }
   }
@@ -437,14 +410,12 @@ class BusinessProfileService {
       const response = await axios.get(`/api/posts/accounts/${accountId}/locations/${locationId}/media`);
       return response.data;
     } catch (error) {
-      console.error(`Error fetching media for location ${locationId}:`, error);
       return { profilePicture: null, logos: [], photos: [], businessImages: [] };
     }
   }
 
   // Clear all cache
   clearCache() {
-    console.log(`🧹 [DEBUG] Clearing all cache (${this.cache.size} entries)`);
     this.cache.clear();
     this.cacheExpiry.clear();
     this.pendingRequests.clear();
@@ -452,45 +423,33 @@ class BusinessProfileService {
 
   // Clear reviews cache specifically
   clearReviewsCache() {
-    console.log(`🧹 [DEBUG] Clearing reviews cache`);
     const reviewsKeys = Array.from(this.cache.keys()).filter(key => key.startsWith('reviews_'));
     reviewsKeys.forEach(key => {
       this.cache.delete(key);
       this.cacheExpiry.delete(key);
-      console.log(`🗑️ [DEBUG] Cleared cache entry: ${key}`);
     });
-    console.log(`🧹 [DEBUG] Cleared ${reviewsKeys.length} reviews cache entries`);
   }
 
   // Clear locations cache specifically
   clearLocationsCache() {
-    console.log(`🧹 [DEBUG] Clearing locations cache`);
     const locationsKeys = Array.from(this.cache.keys()).filter(key => key.startsWith('locations_'));
     locationsKeys.forEach(key => {
       this.cache.delete(key);
       this.cacheExpiry.delete(key);
-      console.log(`🗑️ [DEBUG] Cleared cache entry: ${key}`);
     });
-    console.log(`🧹 [DEBUG] Cleared ${locationsKeys.length} locations cache entries`);
   }
 
   // Clear accounts cache specifically
   clearAccountsCache() {
-    console.log(`🧹 [DEBUG] Clearing accounts cache`);
-    console.log(`🔍 [DEBUG] All cache keys:`, Array.from(this.cache.keys()));
     const accountsKeys = Array.from(this.cache.keys()).filter(key => key === 'accounts' || key.startsWith('accounts_'));
-    console.log(`🔍 [DEBUG] Found accounts keys:`, accountsKeys);
     accountsKeys.forEach(key => {
       this.cache.delete(key);
       this.cacheExpiry.delete(key);
-      console.log(`🗑️ [DEBUG] Cleared cache entry: ${key}`);
     });
-    console.log(`🧹 [DEBUG] Cleared ${accountsKeys.length} accounts cache entries`);
   }
 
   // Force refresh reviews for all locations
   async refreshAllReviews(accounts) {
-    console.log(`🔄 [DEBUG] Force refreshing reviews for ${accounts.length} accounts`);
     
     // Clear reviews cache first
     this.clearReviewsCache();
@@ -503,23 +462,19 @@ class BusinessProfileService {
         
         if (locations.length > 0) {
           const locationId = locations[0].name.split('/').pop();
-          console.log(`🔄 [DEBUG] Refreshing reviews for ${account.accountName} (${accountId}/${locationId})`);
           return await this.getReviewsForLocation(accountId, locationId, true);
         }
       } catch (error) {
-        console.error(`❌ [DEBUG] Error refreshing reviews for account ${account.name}:`, error);
         return null;
       }
     });
     
     const results = await Promise.all(refreshPromises);
-    console.log(`🔄 [DEBUG] Completed refresh for ${results.filter(r => r).length} accounts`);
     return results;
   }
 
   // Force clear corrupted cache (one-time cleanup)
   forceCleanCorruptedCache() {
-    console.log('🧹 Force clearing corrupted cache data...');
 
     // Check each cached item for corruption
     const corruptedKeys = [];
@@ -541,10 +496,8 @@ class BusinessProfileService {
     corruptedKeys.forEach(key => {
       this.cache.delete(key);
       this.cacheExpiry.delete(key);
-      console.log(`🗑️ Cleared corrupted cache entry: ${key}`);
     });
 
-    console.log(`🧹 Cleared ${corruptedKeys.length} corrupted cache entries`);
     return corruptedKeys.length;
   }
 
@@ -601,36 +554,18 @@ class BusinessProfileService {
           if (cachedResponse.data.success && cachedResponse.data.cached) {
             return cachedResponse.data;
           } else {
-            console.log(`💾 [DEBUG] Cached data not available or invalid, will fetch from API`);
           }
         } catch (cacheError) {
-          console.log(`💾 [DEBUG] No cached reviews available for location ${locationId}, fetching from API. Error:`, {
-            message: cacheError.message,
-            status: cacheError.response?.status,
-            statusText: cacheError.response?.statusText,
-            data: cacheError.response?.data
-          });
         }
       } else {
-        console.log(`🔄 [DEBUG] Force refresh requested, skipping cache`);
       }
 
       // If no cached data or force refresh, fetch from API
-      console.log(`🔍 [DEBUG] Fetching reviews from API: /api/reviews/accounts/${accountId}/locations/${locationId}/reviews`);
       const response = await axios.get(`/api/reviews/accounts/${accountId}/locations/${locationId}/reviews`);
       
       
       return response.data;
     } catch (error) {
-      console.error(`❌ [DEBUG] Error fetching reviews for location ${locationId}:`, error);
-      console.error(`❌ [DEBUG] Error details:`, {
-        message: error.message,
-        status: error.response?.status,
-        statusText: error.response?.statusText,
-        data: error.response?.data,
-        url: error.config?.url,
-        method: error.config?.method
-      });
       return { reviews: [], totalReviews: 0, averageRating: 0 };
     }
   }
@@ -648,13 +583,11 @@ class BusinessProfileService {
   printAPIStats() {
     const apiStats = apiTracker.printStats();
     const cacheStats = this.getCacheStats();
-    console.log('📊 Combined Stats:', { apiStats, cacheStats });
     return { apiStats, cacheStats };
   }
 
   // Test validation system with corrupted data
   testValidationSystem() {
-    console.log('🧪 Testing validation system...\n');
 
     // Mock corrupted data similar to what we found in the logs
     const corruptedAccountsData = [
@@ -713,39 +646,21 @@ class BusinessProfileService {
     ];
 
     // Test accounts validation
-    console.log('📋 Testing accounts validation:');
-    console.log('Original accounts:', corruptedAccountsData.length);
     const cleanedAccounts = this.validateAndCleanData(corruptedAccountsData, 'accounts');
-    console.log('Cleaned accounts:', cleanedAccounts.length);
-    console.log('Account names:', cleanedAccounts.map(acc => acc.name));
-    console.log('');
 
     // Test locations validation
-    console.log('📍 Testing locations validation:');
-    console.log('Original locations:', corruptedLocationsData.length);
     const cleanedLocations = this.validateAndCleanData(corruptedLocationsData, 'locations');
-    console.log('Cleaned locations:', cleanedLocations.length);
-    console.log('Location names:', cleanedLocations.map(loc => loc.name));
-    console.log('');
 
     // Test reviews validation
-    console.log('⭐ Testing reviews validation:');
-    console.log('Original reviews:', corruptedReviewsData.length);
     const cleanedReviews = this.validateAndCleanData(corruptedReviewsData, 'reviews');
-    console.log('Cleaned reviews:', cleanedReviews.length);
-    console.log('Review ratings:', cleanedReviews.map(rev => rev.star_rating));
-    console.log('');
 
     // Test cache key detection
-    console.log('🔑 Testing cache key detection:');
     const originalCacheSize = this.cache.size;
     this.setCachedData('test_accounts', corruptedAccountsData);
     this.setCachedData('test_locations_123', corruptedLocationsData);
     this.setCachedData('test_reviews_123_456', { reviews: corruptedReviewsData });
 
     const cacheStats = this.getCacheStats();
-    console.log('Added 3 test cache entries');
-    console.log('Cache size increase:', cacheStats.cacheSize - originalCacheSize);
 
     // Clean up test data
     this.cache.delete('test_accounts');
@@ -755,8 +670,6 @@ class BusinessProfileService {
     this.cacheExpiry.delete('test_locations_123');
     this.cacheExpiry.delete('test_reviews_123_456');
 
-    console.log('\n✅ Validation test completed!');
-    console.log('🛡️ Data validation system is working and will prevent future cache corruption.');
     return {
       accounts: { original: corruptedAccountsData.length, cleaned: cleanedAccounts.length },
       locations: { original: corruptedLocationsData.length, cleaned: cleanedLocations.length },

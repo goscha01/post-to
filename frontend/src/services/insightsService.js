@@ -33,7 +33,6 @@ class InsightsService {
 
       // If validation changed the data, update the cache
       if (JSON.stringify(validatedData) !== JSON.stringify(cachedData)) {
-        console.log(`🔧 Re-validated and cleaned cached data for key: ${key}`);
         this.cache.set(key, validatedData);
       }
 
@@ -53,14 +52,12 @@ class InsightsService {
 
     // Check if we should use cache based on session
     if (!this.sessionCacheConfig.shouldUseCache(dataType)) {
-      console.log(`🚫 Skipping cache for ${key} - session expired or cache disabled for ${dataType}`);
       return;
     }
 
     // Get session-based TTL
     const ttl = this.sessionCacheConfig.getTTL(dataType);
     if (ttl <= 0) {
-      console.log(`🚫 Skipping cache for ${key} - TTL is 0 for ${dataType}`);
       return;
     }
 
@@ -69,7 +66,6 @@ class InsightsService {
     this.cache.set(key, cleanedData);
     this.cacheExpiry.set(key, Date.now() + ttl);
     
-    console.log(`💾 Cached ${key} with session-based TTL: ${Math.round(ttl / 1000 / 60)} minutes for ${dataType}`);
   }
 
   // Validate and clean data before caching
@@ -122,7 +118,6 @@ class InsightsService {
     if (!forceRefresh) {
       const cachedData = this.getCachedData(cacheKey);
       if (cachedData) {
-        console.log(`📦 Retrieved insights from cache for ${locationId}: ${cachedData.locationMetrics?.length || 0} metrics`);
         return cachedData;
       }
     } else {
@@ -146,7 +141,6 @@ class InsightsService {
       if (result && result.success !== false) {
         this.setCachedData(cacheKey, result);
       } else {
-        console.log(`⚠️ Not caching invalid insights data for ${locationId}`);
       }
       
       return result;
@@ -170,19 +164,15 @@ class InsightsService {
         timeRange: customTimeRange || this.getTimeRangeForPeriod(period)
       };
 
-      console.log('📤 Fetching insights from API:', requestData);
       
       const response = await axios.post('/api/insights/basic', requestData);
       
       if (response.data.success) {
-        console.log('✅ Insights fetched successfully from API');
         return response.data.data;
       } else {
-        console.error('❌ Failed to fetch insights:', response.data.error);
         return { success: false, error: response.data.error };
       }
     } catch (error) {
-      console.error('❌ Error fetching insights:', error);
       return { success: false, error: error.message };
     }
   }
@@ -195,7 +185,6 @@ class InsightsService {
     if (!forceRefresh) {
       const cachedData = this.getCachedData(cacheKey);
       if (cachedData) {
-        console.log(`📦 Retrieved timeline data from cache for ${locationId}: ${cachedData.locationMetrics?.length || 0} metrics`);
         return cachedData;
       }
     } else {
@@ -219,7 +208,6 @@ class InsightsService {
       if (result && result.success !== false) {
         this.setCachedData(cacheKey, result);
       } else {
-        console.log(`⚠️ Not caching invalid timeline data for ${locationId}`);
       }
       
       return result;
@@ -238,19 +226,15 @@ class InsightsService {
         timeRange: customTimeRange || this.getTimeRangeForPeriod(period)
       };
 
-      console.log('📤 Fetching timeline data from API:', requestData);
       
       const response = await axios.post('/api/insights/timeline', requestData);
       
       if (response.data.success) {
-        console.log('✅ Timeline data fetched successfully from API');
         return response.data.data;
       } else {
-        console.error('❌ Failed to fetch timeline data:', response.data.error);
         return { success: false, error: response.data.error };
       }
     } catch (error) {
-      console.error('❌ Error fetching timeline data:', error);
       return { success: false, error: error.message };
     }
   }
@@ -290,7 +274,6 @@ class InsightsService {
 
   // Clear all cache
   clearCache() {
-    console.log(`🧹 [DEBUG] Clearing insights cache (${this.cache.size} entries)`);
     this.cache.clear();
     this.cacheExpiry.clear();
     this.pendingRequests.clear();
@@ -298,16 +281,13 @@ class InsightsService {
 
   // Clear insights cache specifically
   clearInsightsCache() {
-    console.log(`🧹 [DEBUG] Clearing insights cache`);
     const insightsKeys = Array.from(this.cache.keys()).filter(key => 
       key.startsWith('insights_') || key.startsWith('timeline_')
     );
     insightsKeys.forEach(key => {
       this.cache.delete(key);
       this.cacheExpiry.delete(key);
-      console.log(`🗑️ [DEBUG] Cleared cache entry: ${key}`);
     });
-    console.log(`🧹 [DEBUG] Cleared ${insightsKeys.length} insights cache entries`);
   }
 
   // Get cache stats
@@ -323,7 +303,6 @@ class InsightsService {
   printAPIStats() {
     const apiStats = apiTracker.printStats();
     const cacheStats = this.getCacheStats();
-    console.log('📊 Insights Stats:', { apiStats, cacheStats });
     return { apiStats, cacheStats };
   }
 }

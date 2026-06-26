@@ -101,7 +101,6 @@ const cacheService = {
 setInterval(() => {
   const cleaned = cacheService.cleanExpiredCache();
   if (cleaned > 0) {
-    console.log(`Cleaned ${cleaned} expired cache entries`);
   }
 }, 5 * 60 * 1000);
 

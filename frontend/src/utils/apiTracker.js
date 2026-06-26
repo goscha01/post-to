@@ -21,7 +21,6 @@ class APITracker {
     this.calls.push(call);
 
     // Simple API call log
-    console.log(`🌐 ${method} ${url} (${component})`);
 
     // Keep only last 100 calls to prevent memory issues
     if (this.calls.length > 100) {
@@ -48,14 +47,12 @@ class APITracker {
 
   printStats() {
     const stats = this.getStats();
-    console.log('📊 API Call Statistics:', stats);
     return stats;
   }
 
   clear() {
     this.calls = [];
     this.startTime = Date.now();
-    console.log('🗑️ API call tracker cleared');
   }
 
   // Setup axios interceptors to automatically log all API calls
@@ -65,7 +62,6 @@ class APITracker {
     try {
       const axios = axiosInstance;
       if (!axios) {
-        console.warn('⚠️ Axios instance not provided for interceptors');
         return;
       }
 
@@ -77,7 +73,6 @@ class APITracker {
           return config;
         },
         (error) => {
-          console.error('🔥 API Request Error:', error);
           return Promise.reject(error);
         }
       );
@@ -90,7 +85,6 @@ class APITracker {
           if (call && call.url === response.config.url) {
             call.responseData = response.data ? JSON.stringify(response.data).substring(0, 200) : null;
             call.status = response.status;
-            console.log(`✅ Response [${response.status}]:`, response.data);
           }
           return response;
         },
@@ -100,16 +94,13 @@ class APITracker {
           if (call && error.config && call.url === error.config.url) {
             call.error = error.message;
             call.status = error.response?.status || 'Network Error';
-            console.error(`❌ Error Response [${call.status}]:`, error.message);
           }
           return Promise.reject(error);
         }
       );
 
       this.interceptorsSetup = true;
-      console.log('🔧 Axios interceptors setup for API logging');
     } catch (error) {
-      console.warn('⚠️ Could not setup axios interceptors:', error.message);
     }
   }
 

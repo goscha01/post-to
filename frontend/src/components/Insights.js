@@ -215,7 +215,6 @@ const fetchTimelineData = async (profileId, period, profilesData = profiles) => 
   if (!profileId) return;
   
   try {
-    console.log('🔍 Fetching timeline for profile:', profileId);
     
     // Extract account ID and location ID from the profile
     let accountId, locationId;
@@ -252,7 +251,6 @@ const fetchTimelineData = async (profileId, period, profilesData = profiles) => 
     }
     
     if (!accountId || !locationId) {
-      console.error('❌ Failed to extract accountId or locationId from profile:', profileId);
       return;
     }
     
@@ -266,7 +264,6 @@ const fetchTimelineData = async (profileId, period, profilesData = profiles) => 
       }
     };
     
-    console.log('📤 Fetching timeline data with:', requestData);
     
     // Use cached insights service
     const timelineData = await insightsService.getTimelineData(
@@ -280,18 +277,13 @@ const fetchTimelineData = async (profileId, period, profilesData = profiles) => 
     if (timelineData && timelineData.success !== false) {
       setTimelineData(timelineData);
       setError(null); // Clear any previous errors
-      console.log('✅ Timeline data fetched successfully:', timelineData);
     } else {
-      console.error('❌ Failed to fetch timeline data:', timelineData?.error);
       setError('Failed to fetch timeline data. Please try again.');
     }
   } catch (error) {
-    console.error('Error fetching timeline data:', error);
     if (error.response?.status === 401) {
-      console.error('❌ Authentication failed - please reconnect your GMB account');
       setError('Authentication failed. Please reconnect your GMB account.');
     } else if (error.response?.status === 429) {
-      console.error('❌ Rate limited - please wait before retrying');
       setError('Too many requests. Please wait a moment and try again.');
     } else {
       setError('Failed to fetch timeline data. Please try again.');
@@ -302,19 +294,15 @@ const fetchTimelineData = async (profileId, period, profilesData = profiles) => 
   // Transform timeline data for chart
 // Add this debug code to your transformTimelineDataForChart function
 const transformTimelineDataForChart = () => {
-  console.log('🔍 Starting timeline transform');
   
   if (!timelineData || !timelineData.metrics) {
-    console.log('❌ No timeline data or metrics found');
     return [];
   }
   
-  console.log('🔍 Found metrics:', timelineData.metrics.length);
   
   // Get all unique dates from all metrics
   const allDates = new Set();
   timelineData.metrics.forEach(metric => {
-    console.log('🔍 Processing metric:', metric.metric, 'with', metric.timeSeriesData?.length || 0, 'data points');
     
     if (metric.timeSeriesData) {
       metric.timeSeriesData.forEach(dataPoint => {
@@ -323,7 +311,6 @@ const transformTimelineDataForChart = () => {
     }
   });
   
-  console.log('🔍 Timeline data processed:', timelineData.metrics.length, 'metrics,', allDates.size, 'unique dates');
   
   // Sort dates
   const sortedDates = Array.from(allDates).sort();
@@ -342,11 +329,9 @@ const transformTimelineDataForChart = () => {
     return dataPoint;
   });
   
-  console.log('🔍 Chart data generated:', chartData.length, 'data points');
   
   // Check for ACTIONS_PHONE specifically
   const hasPhoneData = chartData.some(point => point.ACTIONS_PHONE > 0);
-  console.log('🔍 Has phone data:', hasPhoneData);
   
   return chartData;
 };
@@ -406,7 +391,6 @@ const transformTimelineDataForChart = () => {
         }
       }
     } catch (error) {
-      console.error('Error fetching data:', error);
     } finally {
       setLoading(false);
     }
@@ -421,20 +405,13 @@ const transformTimelineDataForChart = () => {
       const gmbRefreshToken = localStorage.getItem('gmb_refresh_token');
       const gmbGoogleAccessToken = localStorage.getItem('gmb_google_access_token');
       
-      console.log('🔍 Token Debug:');
-      console.log('🔍 gmb_token:', gmbToken ? 'exists' : 'null');
-      console.log('🔍 gmb_refresh_token:', gmbRefreshToken ? 'exists' : 'null');
-      console.log('🔍 gmb_google_access_token:', gmbGoogleAccessToken ? 'exists' : 'null');
       
-      console.log('🔍 Profile ID received:', profileId);
-      console.log('🔍 Profile ID type:', typeof profileId);
       
       // Extract account ID and location ID from the profile
       let accountId, locationId;
       
       if (profileId.includes('/')) {
         const profileParts = profileId.split('/');
-        console.log('🔍 Profile parts:', profileParts);
         
         if (profileParts[0] === 'locations' && profileParts.length === 2) {
           // Format: locations/{locationId}
@@ -464,11 +441,8 @@ const transformTimelineDataForChart = () => {
         }
       }
       
-      console.log('🔍 Extracted accountId:', accountId);
-      console.log('🔍 Extracted locationId:', locationId);
       
       if (!accountId || !locationId) {
-        console.error('❌ Failed to extract accountId or locationId from profile:', profileId);
         return;
       }
       
@@ -493,7 +467,6 @@ const transformTimelineDataForChart = () => {
             }
       };
 
-      console.log('📤 Fetching insights with data:', requestData);
       
       // Use cached insights service
       const insightsData = await insightsService.getInsights(
@@ -507,18 +480,13 @@ const transformTimelineDataForChart = () => {
       if (insightsData && insightsData.success !== false) {
         setInsights(insightsData); // Use full data object from service
         setError(null); // Clear any previous errors
-        console.log('✅ Insights fetched successfully:', insightsData.locationMetrics);
       } else {
-        console.error('❌ Failed to fetch insights:', insightsData?.error);
         setError('Failed to fetch insights. Please try again.');
       }
     } catch (error) {
-      console.error('Error fetching insights:', error);
       if (error.response?.status === 401) {
-        console.error('❌ Authentication failed - please reconnect your GMB account');
         setError('Authentication failed. Please reconnect your GMB account.');
       } else if (error.response?.status === 429) {
-        console.error('❌ Rate limited - please wait before retrying');
         setError('Too many requests. Please wait a moment and try again.');
       } else {
         setError('Failed to fetch insights. Please try again.');
@@ -530,14 +498,12 @@ const transformTimelineDataForChart = () => {
     if (!profileId) return;
     
     try {
-      console.log('🔍 Profile ID received:', profileId);
       
       // Extract account ID and location ID from the profile
       let accountId, locationId;
       
       if (profileId.includes('/')) {
         const profileParts = profileId.split('/');
-        console.log('🔍 Profile parts:', profileParts);
         
         if (profileParts[0] === 'locations' && profileParts.length === 2) {
           locationId = profileParts[1];
@@ -562,11 +528,8 @@ const transformTimelineDataForChart = () => {
         }
       }
       
-      console.log('🔍 Extracted accountId:', accountId);
-      console.log('🔍 Extracted locationId:', locationId);
       
       if (!accountId || !locationId) {
-        console.error('❌ Failed to extract accountId or locationId from profile:', profileId);
         return;
       }
       
@@ -591,7 +554,6 @@ const transformTimelineDataForChart = () => {
             }
       };
 
-      console.log('📤 Fetching insights with data:', requestData);
       
       // Use the correct insights endpoint
       const response = await axios.post(
@@ -601,17 +563,12 @@ const transformTimelineDataForChart = () => {
       
       if (response.data.success) {
         setInsights(response.data.data);
-        console.log('✅ Insights fetched successfully:', response.data.data.locationMetrics);
       } else {
-        console.error('❌ Failed to fetch insights:', response.data.error);
       }
     } catch (error) {
-      console.error('Error fetching insights:', error);
       if (error.response?.status === 401) {
-        console.error('❌ Authentication failed - please reconnect your GMB account');
         setError('Authentication failed. Please reconnect your GMB account.');
       } else if (error.response?.status === 429) {
-        console.error('❌ Rate limited - please wait before retrying');
         setError('Too many requests. Please wait a moment and try again.');
       } else {
         setError('Failed to fetch insights. Please try again.');
@@ -629,7 +586,6 @@ const transformTimelineDataForChart = () => {
       // Also refresh timeline data
       await fetchTimelineData(selectedProfile, selectedPeriod);
     } catch (error) {
-      console.error('Error refreshing insights:', error);
     } finally {
       setRefreshing(false);
     }
@@ -679,7 +635,6 @@ const transformTimelineDataForChart = () => {
       }
       
       if (!accountId || !locationId) {
-        console.error('❌ Failed to extract accountId or locationId from profile:', selectedProfile);
         return;
       }
       
@@ -706,7 +661,6 @@ const transformTimelineDataForChart = () => {
             }
       };
       
-      console.log('📤 Fetching ALL metrics with data:', requestData);
       
       // Use cached insights service with force refresh
       const insightsData = await insightsService.getInsights(
@@ -719,14 +673,10 @@ const transformTimelineDataForChart = () => {
       
       if (insightsData && insightsData.success !== false) {
         setInsights(insightsData);
-        console.log('✅ All metrics fetched successfully:', insightsData.locationMetrics);
       } else {
-        console.error('❌ Failed to fetch all metrics:', insightsData?.error);
       }
     } catch (error) {
-      console.error('Error fetching all metrics:', error);
       if (error.response?.status === 401) {
-        console.error('❌ Authentication failed - please reconnect your GMB account');
       }
     } finally {
       setRefreshing(false);
@@ -773,7 +723,6 @@ const transformTimelineDataForChart = () => {
       }
       
       if (!accountId || !locationId) {
-        console.error('❌ Failed to extract accountId or locationId from profile:', selectedProfile);
         return;
       }
       
@@ -790,7 +739,6 @@ const transformTimelineDataForChart = () => {
           : new Date().toISOString().split('T')[0]
       };
 
-      console.log('📤 Exporting insights with data:', requestData);
       
       const response = await axios.post('http://localhost:3001/api/insights/export', requestData, {
         responseType: format === 'csv' ? 'blob' : 'json'
@@ -816,9 +764,7 @@ const transformTimelineDataForChart = () => {
         link.remove();
       }
       
-      console.log('✅ Export completed successfully');
     } catch (error) {
-      console.error('Error exporting insights:', error);
       alert('Failed to export insights. Please try again.');
     }
   };
@@ -826,7 +772,6 @@ const transformTimelineDataForChart = () => {
   const getMetricIcon = (metricName) => {
     // Safety check for undefined/null metricName
     if (!metricName || typeof metricName !== 'string') {
-      console.warn('⚠️ getMetricIcon called with invalid metricName:', metricName);
       return BarChart3; // Default icon
     }
     
@@ -1125,7 +1070,6 @@ const getAuthHeaders = () => {
   </div>
 ) : (() => {
   const chartData = transformTimelineDataForChart();
-  console.log('🔍 Rendering chart with', chartData.length, 'data points for', selectedTimelineMetrics.length, 'metrics');
   
   return chartData.length > 0 ? (
     <div className="h-96">

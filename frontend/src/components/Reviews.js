@@ -25,7 +25,6 @@ const ProfileImage = ({ profilePhotoUrl, cachedImageUrl, displayName }) => {
   useEffect(() => {
     // If we have a cached image, use it immediately
     if (cachedImageUrl) {
-      console.log(`📦 ProfileImage using cached image: ${profilePhotoUrl?.substring(0, 50)}...`);
       setImageSrc(cachedImageUrl);
       setLoading(false);
       return;
@@ -50,7 +49,6 @@ const ProfileImage = ({ profilePhotoUrl, cachedImageUrl, displayName }) => {
           setError(true);
         }
       } catch (err) {
-        console.error('Error fetching profile image:', err);
         setError(true);
       } finally {
         setLoading(false);
@@ -127,17 +125,13 @@ const Reviews = () => {
       // Use centralized business profile service with caching
       const profilesWithLocations = await businessProfileService.getAccounts();
       setProfiles(profilesWithLocations);
-      console.log('Profiles with locations loaded:', profilesWithLocations);
       
       if (profilesWithLocations.length > 0 && profilesWithLocations[0].locations.length > 0) {
         const firstLocation = profilesWithLocations[0].locations[0].name;
-        console.log('Setting selected profile to:', firstLocation);
         setSelectedProfile(firstLocation);
       } else {
-        console.log('No profiles or locations found');
       }
     } catch (error) {
-      console.error('Error fetching data:', error);
     } finally {
       setLoading(false);
     }
@@ -146,7 +140,6 @@ const Reviews = () => {
   const fetchReviews = async (locationName) => {
     if (!locationName) return;
     
-    console.log('Fetching reviews for location:', locationName);
     
     try {
       // Extract account and location IDs from the location name
@@ -165,7 +158,6 @@ const Reviews = () => {
         
         if (profile) {
           accountId = profile.name.split('/').pop(); // Extract account ID from profile name
-          console.log('Found profile for location:', profile.accountName, 'Account ID:', accountId);
         }
       } else if (locationName.includes('/locations/')) {
         // Format: accounts/accountId/locations/locationId
@@ -175,12 +167,10 @@ const Reviews = () => {
       }
       
       if (!accountId || !locationId) {
-        console.error('Could not extract account or location ID from:', locationName);
         setReviews([]);
         return;
       }
       
-      console.log('Extracted IDs - Account:', accountId, 'Location:', locationId);
       
       // STEP 1: Load cached data first for instant UI
       let currentReviews = [];
@@ -190,30 +180,24 @@ const Reviews = () => {
         // Process media for cached reviews
         const reviewsWithMedia = await reviewsMediaService.getMediaForReviews(cachedResponse.reviews);
         setReviews(reviewsWithMedia);
-        console.log(`📦 Displaying ${cachedResponse.reviews.length} cached reviews for ${locationId}`);
       }
       
       // STEP 2: Fetch fresh data in background
-      console.log(`🔄 Fetching fresh reviews for ${locationId} in background`);
       const freshResponse = await businessProfileService.getReviewsForLocation(accountId, locationId, true);
       
       if (freshResponse && freshResponse.success) {
         // Compare fresh data with current data and update only if changes are detected
         const hasChanges = JSON.stringify(freshResponse.reviews) !== JSON.stringify(currentReviews);
         if (hasChanges) {
-          console.log(`🔄 Fresh reviews data changed, updating UI for ${locationId}`);
           // Process media for fresh reviews
           const freshReviewsWithMedia = await reviewsMediaService.getMediaForReviews(freshResponse.reviews || []);
           setReviews(freshReviewsWithMedia);
         } else {
-          console.log(`📄 No changes detected in fresh reviews for ${locationId}`);
         }
       } else {
-        console.log(`⚠️ No fresh reviews found for ${locationId}`);
         setReviews([]);
       }
     } catch (error) {
-      console.error('Error fetching reviews:', error);
       setReviews([]);
     }
   };
@@ -258,7 +242,6 @@ const Reviews = () => {
       
       alert('Reply posted successfully!');
     } catch (error) {
-      console.error('Error posting reply:', error);
       alert('Failed to post reply. Please try again.');
     }
   };
@@ -300,7 +283,6 @@ const Reviews = () => {
       
       alert('Reply updated successfully!');
     } catch (error) {
-      console.error('Error updating reply:', error);
       alert('Failed to update reply. Please try again.');
     }
   };
@@ -336,7 +318,6 @@ const Reviews = () => {
       await fetchReviews(selectedProfile);
       alert('Reply deleted successfully!');
     } catch (editError) {
-      console.error('Error deleting reply:', editError);
       alert('Failed to delete reply. Please try again.');
     }
   };
@@ -512,7 +493,7 @@ const Reviews = () => {
                         />
                       ) : (
                         <div>
-                          {console.log('No profile photo URL for:', review.reviewer?.displayName)}
+                          {}
                           {null}
                         </div>
                       )}

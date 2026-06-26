@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import axios from '../utils/axiosConfig';
+import rlog from '../utils/remoteLogger';
 import userProfileService from '../services/userProfileService';
 import businessProfileService from '../services/businessProfileService';
 import postsService from '../services/postsService';
@@ -29,7 +30,6 @@ export const AuthProvider = ({ children }) => {
     if (storedToken) {
       // Check if it's a Google access token (starts with ya29.) or invalid JWT
       if (storedToken.startsWith('ya29.') || storedToken.split('.').length !== 3) {
-        console.error('Invalid token format found in localStorage (Google access token or malformed JWT), clearing it');
         localStorage.removeItem('gmb_token');
         localStorage.removeItem('gmb_business_connected');
         localStorage.removeItem('gmb_google_access_token');
@@ -44,13 +44,10 @@ export const AuthProvider = ({ children }) => {
 
   // Configure axios defaults
   useEffect(() => {
-    console.log('AuthContext: Token changed to:', token ? 'Token exists' : 'No token');
-    console.log('AuthContext: isDisconnected:', isDisconnected);
     
     if (token && !isDisconnected) {
       axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
       setIsAuthenticated(true);
-      console.log('AuthContext: Setting isAuthenticated to true');
       
       // Start new session for caching
       sessionCacheConfig.startNewSession();
@@ -60,7 +57,6 @@ export const AuthProvider = ({ children }) => {
       // If disconnected, keep user authenticated for UI but don't set auth headers
       setIsAuthenticated(true);
       setLoading(false);
-      console.log('AuthContext: User is disconnected but keeping UI authenticated');
     } else {
       setLoading(false);
     }
@@ -98,7 +94,6 @@ export const AuthProvider = ({ children }) => {
           const userWithCachedImage = await userProfileService.processUserProfilePicture(userData);
           setUser(userWithCachedImage);
         } catch (jwtError) {
-          console.error('Error parsing JWT token:', jwtError);
           // Clear invalid token and logout
           logout();
           return;
@@ -106,19 +101,25 @@ export const AuthProvider = ({ children }) => {
       }
       setLoading(false);
     } catch (error) {
-      console.error('Error fetching user profile:', error);
       logout();
     }
   };
 
   const login = async (forceConsent = false) => {
+    rlog('info', 'AuthContext', 'login.start', { forceConsent });
     try {
-      const url = forceConsent 
+      const url = forceConsent
         ? 'http://localhost:3001/auth/google?force_consent=true'
         : 'http://localhost:3001/auth/google';
       const response = await axios.get(url);
+      rlog('info', 'AuthContext', 'login.gotAuthUrl', { status: response.status, hasAuthUrl: !!response.data?.authUrl });
       window.location.href = response.data.authUrl;
     } catch (error) {
+      rlog('error', 'AuthContext', 'login.error', {
+        status: error.response?.status,
+        data: error.response?.data,
+        message: error.message
+      });
       if (error.response?.status === 429) {
         const retryAfter = error.response.data.retryAfter || 2;
         alert(`Too many requests. Please wait ${retryAfter} seconds and try again.`);
@@ -138,14 +139,21 @@ export const AuthProvider = ({ children }) => {
         const retryAfter = error.response.data.retryAfter || 2;
         alert(`Too many requests. Please wait ${retryAfter} seconds and try again.`);
       } else {
-        console.error('Business authentication error:', error);
         alert('Failed to initiate business authentication. Please try again.');
       }
     }
   };
 
   const handleAuthCallback = async (newToken, googleAccessToken, googleRefreshToken, isBusinessConnection = false) => {
-    
+    rlog('info', 'AuthContext', 'handleAuthCallback.start', {
+      hasNewToken: !!newToken,
+      tokenLen: newToken?.length || 0,
+      tokenStart: newToken?.slice(0, 12),
+      hasGoogleAccess: !!googleAccessToken,
+      hasGoogleRefresh: !!googleRefreshToken,
+      isBusinessConnection
+    });
+
     setToken(newToken);
     localStorage.setItem('gmb_token', newToken);
     
@@ -155,8 +163,6 @@ export const AuthProvider = ({ children }) => {
     }
     if (googleRefreshToken) {
       localStorage.setItem('gmb_refresh_token', googleRefreshToken);
-      console.log('🔑 Storing refresh token:', googleRefreshToken.substring(0, 20) + '...');
-      console.log('🔑 Refresh token length:', googleRefreshToken.length);
     }
     
     // Store business connection status
@@ -191,8 +197,12 @@ export const AuthProvider = ({ children }) => {
       await new Promise(resolve => setTimeout(resolve, 100));
       const userWithCachedImage = await userProfileService.processUserProfilePicture(userData);
       setUser(userWithCachedImage);
+      rlog('info', 'AuthContext', 'handleAuthCallback.userSet', { userId: userData.id, email: userData.email });
     } catch (jwtError) {
-      console.error('Error parsing JWT token:', jwtError);
+      rlog('error', 'AuthContext', 'handleAuthCallback.jwtDecodeFailed', {
+        message: jwtError.message,
+        tokenStart: newToken?.slice(0, 12)
+      });
       // Clear invalid token
       localStorage.removeItem('gmb_token');
       setToken(null);
@@ -204,7 +214,6 @@ export const AuthProvider = ({ children }) => {
   };
 
   const logout = () => {
-    console.log('🚪 Logging out - clearing frontend cache...');
     
     // Clear all frontend service caches only
     businessProfileService.clearCache();
@@ -230,11 +239,9 @@ export const AuthProvider = ({ children }) => {
     localStorage.removeItem('gmb_refresh_token');
     delete axios.defaults.headers.common['Authorization'];
     
-    console.log('✅ Frontend cache and session cleared on logout');
   };
 
   const softDisconnect = () => {
-    console.log('🚪 Soft disconnect - clearing frontend cache...');
     
     // Clear all frontend service caches only
     businessProfileService.clearCache();
@@ -254,7 +261,6 @@ export const AuthProvider = ({ children }) => {
     delete axios.defaults.headers.common['Authorization'];
     setToken(null);
     setIsDisconnected(true);
-    console.log('AuthContext: User disconnected (soft disconnect) - frontend cache and session cleared');
   };
 
   const reconnect = () => {
@@ -266,24 +272,17 @@ export const AuthProvider = ({ children }) => {
     try {
       // Prevent multiple simultaneous refresh calls
       if (window.refreshInProgress) {
-        console.log('🔄 Refresh already in progress, skipping...');
         return null;
       }
       
       window.refreshInProgress = true;
       
       const refreshToken = localStorage.getItem('gmb_refresh_token');
-      console.log('🔄 Attempting token refresh...');
-      console.log('🔄 Refresh token available:', !!refreshToken);
-      console.log('🔄 Refresh token length:', refreshToken ? refreshToken.length : 0);
-      console.log('🔄 Refresh token starts with:', refreshToken ? refreshToken.substring(0, 20) + '...' : 'null');
       
       // Debug all localStorage items
-      console.log('🔍 All localStorage items:');
       for (let i = 0; i < localStorage.length; i++) {
         const key = localStorage.key(i);
         if (key && key.includes('gmb')) {
-          console.log(`🔍 ${key}:`, localStorage.getItem(key) ? 'exists' : 'null');
         }
       }
       
@@ -291,27 +290,20 @@ export const AuthProvider = ({ children }) => {
         throw new Error('No refresh token available');
       }
 
-      console.log('🔄 Sending refresh request to backend...');
       const response = await axios.post('http://localhost:3001/auth/refresh', {
         refreshToken
       });
 
-      console.log('🔄 Refresh response received:', response.status);
-      console.log('🔄 Response data:', response.data);
       
       const newToken = response.data.access_token;
-      console.log('🔄 New token received:', newToken ? 'exists' : 'null');
-      console.log('🔄 New token length:', newToken ? newToken.length : 0);
       
       setToken(newToken);
       localStorage.setItem('gmb_token', newToken);
       axios.defaults.headers.common['Authorization'] = `Bearer ${newToken}`;
       
-      console.log('🔄 Token updated in localStorage and axios headers');
 
       return newToken;
     } catch (error) {
-      console.error('Token refresh failed:', error);
       
       // Handle rate limiting specifically
       if (error.response?.status === 429) {
@@ -333,7 +325,6 @@ export const AuthProvider = ({ children }) => {
           
           return newToken;
         } catch (retryError) {
-          console.error('Token refresh retry failed:', retryError);
           logout();
           throw retryError;
         }
@@ -355,11 +346,7 @@ export const AuthProvider = ({ children }) => {
         const currentToken = localStorage.getItem('gmb_token');
         if (currentToken) {
           config.headers.Authorization = `Bearer ${currentToken}`;
-          console.log('🔑 Adding token to request:', config.url);
-          console.log('🔑 Token length:', currentToken.length);
-          console.log('🔑 Token starts with:', currentToken.substring(0, 20) + '...');
         } else {
-          console.log('🔑 No token available for request:', config.url);
         }
         return config;
       },
@@ -373,22 +360,17 @@ export const AuthProvider = ({ children }) => {
         // Handle 401 errors with token refresh
         if (error.response?.status === 401 && token && !isDisconnected) {
           try {
-            console.log('🔄 401 error detected, refreshing token...');
             const newToken = await refreshToken();
             
             if (newToken) {
-              console.log('🔄 Token refreshed, updating request headers...');
               // Update the original request with the new token
               error.config.headers.Authorization = `Bearer ${newToken}`;
-              console.log('🔄 Retrying request with new token...');
               return axios.request(error.config);
             } else {
-              console.log('🔄 No new token received, logging out...');
               logout();
               return Promise.reject(error);
             }
           } catch (refreshError) {
-            console.log('🔄 Token refresh failed:', refreshError.message);
             // Only logout if it's not a rate limit error
             if (refreshError.response?.status !== 429) {
               logout();

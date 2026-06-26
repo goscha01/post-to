@@ -21,10 +21,8 @@ router.use(requireBusinessAuth); // Then check business authentication
 // Helper function to get cached services for a location
 async function getCachedServices(locationId, userId) {
   try {
-    console.log(`🗃️ Looking for cached services for location: ${locationId}, user: ${userId}`);
     return CacheUtils.getCachedExistingServices(userId, locationId) || [];
   } catch (error) {
-    console.error('Error in getCachedServices:', error);
     return [];
   }
 }
@@ -48,13 +46,11 @@ const saveServiceToDatabase = async (userId, serviceData) => {
       .single();
 
     if (error) {
-      console.error('Error saving service to database:', error);
       return null;
     }
 
     return data;
   } catch (error) {
-    console.error('Error in saveServiceToDatabase:', error);
     return null;
   }
 };
@@ -157,7 +153,6 @@ const saveExistingServicesToDatabase = async (userId, services, platform = 'goog
 
     return savedServices;
   } catch (error) {
-    console.error('Error saving existing services to database:', error);
     return [];
   }
 };
@@ -189,7 +184,6 @@ router.get('/categories', async (req, res) => {
       categories: response.data.categories || []
     });
   } catch (error) {
-    console.error('Error fetching categories:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to fetch categories',
@@ -244,9 +238,6 @@ router.get('/categories/batchGet', async (req, res) => {
       }
     });
     
-    console.log('🔍 Backend batchGet - Original names:', names);
-    console.log('🔍 Backend batchGet - Formatted names:', formattedNames);
-    console.log('🔍 Backend batchGet - Proper names:', properNames);
     
     const response = await gmbClient.categories.batchGet({
       regionCode,
@@ -287,11 +278,9 @@ router.get('/categories/batchGet', async (req, res) => {
       categories: response.data.categories || []
     });
   } catch (error) {
-    console.error('Error fetching categories by ID:', error);
     
     // Provide fallback services for house cleaning if API fails
     if (names && names.toString().includes('house_cleaning')) {
-      console.log('🔄 Providing fallback services for house cleaning due to API error');
       return res.json({
         success: true,
         categories: [{
@@ -416,7 +405,6 @@ router.get('/categories/:categoryId', async (req, res) => {
       categoryId: categoryId
     });
   } catch (error) {
-    console.error('Error fetching services for category:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to fetch services for category',
@@ -467,7 +455,6 @@ router.get('/locations/:locationId/services', async (req, res) => {
       cached: false
     });
   } catch (error) {
-    console.error('Error fetching location services:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to fetch location services',
@@ -517,7 +504,6 @@ router.patch('/locations/:locationId/services', [
       location: response.data
     });
   } catch (error) {
-    console.error('Error updating location services:', error);
     
     res.status(500).json({
       success: false,

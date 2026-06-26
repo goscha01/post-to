@@ -15,8 +15,6 @@ const BusinessSuccessCallback = () => {
     const token = searchParams.get('token');
     const refreshToken = searchParams.get('refreshToken');
     
-    console.log('BusinessSuccessCallback: Token from URL:', token ? 'Token received' : 'No token');
-    console.log('BusinessSuccessCallback: Refresh token from URL:', refreshToken ? 'Refresh token received' : 'No refresh token');
     
     if (token) {
       processedRef.current = true;
@@ -32,7 +30,6 @@ const BusinessSuccessCallback = () => {
         navigate('/profiles');
       }, 2000);
     } else {
-      console.error('Missing token in business success callback');
       navigate('/profiles?error=missing_token');
     }
   }, [navigate, searchParams]); // Removed handleAuthCallback from dependencies

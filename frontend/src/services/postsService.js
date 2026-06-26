@@ -33,7 +33,6 @@ class PostsService {
 
       // If validation changed the data, update the cache
       if (JSON.stringify(validatedData) !== JSON.stringify(cachedData)) {
-        console.log(`🔧 Re-validated and cleaned cached data for key: ${key}`);
         this.cache.set(key, validatedData);
       }
 
@@ -53,14 +52,12 @@ class PostsService {
 
     // Check if we should use cache based on session
     if (!this.sessionCacheConfig.shouldUseCache(dataType)) {
-      console.log(`🚫 Skipping cache for ${key} - session expired or cache disabled for ${dataType}`);
       return;
     }
 
     // Get session-based TTL
     const ttl = this.sessionCacheConfig.getTTL(dataType);
     if (ttl <= 0) {
-      console.log(`🚫 Skipping cache for ${key} - TTL is 0 for ${dataType}`);
       return;
     }
 
@@ -69,7 +66,6 @@ class PostsService {
     this.cache.set(key, cleanedData);
     this.cacheExpiry.set(key, Date.now() + ttl);
     
-    console.log(`💾 Cached ${key} with session-based TTL: ${ttl / 1000 / 60} minutes for ${dataType}`);
   }
 
   // Validate and clean data before caching
@@ -103,7 +99,6 @@ class PostsService {
       });
 
     if (cleanedData.length !== data.length) {
-      console.warn(`🔧 Cleaned ${data.length} ${dataType} items to ${cleanedData.length} (removed duplicates/corrupted data)`);
     }
 
     return cleanedData;
@@ -197,14 +192,12 @@ class PostsService {
     
     // Skip frontend cache - always use backend cache for consistency
     if (forceRefresh) {
-      console.log(`🔄 [DEBUG] Force refresh requested, clearing cache for ${cacheKey}`);
       this.cache.delete(cacheKey);
       this.cacheExpiry.delete(cacheKey);
     }
 
     // Check if request is already in progress
     if (this.pendingRequests.has(cacheKey)) {
-      console.log(`⏳ [DEBUG] Request already in progress for ${cacheKey}`);
       return this.pendingRequests.get(cacheKey);
     }
 
@@ -217,10 +210,8 @@ class PostsService {
       
       // Only cache if we got valid data
       if (result && Array.isArray(result) && result.length >= 0) {
-        console.log(`💾 [CACHE] Storing ${result.length} posts in FRONTEND cache for ${locationId}`);
         this.setCachedData(cacheKey, result);
       } else {
-        console.log(`⚠️ [CACHE] Not caching invalid data for ${locationId}`);
       }
       
       return result;
@@ -231,13 +222,11 @@ class PostsService {
 
   // Fetch posts from API with cache-first loading
   async fetchPostsFromAPI(locationId, accountId, forceRefresh = false) {
-    console.log(`🔍 [DEBUG] fetchPostsFromAPI called for locationId: ${locationId}, accountId: ${accountId}, forceRefresh: ${forceRefresh}`);
     
     try {
       // Always try backend cache first (unless force refresh)
       if (!forceRefresh) {
         try {
-          console.log(`📦 [CACHE] Fetching from backend cache: /api/posts/location/${locationId}?cached_only=true`);
           const cachedResponse = await axios.get(`/api/posts/location/${locationId}?cached_only=true`, {
             headers: {
               'x-gmb-account-id': accountId
@@ -246,47 +235,25 @@ class PostsService {
           
           if (cachedResponse.data.success && cachedResponse.data.cached) {
             const cachedPosts = cachedResponse.data.posts || [];
-            console.log(`📦 [CACHE] Successfully fetched ${cachedPosts.length} posts from BACKEND cache`);
-            
+
             // Only return cached posts if there are actually posts in the cache
             if (cachedPosts.length > 0) {
               return cachedPosts;
-            } else {
-              console.log(`📦 [CACHE] Backend cache is empty, will fetch from GMB API`);
             }
           }
         } catch (cacheError) {
-          console.log(`💾 [DEBUG] Backend cache not available for location ${locationId}, will fetch from API. Error:`, {
-            message: cacheError.message,
-            status: cacheError.response?.status,
-            statusText: cacheError.response?.statusText,
-            data: cacheError.response?.data
-          });
         }
-      } else {
-        console.log(`🔄 [DEBUG] Force refresh requested, skipping backend cache`);
       }
 
       // If no cached data or force refresh, fetch from API
-      console.log(`🌐 [API] Fetching posts from GMB API: /api/posts/location/${locationId}`);
       const response = await axios.get(`/api/posts/location/${locationId}`, {
         headers: {
           'x-gmb-account-id': accountId
         }
       });
       
-      console.log(`🌐 [API] Successfully fetched ${response.data.posts?.length || 0} posts from GMB API`);
       return response.data.posts || [];
     } catch (error) {
-      console.error(`❌ [DEBUG] Error fetching posts for location ${locationId}:`, error);
-      console.error(`❌ [DEBUG] Error details:`, {
-        message: error.message,
-        status: error.response?.status,
-        statusText: error.response?.statusText,
-        data: error.response?.data,
-        url: error.config?.url,
-        method: error.config?.method
-      });
       return [];
     }
   }
@@ -333,7 +300,6 @@ class PostsService {
 
   // Clear all cache
   clearCache() {
-    console.log(`🧹 [DEBUG] Clearing all cache (${this.cache.size} entries)`);
     this.cache.clear();
     this.cacheExpiry.clear();
     this.pendingRequests.clear();
@@ -341,31 +307,24 @@ class PostsService {
 
   // Clear posts cache specifically
   clearPostsCache() {
-    console.log(`🧹 [DEBUG] Clearing posts cache`);
     const postsKeys = Array.from(this.cache.keys()).filter(key => key.startsWith('posts_'));
     postsKeys.forEach(key => {
       this.cache.delete(key);
       this.cacheExpiry.delete(key);
-      console.log(`🗑️ [DEBUG] Cleared cache entry: ${key}`);
     });
-    console.log(`🧹 [DEBUG] Cleared ${postsKeys.length} posts cache entries`);
   }
 
   // Clear media cache specifically
   clearMediaCache() {
-    console.log(`🧹 [DEBUG] Clearing media cache`);
     const mediaKeys = Array.from(this.cache.keys()).filter(key => key.startsWith('media_'));
     mediaKeys.forEach(key => {
       this.cache.delete(key);
       this.cacheExpiry.delete(key);
-      console.log(`🗑️ [DEBUG] Cleared cache entry: ${key}`);
     });
-    console.log(`🧹 [DEBUG] Cleared ${mediaKeys.length} media cache entries`);
   }
 
   // Force refresh posts for all locations
   async refreshAllPosts(locations) {
-    console.log(`🔄 [DEBUG] Force refreshing posts for ${locations.length} locations`);
     
     // Clear posts cache first
     this.clearPostsCache();
@@ -376,16 +335,13 @@ class PostsService {
         const locationId = location.name.split('/').pop();
         const accountId = location.accountId;
         
-        console.log(`🔄 [DEBUG] Refreshing posts for location ${locationId} (account ${accountId})`);
         return await this.getPostsForLocation(locationId, accountId, true);
       } catch (error) {
-        console.error(`❌ [DEBUG] Error refreshing posts for location ${location.name}:`, error);
         return null;
       }
     });
     
     const results = await Promise.all(refreshPromises);
-    console.log(`🔄 [DEBUG] Completed refresh for ${results.filter(r => r).length} locations`);
     return results;
   }
 
@@ -402,7 +358,6 @@ class PostsService {
   printAPIStats() {
     const apiStats = apiTracker.printStats();
     const cacheStats = this.getCacheStats();
-    console.log('📊 Combined Stats:', { apiStats, cacheStats });
     return { apiStats, cacheStats };
   }
 }

@@ -50,10 +50,8 @@ const AccountProfileImage = ({ profilePicture, accountName }) => {
           setError(true);
         }
       } catch (err) {
-        console.error('Error fetching account profile image:', err);
         // If it's a 400 error (likely expired URL), try to refresh the profile data
         if (err.response?.status === 400) {
-          console.log('Profile image URL may have expired, consider refreshing profile data');
         }
         setError(true);
       } finally {
@@ -116,7 +114,6 @@ const BusinessProfilePopup = ({ isOpen, onClose, profile, accountId }) => {
         setError('No location data available');
       }
     } catch (err) {
-      console.error('Error fetching detailed profile data:', err);
       setError('Failed to load detailed profile data');
     } finally {
       setLoading(false);
@@ -632,7 +629,6 @@ const BusinessProfiles = () => {
   const [isDisconnected, setIsDisconnected] = useState(false);
 
   useEffect(() => {
-    console.log(`📡 BusinessProfiles useEffect triggered - isAuthenticated: ${isAuthenticated}, authDisconnected: ${authDisconnected}`);
 
     // Check for error parameters in URL
     const urlParams = new URLSearchParams(window.location.search);
@@ -657,7 +653,6 @@ const BusinessProfiles = () => {
     } else if (isAuthenticated && !authDisconnected) {
       // Check if business profiles are connected
       const businessConnected = localStorage.getItem('gmb_business_connected') === 'true';
-      console.log(`🔗 Business connected: ${businessConnected}`);
 
       if (businessConnected) {
         // Business profiles are connected, fetch them
@@ -680,7 +675,6 @@ const BusinessProfiles = () => {
 
   const fetchProfiles = async (forceRefresh = false) => {
     if (isFetching || fetchingRef.current) {
-      console.log(`⏸️ fetchProfiles already in progress, skipping duplicate call`);
       return;
     }
 
@@ -723,7 +717,6 @@ const BusinessProfiles = () => {
         // Use force refresh
         accounts = await businessProfileService.getAccounts(true);
       }
-      console.log(`📋 Received ${accounts?.length || 0} accounts:`, accounts);
       
       if (accounts && accounts.length > 0) {
         // Remove duplicate accounts by ID (normalize account names first)
@@ -735,7 +728,6 @@ const BusinessProfiles = () => {
             return normalizedName === otherNormalizedName;
           });
         });
-        console.log(`🔧 Filtered ${accounts.length} accounts to ${uniqueAccounts.length} unique accounts`);
 
         // Fetch business data for each account (single card per business)
         const businessProfiles = await Promise.all(
@@ -743,7 +735,6 @@ const BusinessProfiles = () => {
             try {
               // Extract account ID from the full name (e.g., "accounts/123456789" -> "123456789")
               const accountId = account.name.split('/').pop();
-              console.log(`🏢 Processing account ${index + 1}/${uniqueAccounts.length}: ${accountId} (${account.accountName})`);
               // Account data loaded
               
               // Use centralized service for locations (already cached)
@@ -814,7 +805,6 @@ const BusinessProfiles = () => {
                   }
                 }
               } catch (accountMediaError) {
-                console.error(`Error fetching account media for ${account.name}:`, accountMediaError);
               }
               
               // Fetch review statistics
@@ -835,7 +825,6 @@ const BusinessProfiles = () => {
               
               return profileData;
             } catch (error) {
-              console.error(`Error fetching business data for ${account.name}:`, error);
               return {
                 ...account,
                 accountProfilePicture: null,
@@ -848,8 +837,16 @@ const BusinessProfiles = () => {
           })
         );
 
-        console.log(`📄 Created ${businessProfiles.length} business profiles`);
-        setProfiles(businessProfiles);
+        // Deduplicate profiles by account name
+        const uniqueProfiles = businessProfiles.reduce((acc, current) => {
+          const exists = acc.find(item => item.name === current.name);
+          if (!exists) {
+            acc.push(current);
+          }
+          return acc;
+        }, []);
+
+        setProfiles(uniqueProfiles);
         
         // Background refresh: check for updates and refresh UI if needed
         if (!forceRefresh) {
@@ -878,7 +875,6 @@ const BusinessProfiles = () => {
               }
               
               if (hasChanges) {
-                console.log(`🔄 [DEBUG] Background refresh: data changed, updating UI`);
                 // Re-process the fresh data (simplified version)
                 const freshBusinessProfiles = await Promise.all(
                   freshAccounts.map(async (account) => {
@@ -891,12 +887,6 @@ const BusinessProfiles = () => {
                     }
                     
                     let businessName = account.accountName;
-                    console.log(`🔍 [DEBUG] Background refresh: extracting business name for ${account.accountName}:`, {
-                      profileBusinessName: firstLocation.profile?.businessName,
-                      businessName: firstLocation.businessName,
-                      locationName: firstLocation.locationName,
-                      title: firstLocation.title
-                    });
                     
                     if (firstLocation.profile?.businessName) {
                       businessName = firstLocation.profile.businessName;
@@ -908,7 +898,6 @@ const BusinessProfiles = () => {
                       businessName = firstLocation.title;
                     }
                     
-                    console.log(`🔍 [DEBUG] Background refresh: final business name: ${businessName}`);
                     
                     const locationId = firstLocation.name.split('/').pop();
                     // Force refresh reviews in background refresh to get latest data
@@ -953,12 +942,19 @@ const BusinessProfiles = () => {
                     };
                   })
                 );
-                
-                console.log(`📄 Background refresh: Updated ${freshBusinessProfiles.length} business profiles`);
-                setProfiles(freshBusinessProfiles);
+
+                // Deduplicate fresh profiles by account name
+                const uniqueFreshProfiles = freshBusinessProfiles.reduce((acc, current) => {
+                  const exists = acc.find(item => item.name === current.name);
+                  if (!exists) {
+                    acc.push(current);
+                  }
+                  return acc;
+                }, []);
+
+                setProfiles(uniqueFreshProfiles);
                 
                 // Update the cached data with the fresh data
-                console.log(`💾 [DEBUG] Background refresh: updating cached data with fresh business names`);
                 businessProfileService.setCachedData('accounts', freshAccounts);
                 
                 // Also update individual location caches
@@ -966,7 +962,6 @@ const BusinessProfiles = () => {
                   const accountId = account.name.split('/').pop();
                   const locations = account.locations || [];
                   if (locations.length > 0) {
-                    console.log(`💾 [DEBUG] Background refresh: updating location cache for account ${accountId}`);
                     businessProfileService.setCachedData(`locations_${accountId}`, locations);
                   }
                 }
@@ -977,22 +972,18 @@ const BusinessProfiles = () => {
                   const locations = account.locations || [];
                   if (locations.length > 0) {
                     const locationId = locations[0].name.split('/').pop();
-                    console.log(`💾 [DEBUG] Background refresh: updating reviews cache for ${accountId}/${locationId}`);
                     // Force refresh reviews to update cache
                     await businessProfileService.getReviewsForLocation(accountId, locationId, true);
                   }
                 }
               } else {
-                console.log(`📄 Background refresh: no changes detected`);
               }
             } catch (error) {
-              console.error('Error in background refresh:', error);
             }
           }, 1000); // Wait 1 second after initial render
         }
       }
     } catch (error) {
-      console.error('Error fetching profiles:', error);
       
       // Clear any existing error first
       setConnectError('');
@@ -1000,29 +991,24 @@ const BusinessProfiles = () => {
       // Handle business authentication errors
       if (error.response?.data?.needsBusinessAuth) {
         // Business authentication required/expired
-        console.log('Business authentication required');
         setIsDisconnected(true);
         setConnectError(error.response.data.error || 'Business authentication required. Please reconnect your Google My Business account.');
         localStorage.removeItem('gmb_business_connected');
         setProfiles([]);
       } else if (error.response?.status === 403) {
         // Permission/scope error
-        console.log('Insufficient permissions for business access');
         setIsDisconnected(true);
         setConnectError('Insufficient permissions. Please disconnect and reconnect your Google My Business account with all required permissions.');
         localStorage.removeItem('gmb_business_connected');
         setProfiles([]);
       } else if (error.response?.status === 401) {
         // Authentication expired
-        console.log('Authentication expired');
         setConnectError('Authentication expired. Please sign in again.');
       } else if (error.response?.status === 429) {
         // Rate limit error
-        console.log('Rate limit exceeded');
         setConnectError('Too many requests. Please wait a moment and try again.');
       } else {
         // Other errors
-        console.log('General error fetching profiles:', error.message);
         setConnectError('Failed to fetch business profiles. Please try again.');
       }
     } finally {
@@ -1083,20 +1069,12 @@ const BusinessProfiles = () => {
       if (response?.reviews) {
         // Reviews data available
       } else {
-        console.log(`🔍 [DEBUG] No reviews property in response`);
       }
 
       if (response.success && response.reviews) {
         const reviews = response.reviews;
         const totalReviews = reviews.length;
         
-        console.log(`🔍 [DEBUG] Processing ${totalReviews} reviews:`, reviews.map((review, index) => ({
-          index,
-          reviewId: review.reviewId || review.name,
-          starRating: review.star_rating || review.starRating || review.rating,
-          reviewer: review.reviewer?.displayName || review.reviewerName,
-          comment: review.comment?.substring(0, 50) + '...'
-        })));
         
         // Calculate average rating
         let totalRating = 0;
@@ -1125,36 +1103,16 @@ const BusinessProfiles = () => {
         
         const averageRating = validRatings > 0 ? (totalRating / validRatings).toFixed(1) : 0;
         
-        console.log(`🔍 [DEBUG] Final calculation:`, {
-          totalReviews,
-          validRatings,
-          totalRating,
-          averageRating: parseFloat(averageRating)
-        });
 
         return {
           totalReviews,
           averageRating: parseFloat(averageRating)
         };
       } else {
-        console.log(`⚠️ [DEBUG] No reviews data found in response for ${accountId}/${locationId}:`, {
-          responseSuccess: response?.success,
-          hasReviews: !!response?.reviews,
-          responseError: response?.error,
-          fullResponse: response
-        });
       }
     } catch (error) {
-      console.error(`❌ [DEBUG] Error fetching review stats for ${accountId}/${locationId}:`, error);
-      console.error(`❌ [DEBUG] Error details:`, {
-        message: error.message,
-        status: error.response?.status,
-        statusText: error.response?.statusText,
-        data: error.response?.data
-      });
     }
     
-    console.log(`🔍 [DEBUG] Returning default values: { totalReviews: 0, averageRating: 0 }`);
     return { totalReviews: 0, averageRating: 0 };
   };
 
@@ -1251,7 +1209,6 @@ const BusinessProfiles = () => {
           </button>
           <button
             onClick={async () => {
-              console.log(`🔄 [DEBUG] Manual refresh all data triggered`);
               try {
                 setRefreshing(true);
                 // Clear all caches to get fresh data
@@ -1260,22 +1217,17 @@ const BusinessProfiles = () => {
                 businessProfileService.clearAccountsCache();
                 
                 // Force refresh accounts first
-                console.log(`🔄 [DEBUG] Force refreshing accounts`);
                 const accounts = await businessProfileService.getAccounts(true);
-                console.log(`🔄 [DEBUG] Force refreshing locations for ${accounts.length} accounts`);
                 
                 // Force refresh locations for each account
                 for (const account of accounts) {
                   const accountId = account.name.split('/').pop();
-                  console.log(`🔄 [DEBUG] Force refreshing locations for account ${accountId}`);
                   await businessProfileService.getLocationsForAccount(accountId, true);
                 }
                 
                 await businessProfileService.refreshAllReviews(accounts);
                 await refreshProfiles(true);
-                console.log(`✅ [DEBUG] Manual refresh completed`);
               } catch (error) {
-                console.error(`❌ [DEBUG] Manual refresh failed:`, error);
               } finally {
                 setRefreshing(false);
               }
@@ -1310,12 +1262,6 @@ const BusinessProfiles = () => {
                       <div className="flex items-center space-x-4 mt-2">
                         <div className="flex items-center space-x-1">
                           {(() => {
-                            console.log(`🔍 [DEBUG] Rendering stars for profile ${profile.businessName}:`, {
-                              averageRating: profile.averageRating,
-                              type: typeof profile.averageRating,
-                              totalReviews: profile.totalReviews,
-                              type: typeof profile.totalReviews
-                            });
                             return renderStars(profile.averageRating);
                           })()}
                           <span className="text-sm font-medium text-gray-700 ml-1">
@@ -1390,7 +1336,6 @@ const BusinessProfiles = () => {
             <div className="mt-6 space-y-3">
               <button
                 onClick={async () => {
-                  console.log(`🧪 [DEBUG] Testing Google My Business API...`);
                   try {
                     // Test with the current business profile
                     if (profiles.length > 0) {
@@ -1399,9 +1344,7 @@ const BusinessProfiles = () => {
                       const locationId = profile.locations?.[0]?.name?.split('/').pop();
                       
                       if (accountId && locationId) {
-                        console.log(`🧪 [DEBUG] Testing API for ${profile.businessName} (${accountId}/${locationId})`);
                         const testResponse = await businessProfileService.fetchReviewsFromAPI(accountId, locationId, true);
-                        console.log(`🧪 [DEBUG] API Test Result:`, testResponse);
                         
                         if (testResponse.reviews && testResponse.reviews.length > 0) {
                           alert(`✅ API Test Successful!\nFound ${testResponse.reviews.length} reviews for ${profile.businessName}`);
@@ -1413,7 +1356,6 @@ const BusinessProfiles = () => {
                       alert('No business profiles available to test');
                     }
                   } catch (error) {
-                    console.error(`❌ [DEBUG] API Test Failed:`, error);
                     alert(`❌ API Test Failed: ${error.message}`);
                   }
                 }}

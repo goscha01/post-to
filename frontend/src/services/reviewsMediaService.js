@@ -24,21 +24,18 @@ class ReviewsMediaService {
   setCachedImage(url, dataUrl) {
     // Check if we should use cache based on session
     if (!this.sessionCacheConfig.shouldUseCache('reviews')) {
-      console.log(`🚫 Skipping cache for review image - session expired or cache disabled`);
       return;
     }
 
     // Get session-based TTL
     const ttl = this.sessionCacheConfig.getTTL('reviews');
     if (ttl <= 0) {
-      console.log(`🚫 Skipping cache for review image - TTL is 0`);
       return;
     }
 
     this.cache.set(url, dataUrl);
     this.cacheExpiry.set(url, Date.now() + ttl);
     
-    console.log(`💾 Cached review image with session-based TTL: ${Math.round(ttl / 1000 / 60)} minutes`);
   }
 
   // Process media for reviews (profile images)
@@ -54,7 +51,6 @@ class ReviewsMediaService {
         // Check cache first
         const cachedImage = this.getCachedImage(review.reviewer.profilePhotoUrl);
         if (cachedImage) {
-          console.log(`📦 Retrieved review image from reviewsMediaService cache: ${review.reviewer.profilePhotoUrl.substring(0, 50)}...`);
           return {
             ...review,
             reviewer: {
@@ -79,7 +75,6 @@ class ReviewsMediaService {
             };
           }
         } catch (error) {
-          console.error('Error fetching profile image:', error);
         }
 
         return review;

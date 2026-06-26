@@ -1,4 +1,3 @@
-process.env["NODE_TLS_REJECT_UNAUTHORIZED"] = 0;
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -12,6 +11,8 @@ const insightsRoutes = require('./routes/insights');
 const reviewsRoutes = require('./routes/reviews');
 const servicesRoutes = require('./routes/services');
 const cacheRoutes = require('./routes/cache');
+const aiRoutes = require('./routes/ai');
+const clientLogRoutes = require('./routes/clientLog');
 const apiLogger = require('./middleware/apiLogger');
 
 const app = express();
@@ -48,6 +49,8 @@ app.use('/api/insights', insightsRoutes);
 app.use('/api/reviews', reviewsRoutes);
 app.use('/api/services', servicesRoutes);
 app.use('/api/cache', cacheRoutes);
+app.use('/api/ai', aiRoutes);
+app.use('/api/client-log', clientLogRoutes);
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -56,7 +59,6 @@ app.get('/health', (req, res) => {
 
 // Error handling middleware
 app.use((err, req, res, next) => {
-  console.error(err.stack);
   res.status(500).json({ 
     error: 'Something went wrong!',
     message: process.env.NODE_ENV === 'development' ? err.message : 'Internal server error'
@@ -68,9 +70,20 @@ app.use('*', (req, res) => {
   res.status(404).json({ error: 'Route not found' });
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  console.log(`Environment: ${process.env.NODE_ENV}`);
+// Global error handlers to prevent crashes
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught Exception:', error);
+  console.error('Stack:', error.stack);
+  // Don't exit - keep server running
 });
 
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise);
+  console.error('Reason:', reason);
+  // Don't exit - keep server running
+});
 
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+});

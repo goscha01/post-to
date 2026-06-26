@@ -45,7 +45,6 @@ class SessionCacheUtils {
         endTime: null,
         lastActivity: Date.now()
       });
-      console.log(`🔄 Created new session for user: ${userId}`);
     }
     
     const session = this.sessions.get(userId);
@@ -58,7 +57,6 @@ class SessionCacheUtils {
     if (sessionElapsed > this.defaultSessionDuration) {
       session.isActive = false;
       session.endTime = Date.now();
-      console.log(`🔚 Session expired for user: ${userId}`);
     }
     
     return session;
@@ -75,7 +73,6 @@ class SessionCacheUtils {
     const config = this.ttlConfig[dataType];
     
     if (!config) {
-      console.warn(`Unknown data type: ${dataType}, using default TTL`);
       return this.defaultSessionDuration;
     }
 
@@ -121,7 +118,6 @@ class SessionCacheUtils {
       // Reset session start time to now, maintaining the original session duration
       session.startTime = Date.now();
       session.lastActivity = Date.now();
-      console.log(`⏰ Refreshed session for user ${userId} - ${this.defaultSessionDuration / 1000 / 60} minutes remaining`);
     }
   }
 
@@ -134,7 +130,6 @@ class SessionCacheUtils {
       const session = this.sessions.get(userId);
       session.isActive = false;
       session.endTime = Date.now();
-      console.log(`🔚 Ended session for user: ${userId}`);
     }
   }
 
@@ -179,7 +174,6 @@ class SessionCacheUtils {
     
     expiredUsers.forEach(userId => {
       this.sessions.delete(userId);
-      console.log(`🧹 Cleaned up expired session for user: ${userId}`);
     });
     
     return expiredUsers.length;
@@ -209,9 +203,7 @@ class SessionCacheUtils {
   updateTTLConfig(dataType, config) {
     if (this.ttlConfig[dataType]) {
       this.ttlConfig[dataType] = { ...this.ttlConfig[dataType], ...config };
-      console.log(`⚙️ Updated TTL config for ${dataType}:`, config);
     } else {
-      console.warn(`Unknown data type: ${dataType}`);
     }
   }
 
@@ -231,7 +223,6 @@ const sessionCacheUtils = new SessionCacheUtils();
 setInterval(() => {
   const cleaned = sessionCacheUtils.cleanupExpiredSessions();
   if (cleaned > 0) {
-    console.log(`🧹 Cleaned up ${cleaned} expired sessions`);
   }
 }, 10 * 60 * 1000);
 

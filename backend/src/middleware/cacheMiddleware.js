@@ -52,7 +52,6 @@ const cacheMiddleware = (options = {}) => {
       cachedData = await cacheService.get(cacheKey, userId);
 
       if (cachedData) {
-        console.log(`Cache hit for ${endpoint}`);
         return res.json({
           success: true,
           data: cachedData,
@@ -61,7 +60,6 @@ const cacheMiddleware = (options = {}) => {
         });
       }
 
-      console.log(`Cache miss for ${endpoint}`);
       
       // Store original res.json method
       const originalJson = res.json.bind(res);
@@ -76,22 +74,18 @@ const cacheMiddleware = (options = {}) => {
           if (sessionBased) {
             // Check if we should use cache based on session
             if (!sessionCacheUtils.shouldUseCache(userId, dataType)) {
-              console.log(`🚫 Skipping cache for ${endpoint} - session expired or cache disabled for ${dataType}`);
               return originalJson(data);
             }
             
             // Get session-based TTL
             cacheTTL = sessionCacheUtils.getTTL(userId, dataType);
             if (cacheTTL <= 0) {
-              console.log(`🚫 Skipping cache for ${endpoint} - TTL is 0 for ${dataType}`);
               return originalJson(data);
             }
             
-            console.log(`Using session-based TTL for ${dataType}: ${cacheTTL / 1000 / 60} minutes`);
           }
           
           cacheService.set(cacheKey, data, userId, Math.floor(cacheTTL / 1000));
-          console.log(`Cached response for ${endpoint} with TTL: ${cacheTTL / 1000 / 60} minutes`);
         }
         
         // Call original json method
@@ -100,7 +94,6 @@ const cacheMiddleware = (options = {}) => {
 
       next();
     } catch (error) {
-      console.error('Cache middleware error:', error);
       next();
     }
   };
@@ -122,7 +115,6 @@ const invalidateCacheMiddleware = (pattern = '*') => {
     res.json = function(data) {
       if (data && (data.success !== false)) {
         cacheService.deleteByPattern(pattern, userId);
-        console.log(`Invalidated cache entries for pattern: ${pattern}`);
       }
       return originalJson(data);
     };
@@ -130,7 +122,6 @@ const invalidateCacheMiddleware = (pattern = '*') => {
     res.send = function(data) {
       if (data && (data.success !== false)) {
         cacheService.deleteByPattern(pattern, userId);
-        console.log(`Invalidated cache entries for pattern: ${pattern}`);
       }
       return originalSend(data);
     };
@@ -150,7 +141,6 @@ const cacheStatsMiddleware = async (req, res, next) => {
       cache: stats
     });
   } catch (error) {
-    console.error('Cache stats error:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to get cache statistics'
@@ -183,7 +173,6 @@ const clearCacheMiddleware = async (req, res, next) => {
       result
     });
   } catch (error) {
-    console.error('Clear cache error:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to clear cache'

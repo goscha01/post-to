@@ -76,7 +76,6 @@ class DatabaseCache {
 
       return data.cache_value;
     } catch (error) {
-      console.error('Cache get error:', error);
       return null;
     }
   }
@@ -104,7 +103,6 @@ class DatabaseCache {
         });
 
     } catch (error) {
-      console.error('Cache set error:', error);
     }
   }
 
@@ -116,7 +114,6 @@ class DatabaseCache {
         .delete()
         .eq('cache_key', key);
     } catch (error) {
-      console.error('Cache delete error:', error);
     }
   }
 }
@@ -174,7 +171,6 @@ const smartRateLimitMiddleware = (endpoint = 'general') => {
       
       next();
     } catch (error) {
-      console.error('Rate limiting error:', error);
       next(); // Allow request if rate limiting fails
     }
   };
@@ -189,10 +185,8 @@ setInterval(async () => {
       .lt('expiry', new Date());
     
     if (!error) {
-      console.log('Cache cleanup completed');
     }
   } catch (error) {
-    console.error('Cache cleanup error:', error);
   }
 }, 3600000); // 1 hour
 
@@ -206,7 +200,6 @@ router.get('/google', smartRateLimitMiddleware('oauth_url'), async (req, res) =>
     if (!forceConsent) {
       const cachedUrl = await dbCache.get(cacheKey);
       if (cachedUrl) {
-        console.log('Returning cached OAuth URL');
         return res.json({ authUrl: cachedUrl });
       }
     }
@@ -224,29 +217,24 @@ router.get('/google', smartRateLimitMiddleware('oauth_url'), async (req, res) =>
       await dbCache.set(cacheKey, authUrl, 180000);
     }
 
-    console.log('Generated new OAuth URL');
     res.json({ authUrl });
 
   } catch (error) {
-    console.error('Error generating auth URL:', error);
     res.status(500).json({ error: 'Failed to generate authorization URL' });
   }
 });
 
 // OAuth callback
 router.get('/google/oauth/callback', async (req, res) => {
-  console.log('OAuth callback received:', req.query);
   try {
     const { code, state } = req.query;
     
     if (!code) {
-      console.log('No authorization code provided');
       return res.status(400).json({ error: 'Authorization code not provided' });
     }
 
     // Validate state parameter for user auth
     if (state && !state.startsWith('auth_') && !state.startsWith('reauth_')) {
-      console.log('Invalid state parameter');
       return res.status(400).json({ error: 'Invalid state parameter' });
     }
 
@@ -274,7 +262,6 @@ router.get('/google/oauth/callback', async (req, res) => {
 
     if (!user) {
       // Create new user
-      console.log('Creating new user:', userInfo.data.email);
       const { data: newUser, error: createError } = await supabase
         .from('users')
         .insert([{
@@ -331,15 +318,19 @@ router.get('/google/oauth/callback', async (req, res) => {
       { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
     );
     
-    console.log('JWT token generated for user:', user.id);
 
     // Redirect to frontend
     const redirectUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/callback?token=${jwtToken}`;
-    console.log('User OAuth callback successful, redirecting to:', redirectUrl);
     res.redirect(redirectUrl);
-    
+
   } catch (error) {
-    console.error('OAuth callback error:', error);
+    console.error('[auth/google/oauth/callback] FAILED:', error.message);
+    console.error('cause:', error.cause);
+    if (error.cause) {
+      console.error('cause.code:', error.cause.code, 'errno:', error.cause.errno);
+      console.error('cause.message:', error.cause.message);
+    }
+    if (error.stack) console.error(error.stack);
     res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/error?message=${encodeURIComponent(error.message)}`);
   }
 });
@@ -369,7 +360,6 @@ router.get('/google/business', smartRateLimitMiddleware('business_oauth'), async
     // Check cache first
     const cachedUrl = await dbCache.get(cacheKey);
     if (cachedUrl) {
-      console.log('Returning cached business OAuth URL');
       return res.json({ authUrl: cachedUrl });
     }
 
@@ -384,23 +374,19 @@ router.get('/google/business', smartRateLimitMiddleware('business_oauth'), async
     // Cache for 3 minutes
     await dbCache.set(cacheKey, authUrl, 180000);
 
-    console.log('Generated new business OAuth URL for user:', user_id);
     res.json({ authUrl });
 
   } catch (error) {
-    console.error('Error generating business auth URL:', error);
     res.status(500).json({ error: 'Failed to generate business authorization URL' });
   }
 });
 
 // Business OAuth callback (separate endpoint for business profile access)
 router.get('/google/business/callback', async (req, res) => {
-  console.log('Business OAuth callback received:', req.query);
   try {
     const { code, state } = req.query;
     
     if (!code) {
-      console.log('No authorization code provided for business auth');
       return res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/business/error?error=no_code`);
     }
 
@@ -414,7 +400,6 @@ router.get('/google/business/callback', async (req, res) => {
     }
 
     if (!extractedUserId) {
-      console.error('No user_id found in state parameter for business authentication');
       return res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/business/error?error=invalid_state`);
     }
 
@@ -437,7 +422,6 @@ router.get('/google/business/callback', async (req, res) => {
       .single();
 
     if (userError || !user) {
-      console.error('Business authentication attempted for non-existent user:', extractedUserId);
       return res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/business/error?error=user_not_found`);
     }
 
@@ -456,7 +440,6 @@ router.get('/google/business/callback', async (req, res) => {
       .eq('id', user.id);
 
     if (updateError) {
-      console.error('Error updating user with business tokens:', updateError);
       return res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/business/error?error=update_failed`);
     }
 
@@ -474,15 +457,12 @@ router.get('/google/business/callback', async (req, res) => {
       { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
     );
     
-    console.log('Business connection successful for user:', user.id);
 
     // Redirect to frontend with success - include both JWT and Google refresh token
     const redirectUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/business/success?token=${jwtToken}&refreshToken=${tokens.refresh_token}`;
-    console.log('Business OAuth callback successful, redirecting to:', redirectUrl);
     res.redirect(redirectUrl);
     
   } catch (error) {
-    console.error('Business OAuth callback error:', error);
     res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/business/error?error=callback_failed`);
   }
 });
@@ -492,17 +472,12 @@ router.post('/refresh', smartRateLimitMiddleware('token_refresh'), async (req, r
   try {
     const { refreshToken } = req.body;
     
-    console.log('🔄 Refresh endpoint called');
-    console.log('🔄 Refresh token received:', !!refreshToken);
-    console.log('🔄 Refresh token length:', refreshToken ? refreshToken.length : 0);
-    console.log('🔄 Refresh token starts with:', refreshToken ? refreshToken.substring(0, 20) + '...' : 'null');
     
     if (!refreshToken) {
       return res.status(400).json({ error: 'Refresh token required' });
     }
 
     // Find user by business refresh token (since we're using Google refresh token from business auth)
-    console.log('🔄 Looking up user by business_refresh_token...');
     const { data: user, error: userError } = await supabase
       .from('users')
       .select('id, email, google_id, name, picture_url, has_business_access, business_refresh_token')
@@ -510,19 +485,13 @@ router.post('/refresh', smartRateLimitMiddleware('token_refresh'), async (req, r
       .single();
 
     if (userError || !user) {
-      console.error('🔄 Token refresh error:', userError);
-      console.error('🔄 User found:', !!user);
       return res.status(401).json({ error: 'Invalid refresh token' });
     }
 
-    console.log('🔄 User found:', user.id);
-    console.log('🔄 User has business access:', user.has_business_access);
     
     // Use business OAuth client to refresh the Google access token
-    console.log('🔄 Refreshing Google access token...');
     businessOAuth2Client.setCredentials({ refresh_token: refreshToken });
     const { credentials } = await businessOAuth2Client.refreshAccessToken();
-    console.log('🔄 Google token refreshed successfully');
 
     // Update business tokens in database
     const { error: updateError } = await supabase
@@ -534,12 +503,10 @@ router.post('/refresh', smartRateLimitMiddleware('token_refresh'), async (req, r
       .eq('id', user.id);
 
     if (updateError) {
-      console.error('Error updating business tokens:', updateError);
       return res.status(500).json({ error: 'Failed to update tokens' });
     }
 
     // Generate new JWT token instead of returning Google access token
-    console.log('🔄 Generating new JWT token...');
     const jwtToken = jwt.sign(
       { 
         userId: user.id, 
@@ -553,9 +520,6 @@ router.post('/refresh', smartRateLimitMiddleware('token_refresh'), async (req, r
       { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
     );
 
-    console.log('🔄 JWT token generated successfully');
-    console.log('🔄 JWT token length:', jwtToken.length);
-    console.log('🔄 JWT token starts with:', jwtToken.substring(0, 20) + '...');
 
     res.json({
       access_token: jwtToken, // Return JWT instead of Google access token
@@ -563,7 +527,6 @@ router.post('/refresh', smartRateLimitMiddleware('token_refresh'), async (req, r
     });
 
   } catch (error) {
-    console.error('Token refresh error:', error);
     res.status(500).json({ error: 'Failed to refresh token' });
   }
 });
@@ -587,7 +550,6 @@ router.post('/logout', async (req, res) => {
 
     res.json({ message: 'Logged out successfully' });
   } catch (error) {
-    console.error('Logout error:', error);
     res.status(500).json({ error: 'Logout failed' });
   }
 });

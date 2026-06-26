@@ -11,9 +11,11 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY
 );
 
-// Apply both middlewares to all review routes
-router.use(authMiddleware); // First authenticate the user
-router.use(requireBusinessAuth); // Then check business authentication
+// User authentication applies to every review route.
+// Business (GMB) authentication is applied PER-ROUTE so that endpoints which
+// don't actually call Google APIs (e.g. AI generation from a stored review)
+// don't get blocked when a user's GMB token is revoked or expired.
+router.use(authMiddleware);
 
 // Helper function to save review to database
 const saveReviewToDatabase = async (userId, reviewData) => {
@@ -39,13 +41,11 @@ const saveReviewToDatabase = async (userId, reviewData) => {
       .single();
 
     if (error) {
-      console.error('Error saving review to database:', error);
       return null;
     }
 
     return data;
   } catch (error) {
-    console.error('Error in saveReviewToDatabase:', error);
     return null;
   }
 };
@@ -62,10 +62,8 @@ const saveExistingReviewsToDatabase = async (userId, reviews, locationId, accoun
 
     if (!existingLocation) {
       // Use the specific account ID from the request
-      console.log(`Creating location ${locationId} under account ${accountId}`);
 
       // Verify the account exists (it should have been created by the /accounts endpoint)
-      console.log(`🔍 Searching for GMB account: ${accountId} for user: ${userId}`);
 
       const { data: gmbAccount, error: accountError } = await supabase
         .from('gmb_accounts')
@@ -74,17 +72,14 @@ const saveExistingReviewsToDatabase = async (userId, reviews, locationId, accoun
         .eq('user_id', userId)
         .single();
 
-      console.log(`🔍 Account query result:`, { gmbAccount, accountError });
 
       if (!gmbAccount) {
-        console.log(`❌ No GMB account ${accountId} found in database for user ${userId}, skipping location creation`);
 
         // Debug: Let's see what accounts DO exist for this user
         const { data: allUserAccounts } = await supabase
           .from('gmb_accounts')
           .select('account_id')
           .eq('user_id', userId);
-        console.log(`🔍 All accounts for user ${userId}:`, allUserAccounts);
 
         return [];
       }
@@ -103,7 +98,6 @@ const saveExistingReviewsToDatabase = async (userId, reviews, locationId, accoun
         .single();
 
       if (locationError) {
-        console.error('Error creating location:', locationError);
         return [];
       }
 
@@ -164,7 +158,6 @@ const saveExistingReviewsToDatabase = async (userId, reviews, locationId, accoun
 
     return savedReviews;
   } catch (error) {
-    console.error('Error saving existing reviews to database:', error);
     return [];
   }
 };
@@ -180,19 +173,17 @@ async function getCachedReviews(locationId, userId) {
       .order('create_time', { ascending: false });
 
     if (error) {
-      console.error('Error fetching cached reviews:', error);
       return [];
     }
 
     return cachedReviews || [];
   } catch (error) {
-    console.error('Error in getCachedReviews:', error);
     return [];
   }
 }
 
 // Get reviews for a location
-router.get('/accounts/:accountId/locations/:locationId/reviews', async (req, res) => {
+router.get('/accounts/:accountId/locations/:locationId/reviews', requireBusinessAuth, async (req, res) => {
   try {
     const { accountId, locationId } = req.params;
     const { cached_only } = req.query;
@@ -202,7 +193,6 @@ router.get('/accounts/:accountId/locations/:locationId/reviews', async (req, res
     if (cached_only === 'true') {
       const cachedReviews = await getCachedReviews(locationId, userId);
       
-      console.log(`📦 [DEBUG] Using cached reviews for ${accountId}/${locationId}: ${cachedReviews.length} reviews`);
       
       return res.json({
         success: true,
@@ -216,8 +206,6 @@ router.get('/accounts/:accountId/locations/:locationId/reviews', async (req, res
       const axios = require('axios');
       const gmbUrl = `https://mybusiness.googleapis.com/v4/accounts/${accountId}/locations/${locationId}/reviews`;
       
-      console.log(`🔍 [DEBUG] Making GMB API call to: ${gmbUrl}`);
-      console.log(`🔍 [DEBUG] Using business token: ${req.businessToken ? 'Present' : 'Missing'}`);
       
       const reviews = await axios.get(gmbUrl, {
         headers: {
@@ -226,7 +214,6 @@ router.get('/accounts/:accountId/locations/:locationId/reviews', async (req, res
         }
       });
       
-      console.log(`🔍 [DEBUG] GMB API response: ${reviews.status} ${reviews.statusText}, ${reviews.data?.reviews?.length || 0} reviews`);
       
       // Save existing reviews to database
       if (reviews.data.reviews && reviews.data.reviews.length > 0) {
@@ -246,7 +233,6 @@ router.get('/accounts/:accountId/locations/:locationId/reviews', async (req, res
         source: 'GMB_V4_API'
       };
       
-      console.log(`🔍 [DEBUG] Reviews API response for ${accountId}/${locationId}: ${responseData.reviews.length} reviews from ${responseData.source}`);
       
       res.json(responseData);
       
@@ -266,7 +252,6 @@ router.get('/accounts/:accountId/locations/:locationId/reviews', async (req, res
     }
 
   } catch (error) {
-    console.error('Error fetching reviews:', error);
     res.status(500).json({ 
       error: 'Failed to fetch reviews',
       details: error.message 
@@ -275,7 +260,7 @@ router.get('/accounts/:accountId/locations/:locationId/reviews', async (req, res
 });
 
 // Get a specific review
-router.get('/accounts/:accountId/locations/:locationId/reviews/:reviewId', async (req, res) => {
+router.get('/accounts/:accountId/locations/:locationId/reviews/:reviewId', requireBusinessAuth, async (req, res) => {
   try {
     let { accountId, locationId, reviewId } = req.params;
     
@@ -322,7 +307,6 @@ router.get('/accounts/:accountId/locations/:locationId/reviews/:reviewId', async
     }
     
   } catch (error) {
-    console.error('Error fetching specific review:', error);
     res.status(500).json({ 
       success: false, 
       error: 'Failed to fetch specific review',
@@ -332,7 +316,7 @@ router.get('/accounts/:accountId/locations/:locationId/reviews/:reviewId', async
 });
 
 // Get reviews from multiple locations
-router.post('/accounts/:accountId/locations/batchGetReviews', async (req, res) => {
+router.post('/accounts/:accountId/locations/batchGetReviews', requireBusinessAuth, async (req, res) => {
   try {
     let { accountId } = req.params;
     const { locationNames, pageSize, pageToken, orderBy, ignoreRatingOnlyReviews } = req.body;
@@ -375,7 +359,6 @@ router.post('/accounts/:accountId/locations/batchGetReviews', async (req, res) =
     }
     
   } catch (error) {
-    console.error('Error fetching batch reviews:', error);
     res.status(500).json({ 
       success: false, 
       error: 'Failed to fetch batch reviews',
@@ -385,7 +368,7 @@ router.post('/accounts/:accountId/locations/batchGetReviews', async (req, res) =
 });
 
 // Reply to a review
-router.put('/accounts/:accountId/locations/:locationId/reviews/:reviewId/reply', [
+router.put('/accounts/:accountId/locations/:locationId/reviews/:reviewId/reply', requireBusinessAuth, [
   body('comment').notEmpty().withMessage('Comment is required for review reply')
 ], async (req, res) => {
   const errors = validationResult(req);
@@ -442,7 +425,6 @@ router.put('/accounts/:accountId/locations/:locationId/reviews/:reviewId/reply',
     }
     
   } catch (error) {
-    console.error('Error replying to review:', error);
     res.status(500).json({ 
       success: false, 
       error: 'Failed to reply to review',
@@ -452,7 +434,7 @@ router.put('/accounts/:accountId/locations/:locationId/reviews/:reviewId/reply',
 });
 
 // Delete a review reply
-router.delete('/accounts/:accountId/locations/:locationId/reviews/:reviewId/reply', async (req, res) => {
+router.delete('/accounts/:accountId/locations/:locationId/reviews/:reviewId/reply', requireBusinessAuth, async (req, res) => {
   try {
     let { accountId, locationId, reviewId } = req.params;
     
@@ -488,12 +470,91 @@ router.delete('/accounts/:accountId/locations/:locationId/reviews/:reviewId/repl
     }
     
   } catch (error) {
-    console.error('Error deleting review reply:', error);
     res.status(500).json({ 
       success: false, 
       error: 'Failed to delete review reply',
       details: error.message
     });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// AI: Generate social/GMB post draft from a stored review.
+// Loads the review by gmb_reviews.id (UUID) OR by gmb_reviews.review_id (string),
+// then delegates to the shared handler in routes/ai.js. Saves draft to
+// ai_generated_posts and logs the job in ai_jobs.
+// ---------------------------------------------------------------------------
+const { generateReviewPostHandler } = require('./ai');
+
+router.post('/:reviewId/generate-post', async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const reviewIdParam = req.params.reviewId;
+
+    // Try lookup by UUID primary key first, then by GMB review_id string.
+    let review = null;
+    const uuidLike = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(reviewIdParam);
+    if (uuidLike) {
+      const { data } = await supabase
+        .from('gmb_reviews')
+        .select('*')
+        .eq('id', reviewIdParam)
+        .eq('user_id', userId)
+        .single();
+      review = data;
+    }
+    if (!review) {
+      const { data } = await supabase
+        .from('gmb_reviews')
+        .select('*')
+        .eq('review_id', reviewIdParam)
+        .eq('user_id', userId)
+        .single();
+      review = data;
+    }
+
+    if (!review) {
+      return res.status(404).json({ error: 'Review not found' });
+    }
+
+    // Optional location → business_name lookup (best-effort).
+    let businessName = req.body.businessName || null;
+    let city = req.body.city || null;
+    if (review.location_id && (!businessName || !city)) {
+      const { data: location } = await supabase
+        .from('gmb_locations')
+        .select('business_name, location_name, address')
+        .eq('location_id', review.location_id)
+        .eq('user_id', userId)
+        .single();
+      if (location) {
+        if (!businessName) businessName = location.business_name || location.location_name || null;
+        if (!city && location.address) {
+          // Address is a free-form string; we don't parse it here. Caller can pass city explicitly.
+        }
+      }
+    }
+
+    // Build req.body that generateReviewPostHandler expects.
+    req.body = {
+      ...req.body,
+      businessName: businessName || req.body.businessName,
+      businessType: req.body.businessType,
+      city: city || req.body.city,
+      reviewText: req.body.reviewText || review.comment || '',
+      reviewRating: req.body.reviewRating ?? review.star_rating ?? null,
+      reviewerName: req.body.reviewerName || review.reviewer_name || '',
+      platform: req.body.platform || 'google',
+      tone: req.body.tone
+    };
+
+    return generateReviewPostHandler(req, res, {
+      sourceType: 'review',
+      sourceId: review.id
+    });
+  } catch (err) {
+    console.error('reviews/:reviewId/generate-post failed:', err.message);
+    return res.status(500).json({ error: 'Failed to generate review post', message: err.message });
   }
 });
 

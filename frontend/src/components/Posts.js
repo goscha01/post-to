@@ -167,7 +167,6 @@ const Posts = () => {
   const fetchPosts = useCallback(async (locationId, page = 1, append = false, forceRefresh = false) => {
     if (!locationId) return;
     
-    console.log(`🔍 [FLOW] fetchPosts called - forceRefresh: ${forceRefresh}, locationId: ${locationId}`);
     
     try {
       // Extract IDs from the full path: accounts/{accountId}/locations/{locationId}
@@ -175,23 +174,18 @@ const Posts = () => {
       const locationIdOnly = profileParts[profileParts.length - 1];
       const accountId = profileParts[1];
       
-      console.log(`🔍 [FLOW] Extracted - locationIdOnly: ${locationIdOnly}, accountId: ${accountId}`);
 
       // Use centralized posts service with caching
       const posts = await postsService.getPostsForLocation(locationIdOnly, accountId, forceRefresh);
       
       // Log posts order for debugging
       if (posts && posts.length > 0) {
-        console.log(`📅 Posts received from service - Count: ${posts.length}`);
-        console.log(`📅 First post: ${posts[0]?.content?.substring(0, 50)}... (${posts[0]?.createdAt})`);
-        console.log(`📅 Last post: ${posts[posts.length - 1]?.content?.substring(0, 50)}... (${posts[posts.length - 1]?.createdAt})`);
       }
       
       if (posts && posts.length > 0) {
         // Process media for posts
         const postsWithMedia = await postsService.getMediaForPosts(posts);
-        
-        
+
         setPosts(postsWithMedia);
         
         // Background refresh: check for updates and refresh UI if needed
@@ -233,10 +227,8 @@ const Posts = () => {
                 // Update the cached data with the fresh data
                 postsService.setCachedData(`posts_${locationIdOnly}`, freshPosts);
               } else {
-                console.log(`📄 Background refresh: no changes detected`);
               }
             } catch (error) {
-              console.error('Error in background refresh:', error);
             }
           }, 1000); // Wait 1 second after initial render
         }
@@ -951,7 +943,6 @@ const Posts = () => {
         <div className="flex space-x-3">
           <button
             onClick={() => {
-              console.log('🔄 Refresh Posts clicked (using cache)');
               fetchPosts(selectedProfile, 1, false, false);
             }}
             disabled={refreshing}
@@ -963,7 +954,6 @@ const Posts = () => {
           <button
             onClick={async () => {
               try {
-                console.log('🔄 Refresh All Posts clicked (force refresh from API)');
                 setRefreshing(true);
                 // Clear all caches to get fresh data
                 postsService.clearPostsCache();
@@ -975,13 +965,10 @@ const Posts = () => {
                   const locationIdOnly = profileParts[profileParts.length - 1];
                   const accountId = profileParts[1];
                   
-                  console.log('🔄 Force refreshing from GMB API...');
                   await postsService.getPostsForLocation(locationIdOnly, accountId, true);
                   await fetchPosts(selectedProfile, 1, false, true);
-                  console.log('✅ Force refresh completed');
                 }
               } catch (error) {
-                console.error(`❌ Manual refresh failed:`, error);
               } finally {
                 setRefreshing(false);
               }

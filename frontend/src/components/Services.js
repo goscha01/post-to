@@ -65,7 +65,6 @@ const Services = () => {
     
     if (timeSinceLastCall < minDelay) {
       const delay = minDelay - timeSinceLastCall;
-      console.log(`⏳ Rate limiting: waiting ${delay}ms before next API call`);
       await new Promise(resolve => setTimeout(resolve, delay));
     }
     
@@ -74,21 +73,16 @@ const Services = () => {
 
 
   useEffect(() => {
-    console.log('🔍 Services useEffect triggered:', { isAuthenticated, isDisconnected, dataLoaded, fetchDataCalled: fetchDataCalled.current, selectedProfile: !!selectedProfile });
     
     if (isAuthenticated && !isDisconnected) {
       // Always check if we need to load data (either not loaded yet or no profile selected)
       if (!dataLoaded || !selectedProfile) {
-        console.log('🔍 Need to load data - checking business connection...');
         // Check if business profiles are connected
         const businessConnected = localStorage.getItem('gmb_business_connected') === 'true';
-        console.log('🔍 Business connected:', businessConnected);
         
         if (businessConnected) {
-          console.log('🔍 Calling fetchData...');
           fetchData();
           setDataLoaded(true);
-          console.log('🔍 Data loaded flag set to true');
         } else {
           // User is authenticated but business profiles not connected
           setProfiles([]);
@@ -99,13 +93,10 @@ const Services = () => {
           setLoading(false);
           setDataLoaded(true);
           fetchDataCalled.current = true;
-          console.log('🔍 No business connection, data cleared');
         }
       } else {
-        console.log('🔍 Data already loaded and profile selected, skipping fetchData');
       }
     } else if (isDisconnected) {
-      console.log('🔍 User disconnected, clearing data...');
       // Clear data when disconnected
       setProfiles([]);
       setSelectedProfile(null);
@@ -116,16 +107,13 @@ const Services = () => {
       setDataLoaded(false);
       fetchDataCalled.current = false;
     } else {
-      console.log('🔍 Conditions not met, skipping fetchData');
     }
   }, [isAuthenticated, isDisconnected, dataLoaded, selectedProfile]);
 
   const fetchData = async () => {
-    console.log('🔍 fetchData called!', { fetchDataCalled: fetchDataCalled.current, dataLoaded });
     
     // Prevent multiple calls
     if (fetchDataCalled.current) {
-      console.log('🔍 fetchData already called, skipping...');
       return;
     }
     
@@ -136,11 +124,9 @@ const Services = () => {
       // Use centralized business profile service with caching
       const profilesWithLocations = await businessProfileService.getAccounts();
       setProfiles(profilesWithLocations);
-      console.log('Profiles with locations loaded:', profilesWithLocations);
       
       if (profilesWithLocations.length > 0 && profilesWithLocations[0].locations.length > 0) {
         const firstLocation = profilesWithLocations[0].locations[0];
-        console.log('Setting selected profile to:', firstLocation);
         setSelectedProfile(firstLocation);
         
         // IMMEDIATE: Set business categories from profile data at code level
@@ -171,8 +157,6 @@ const Services = () => {
             setBusinessCategories(categories);
             const primaryCategory = categories[0];
             setSelectedCategory(primaryCategory.id || primaryCategory.name);
-            console.log(`⚡ Immediate business categories set: ${categories.length} categories, selected: ${primaryCategory.displayName}`);
-            console.log(`⚡ Setting selectedCategory to: ${primaryCategory.id || primaryCategory.name}`);
           } else {
             // Set default if no categories found
             const defaultCategory = {
@@ -182,7 +166,6 @@ const Services = () => {
             };
             setBusinessCategories([defaultCategory]);
             setSelectedCategory(defaultCategory.id);
-            console.log(`⚡ Immediate default category set: ${defaultCategory.displayName}`);
           }
         } else {
           // Set default if no categories property
@@ -193,14 +176,10 @@ const Services = () => {
           };
             setBusinessCategories([defaultCategory]);
             setSelectedCategory(defaultCategory.id);
-            console.log(`⚡ Immediate default category set (no categories): ${defaultCategory.displayName}`);
-            console.log(`⚡ Setting selectedCategory to: ${defaultCategory.id}`);
         }
       } else {
-        console.log('No profiles or locations found');
       }
     } catch (error) {
-      console.error('Error fetching data:', error);
       setError('Failed to load business profiles');
     } finally {
       setLoading(false);
@@ -209,37 +188,26 @@ const Services = () => {
 
   useEffect(() => {
     if (selectedProfile && !isDisconnected && dataLoaded) {
-      console.log('🔍 Scheduling existing services fetch for profile:', selectedProfile.name);
       // fetchBusinessCategories() is now called immediately in fetchData()
       // Delay the existing services fetch to make it truly background
       setTimeout(() => {
-        console.log('🔍 Timeout: Calling fetchExistingServices...');
         fetchExistingServices();
       }, 1000);
     } else {
-      console.log('🔍 Skipping existing services fetch - conditions not met');
     }
   }, [selectedProfile, isDisconnected, dataLoaded]);
 
   useEffect(() => {
-    console.log('🔍 selectedCategory changed to:', selectedCategory);
-    console.log('🔍 businessCategories:', businessCategories);
-    console.log('🔍 dataLoaded:', dataLoaded);
     if (selectedCategory && dataLoaded) {
-      console.log('🔍 Scheduling services fetch for category:', selectedCategory);
       // Delay the services fetch to make it truly background
       setTimeout(() => {
-        console.log('🔍 Timeout: Calling fetchServicesForCategory...');
         fetchServicesForCategory(selectedCategory);
       }, 1500);
     } else {
-      console.log('🔍 Skipping services fetch - data not loaded yet or no category');
     }
   }, [selectedCategory, dataLoaded]);
 
   useEffect(() => {
-    console.log('🔍 businessCategories changed:', businessCategories);
-    console.log('🔍 selectedCategory:', selectedCategory);
   }, [businessCategories]);
 
   const fetchBusinessCategories = async (forceRefresh = false) => {
@@ -248,7 +216,6 @@ const Services = () => {
     try {
       setLoading(true);
       setError(null);
-      console.log('🔍 fetchBusinessCategories called for profile:', selectedProfile?.name);
       
       const accountId = selectedProfile.accountId;
       const locationId = selectedProfile.name.split('/').pop();
@@ -257,7 +224,6 @@ const Services = () => {
       const currentCategories = businessCategories;
 
       // Fetch fresh location data in background to get updated categories
-      console.log(`🔄 Fetching fresh location data for categories in background`);
       try {
         const locationResponse = await axios.get(`http://localhost:3001/api/gmb/accounts/${accountId}/locations`);
         
@@ -290,24 +256,18 @@ const Services = () => {
             // Compare fresh data with current data and update only if changes are detected
             const hasChanges = JSON.stringify(freshCategories) !== JSON.stringify(currentCategories);
             if (hasChanges) {
-              console.log(`🔄 Fresh categories data changed, updating UI`);
               setBusinessCategories(freshCategories);
               // Automatically select the primary category as default
               const primaryCategory = freshCategories[0];
               setSelectedCategory(primaryCategory.id);
-              console.log(`📋 Updated to fresh primary category: ${primaryCategory.displayName} (ID: ${primaryCategory.id})`);
             } else {
-              console.log(`📄 No changes detected in fresh categories`);
             }
           }
         }
       } catch (freshError) {
-        console.error('Error fetching fresh location data:', freshError);
       }
     } catch (error) {
-      console.error('Error fetching business categories:', error);
       // No categories available, set default primary category
-      console.log('🔍 Error occurred, setting default category');
       const defaultCategory = {
         id: 'gcid:house_cleaning_service',
         name: 'House cleaning service',
@@ -315,7 +275,6 @@ const Services = () => {
       };
       setBusinessCategories([defaultCategory]);
       setSelectedCategory(defaultCategory.id);
-      console.log(`📋 Using default primary category after error: ${defaultCategory.displayName} (ID: ${defaultCategory.id})`);
     } finally {
       setLoading(false);
     }
@@ -323,7 +282,6 @@ const Services = () => {
 
   // Background fetch function for services
   const fetchFreshServicesInBackground = async (categoryId) => {
-    console.log('🔄 Background: Fetching fresh services for category:', categoryId);
 
     try {
       // Use servicesMediaService with force refresh
@@ -334,26 +292,21 @@ const Services = () => {
         const hasChanges = JSON.stringify(freshServices) !== JSON.stringify(services);
 
         if (hasChanges) {
-          console.log('🔄 Background: Fresh services data changed, updating UI');
           setServices(freshServices);
         } else {
-          console.log('📄 Background: No changes detected in fresh services');
         }
       }
     } catch (error) {
-      console.error('Background error fetching fresh services:', error);
     }
   };
 
   const fetchServicesForCategory = async (categoryId) => {
-    console.log('🔍 fetchServicesForCategory called for:', categoryId);
 
     // Use servicesMediaService for caching
     try {
       const services = await servicesMediaService.getServicesForCategory(categoryId);
       
       if (services && services.length > 0) {
-        console.log(`📦 Using cached services for category ${categoryId}: ${services.length} services`);
         setServices(services);
         
         // Fetch fresh data in background for cache update
@@ -361,10 +314,8 @@ const Services = () => {
         return;
       }
     } catch (error) {
-      console.log('📦 Error fetching cached services, proceeding with fallback');
     }
 
-    console.log('🔍 No cached services found, setting fallback and fetching from API');
     
     // STEP 2: Set fallback services immediately
     const fallbackServices = [
@@ -380,11 +331,9 @@ const Services = () => {
     setServices(fallbackServices);
     
     // STEP 3: Fetch fresh services in background using servicesMediaService
-    console.log('🔄 Fetching fresh services for category:', categoryId);
     
     // Convert category name to proper Google category ID format
     let googleCategoryId = categoryId;
-    console.log('Original categoryId:', categoryId);
     
     if (!categoryId.startsWith('gcid:')) {
       // Convert display name to Google category ID
@@ -406,7 +355,6 @@ const Services = () => {
       googleCategoryId = categoryMap[categoryId] || `gcid:${categoryId.toLowerCase().replace(/\s+/g, '_')}`;
     }
     
-    console.log('Using Google category ID:', googleCategoryId);
     
     try {
       // Convert to proper format for Google API
@@ -414,23 +362,16 @@ const Services = () => {
         ? googleCategoryId 
         : `categories/${googleCategoryId}`;
       
-      console.log('Proper category ID for API:', properCategoryId);
-      console.log('Using servicesMediaService to fetch services...');
       
       // Use servicesMediaService instead of direct API call
       const services = await servicesMediaService.getServicesForCategory(properCategoryId, true);
       
-      console.log('✅ Services fetched successfully:', services.length);
       
       if (services && services.length > 0) {
-        console.log('✅ Fresh services fetched for category:', categoryId);
         setServices(services);
       } else {
-        console.log('⚠️ No services returned from servicesMediaService');
       }
     } catch (error) {
-      console.error('Error fetching services for category:', error);
-      console.log('Using fallback services due to API error');
       setError('Failed to fetch services for this category. The category might not be supported by Google My Business API.');
       
       // Use fallback services even on error for house cleaning
@@ -442,7 +383,6 @@ const Services = () => {
           { id: 'post_construction', name: 'Post-Construction Cleaning', description: 'Cleaning after construction work', type: 'structured', serviceTypeId: 'job_type_id:post_construction_cleaning' },
           { id: 'office_cleaning', name: 'Office Cleaning', description: 'Commercial office cleaning', type: 'structured', serviceTypeId: 'job_type_id:office_cleaning' }
         ];
-        console.log('Using fallback services due to error:', fallbackServices);
         setServices(fallbackServices);
         setError(null); // Clear error since we have fallback services
       } else {
@@ -453,7 +393,6 @@ const Services = () => {
 
   // Background fetch function for existing services
   const fetchFreshExistingServicesInBackground = async (locationId, cachedData) => {
-    console.log(`🔄 Background: Fetching fresh existing services for ${locationId}`);
 
     try {
       // Use servicesMediaService with force refresh
@@ -464,15 +403,12 @@ const Services = () => {
         const hasChanges = JSON.stringify(freshServiceItems) !== JSON.stringify(cachedData);
 
         if (hasChanges) {
-          console.log(`🔄 Background: Fresh existing services data changed, updating UI for ${locationId}`);
           const formattedServices = formatExistingServices(freshServiceItems);
           setExistingServices(formattedServices);
         } else {
-          console.log(`📄 Background: No changes detected in fresh existing services for ${locationId}`);
         }
       }
     } catch (error) {
-      console.error('Background error fetching fresh existing services:', error);
     }
   };
 
@@ -490,7 +426,6 @@ const Services = () => {
         const existingServices = await servicesMediaService.getExistingServicesForLocation(locationId);
         
         if (existingServices && existingServices.length > 0) {
-          console.log(`📦 Using cached existing services for ${locationId}: ${existingServices.length} items`);
           const formattedServices = formatExistingServices(existingServices);
           setExistingServices(formattedServices);
           setIsLoading(false);
@@ -500,11 +435,9 @@ const Services = () => {
           return;
         }
       } catch (error) {
-        console.log(`📦 Error fetching cached existing services for ${locationId}, proceeding with fresh fetch`);
       }
 
       // STEP 2: No cache available, fetch fresh data with loading state
-      console.log(`🔄 Fetching fresh existing services for ${locationId}`);
       const response = await axios.get(`http://localhost:3001/api/gmb/locations/${locationId}/services`);
 
       if (response.data.success) {
@@ -513,7 +446,6 @@ const Services = () => {
         setExistingServices(formattedServices);
       }
     } catch (error) {
-      console.error('Error fetching existing services:', error);
       
       if (error.response?.status === 429) {
         setError('Rate limit exceeded. Please wait a moment before trying again.');
@@ -534,7 +466,6 @@ const Services = () => {
     
     // Check if user is disconnected
     if (isDisconnected) {
-      console.log('Cannot add service: user is disconnected');
       return;
     }
     
@@ -545,7 +476,6 @@ const Services = () => {
       const locationId = selectedProfile.name.split('/').pop();
       
       // First, check if the location supports service management
-      console.log('🔍 Checking location permissions...');
       
       try {
         const accountId = selectedProfile.accountId;
@@ -557,11 +487,6 @@ const Services = () => {
           );
           
           if (location && location.metadata) {
-            console.log('📍 Location metadata:', {
-              canModifyServiceList: location.metadata.canModifyServiceList,
-              canDelete: location.metadata.canDelete,
-              placeId: location.metadata.placeId
-            });
             
             if (location.metadata.canModifyServiceList === false) {
               setError('❌ This business location does not support service management. The canModifyServiceList flag is false.');
@@ -570,7 +495,6 @@ const Services = () => {
           }
         }
       } catch (metadataError) {
-        console.log('Could not check location metadata:', metadataError.message);
       }
       
       // Get current services to preserve them
@@ -595,13 +519,6 @@ const Services = () => {
       // Add the new service to existing services
       const allServiceItems = [...currentServiceItems, newServiceItem];
       
-      console.log('Adding service to location:', {
-        locationId,
-        service,
-        newServiceItem,
-        currentCount: currentServiceItems.length,
-        newCount: allServiceItems.length
-      });
       
       // Send all services (existing + new) to preserve existing ones
       const response = await axios.patch(`http://localhost:3001/api/gmb/locations/${locationId}/services`, {
@@ -613,18 +530,6 @@ const Services = () => {
         setError(null);
       }
     } catch (error) {
-      console.error('Error adding service:', error);
-      console.error('Full error details:', {
-        message: error.message,
-        status: error.response?.status,
-        statusText: error.response?.statusText,
-        data: error.response?.data,
-        config: {
-          url: error.config?.url,
-          method: error.config?.method,
-          data: error.config?.data
-        }
-      });
       
       // Show more specific error message
       if (error.response?.status === 429) {
@@ -652,7 +557,6 @@ const Services = () => {
     
     // Check if user is disconnected
     if (isDisconnected) {
-      console.log('Cannot remove service: user is disconnected');
       return;
     }
     
@@ -682,7 +586,6 @@ const Services = () => {
         setError(null);
       }
     } catch (error) {
-      console.error('Error removing service:', error);
       setError('Failed to remove service');
     }
   };
@@ -695,7 +598,6 @@ const Services = () => {
     
     // Check if user is disconnected
     if (isDisconnected) {
-      console.log('Cannot search categories: user is disconnected');
       return;
     }
     
@@ -714,7 +616,6 @@ const Services = () => {
         setSearchResults(response.data.categories || []);
       }
     } catch (error) {
-      console.error('Error searching categories:', error);
       setSearchResults([]);
     } finally {
       setIsSearchingCategories(false);
@@ -882,7 +783,6 @@ const Services = () => {
     
     // Check if user is disconnected
     if (isDisconnected) {
-      console.log('Cannot update service: user is disconnected');
       return;
     }
     
@@ -959,7 +859,6 @@ const Services = () => {
             // For structured services, we cannot edit them directly
             // Instead, we should probably just update the description if possible
             // But for now, let's return the item unchanged to avoid API errors
-            console.warn('Cannot edit structured service:', item.structuredServiceItem.serviceTypeId);
             return item;
           }
         }
@@ -967,16 +866,10 @@ const Services = () => {
       });
       
       // Send updated services to Google
-      console.log('Sending service update request:', {
-        locationId,
-        serviceItems: updatedServiceItems
-      });
       
       // Log each service item for debugging
-      console.log(`Total services to send: ${updatedServiceItems.length}`);
       updatedServiceItems.forEach((item, index) => {
         const serviceName = item.freeFormServiceItem?.label?.displayName || item.structuredServiceItem?.serviceTypeId || 'Unknown';
-        console.log(`Service item ${index}: ${serviceName}`);
       });
       
       const response = await axios.patch(`http://localhost:3001/api/gmb/locations/${locationId}/services`, {
@@ -990,17 +883,9 @@ const Services = () => {
         setError(null);
       }
     } catch (error) {
-      console.error('Error updating service:', error);
-      console.error('Error details:', {
-        message: error.message,
-        status: error.response?.status,
-        data: error.response?.data,
-        config: error.config
-      });
       
       // Log the full error response for debugging
       if (error.response?.data) {
-        console.error('Full error response:', JSON.stringify(error.response.data, null, 2));
       }
       
       if (error.response?.status === 429) {
@@ -1024,7 +909,6 @@ const Services = () => {
     
     // Check if user is disconnected
     if (isDisconnected) {
-      console.log('Cannot add custom service: user is disconnected');
       return;
     }
     
@@ -1071,13 +955,6 @@ const Services = () => {
       // Add the new service to existing services
       const allServiceItems = [...currentServiceItems, newServiceItem];
       
-      console.log('Adding custom service to location:', {
-        locationId,
-        serviceName,
-        serviceDescription,
-        currentCount: currentServiceItems.length,
-        newCount: allServiceItems.length
-      });
       
       // Send all services (existing + new) to preserve existing ones
       const response = await axios.patch(`http://localhost:3001/api/gmb/locations/${locationId}/services`, {
@@ -1090,7 +967,6 @@ const Services = () => {
         setError(null);
       }
     } catch (error) {
-      console.error('Error adding custom service:', error);
       setError('Failed to add custom service');
     }
   };
@@ -1176,25 +1052,17 @@ const Services = () => {
             <label htmlFor="category-select" className="block text-sm font-medium text-gray-700 mb-2">
               Select Business Category
             </label>
-            {console.log('🔍 Category dropdown render - selectedCategory:', selectedCategory, 'businessCategories:', businessCategories)}
+            {}
             <select
               id="category-select"
               value={selectedCategory}
               onChange={(e) => {
-                console.log('🔍 Category dropdown onChange triggered:', e.target.value);
                 setSelectedCategory(e.target.value);
               }}
               className="block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
             >
               <option value="">Select a business category...</option>
               {(businessCategories || []).map((category) => {
-                console.log('🔍 Rendering category option:', {
-                  id: category.id,
-                  name: category.name,
-                  displayName: category.displayName,
-                  selectedCategory: selectedCategory,
-                  isSelected: (category.id || category.name) === selectedCategory
-                });
                 return (
                   <option key={category.id || category.name || `category_${Math.random()}`} value={category.id || category.name}>
                     {category.displayName || category.name}

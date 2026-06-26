@@ -31,21 +31,18 @@ class ServicesMediaService {
   setCachedData(key, data, dataType = 'services') {
     // Check if we should use cache based on session
     if (!this.sessionCacheConfig.shouldUseCache(dataType)) {
-      console.log(`🚫 Skipping cache for ${key} - session expired or cache disabled`);
       return;
     }
 
     // Get session-based TTL
     const ttl = this.sessionCacheConfig.getTTL(dataType);
     if (ttl <= 0) {
-      console.log(`🚫 Skipping cache for ${key} - TTL is 0`);
       return;
     }
 
     this.cache.set(key, data);
     this.cacheExpiry.set(key, Date.now() + ttl);
     
-    console.log(`💾 Cached ${key} with session-based TTL: ${ttl / 1000 / 60} minutes`);
   }
 
   // Set cached image with session-based expiry
@@ -61,7 +58,6 @@ class ServicesMediaService {
     if (!forceRefresh) {
       const cachedData = this.getCachedData(cacheKey);
       if (cachedData) {
-        console.log(`📦 Using cached services for category ${categoryId}`);
         return cachedData;
       }
     } else {
@@ -71,7 +67,6 @@ class ServicesMediaService {
 
     // Check if request is already in progress
     if (this.pendingRequests.has(cacheKey)) {
-      console.log(`⏳ Request already in progress for ${cacheKey}`);
       return this.pendingRequests.get(cacheKey);
     }
 
@@ -84,10 +79,8 @@ class ServicesMediaService {
       
       // Only cache if we got valid data
       if (result && Array.isArray(result) && result.length >= 0) {
-        console.log(`💾 Storing ${result.length} services in cache for category ${categoryId}`);
         this.setCachedData(cacheKey, result);
       } else {
-        console.log(`⚠️ Not caching invalid data for category ${categoryId}`);
       }
       
       return result;
@@ -98,40 +91,28 @@ class ServicesMediaService {
 
   // Fetch services from API with cache-first loading
   async fetchServicesFromAPI(categoryId, forceRefresh = false) {
-    console.log(`🔍 fetchServicesFromAPI called for categoryId: ${categoryId}, forceRefresh: ${forceRefresh}`);
     
     try {
       // Always try backend cache first (unless force refresh)
       if (!forceRefresh) {
         try {
-          console.log(`📦 Fetching from backend cache: /api/services/categories/${categoryId}?cached_only=true`);
           const cachedResponse = await axios.get(`/api/services/categories/${categoryId}?cached_only=true`);
           
           if (cachedResponse.data.success && cachedResponse.data.cached) {
             const cachedServices = cachedResponse.data.services || [];
-            console.log(`📦 Successfully fetched ${cachedServices.length} services from BACKEND cache`);
             
             // Only return cached services if there are actually services in the cache
             if (cachedServices.length > 0) {
               return cachedServices;
             } else {
-              console.log(`📦 Backend cache is empty, will fetch from GMB API`);
             }
           }
         } catch (cacheError) {
-          console.log(`💾 Backend cache not available for category ${categoryId}, will fetch from API. Error:`, {
-            message: cacheError.message,
-            status: cacheError.response?.status,
-            statusText: cacheError.response?.statusText,
-            data: cacheError.response?.data
-          });
         }
       } else {
-        console.log(`🔄 Force refresh requested, skipping backend cache`);
       }
 
       // If no cached data or force refresh, fetch from API
-      console.log(`🌐 Fetching services from GMB API: /api/gmb/categories/batchGet`);
       const response = await axios.get(`/api/gmb/categories/batchGet`, {
         params: {
           names: categoryId,
@@ -141,7 +122,6 @@ class ServicesMediaService {
         }
       });
       
-      console.log(`🌐 Successfully fetched services from GMB API`);
       
       if (response.data.success && response.data.categories.length > 0) {
         const category = response.data.categories[0];
@@ -191,15 +171,6 @@ class ServicesMediaService {
       
       return [];
     } catch (error) {
-      console.error(`❌ Error fetching services for category ${categoryId}:`, error);
-      console.error(`❌ Error details:`, {
-        message: error.message,
-        status: error.response?.status,
-        statusText: error.response?.statusText,
-        data: error.response?.data,
-        url: error.config?.url,
-        method: error.config?.method
-      });
       return [];
     }
   }
@@ -212,7 +183,6 @@ class ServicesMediaService {
     if (!forceRefresh) {
       const cachedData = this.getCachedData(cacheKey);
       if (cachedData) {
-        console.log(`📦 Using cached existing services for location ${locationId}`);
         return cachedData;
       }
     } else {
@@ -222,7 +192,6 @@ class ServicesMediaService {
 
     // Check if request is already in progress
     if (this.pendingRequests.has(cacheKey)) {
-      console.log(`⏳ Request already in progress for ${cacheKey}`);
       return this.pendingRequests.get(cacheKey);
     }
 
@@ -235,10 +204,8 @@ class ServicesMediaService {
       
       // Only cache if we got valid data
       if (result && Array.isArray(result) && result.length >= 0) {
-        console.log(`💾 Storing ${result.length} existing services in cache for location ${locationId}`);
         this.setCachedData(cacheKey, result);
       } else {
-        console.log(`⚠️ Not caching invalid data for location ${locationId}`);
       }
       
       return result;
@@ -249,54 +216,32 @@ class ServicesMediaService {
 
   // Fetch existing services from API with cache-first loading
   async fetchExistingServicesFromAPI(locationId, forceRefresh = false) {
-    console.log(`🔍 fetchExistingServicesFromAPI called for locationId: ${locationId}, forceRefresh: ${forceRefresh}`);
     
     try {
       // Always try backend cache first (unless force refresh)
       if (!forceRefresh) {
         try {
-          console.log(`📦 Fetching from backend cache: /api/gmb/locations/${locationId}/services?cached_only=true`);
           const cachedResponse = await axios.get(`/api/gmb/locations/${locationId}/services?cached_only=true`);
           
           if (cachedResponse.data.success && cachedResponse.data.cached) {
             const cachedServices = cachedResponse.data.serviceItems || [];
-            console.log(`📦 Successfully fetched ${cachedServices.length} existing services from BACKEND cache`);
             
             // Only return cached services if there are actually services in the cache
             if (cachedServices.length > 0) {
               return cachedServices;
             } else {
-              console.log(`📦 Backend cache is empty, will fetch from GMB API`);
             }
           }
         } catch (cacheError) {
-          console.log(`💾 Backend cache not available for location ${locationId}, will fetch from API. Error:`, {
-            message: cacheError.message,
-            status: cacheError.response?.status,
-            statusText: cacheError.response?.statusText,
-            data: cacheError.response?.data
-          });
         }
       } else {
-        console.log(`🔄 Force refresh requested, skipping backend cache`);
       }
 
       // If no cached data or force refresh, fetch from API
-      console.log(`🌐 Fetching existing services from GMB API: /api/gmb/locations/${locationId}/services`);
       const response = await axios.get(`/api/gmb/locations/${locationId}/services`);
       
-      console.log(`🌐 Successfully fetched existing services from GMB API`);
       return response.data.serviceItems || [];
     } catch (error) {
-      console.error(`❌ Error fetching existing services for location ${locationId}:`, error);
-      console.error(`❌ Error details:`, {
-        message: error.message,
-        status: error.response?.status,
-        statusText: error.response?.statusText,
-        data: error.response?.data,
-        url: error.config?.url,
-        method: error.config?.method
-      });
       return [];
     }
   }

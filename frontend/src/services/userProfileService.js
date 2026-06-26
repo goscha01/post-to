@@ -13,7 +13,6 @@ class UserProfileService {
     const now = Date.now();
 
     if (this.cache.has(key) && this.cacheExpiry.get(key) > now) {
-      console.log('📦 Using cached user profile image');
       return this.cache.get(key);
     }
 
@@ -34,7 +33,6 @@ class UserProfileService {
     this.cache.set(key, imageData);
     this.cacheExpiry.set(key, expiryTime);
 
-    console.log('💾 Cached user profile image data');
   }
 
   // Process and cache user profile picture
@@ -55,12 +53,10 @@ class UserProfileService {
       }
 
       // If no cached data, fetch and cache the image
-      console.log('🖼️ Fetching user profile image for caching');
 
       // Get the current token from localStorage
       const token = localStorage.getItem('gmb_token');
       if (!token) {
-        console.log('⚠️ No authentication token available for image caching');
         return user; // Return user without caching if no token
       }
 
@@ -88,7 +84,6 @@ class UserProfileService {
         };
       }
     } catch (error) {
-      console.error('Error caching user profile picture:', error);
     }
 
     // Return original user data if caching fails
@@ -101,11 +96,9 @@ class UserProfileService {
       const key = `profile_image_${userId}`;
       this.cache.delete(key);
       this.cacheExpiry.delete(key);
-      console.log(`🗑️ Cleared profile cache for user ${userId}`);
     } else {
       this.cache.clear();
       this.cacheExpiry.clear();
-      console.log('🗑️ Cleared all user profile cache');
     }
   }
 

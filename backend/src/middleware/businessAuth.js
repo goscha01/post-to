@@ -65,9 +65,7 @@ const requireBusinessAuth = async (req, res, next) => {
         req.businessToken = credentials.access_token;
         req.businessRefreshToken = user.business_refresh_token;
         
-        console.log('Business token refreshed for user:', userId);
       } catch (refreshError) {
-        console.error('Business token refresh failed:', refreshError);
         return res.status(401).json({ 
           error: 'Business authentication expired. Please reconnect your Google My Business account.',
           needsBusinessAuth: true
@@ -91,7 +89,6 @@ const requireBusinessAuth = async (req, res, next) => {
     
     next();
   } catch (error) {
-    console.error('Business auth middleware error:', error);
     res.status(500).json({ error: 'Business authentication check failed' });
   }
 };

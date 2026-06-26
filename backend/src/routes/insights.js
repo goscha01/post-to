@@ -13,8 +13,6 @@ router.post('/timeline', authMiddleware, requireBusinessAuth, async (req, res) =
   try {
     const { accountId, locationId, metricRequests, timeRange } = req.body;
     
-    console.log('Timeline insights request received for location:', locationId);
-    console.log('Fetching real timeline data from Google API');
     
     if (!locationId || !metricRequests || !timeRange) {
       return res.status(400).json({
@@ -52,7 +50,6 @@ router.post('/timeline', authMiddleware, requireBusinessAuth, async (req, res) =
       const gmbMetric = metricRequest.metric;
       const apiMetrics = metricMap[gmbMetric] || [gmbMetric];
       
-      console.log(`Fetching timeline data for: ${gmbMetric} -> ${apiMetrics.join(', ')}`);
       
       // Store daily values - key is date string, value is total for that date
       const dailyTotals = {};
@@ -61,7 +58,6 @@ router.post('/timeline', authMiddleware, requireBusinessAuth, async (req, res) =
       // Fetch data for each API metric that maps to this dashboard metric
       for (const apiMetric of apiMetrics) {
         try {
-          console.log(`Making timeline API call for: ${gmbMetric} -> ${apiMetric}`);
           
           const response = await axios.get(
             `${PERFORMANCE_URL}/locations/${locationId}:fetchMultiDailyMetricsTimeSeries`,
@@ -82,7 +78,6 @@ router.post('/timeline', authMiddleware, requireBusinessAuth, async (req, res) =
             }
           );
           
-          console.log(`Timeline API response for ${apiMetric}:`, JSON.stringify(response.data, null, 2));
           
           // Parse the timeline data from Google's response
           if (response.data.multiDailyMetricTimeSeries) {
@@ -102,7 +97,6 @@ router.post('/timeline', authMiddleware, requireBusinessAuth, async (req, res) =
                         dailyTotals[dateStr] += value;
                         totalValue += value;
                         
-                        console.log(`Found timeline value ${value} for ${apiMetric} on ${dateStr}`);
                       }
                     });
                   }
@@ -112,8 +106,6 @@ router.post('/timeline', authMiddleware, requireBusinessAuth, async (req, res) =
           }
           
         } catch (error) {
-          console.error(`Failed to fetch timeline data for ${apiMetric}:`, error.response?.data || error.message);
-          console.error(`Error status:`, error.response?.status);
         }
       }
       
@@ -133,7 +125,6 @@ router.post('/timeline', authMiddleware, requireBusinessAuth, async (req, res) =
         });
       }
       
-      console.log(`Timeline data for ${gmbMetric}: ${totalValue} total, ${timeSeriesData.length} days`);
       
       timelineMetrics.push({
         metric: gmbMetric,
@@ -151,8 +142,6 @@ router.post('/timeline', authMiddleware, requireBusinessAuth, async (req, res) =
       metrics: timelineMetrics
     };
     
-    console.log('Real timeline data fetched successfully');
-    console.log(`Fetched ${timelineMetrics.length} metrics with real daily data`);
 
     res.json({
       success: true,
@@ -160,7 +149,6 @@ router.post('/timeline', authMiddleware, requireBusinessAuth, async (req, res) =
     });
 
   } catch (error) {
-    console.error('Error fetching real timeline data:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to fetch timeline insights from Google API',
@@ -248,8 +236,6 @@ router.post('/basic', authMiddleware, requireBusinessAuth, async (req, res) => {
   try {
     const { accountId, locationId, metricRequests, timeRange } = req.body;
     
-    console.log('📥 Insights request received for location:', locationId);
-    console.log('🔍 Metric requests:', JSON.stringify(metricRequests, null, 2));
     
     if (!locationId || !metricRequests || !timeRange) {
       return res.status(400).json({
@@ -301,8 +287,6 @@ router.post('/basic', authMiddleware, requireBusinessAuth, async (req, res) => {
       // Fetch data for each API metric that maps to this dashboard metric
       for (const apiMetric of apiMetrics) {
         try {
-          console.log(`🚀 Making API call for: ${gmbMetric} -> ${apiMetric}`);
-          console.log(`📅 Date range: ${startDate.toISOString()} to ${endDate.toISOString()}`);
           
           const response = await axios.get(
 `${PERFORMANCE_URL}/locations/${locationId}:fetchMultiDailyMetricsTimeSeries`,            {
@@ -322,7 +306,6 @@ router.post('/basic', authMiddleware, requireBusinessAuth, async (req, res) => {
             }
           );
           
-          console.log(`✅ API response for ${apiMetric}:`, JSON.stringify(response.data, null, 2));
           
           // Sum up values from this API metric
           let metricValue = 0;
@@ -335,7 +318,6 @@ router.post('/basic', authMiddleware, requireBusinessAuth, async (req, res) => {
                       if (datedValue.value) {
                         const value = parseInt(datedValue.value) || 0;
                         metricValue += value;
-                        console.log(`📊 Found value ${value} for ${apiMetric} on ${datedValue.date}`);
                       }
                     });
                   }
@@ -344,24 +326,19 @@ router.post('/basic', authMiddleware, requireBusinessAuth, async (req, res) => {
             });
           }
           
-          console.log(`💰 Total value for ${apiMetric}: ${metricValue}`);
           totalValue += metricValue;
           
         } catch (error) {
-          console.error(`❌ Failed to fetch ${apiMetric}:`, error.response?.data || error.message);
-          console.error(`❌ Error status:`, error.response?.status);
         }
       }
       
       // Store the aggregated result for this dashboard metric
-      console.log(`🎯 Final aggregated value for ${gmbMetric}: ${totalValue}`);
       allMetricsData.push({
         gmbMetric: gmbMetric,
         totalValue: totalValue
       });
     }
 
-    console.log('✅ All metrics fetched successfully');
     
     // Create response in expected format
     const locationMetrics = allMetricsData.map(metricData => ({
@@ -373,7 +350,6 @@ router.post('/basic', authMiddleware, requireBusinessAuth, async (req, res) => {
     }));
     
     const transformedData = { locationMetrics };
-    console.log('✨ Final transformed data:', JSON.stringify(transformedData, null, 2));
 
     res.json({
       success: true,
@@ -381,7 +357,6 @@ router.post('/basic', authMiddleware, requireBusinessAuth, async (req, res) => {
     });
 
   } catch (error) {
-    console.error('🚨 Error fetching basic insights:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to fetch insights',
@@ -447,7 +422,6 @@ router.get('/metrics', async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('Error fetching available metrics:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to fetch available metrics'

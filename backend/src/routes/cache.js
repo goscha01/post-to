@@ -36,7 +36,6 @@ router.get('/health', async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('Cache health error:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to get cache health'
@@ -64,7 +63,6 @@ router.post('/invalidate', async (req, res) => {
       invalidated
     });
   } catch (error) {
-    console.error('Cache invalidation error:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to invalidate cache'
@@ -99,7 +97,6 @@ router.get('/test', async (req, res) => {
       cacheWorking: !!cachedData
     });
   } catch (error) {
-    console.error('Cache test error:', error);
     res.status(500).json({
       success: false,
       error: 'Cache test failed'

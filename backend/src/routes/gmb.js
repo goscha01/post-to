@@ -17,10 +17,8 @@ router.get('/proxy-image', authMiddleware, async (req, res) => {
   try {
     const { url } = req.query;
 
-    console.log(`🖼️ Proxy image request for URL: ${url ? url.substring(0, 50) + '...' : 'null'}`);
 
     if (!url) {
-      console.error('❌ Missing URL parameter');
       return res.status(400).json({
         success: false,
         error: 'URL parameter is required'
@@ -29,19 +27,16 @@ router.get('/proxy-image', authMiddleware, async (req, res) => {
 
     // Validate that it's a Google Photos URL
     if (!url.includes('lh3.googleusercontent.com')) {
-      console.error('❌ Invalid URL - not a Google Photos URL:', url);
       return res.status(400).json({
         success: false,
         error: 'Only Google Photos URLs are supported'
       });
     }
 
-    console.log(`🔄 Processing image: ${url.substring(0, 50)}...`);
 
     // Use cached image system to avoid multiple downloads
     const imageData = await getOrDownloadImage(url);
 
-    console.log(`✅ Image processed successfully: ${imageData.size} bytes, type: ${imageData.type}`);
 
     res.json({
       success: true,
@@ -50,8 +45,6 @@ router.get('/proxy-image', authMiddleware, async (req, res) => {
       size: imageData.size
     });
   } catch (error) {
-    console.error('❌ Error proxying image:', error);
-    console.error('❌ Error stack:', error.stack);
     res.status(500).json({
       success: false,
       error: 'Failed to proxy image',
@@ -98,7 +91,6 @@ function getBusinessProfileClient(accessToken) {
 // Helper function to get cached accounts from database
 async function getCachedAccounts(userId) {
   try {
-    console.log(`🗃️ Looking for cached accounts for user: ${userId}`);
 
     const { data: cachedAccounts, error } = await supabase
       .from('gmb_accounts')
@@ -107,11 +99,9 @@ async function getCachedAccounts(userId) {
       .order('created_at', { ascending: false });
 
     if (error) {
-      console.log('❌ Accounts cache query error:', error);
       return [];
     }
 
-    console.log(`📦 Found ${cachedAccounts.length} cached accounts`);
     return cachedAccounts.map(account => ({
       name: `accounts/${account.account_id}`,
       accountName: account.account_name,
@@ -122,7 +112,6 @@ async function getCachedAccounts(userId) {
       permissionLevel: account.permission_level
     }));
   } catch (error) {
-    console.error('Error in getCachedAccounts:', error);
     return [];
   }
 }
@@ -168,7 +157,6 @@ router.get('/accounts', async (req, res) => {
 
     // Save accounts to database for caching
     if (userId) {
-      console.log(`🔍 Saving ${accounts.length} accounts for user: ${userId}`);
 
       for (const account of accounts) {
         try {
@@ -177,10 +165,8 @@ router.get('/accounts', async (req, res) => {
           const accountId = cleanAccountName.split('/').pop();
 
           if (account.name !== cleanAccountName) {
-            console.warn(`🔧 Fixed corrupted account name: "${account.name}" -> "${cleanAccountName}"`);
           }
 
-          console.log(`🔍 Attempting to save account ${accountId} for user ${userId}`);
 
           // Upsert account to database
           const { data, error } = await supabase
@@ -198,16 +184,12 @@ router.get('/accounts', async (req, res) => {
             .select();
 
           if (error) {
-            console.error(`❌ Database error saving account ${accountId}:`, error);
           } else {
-            console.log(`✅ Saved GMB account to database: ${accountId}`, data);
           }
         } catch (dbError) {
-          console.error(`❌ Failed to save account ${account.name} to database:`, dbError);
         }
       }
     } else {
-      console.log(`❌ No userId provided, cannot save accounts to database`);
     }
 
     res.json({
@@ -215,7 +197,6 @@ router.get('/accounts', async (req, res) => {
       accounts: accounts
     });
   } catch (error) {
-    console.error('Error fetching GMB accounts:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to fetch GMB accounts',
@@ -227,7 +208,6 @@ router.get('/accounts', async (req, res) => {
 // Helper function to get cached locations from database
 async function getCachedLocations(accountId, userId) {
   try {
-    console.log(`🗃️ Looking for cached locations for account: ${accountId}, user: ${userId}`);
 
     const { data: cachedLocations, error } = await supabase
       .from('gmb_locations')
@@ -237,17 +217,9 @@ async function getCachedLocations(accountId, userId) {
       .order('created_at', { ascending: false });
 
     if (error) {
-      console.log('❌ Locations cache query error:', error);
       return [];
     }
 
-    console.log(`📦 Found ${cachedLocations.length} cached locations`);
-    console.log(`🔍 [DEBUG] Cached location data from database:`, cachedLocations.map(loc => ({
-      location_id: loc.location_id,
-      location_name: loc.location_name,
-      business_name: loc.business_name,
-      allKeys: Object.keys(loc)
-    })));
     
     return cachedLocations.map(location => {
       const mappedLocation = {
@@ -258,7 +230,6 @@ async function getCachedLocations(accountId, userId) {
           try {
             return JSON.parse(location.address);
           } catch (parseError) {
-            console.warn(`Invalid JSON in address field for location ${location.location_id}:`, location.address?.substring(0, 50));
             return null;
           }
         })() : null,
@@ -270,17 +241,10 @@ async function getCachedLocations(accountId, userId) {
         labels: location.labels || []
       };
       
-      console.log(`🔍 [DEBUG] Cached location mapped for ${location.location_name}:`, {
-        name: mappedLocation.name,
-        locationName: mappedLocation.locationName,
-        businessName: mappedLocation.businessName,
-        originalBusinessName: location.business_name
-      });
       
       return mappedLocation;
     });
   } catch (error) {
-    console.error('Error in getCachedLocations:', error);
     return [];
   }
 }
@@ -308,26 +272,39 @@ router.get('/accounts/:accountId/locations', async (req, res) => {
 
     const gmbClient = getBusinessProfileClient(accessToken);
     const accountName = `accounts/${accountId}`;
-    
+
     const readMask = 'name,title,storeCode,websiteUri,storefrontAddress,phoneNumbers,profile,regularHours,metadata,latlng,openInfo,labels,serviceArea,categories';
-    
-    const locationsResponse = await gmbClient.accounts.locations.list({
-      parent: accountName,
-      readMask: readMask
-    });
-    
-    console.log(`🔍 [DEBUG] Raw GMB API response for ${accountId}:`, {
-      hasLocations: !!locationsResponse.data.locations,
-      locationsCount: locationsResponse.data.locations?.length || 0,
-      firstLocation: locationsResponse.data.locations?.[0] ? {
-        name: locationsResponse.data.locations[0].name,
-        title: locationsResponse.data.locations[0].title,
-        profile: locationsResponse.data.locations[0].profile,
-        profileBusinessName: locationsResponse.data.locations[0].profile?.businessName,
-        allKeys: Object.keys(locationsResponse.data.locations[0])
-      } : null
-    });
-    
+
+    let locationsResponse;
+    try {
+      locationsResponse = await gmbClient.accounts.locations.list({
+        parent: accountName,
+        readMask: readMask
+      });
+    } catch (apiError) {
+      // Handle 404 - account not found or no access
+      if (apiError.code === 404 || apiError.status === 404) {
+        // Remove invalid account and its locations from database
+        if (userId) {
+          try {
+            await supabase.from('gmb_locations').delete().eq('account_id', accountId).eq('user_id', userId);
+            await supabase.from('gmb_accounts').delete().eq('account_id', accountId).eq('user_id', userId);
+          } catch (dbError) {
+            // Ignore cleanup errors
+          }
+        }
+
+        return res.json({
+          success: true,
+          locations: [],
+          message: 'Account not found or no access'
+        });
+      }
+
+      // For other errors, re-throw to be caught by outer catch
+      throw apiError;
+    }
+
     if (!locationsResponse.data.locations) {
       return res.json({
         success: true,
@@ -353,15 +330,7 @@ router.get('/accounts/:accountId/locations', async (req, res) => {
         serviceArea: location.serviceArea,
         categories: location.categories
       };
-      
-      console.log(`🔍 [DEBUG] Mapped location for ${location.title}:`, {
-        name: mappedLocation.name,
-        locationName: mappedLocation.locationName,
-        businessName: mappedLocation.businessName,
-        profileBusinessName: mappedLocation.profile?.businessName,
-        hasProfile: !!mappedLocation.profile
-      });
-      
+
       return mappedLocation;
     });
 
@@ -392,9 +361,8 @@ router.get('/accounts/:accountId/locations', async (req, res) => {
               onConflict: 'user_id,account_id,location_id'
             });
 
-          console.log(`✅ Saved GMB location to database: ${locationId}`);
         } catch (dbError) {
-          console.error(`❌ Failed to save location ${location.name} to database:`, dbError);
+          // Ignore database errors for individual locations
         }
       }
     }
@@ -404,9 +372,8 @@ router.get('/accounts/:accountId/locations', async (req, res) => {
       locations: locations
     });
   } catch (error) {
-    console.error('Error fetching GMB locations:', error);
-    res.status(500).json({ 
-      success: false, 
+    res.status(500).json({
+      success: false,
       error: 'Failed to fetch GMB locations',
       details: error.message
     });
@@ -425,13 +392,11 @@ async function getCachedMedia(accountId, locationId, userId) {
       .single();
 
     if (error && error.code !== 'PGRST116') {
-      console.error('Error fetching cached media:', error);
       return null;
     }
 
     return cachedMedia;
   } catch (error) {
-    console.error('Error in getCachedMedia:', error);
     return null;
   }
 }
@@ -457,14 +422,11 @@ async function saveMediaToCache(accountId, locationId, userId, mediaData) {
       .single();
 
     if (error) {
-      console.error('Error saving media to cache:', error);
       return null;
     }
 
-    console.log(`✅ Saved media to cache: ${accountId}/${locationId}`);
     return data;
   } catch (error) {
-    console.error('Error in saveMediaToCache:', error);
     return null;
   }
 }
@@ -518,11 +480,7 @@ router.get('/accounts/:accountId/locations/:locationId/media', async (req, res) 
         loc.name === `accounts/${accountId}/locations/${locationId}`
       );
       
-      console.log(`Media endpoint: Found location for ${accountId}/${locationId}:`, !!location);
       if (location) {
-        console.log('Location profile:', location.profile);
-        console.log('Location metadata:', location.metadata);
-        console.log('Location photos:', location.photos);
       }
       
       let mediaItems = [];
@@ -584,10 +542,6 @@ router.get('/accounts/:accountId/locations/:locationId/media', async (req, res) 
         profilePicture = mediaItems[0];
       }
       
-      console.log(`Media endpoint: Found ${mediaItems.length} total media items`);
-      console.log(`Media endpoint: Found ${logos.length} logos`);
-      console.log(`Media endpoint: Found ${photos.length} photos`);
-      console.log(`Media endpoint: Profile picture set to:`, profilePicture);
 
       // Save media to cache for future requests
       const mediaResponse = {
@@ -620,7 +574,6 @@ router.get('/accounts/:accountId/locations/:locationId/media', async (req, res) 
       });
     }
   } catch (error) {
-    console.error('Error fetching media:', error);
     res.status(500).json({ 
       success: false, 
       error: 'Failed to fetch media',

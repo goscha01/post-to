@@ -1,16 +1,17 @@
 import axios from 'axios';
 import apiTracker from './apiTracker';
 
-// Create a configured axios instance
+// Create a configured axios instance.
+// Production: REACT_APP_API_URL is set to the Railway backend URL on Vercel.
+// Local dev: falls back to localhost:3001.
 const axiosInstance = axios.create({
-  baseURL: 'http://localhost:3001',
+  baseURL: process.env.REACT_APP_API_URL || 'http://localhost:3001',
   timeout: 10000,
 });
 
 // Setup request interceptor for logging
 axiosInstance.interceptors.request.use(
   (config) => {
-    console.log(`🌐 ${config.method?.toUpperCase()} ${config.url}`);
     return config;
   },
   (error) => {

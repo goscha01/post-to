@@ -21,7 +21,6 @@ const Layout = ({ children }) => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   // Debug user data
-  console.log('Layout - User data:', user);
 
   const navigation = [
     { name: 'Dashboard', href: '/dashboard', icon: Home },

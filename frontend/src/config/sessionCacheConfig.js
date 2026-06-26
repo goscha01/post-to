@@ -42,7 +42,6 @@ class SessionCacheConfig {
   clearSessionCache() {
     // End current session
     this.isSessionActive = false;
-    console.log('🧹 Session ended - cache disabled');
   }
 
   /**
@@ -52,7 +51,6 @@ class SessionCacheConfig {
     // Start new session
     this.isSessionActive = true;
     this.sessionStartTime = Date.now();
-    console.log('🚀 New session started - cache enabled');
   }
 
   /**

@@ -22,7 +22,6 @@ class ImageService {
     if (useCache) {
       const cachedImage = this.getCachedImage(imageUrl);
       if (cachedImage) {
-        console.log(`📦 Retrieved image from cache: ${imageUrl.substring(0, 50)}...`);
         return cachedImage;
       }
     }
@@ -62,21 +61,18 @@ class ImageService {
   setCachedImage(imageUrl, result) {
     // Check if we should use cache based on session
     if (!this.sessionCacheConfig.shouldUseCache('userProfile')) {
-      console.log(`🚫 Skipping cache for image - session expired or cache disabled`);
       return;
     }
 
     // Get session-based TTL for user profile images
     const ttl = this.sessionCacheConfig.getTTL('userProfile');
     if (ttl <= 0) {
-      console.log(`🚫 Skipping cache for image - TTL is 0`);
       return;
     }
 
     this.cache.set(imageUrl, result);
     this.cacheExpiry.set(imageUrl, Date.now() + ttl);
     
-    console.log(`💾 Cached image with session-based TTL: ${Math.round(ttl / 1000 / 60)} minutes`);
   }
 
   // Process single image
@@ -84,12 +80,10 @@ class ImageService {
     try {
       // Check if it's a Google Photos URL that needs proxying
       if (imageUrl && imageUrl.includes('lh3.googleusercontent.com')) {
-        console.log(`🖼️ Processing Google Photos URL: ${imageUrl.substring(0, 50)}...`);
         
         const response = await axios.get(`http://localhost:3001/api/gmb/proxy-image?url=${encodeURIComponent(imageUrl)}`);
         
         if (response.data.success && response.data.dataUrl) {
-          console.log(`✅ Successfully processed image: ${response.data.size} bytes`);
           return {
             success: true,
             dataUrl: response.data.dataUrl,
@@ -97,12 +91,10 @@ class ImageService {
             size: response.data.size
           };
         } else {
-          console.error('❌ Backend returned unsuccessful response:', response.data);
           throw new Error(`Backend processing failed: ${response.data.error || 'Unknown error'}`);
         }
       } else {
         // For non-Google URLs, return directly
-        console.log(`🖼️ Processing non-Google URL: ${imageUrl.substring(0, 50)}...`);
         return {
           success: true,
           dataUrl: imageUrl,
@@ -111,14 +103,6 @@ class ImageService {
         };
       }
     } catch (error) {
-      console.error('❌ Error processing image:', error);
-      console.error('❌ Image URL:', imageUrl);
-      console.error('❌ Error details:', {
-        message: error.message,
-        status: error.response?.status,
-        statusText: error.response?.statusText,
-        data: error.response?.data
-      });
       
       return {
         success: false,
@@ -157,7 +141,6 @@ class ImageService {
           await new Promise(resolve => setTimeout(resolve, this.batchDelay));
         }
       } catch (error) {
-        console.error('Batch processing error:', error);
         // Add error results for failed batch
         results.push(...batch.map(() => ({ success: false, error: error.message })));
       }

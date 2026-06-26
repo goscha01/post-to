@@ -161,8 +161,6 @@ const mapTopicTypeToPostType = (topicType) => {
 // Helper function to save post to database
 const savePostToDatabase = async (userId, postData) => {
   try {
-    // Saving post to database
-    
     // Convert platforms array to single platform for this schema
     const platform = Array.isArray(postData.platforms) ? postData.platforms[0] : postData.platforms || 'unknown';
     
@@ -196,46 +194,23 @@ const savePostToDatabase = async (userId, postData) => {
       : [];
 
     // Debug: Log what we're saving
-    console.log(`🔍 Saving post ${postData.postId} with media:`, {
-      mediaCount: postData.media ? postData.media.length : 0,
-      cachedImageDataCount: cachedImageData.length,
-      hasBase64Data: cachedImageData.some(item => item.data),
-      locationId: postData.locationId,
-      gmbAccountId: postData.gmbAccountId,
-      accountId: postData.accountId
-    });
 
     const insertData = {
       user_id: userId,
-      account_id: postData.accountId || null, // Keep for existing foreign key relationship
-      gmb_account_id: postData.gmbAccountId || postData.accountId || null, // New column for GMB account ID (string)
+      account_id: postData.accountId || null,
+      gmb_account_id: postData.gmbAccountId || postData.accountId || null,
       location_id: postData.locationId || null,
       platform: platform,
       post_id: postData.postId || null,
       content: postData.content,
-      platforms: [platform], // Required array field
-      media_urls: mediaUrls, // Keep for backward compatibility
-      media_data: [...mediaData, ...cachedImageData], // Combine uploaded files and cached images
+      media_urls: mediaUrls,
+      media_data: [...mediaData, ...cachedImageData],
       published_at: postData.posted_at || new Date().toISOString(),
-      status: 'published',
-      // Store additional metadata in the media JSONB field for now
-      media: JSON.stringify({
-        postType: postData.postType || 'UPDATE',
-        callToAction: postData.callToAction || null,
-        originalMedia: [...mediaData, ...cachedImageData]
-      })
+      status: 'published'
     };
 
     // Inserting post data
 
-    console.log(`🔍 Inserting post data:`, {
-      post_id: insertData.post_id,
-      user_id: insertData.user_id,
-      location_id: insertData.location_id,
-      gmb_account_id: insertData.gmb_account_id,
-      platform: insertData.platform,
-      published_at: insertData.published_at
-    });
 
     const { data, error } = await supabase
       .from('social_media_posts')
@@ -244,11 +219,9 @@ const savePostToDatabase = async (userId, postData) => {
       .single();
 
     if (error) {
-      console.log(`❌ Insert error for post ${insertData.post_id}:`, error);
       return null;
     }
 
-    // Post saved successfully
     return data;
   } catch (error) {
     return null;
@@ -258,8 +231,6 @@ const savePostToDatabase = async (userId, postData) => {
 // Helper function to save existing posts from API to database
 const saveExistingPostsToDatabase = async (userId, posts, platform = 'google') => {
   try {
-    console.log(`🔍 saveExistingPostsToDatabase called with ${posts.length} posts for user ${userId}`);
-
     // First, get or create a social media account for this user and platform
     const { data: account, error: accountError } = await supabase
       .from('social_media_accounts')
@@ -284,7 +255,6 @@ const saveExistingPostsToDatabase = async (userId, posts, platform = 'google') =
         .single();
 
       if (createAccountError) {
-        console.log(`❌ Failed to create social media account:`, createAccountError);
         return [];
       }
       socialMediaAccountId = newAccount.id;
@@ -295,10 +265,6 @@ const saveExistingPostsToDatabase = async (userId, posts, platform = 'google') =
     const savedPosts = [];
 
     for (const post of posts) {
-
-      // Debug: Log the post ID we're looking for
-      console.log(`🔍 Looking for existing post with ID: ${post.id} (type: ${typeof post.id})`);
-
       // Check if post already exists in database
       const { data: existingPost } = await supabase
         .from('social_media_posts')
@@ -309,24 +275,7 @@ const saveExistingPostsToDatabase = async (userId, posts, platform = 'google') =
         .single();
 
       if (existingPost) {
-        // Update existing post with correct location_id and gmb_account_id
-        console.log(`🔍 Found existing post ${post.id} (DB ID: ${existingPost.id}), updating with location_id: ${post.locationId}, gmb_account_id: ${post.accountId}`);
-        const { error: updateError } = await supabase
-          .from('social_media_posts')
-          .update({
-            location_id: post.locationId,
-            gmb_account_id: post.accountId
-          })
-          .eq('id', existingPost.id);
-        
-        if (updateError) {
-          console.log(`❌ Error updating post ${post.id}:`, updateError);
-        } else {
-          console.log(`✅ Successfully updated post ${post.id} with location and account IDs`);
-        }
         continue;
-      } else {
-        console.log(`🔍 No existing post found for ID: ${post.id}, will create new post`);
       }
 
       // Prepare post data for database
@@ -341,27 +290,6 @@ const saveExistingPostsToDatabase = async (userId, posts, platform = 'google') =
         locationId: post.locationId // GMB location ID
       };
 
-      // Debug: Log media data structure to ensure base64 data is included
-      if (post.media && post.media.length > 0) {
-        console.log(`🔍 Post ${post.id} media structure:`, post.media.map(item => ({
-          id: item.id,
-          sourceUrl: item.sourceUrl,
-          hasData: !!item.data,
-          dataLength: item.data ? item.data.length : 0,
-          cached: item.cached,
-          filename: item.filename
-        })));
-      }
-
-      // Debug: Check if accountId and locationId are being passed correctly
-      if (!post.accountId || !post.locationId) {
-        console.log(`🔍 Post ${post.id} missing data:`, {
-          accountId: post.accountId,
-          locationId: post.locationId,
-          postKeys: Object.keys(post)
-        });
-      }
-
       // Save to database
       const savedPost = await savePostToDatabase(userId, postData);
       if (savedPost) {
@@ -369,13 +297,8 @@ const saveExistingPostsToDatabase = async (userId, posts, platform = 'google') =
       }
     }
 
-    console.log(`💾 Posts: ${savedPosts.length}/${posts.length} saved`);
-    if (savedPosts.length === 0 && posts.length > 0) {
-      console.log(`🔍 All posts already exist in database`);
-    }
     return savedPosts;
   } catch (error) {
-    console.log(`❌ Error in saveExistingPostsToDatabase:`, error);
     return [];
   }
 };
@@ -389,33 +312,10 @@ async function getCachedPosts(locationId, userId, accountId) {
       .eq('location_id', locationId)
       .eq('gmb_account_id', accountId)
       .eq('user_id', userId)
-      .order('created_at', { ascending: true })
+      .order('published_at', { ascending: false })
 
     if (error) {
-      console.log('❌ Cache query error:', error);
       return [];
-    }
-
-
-
-    if (cachedPosts.length === 0) {
-      // Check what posts actually exist for this user
-      const { data: allUserPosts } = await supabase
-        .from('social_media_posts')
-        .select('post_id, location_id, gmb_account_id, platform')
-        .eq('user_id', userId)
-        .limit(3);
-        
-      if (allUserPosts && allUserPosts.length > 0) {
-        console.log(`🔍 User has ${allUserPosts.length} posts, sample:`, {
-          post_id: allUserPosts[0].post_id,
-          location_id: allUserPosts[0].location_id,
-          gmb_account_id: allUserPosts[0].gmb_account_id
-        });
-        console.log(`🔍 Querying for: location_id=${locationId}, gmb_account_id=${accountId}`);
-      } else {
-        console.log(`🔍 No posts found for location ${locationId}, account ${accountId}`);
-      }
     }
 
     // Process cached posts and ensure images are properly formatted
@@ -465,7 +365,7 @@ async function getCachedPosts(locationId, userId, accountId) {
           callToAction = mediaMetadata.callToAction || null;
         }
       } catch (error) {
-        console.log(`⚠️ Could not parse media metadata for post ${post.id}:`, error.message);
+        // Ignore parsing errors
       }
 
       return {
@@ -473,40 +373,31 @@ async function getCachedPosts(locationId, userId, accountId) {
         content: post.content,
         postType: postType,
         platform: post.platform || 'google', // Default platform
-        createdAt: post.created_at || post.posted_at,
+        createdAt: post.published_at || post.created_at,
         status: 'published',
         media: processedMedia,
         callToAction: callToAction,
         cached: true
       };
     }));
-    
-    // Posts are already sorted by database query (newest first)
-    if (processedPosts.length > 0) {
-      console.log(`📅 Cached posts order - First: ${processedPosts[0]?.createdAt}, Last: ${processedPosts[processedPosts.length - 1]?.createdAt}`);
-    }
-    
+
+    // Posts are already sorted by database query (newest published_at first)
     return processedPosts;
   } catch (error) {
-    console.log('❌ Cache function error:', error);
     return [];
   }
 }
 
 // Get posts for a specific location (GET /location/:locationId endpoint)
 router.get('/location/:locationId', async (req, res) => {
-  console.log('🚨 BACKEND ROUTE CALLED - This should appear in backend logs!');
   try {
     const { locationId } = req.params;
     const { cached_only } = req.query; // Add query parameter for cache-only requests
     const accessToken = req.businessToken;
     const userId = req.user?.userId;
-    
-    console.log(`🔍 [BACKEND] Posts route called - locationId: ${locationId}, cached_only: ${cached_only}, userId: ${userId}`);
 
     // If cached_only=true, return only cached data
     if (cached_only === 'true') {
-      console.log(`📦 [BACKEND] Returning cached data only for location ${locationId}`);
       const accountId = req.headers['x-gmb-account-id'] || '109194636448236279020';
       const cachedPosts = await getCachedPosts(locationId, userId, accountId);
       return res.json({
@@ -516,17 +407,12 @@ router.get('/location/:locationId', async (req, res) => {
         message: 'Cached data only'
       });
     }
-    
-    // Fetching posts for location
-    console.log(`🌐 [BACKEND] Fetching posts from GMB API for location ${locationId}`);
-    
+
     // Try to fetch real posts from Google My Business first
     try {
       // Extract account ID from the location path (assuming format: accounts/{accountId}/locations/{locationId})
       const accountId = req.headers['x-gmb-account-id'] || '109194636448236279020'; // fallback
-      
-      // Fetching GMB posts
-      
+
       // Try direct API call first
       try {
         const gmbResponse = await axios.get(
@@ -539,44 +425,13 @@ router.get('/location/:locationId', async (req, res) => {
           }
         );
 
-        console.log(`📊 GMB: ${gmbResponse.data.localPosts?.length || 0} posts`);
-        console.log(`🔍 GMB Response structure:`, {
-          hasLocalPosts: !!gmbResponse.data.localPosts,
-          localPostsLength: gmbResponse.data.localPosts?.length || 0,
-          responseKeys: Object.keys(gmbResponse.data || {})
-        });
-
         if (gmbResponse.data.localPosts && gmbResponse.data.localPosts.length > 0) {
-          // Processing GMB posts
-         
           // Convert GMB posts to our format and sort by creation date (newest first)
           const realPosts = await Promise.all(gmbResponse.data.localPosts.map(async (post) => {
             // Try to fetch media for this post
             let media = [];
             try {
               if (post.media && post.media.length > 0) {
-                
-                
-                
-                
-                
-                
-                // Try to find any URL-like fields
-                const possibleUrlFields = ['sourceUrl', 'url', 'mediaUrl', 'thumbnailUrl', 'thumbnail', 'imageUrl', 'photoUrl', 'media', 'googleUrl'];
-                
-                possibleUrlFields.forEach(field => {
-                  if (post.media[0][field]) {
-                    
-                  }
-                });
-                
-                // Additional debugging - check all fields in the media item
-                
-                Object.keys(post.media[0]).forEach(key => {
-                  
-                });
-                
-                
                 // Extract media URLs first
                 const mediaUrls = post.media.map(mediaItem => {
                   let sourceUrl = mediaItem.googleUrl || mediaItem.sourceUrl || mediaItem.url || mediaItem.mediaUrl || null;
@@ -586,12 +441,10 @@ router.get('/location/:locationId', async (req, res) => {
                     // If the URL doesn't have parameters, add them
                     if (!sourceUrl.includes('=')) {
                       sourceUrl = `${sourceUrl}=h305-no`;
-                      
                     } else {
                       // If it already has parameters, ensure it has the right format
                       if (!sourceUrl.includes('h305-no')) {
                         sourceUrl = `${sourceUrl}=h305-no`;
-                        
                       }
                     }
                   }
@@ -599,14 +452,11 @@ router.get('/location/:locationId', async (req, res) => {
                   return sourceUrl;
                 }).filter(Boolean);
 
-                
-
                 // Process images using caching system
                 if (mediaUrls.length > 0) {
                   try {
-                    
                     const processedImages = await processImages(mediaUrls);
-                    
+
                     media = processedImages.map((imageData, index) => ({
                       id: post.media[index]?.name?.split('/').pop() || `media-${Date.now()}`,
                       mediaFormat: post.media[index]?.mediaFormat || 'PHOTO',
@@ -622,8 +472,6 @@ router.get('/location/:locationId', async (req, res) => {
                       // Add fromCache flag so frontend knows to use base64 data directly
                       fromCache: true
                     }));
-                    
-                    
                   } catch (error) {
                     // Fallback to original method if caching fails
                     media = post.media.map(mediaItem => ({
@@ -637,18 +485,12 @@ router.get('/location/:locationId', async (req, res) => {
                 } else {
                   media = [];
                 }
-                
-                
-                
               } else {
-                
-                
                 // Check if media might be in a different field
-                // Media could be in attachments, photos, or images fields 
+                // Media could be in attachments, photos, or images fields
               }
             } catch (mediaError) {
-              
-              
+              // Ignore media errors
             }
 
             const processedPost = {
@@ -664,49 +506,22 @@ router.get('/location/:locationId', async (req, res) => {
               locationId: locationId, // Add location ID
               gmbPost: post
             };
-            
-            
-            
-            
-            
-            
-            
-            
-            
+
             return processedPost;
           }));
           
-          // Sort by creation date (oldest first)
-          realPosts.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
-          
-          if (realPosts.length > 0) {
-            console.log(`📅 Posts sorted by date - First: ${realPosts[0]?.createdAt}, Last: ${realPosts[realPosts.length - 1]?.createdAt}`);
-          }
-          
-          
-          
+          // Sort by creation date (newest first)
+          realPosts.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
           // Save existing posts to database
-          console.log(`💾 Saving ${realPosts.length} posts to database for user ${req.user.userId}`);
-          console.log(`🔍 Sample post data:`, {
-            firstPostId: realPosts[0]?.id,
-            firstPostContent: realPosts[0]?.content?.substring(0, 50),
-            firstPostCreatedAt: realPosts[0]?.createdAt,
-            accountId: realPosts[0]?.accountId,
-            locationId: realPosts[0]?.locationId
-          });
-          
           const savedPosts = await saveExistingPostsToDatabase(req.user.userId, realPosts, 'google');
-          console.log(`✅ Successfully saved ${savedPosts.length} posts to database`);
-          
-          
+
           return res.json({
             posts: realPosts,
             savedToDatabase: savedPosts.length
           });
         }
       } catch (v4Error) {
-        
-        
         // Try alternative endpoint
         const gmbResponse = await axios.get(
           `https://mybusinessaccountmanagement.googleapis.com/v1/accounts/${accountId}/locations/${locationId}/localPosts`,
@@ -717,18 +532,14 @@ router.get('/location/:locationId', async (req, res) => {
             }
           }
         );
-        
+
         if (gmbResponse.data.localPosts && gmbResponse.data.localPosts.length > 0) {
-          
-          
           // Convert GMB posts to our format and sort by creation date (newest first)
           const realPosts = await Promise.all(gmbResponse.data.localPosts.map(async (post) => {
             // Try to fetch media for this post
             let media = [];
             try {
               if (post.media && post.media.length > 0) {
-                
-                
                 // Extract media information from the post
                 media = post.media.map(mediaItem => {
                   const extracted = {
@@ -744,12 +555,10 @@ router.get('/location/:locationId', async (req, res) => {
                     // If the URL doesn't have query parameters, add them
                     if (!extracted.sourceUrl.includes('=')) {
                       extracted.sourceUrl = `${extracted.sourceUrl}=h305-no`;
-                      
                     } else {
                       // If it already has parameters, ensure it has the right format
                       if (!extracted.sourceUrl.includes('h305-no')) {
                         extracted.sourceUrl = `${extracted.sourceUrl}=h305-no`;
-                        
                       }
                     }
                   }
@@ -758,7 +567,7 @@ router.get('/location/:locationId', async (req, res) => {
                 });
               }
             } catch (mediaError) {
-              
+              // Ignore media errors
             }
 
             const processedPost = {
@@ -778,29 +587,12 @@ router.get('/location/:locationId', async (req, res) => {
             return processedPost;
           }));
           
-          // Sort by creation date (oldest first)
-          realPosts.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
-          
-          if (realPosts.length > 0) {
-            console.log(`📅 Posts sorted by date - First: ${realPosts[0]?.createdAt}, Last: ${realPosts[realPosts.length - 1]?.createdAt}`);
-          }
-          
-          
-          
+          // Sort by creation date (newest first)
+          realPosts.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
           // Save existing posts to database
-          console.log(`💾 Saving ${realPosts.length} posts to database for user ${req.user.userId}`);
-          console.log(`🔍 Sample post data:`, {
-            firstPostId: realPosts[0]?.id,
-            firstPostContent: realPosts[0]?.content?.substring(0, 50),
-            firstPostCreatedAt: realPosts[0]?.createdAt,
-            accountId: realPosts[0]?.accountId,
-            locationId: realPosts[0]?.locationId
-          });
-          
           const savedPosts = await saveExistingPostsToDatabase(req.user.userId, realPosts, 'google');
-          console.log(`✅ Successfully saved ${savedPosts.length} posts to database`);
-          
-          
+
           return res.json({
             posts: realPosts,
             savedToDatabase: savedPosts.length
@@ -808,11 +600,10 @@ router.get('/location/:locationId', async (req, res) => {
         }
       }
     } catch (gmbError) {
-      
+      // Continue to fallback
     }
     
     // Fallback to mock data if GMB API fails
-    console.log(`📋 Using fallback mock posts because GMB API didn't return posts`);
     const mockPosts = [
       {
         id: '1',
@@ -861,20 +652,14 @@ router.get('/location/:locationId', async (req, res) => {
       
       // Handle invalid dates
       if (isNaN(dateA.getTime()) || isNaN(dateB.getTime())) {
-        console.warn(`⚠️ Invalid date in mock posts`);
         return 0;
       }
       
-      return dateA.getTime() - dateB.getTime(); // Oldest first
+      return dateB.getTime() - dateA.getTime(); // Newest first
     });
-    
-    if (sortedMockPosts.length > 0) {
-      console.log(`📅 Mock posts sorted - First: ${sortedMockPosts[0]?.createdAt}, Last: ${sortedMockPosts[sortedMockPosts.length - 1]?.createdAt}`);
-    }
 
     // Save mock posts to database for caching
     const accountId = req.headers['x-gmb-account-id'] || '109194636448236279020';
-    console.log(`💾 Saving ${sortedMockPosts.length} mock posts to database for user ${req.user?.userId}, location: ${locationId}, account: ${accountId}`);
 
     // Add locationId and accountId to mock posts
     const mockPostsWithIds = sortedMockPosts.map(post => ({
@@ -884,7 +669,6 @@ router.get('/location/:locationId', async (req, res) => {
     }));
 
     const savedMockPosts = await saveExistingPostsToDatabase(req.user?.userId, mockPostsWithIds, 'google');
-    console.log(`✅ Successfully saved ${savedMockPosts.length} mock posts to database`);
 
     res.json({
       posts: sortedMockPosts,
@@ -892,7 +676,11 @@ router.get('/location/:locationId', async (req, res) => {
       source: 'mock_fallback'
     });
   } catch (error) {
-    res.status(500).json({ error: 'Failed to fetch posts' });
+    console.error('Error fetching posts:', error);
+    res.status(500).json({
+      error: 'Failed to fetch posts',
+      details: error.message
+    });
   }
 });
 
@@ -927,9 +715,11 @@ router.post('/upload-images', upload.array('images', 10), async (req, res) => {
     });
 
   } catch (error) {
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to upload images' 
+    console.error('Error uploading images:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to upload images',
+      details: error.message
     });
   }
 });
@@ -1208,7 +998,12 @@ router.post('/', upload.array('images', 10), [
     });
 
   } catch (error) {
-    res.status(500).json({ success: false, error: 'Failed to create post' });
+    console.error('Error creating post:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to create post',
+      details: error.message
+    });
   }
 });
 
@@ -1315,11 +1110,11 @@ router.patch('/:postId', invalidateCacheMiddleware({ pattern: 'user:*:posts*' })
     }
     
   } catch (error) {
-    
-    res.status(500).json({ 
-      success: false, 
+    console.error('Error updating post:', error);
+    res.status(500).json({
+      success: false,
       error: 'Failed to update post',
-      details: error.message 
+      details: error.message
     });
   }
 });
@@ -1367,10 +1162,11 @@ router.delete('/:postId', invalidateCacheMiddleware({ pattern: 'user:*:posts*' }
     }
     
   } catch (error) {
-    res.status(500).json({ 
-      success: false, 
+    console.error('Error deleting post:', error);
+    res.status(500).json({
+      success: false,
       error: 'Failed to delete post',
-      details: error.message 
+      details: error.message
     });
   }
 });
