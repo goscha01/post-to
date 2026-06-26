@@ -20,10 +20,26 @@ const PORT = process.env.PORT || 3001;
 
 // Security middleware
 app.use(helmet());
+
+// CORS allowlist:
+//   - localhost ports for dev
+//   - post-to-app.vercel.app + Vercel preview URLs
+//   - www.post-to.app + apex
+// Override via CORS_ORIGINS env var (comma-separated exact origins).
+const CORS_ALLOWED_PATTERNS = [
+  /^http:\/\/localhost:(3000|3001|3002|3003)$/,
+  /^https:\/\/post-to-app(-[a-z0-9-]+)?\.vercel\.app$/,
+  /^https:\/\/post-to-app-git-[a-z0-9-]+\.vercel\.app$/,
+  /^https:\/\/(www\.)?post-to\.app$/
+];
+const CORS_EXTRA = (process.env.CORS_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
 app.use(cors({
-  origin: process.env.NODE_ENV === 'production' 
-    ? ['https://yourdomain.com'] 
-    : ['http://localhost:3000'],
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, true); // curl, server-to-server
+    if (CORS_EXTRA.includes(origin)) return cb(null, true);
+    if (CORS_ALLOWED_PATTERNS.some(re => re.test(origin))) return cb(null, true);
+    return cb(new Error('CORS: origin not allowed: ' + origin));
+  },
   credentials: true
 }));
 
