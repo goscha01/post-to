@@ -1,4 +1,4 @@
-const cacheService = require('../services/CacheService');
+const cacheService = require('../services/cacheService');
 const { generateCacheKey } = require('../utils/cacheUtils');
 const sessionCacheUtils = require('../utils/sessionCacheUtils');
 
