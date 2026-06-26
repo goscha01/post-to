@@ -229,7 +229,7 @@ const Reviews = () => {
         return;
       }
       
-      await axios.put(`http://localhost:3001/api/gmb/accounts/${accountId}/locations/${locationId}/reviews/${reviewId}/reply`, {
+      await axios.put(`/api/gmb/accounts/${accountId}/locations/${locationId}/reviews/${reviewId}/reply`, {
         comment: replyText.trim()
       });
       
@@ -273,7 +273,7 @@ const Reviews = () => {
         return;
       }
       
-      await axios.put(`http://localhost:3001/api/gmb/accounts/${accountId}/locations/${locationId}/reviews/${reviewId}/reply`, {
+      await axios.put(`/api/gmb/accounts/${accountId}/locations/${locationId}/reviews/${reviewId}/reply`, {
         comment: replyText.trim()
       });
       
@@ -314,7 +314,7 @@ const Reviews = () => {
         return;
       }
       
-      await axios.delete(`http://localhost:3001/api/gmb/accounts/${accountId}/locations/${locationId}/reviews/${reviewId}/reply`);
+      await axios.delete(`/api/gmb/accounts/${accountId}/locations/${locationId}/reviews/${reviewId}/reply`);
       await fetchReviews(selectedProfile);
       alert('Reply deleted successfully!');
     } catch (editError) {

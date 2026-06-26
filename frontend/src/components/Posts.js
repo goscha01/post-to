@@ -383,7 +383,7 @@ const Posts = () => {
           const urlPromises = validUrls.map(async (url, index) => {
 
             try {
-              const mediaResponse = await axios.post('http://localhost:3001/api/posts/media', {
+              const mediaResponse = await axios.post('/api/posts/media', {
                 mediaFormat: 'PHOTO',
                 sourceUrl: url,
                 gmbAccountId: accountId,
@@ -475,7 +475,7 @@ const Posts = () => {
         });
       }
 
-      const response = await axios.post('http://localhost:3001/api/posts', formDataToSend, {
+      const response = await axios.post('/api/posts', formDataToSend, {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
@@ -589,7 +589,7 @@ const Posts = () => {
         return;
       }
       
-      await axios.delete(`http://localhost:3001/api/posts/${postId}`, {
+      await axios.delete(`/api/posts/${postId}`, {
         params: {
           gmbAccountId: accountId,
           gmbLocationId: locationId
@@ -759,7 +759,7 @@ const Posts = () => {
 
 
          
-         const response = await axios.patch(`http://localhost:3001/api/posts/${editingPost.id}`, updateData, {
+         const response = await axios.patch(`/api/posts/${editingPost.id}`, updateData, {
            params: {
              gmbAccountId: accountId,
              gmbLocationId: locationId

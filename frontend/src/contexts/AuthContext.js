@@ -109,8 +109,8 @@ export const AuthProvider = ({ children }) => {
     rlog('info', 'AuthContext', 'login.start', { forceConsent });
     try {
       const url = forceConsent
-        ? 'http://localhost:3001/auth/google?force_consent=true'
-        : 'http://localhost:3001/auth/google';
+        ? '/auth/google?force_consent=true'
+        : '/auth/google';
       const response = await axios.get(url);
       rlog('info', 'AuthContext', 'login.gotAuthUrl', { status: response.status, hasAuthUrl: !!response.data?.authUrl });
       window.location.href = response.data.authUrl;
@@ -132,7 +132,7 @@ export const AuthProvider = ({ children }) => {
       if (!user?.id) {
         throw new Error('User must be authenticated to connect business profile');
       }
-      const response = await axios.get(`http://localhost:3001/auth/google/business?user_id=${user.id}`);
+      const response = await axios.get(`/auth/google/business?user_id=${user.id}`);
       window.location.href = response.data.authUrl;
     } catch (error) {
       if (error.response?.status === 429) {
@@ -290,7 +290,7 @@ export const AuthProvider = ({ children }) => {
         throw new Error('No refresh token available');
       }
 
-      const response = await axios.post('http://localhost:3001/auth/refresh', {
+      const response = await axios.post('/auth/refresh', {
         refreshToken
       });
 
@@ -314,7 +314,7 @@ export const AuthProvider = ({ children }) => {
         
         // Try once more
         try {
-          const response = await axios.post('http://localhost:3001/auth/refresh', {
+          const response = await axios.post('/auth/refresh', {
             refreshToken: localStorage.getItem('gmb_refresh_token')
           });
           

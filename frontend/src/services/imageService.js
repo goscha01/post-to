@@ -81,7 +81,7 @@ class ImageService {
       // Check if it's a Google Photos URL that needs proxying
       if (imageUrl && imageUrl.includes('lh3.googleusercontent.com')) {
         
-        const response = await axios.get(`http://localhost:3001/api/gmb/proxy-image?url=${encodeURIComponent(imageUrl)}`);
+        const response = await axios.get(`/api/gmb/proxy-image?url=${encodeURIComponent(imageUrl)}`);
         
         if (response.data.success && response.data.dataUrl) {
           return {

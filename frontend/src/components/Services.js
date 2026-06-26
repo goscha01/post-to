@@ -225,7 +225,7 @@ const Services = () => {
 
       // Fetch fresh location data in background to get updated categories
       try {
-        const locationResponse = await axios.get(`http://localhost:3001/api/gmb/accounts/${accountId}/locations`);
+        const locationResponse = await axios.get(`/api/gmb/accounts/${accountId}/locations`);
         
         if (locationResponse.data.success && locationResponse.data.locations.length > 0) {
           const freshLocation = locationResponse.data.locations[0];
@@ -438,7 +438,7 @@ const Services = () => {
       }
 
       // STEP 2: No cache available, fetch fresh data with loading state
-      const response = await axios.get(`http://localhost:3001/api/gmb/locations/${locationId}/services`);
+      const response = await axios.get(`/api/gmb/locations/${locationId}/services`);
 
       if (response.data.success) {
         const serviceItems = response.data.serviceItems || [];
@@ -479,7 +479,7 @@ const Services = () => {
       
       try {
         const accountId = selectedProfile.accountId;
-        const locationResponse = await axios.get(`http://localhost:3001/api/gmb/accounts/${accountId}/locations`);
+        const locationResponse = await axios.get(`/api/gmb/accounts/${accountId}/locations`);
         
         if (locationResponse.data.success && locationResponse.data.locations) {
           const location = locationResponse.data.locations.find(loc => 
@@ -498,7 +498,7 @@ const Services = () => {
       }
       
       // Get current services to preserve them
-      const currentServicesResponse = await axios.get(`http://localhost:3001/api/gmb/locations/${locationId}/services`);
+      const currentServicesResponse = await axios.get(`/api/gmb/locations/${locationId}/services`);
       let currentServiceItems = [];
       
       if (currentServicesResponse.data.success && currentServicesResponse.data.serviceItems) {
@@ -521,7 +521,7 @@ const Services = () => {
       
       
       // Send all services (existing + new) to preserve existing ones
-      const response = await axios.patch(`http://localhost:3001/api/gmb/locations/${locationId}/services`, {
+      const response = await axios.patch(`/api/gmb/locations/${locationId}/services`, {
         serviceItems: allServiceItems
       });
       
@@ -577,7 +577,7 @@ const Services = () => {
         };
       });
       
-      const response = await axios.patch(`http://localhost:3001/api/gmb/locations/${locationId}/services`, {
+      const response = await axios.patch(`/api/gmb/locations/${locationId}/services`, {
         serviceItems: currentServices
       });
       
@@ -603,7 +603,7 @@ const Services = () => {
     
     try {
       setIsSearchingCategories(true);
-      const response = await axios.get(`http://localhost:3001/api/gmb/categories`, {
+      const response = await axios.get(`/api/gmb/categories`, {
         params: {
           filter: `displayname=${searchTerm}`,
           regionCode: 'US',
@@ -807,7 +807,7 @@ const Services = () => {
       const locationId = selectedProfile.name.split('/').pop();
       
       // Get current services
-      const currentServicesResponse = await axios.get(`http://localhost:3001/api/gmb/locations/${locationId}/services`);
+      const currentServicesResponse = await axios.get(`/api/gmb/locations/${locationId}/services`);
       let currentServiceItems = [];
       
       if (currentServicesResponse.data.success && currentServicesResponse.data.serviceItems) {
@@ -872,7 +872,7 @@ const Services = () => {
         const serviceName = item.freeFormServiceItem?.label?.displayName || item.structuredServiceItem?.serviceTypeId || 'Unknown';
       });
       
-      const response = await axios.patch(`http://localhost:3001/api/gmb/locations/${locationId}/services`, {
+      const response = await axios.patch(`/api/gmb/locations/${locationId}/services`, {
         serviceItems: updatedServiceItems
       });
       
@@ -919,7 +919,7 @@ const Services = () => {
       const locationId = selectedProfile.name.split('/').pop();
       
       // First, get current services to preserve them
-      const currentServicesResponse = await axios.get(`http://localhost:3001/api/gmb/locations/${locationId}/services`);
+      const currentServicesResponse = await axios.get(`/api/gmb/locations/${locationId}/services`);
       let currentServiceItems = [];
       
       if (currentServicesResponse.data.success && currentServicesResponse.data.serviceItems) {
@@ -957,7 +957,7 @@ const Services = () => {
       
       
       // Send all services (existing + new) to preserve existing ones
-      const response = await axios.patch(`http://localhost:3001/api/gmb/locations/${locationId}/services`, {
+      const response = await axios.patch(`/api/gmb/locations/${locationId}/services`, {
         serviceItems: allServiceItems
       });
       

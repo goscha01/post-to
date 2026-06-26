@@ -1,4 +1,4 @@
-import axios from 'axios';
+import axios from '../utils/axiosConfig';
 
 class UserProfileService {
   constructor() {
@@ -60,7 +60,7 @@ class UserProfileService {
         return user; // Return user without caching if no token
       }
 
-      const response = await axios.get(`http://localhost:3001/api/gmb/proxy-image?url=${encodeURIComponent(user.picture_url)}`, {
+      const response = await axios.get(`/api/gmb/proxy-image?url=${encodeURIComponent(user.picture_url)}`, {
         headers: {
           'Authorization': `Bearer ${token}`
         }

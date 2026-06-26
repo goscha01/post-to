@@ -557,7 +557,7 @@ const transformTimelineDataForChart = () => {
       
       // Use the correct insights endpoint
       const response = await axios.post(
-        'http://localhost:3001/api/insights/basic', 
+        '/api/insights/basic', 
         requestData
       );
       
@@ -740,7 +740,7 @@ const transformTimelineDataForChart = () => {
       };
 
       
-      const response = await axios.post('http://localhost:3001/api/insights/export', requestData, {
+      const response = await axios.post('/api/insights/export', requestData, {
         responseType: format === 'csv' ? 'blob' : 'json'
       });
       
