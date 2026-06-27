@@ -1431,8 +1431,36 @@ router.get('/accounts/:accountId/locations/:locationId/media', cacheMiddleware({
       const photos = mediaItems.filter(item => item.category === 'PHOTO' || item.category === 'COVER' || item.category === 'PLACE_PHOTO');
       const businessImages = mediaItems.filter(item => item.category === 'BUSINESS_IMAGE' || item.source === 'GOOGLE_DRIVE');
       const allMedia = [...logos, ...photos, ...businessImages];
-      
-      
+
+      // Recompute profilePicture: prefer a PROFILE-category item from ANY
+      // source (v1/v4/media.list), then any LOGO (which last-resort includes
+      // metadata.logoUri). Without this, when location.profile.profileImageUri
+      // is missing we fall back to metadata.logoUri (Google's generic
+      // placeholder) even when v4 returned the real uploaded profile pic.
+      if (!profilePicture || profilePicture.category !== 'PROFILE') {
+        const realProfile = mediaItems.find(item => item.category === 'PROFILE');
+        if (realProfile) {
+          profilePicture = realProfile;
+        } else if (logos.length > 0) {
+          profilePicture = logos[0];
+        }
+      }
+
+      logger.info('posts.media.response', {
+        accountId, locationId,
+        media_count: mediaItems.length,
+        has_profile_picture: !!profilePicture,
+        profile_picture_category: profilePicture?.category || null,
+        profile_picture_source: profilePicture?.source || null,
+        profile_picture_url_host: profilePicture?.googleUrl ? new URL(profilePicture.googleUrl).hostname : null,
+        categories_seen: Array.from(new Set(mediaItems.map(m => m.category))).filter(Boolean),
+        sources_seen: Array.from(new Set(mediaItems.map(m => m.source))).filter(Boolean),
+        has_profile_uri: !!location?.profile?.profileImageUri,
+        has_logo_uri: !!location?.metadata?.logoUri,
+        has_cover_uri: !!location?.metadata?.coverPhotoUri,
+        raw_photos_count: Array.isArray(location?.photos) ? location.photos.length : 0
+      });
+
       res.json({
         success: true,
         media: mediaItems,
