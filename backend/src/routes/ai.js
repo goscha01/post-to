@@ -12,6 +12,7 @@ const { createClient } = require('@supabase/supabase-js');
 const authMiddleware = require('../middleware/authMiddleware');
 const aiContent = require('../services/aiContentService');
 const aiJobs = require('../services/aiJobsService');
+const connectionsService = require('../services/connectionsService');
 
 const router = express.Router();
 
@@ -47,7 +48,8 @@ router.post(
     body('keyword').isString().isLength({ min: 2, max: 255 }),
     body('tone').optional().isString().isLength({ max: 255 }),
     body('targetAudience').optional().isString().isLength({ max: 255 }),
-    body('businessProfileId').optional().isUUID()
+    body('businessProfileId').optional().isUUID(),
+    body('connectionId').optional().isUUID()
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -69,9 +71,22 @@ router.post(
       });
     }
 
+    // If a connectionId is provided, pull display_name + metadata as defaults.
+    // Body values still win — connectionId only fills in what the caller omitted.
+    let connection = null;
+    if (req.body.connectionId) {
+      connection = await connectionsService.getForUser(userId, req.body.connectionId);
+      if (!connection) {
+        return res.status(404).json({ error: 'Connection not found' });
+      }
+    }
+
+    const connBusinessName = connection?.display_name || null;
+    const connDescription = connection?.metadata?.description || null;
+
     const input = {
-      businessName: req.body.businessName || 'Spotless Homes',
-      businessType: req.body.businessType || 'residential cleaning company',
+      businessName: req.body.businessName || connBusinessName || 'Spotless Homes',
+      businessType: req.body.businessType || (connDescription ? connDescription.slice(0, 200) : 'residential cleaning company'),
       service: req.body.service || 'recurring cleaning',
       city: req.body.city || 'Tampa',
       keyword: req.body.keyword,

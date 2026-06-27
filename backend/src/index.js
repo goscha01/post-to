@@ -12,6 +12,7 @@ const reviewsRoutes = require('./routes/reviews');
 const servicesRoutes = require('./routes/services');
 const cacheRoutes = require('./routes/cache');
 const aiRoutes = require('./routes/ai');
+const connectionsRoutes = require('./routes/connections');
 const clientLogRoutes = require('./routes/clientLog');
 const apiLogger = require('./middleware/apiLogger');
 
@@ -70,6 +71,7 @@ app.use('/api/reviews', reviewsRoutes);
 app.use('/api/services', servicesRoutes);
 app.use('/api/cache', cacheRoutes);
 app.use('/api/ai', aiRoutes);
+app.use('/api/connections', connectionsRoutes);
 app.use('/api/client-log', clientLogRoutes);
 
 // Health check endpoint

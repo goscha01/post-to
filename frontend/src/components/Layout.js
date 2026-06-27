@@ -8,6 +8,7 @@ import {
   MessageSquare,
   BarChart3,
   Settings,
+  Link2,
   Menu,
   X,
   LogOut,
@@ -24,6 +25,7 @@ const Layout = ({ children }) => {
 
   const navigation = [
     { name: 'Dashboard', href: '/dashboard', icon: Home },
+    { name: 'Connections', href: '/connections', icon: Link2 },
     { name: 'Business Profiles', href: '/profiles', icon: Building2 },
     { name: 'Posts', href: '/posts', icon: FileText },
     { name: 'Reviews', href: '/reviews', icon: MessageSquare },

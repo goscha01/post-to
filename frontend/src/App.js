@@ -4,6 +4,7 @@ import { AuthProvider, useAuth } from './contexts/AuthContext';
 import Login from './components/Login';
 import Dashboard from './components/Dashboard';
 import BusinessProfiles from './components/BusinessProfiles';
+import Connections from './components/Connections';
 import Posts from './components/Posts';
 import Reviews from './components/Reviews';
 import Insights from './components/Insights';
@@ -56,6 +57,16 @@ const AppContent = () => {
             <ProtectedRoute>
               <Layout>
                 <BusinessProfiles />
+              </Layout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/connections"
+          element={
+            <ProtectedRoute>
+              <Layout>
+                <Connections />
               </Layout>
             </ProtectedRoute>
           }

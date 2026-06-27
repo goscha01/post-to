@@ -2,6 +2,7 @@ const express = require('express');
 const { google } = require('googleapis');
 const jwt = require('jsonwebtoken');
 const { createClient } = require('@supabase/supabase-js');
+const connectionsService = require('../services/connectionsService');
 const router = express.Router();
 
 // Initialize Supabase client
@@ -475,6 +476,20 @@ router.get('/google/business/callback', async (req, res) => {
         message: updateError.message, code: updateError.code, details: updateError.details, hint: updateError.hint
       });
       return res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/business/error?error=update_failed`);
+    }
+
+    // Mirror into the unified connected_accounts list so the new picker UI
+    // shows this Google Business profile alongside website / future providers.
+    // Failure here must not block the OAuth flow.
+    try {
+      await connectionsService.upsertGoogleBusiness({
+        userId: user.id,
+        businessGoogleId: businessUserInfo.data.id,
+        businessEmail: businessUserInfo.data.email,
+        displayName: businessUserInfo.data.name || businessUserInfo.data.email || 'Google Business Profile',
+      });
+    } catch (e) {
+      console.error('[auth/google/business/callback] connected_accounts upsert failed:', e.message);
     }
 
     // Generate JWT token with updated user info
