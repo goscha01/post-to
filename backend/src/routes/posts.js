@@ -1198,7 +1198,11 @@ router.get('/accounts/:accountId/locations/:locationId/media', cacheMiddleware({
           readMask: 'name,title,storeCode,websiteUri,storefrontAddress,phoneNumbers,profile,regularHours,metadata,latlng,openInfo,labels,serviceArea,categories'
         });
         const locs = r?.data?.locations || [];
-        const hit = locs.find(l => l.name === `accounts/${accountId}/locations/${locationId}`);
+        // v1 GMB API returns names as `locations/XXX` (no accounts prefix),
+        // v4 returns `accounts/X/locations/XXX` — accept either.
+        const target = `locations/${locationId}`;
+        const target2 = `accounts/${accountId}/locations/${locationId}`;
+        const hit = locs.find(l => l.name === target || l.name === target2 || l.name?.endsWith('/' + target));
         logger.info('posts.media.token_attempt', {
           accountId, locationId, token_index: tokenIdx,
           profile_email: meta?.email || null,
@@ -1241,11 +1245,13 @@ router.get('/accounts/:accountId/locations/:locationId/media', cacheMiddleware({
     try {
       const locationsResponse = tokenAttempt.result.response;
 
-      // Find the specific location
+      // Find the specific location — same flexible name matching as above.
+      const _target = `locations/${locationId}`;
+      const _target2 = `accounts/${accountId}/locations/${locationId}`;
       const location = locationsResponse.data.locations?.find(loc =>
-        loc.name === `accounts/${accountId}/locations/${locationId}`
+        loc.name === _target || loc.name === _target2 || loc.name?.endsWith('/' + _target)
       );
-      
+
       let profilePicture = null;
       
       // Try to get profile picture from location data
