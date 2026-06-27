@@ -1,10 +1,11 @@
 const axios = require('axios');
 const { createClient } = require('@supabase/supabase-js');
 
-// Initialize Supabase client
+// Use the service-role key — image_cache RLS restricts to authenticated role,
+// and the backend acts on behalf of users without a per-user JWT for this op.
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_ANON_KEY
+  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY
 );
 
 /**

@@ -18,6 +18,10 @@ const apiLogger = require('./middleware/apiLogger');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// Railway / Vercel front-proxy: trust X-Forwarded-* so express-rate-limit can
+// see the real client IP and CORS/cookies behave correctly.
+app.set('trust proxy', 1);
+
 // Security middleware
 app.use(helmet());
 
