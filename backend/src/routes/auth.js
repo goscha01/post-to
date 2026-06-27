@@ -433,10 +433,33 @@ router.get('/google/business/callback', async (req, res) => {
       return res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/business/error?error=user_not_found`);
     }
 
-    // Update user with business tokens and info
+    // ---- Multi-profile: append or upsert into business_profiles JSONB ----
+    const now = new Date().toISOString();
+    const incomingProfile = {
+      business_google_id: businessUserInfo.data.id,
+      business_email: businessUserInfo.data.email,
+      access_token: tokens.access_token,
+      refresh_token: tokens.refresh_token,
+      token_expiry: tokens.expiry_date ? new Date(tokens.expiry_date).toISOString() : null,
+      connected_at: now
+    };
+
+    const existingProfiles = Array.isArray(user.business_profiles) ? user.business_profiles : [];
+    const idx = existingProfiles.findIndex(p => p.business_google_id === incomingProfile.business_google_id);
+    const merged = [...existingProfiles];
+    if (idx >= 0) {
+      // Reconnecting same Google account → refresh tokens, keep connected_at.
+      merged[idx] = { ...merged[idx], ...incomingProfile, connected_at: merged[idx].connected_at || now };
+    } else {
+      merged.push(incomingProfile);
+    }
+
+    // Keep the single business_* columns pointing at the just-connected profile
+    // so the existing requireBusinessAuth middleware keeps working without changes.
     const { error: updateError } = await supabase
       .from('users')
       .update({
+        business_profiles: merged,
         business_access_token: tokens.access_token,
         business_refresh_token: tokens.refresh_token,
         business_token_expiry: tokens.expiry_date ? new Date(tokens.expiry_date) : null,
@@ -448,6 +471,9 @@ router.get('/google/business/callback', async (req, res) => {
       .eq('id', user.id);
 
     if (updateError) {
+      console.error('[auth/google/business/callback] update_failed', {
+        message: updateError.message, code: updateError.code, details: updateError.details, hint: updateError.hint
+      });
       return res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/business/error?error=update_failed`);
     }
 

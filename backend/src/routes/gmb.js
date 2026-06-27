@@ -116,14 +116,14 @@ async function getCachedAccounts(userId) {
   }
 }
 
-// Get GMB accounts
+// Get GMB accounts — aggregates across every business OAuth connection the
+// user has made (multi-profile). Falls back to req.businessToken if there are
+// no entries in business_profiles (e.g., legacy user pre-migration).
 router.get('/accounts', async (req, res) => {
   try {
-    const accessToken = req.businessToken;
     const userId = req.user?.userId;
     const { cached_only } = req.query;
 
-    // If cached_only=true, return only cached data
     if (cached_only === 'true') {
       const cachedAccounts = await getCachedAccounts(userId);
       return res.json({
@@ -134,26 +134,49 @@ router.get('/accounts', async (req, res) => {
       });
     }
 
-    const gmbClient = getGmbAccountClient(accessToken);
+    // Pull every stored business OAuth token for this user.
+    const { data: userRow } = await supabase
+      .from('users')
+      .select('business_profiles')
+      .eq('id', userId)
+      .single();
 
-    const accountsResponse = await gmbClient.accounts.list();
+    const profiles = Array.isArray(userRow?.business_profiles) && userRow.business_profiles.length > 0
+      ? userRow.business_profiles
+      : (req.businessToken
+          ? [{ access_token: req.businessToken, refresh_token: req.businessRefreshToken }]
+          : []);
 
-    if (!accountsResponse.data.accounts) {
-      return res.json({
-        success: true,
-        accounts: []
-      });
+    if (profiles.length === 0) {
+      return res.json({ success: true, accounts: [] });
     }
 
-    const accounts = accountsResponse.data.accounts.map(account => ({
-      name: account.name,
-      accountName: account.accountName,
-      accountNumber: account.accountNumber,
-      type: account.type,
-      role: account.role,
-      state: account.state,
-      permissionLevel: account.permissionLevel
+    // Hit GMB for each token in parallel; tolerate per-profile failures.
+    const seen = new Map(); // dedupe by account.name across profiles
+    await Promise.all(profiles.map(async (p) => {
+      try {
+        const gmbClient = getGmbAccountClient(p.access_token);
+        const resp = await gmbClient.accounts.list();
+        for (const acc of (resp.data.accounts || [])) {
+          if (!seen.has(acc.name)) {
+            seen.set(acc.name, {
+              name: acc.name,
+              accountName: acc.accountName,
+              accountNumber: acc.accountNumber,
+              type: acc.type,
+              role: acc.role,
+              state: acc.state,
+              permissionLevel: acc.permissionLevel,
+              connected_via_email: p.business_email || null
+            });
+          }
+        }
+      } catch (err) {
+        console.error('[gmb/accounts] profile fetch failed for', p.business_email || '(unknown)', err.message);
+      }
     }));
+
+    const accounts = Array.from(seen.values());
 
     // Save accounts to database for caching
     if (userId) {
