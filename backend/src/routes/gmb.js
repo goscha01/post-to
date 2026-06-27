@@ -5,6 +5,7 @@ const authMiddleware = require('../middleware/authMiddleware');
 const requireBusinessAuth = require('../middleware/businessAuth');
 const { getOrDownloadImage } = require('../utils/imageCache');
 const { tryWithEachBusinessToken } = require('../utils/businessTokens');
+const logger = require('../utils/logger');
 const router = express.Router();
 
 // Initialize Supabase client with service role for server-side operations
@@ -463,10 +464,23 @@ router.get('/accounts/:accountId/locations/:locationId/media', async (req, res) 
     accountId = accountId.replace('accounts/', '');
     locationId = locationId.replace('locations/', '');
 
+    logger.info('gmb.media.request', {
+      account_id: accountId,
+      location_id: locationId,
+      user_id: userId,
+      cached_only: cached_only === 'true',
+    });
+
     // If cached_only=true, return only cached data
     if (cached_only === 'true') {
       const cachedMedia = await getCachedMedia(accountId, locationId, userId);
       if (cachedMedia) {
+        logger.info('gmb.media.cached_hit', {
+          account_id: accountId,
+          location_id: locationId,
+          total_media_count: cachedMedia.total_media_count,
+          has_profile_picture: !!cachedMedia.profile_picture,
+        });
         return res.json({
           success: true,
           media: cachedMedia.media_data,
@@ -477,6 +491,10 @@ router.get('/accounts/:accountId/locations/:locationId/media', async (req, res) 
           message: `Found ${cachedMedia.total_media_count} cached media items`
         });
       } else {
+        logger.info('gmb.media.cached_miss', {
+          account_id: accountId,
+          location_id: locationId,
+        });
         return res.json({
           success: true,
           media: [],
@@ -491,19 +509,48 @@ router.get('/accounts/:accountId/locations/:locationId/media', async (req, res) 
 
     // Multi-profile: try each connected OAuth token until one returns the
     // location with media URIs populated.
+    let tokensTried = 0;
+    let tokensWithLocation = 0;
     const mediaAttempt = await tryWithEachBusinessToken(userId, accessToken, async (tok) => {
+      tokensTried += 1;
       const gmbClient = getBusinessProfileClient(tok);
-      const r = await gmbClient.accounts.locations.list({
-        parent: `accounts/${accountId}`,
-        readMask: 'name,title,storeCode,websiteUri,storefrontAddress,phoneNumbers,profile,regularHours,metadata,latlng,openInfo,labels,serviceArea,categories'
-      });
+      let r;
+      try {
+        r = await gmbClient.accounts.locations.list({
+          parent: `accounts/${accountId}`,
+          readMask: 'name,title,storeCode,websiteUri,storefrontAddress,phoneNumbers,profile,regularHours,metadata,latlng,openInfo,labels,serviceArea,categories'
+        });
+      } catch (err) {
+        logger.warn('gmb.media.token_attempt_error', {
+          account_id: accountId,
+          location_id: locationId,
+          token_index: tokensTried,
+          error: err?.message,
+          status: err?.response?.status ?? null,
+        });
+        return null;
+      }
       const loc = r?.data?.locations?.find(l => l.name === `accounts/${accountId}/locations/${locationId}`);
-      if (!loc) return null; // try next token
+      if (!loc) {
+        logger.info('gmb.media.token_attempt_miss', {
+          account_id: accountId,
+          location_id: locationId,
+          token_index: tokensTried,
+          returned_location_count: r?.data?.locations?.length ?? 0,
+        });
+        return null;
+      }
+      tokensWithLocation += 1;
       return r;
     });
 
     try {
       if (!mediaAttempt.ok) {
+        logger.warn('gmb.media.all_tokens_failed', {
+          account_id: accountId,
+          location_id: locationId,
+          tokens_tried: tokensTried,
+        });
         return res.json({ success: true, media: [], logos: [], photos: [], profilePicture: null, message: 'No connected Google profile has media for this location' });
       }
       const locationsResponse = mediaAttempt.result;
@@ -587,6 +634,25 @@ router.get('/accounts/:accountId/locations/:locationId/media', async (req, res) 
         await saveMediaToCache(accountId, locationId, userId, mediaResponse);
       }
 
+      logger.info('gmb.media.response', {
+        account_id: accountId,
+        location_id: locationId,
+        tokens_tried: tokensTried,
+        tokens_with_location: tokensWithLocation,
+        media_count: mediaItems.length,
+        logo_count: logos.length,
+        photo_count: photos.length,
+        has_profile_picture: !!profilePicture,
+        profile_picture_category: profilePicture?.category ?? null,
+        profile_picture_url_host: profilePicture?.googleUrl
+          ? new URL(profilePicture.googleUrl).hostname
+          : null,
+        has_profile_uri: !!location?.profile?.profileImageUri,
+        has_logo_uri: !!location?.metadata?.logoUri,
+        has_cover_uri: !!location?.metadata?.coverPhotoUri,
+        raw_photos_count: Array.isArray(location?.photos) ? location.photos.length : 0,
+      });
+
       res.json({
         success: true,
         media: mediaItems,
@@ -596,8 +662,14 @@ router.get('/accounts/:accountId/locations/:locationId/media', async (req, res) 
         cached: false,
         message: mediaItems.length > 0 ? `Found ${mediaItems.length} media items` : 'No media available'
       });
-      
+
     } catch (apiError) {
+      logger.error('gmb.media.api_error', {
+        account_id: accountId,
+        location_id: locationId,
+        error: apiError?.message,
+        stack: apiError?.stack?.slice(0, 1500),
+      });
       res.json({
         success: true,
         media: [],
@@ -606,8 +678,14 @@ router.get('/accounts/:accountId/locations/:locationId/media', async (req, res) 
       });
     }
   } catch (error) {
-    res.status(500).json({ 
-      success: false, 
+    logger.error('gmb.media.unhandled', {
+      account_id: req.params.accountId,
+      location_id: req.params.locationId,
+      error: error?.message,
+      stack: error?.stack?.slice(0, 1500),
+    });
+    res.status(500).json({
+      success: false,
       error: 'Failed to fetch media',
       details: error.message
     });
