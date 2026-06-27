@@ -489,15 +489,26 @@ router.get('/accounts/:accountId/locations/:locationId/media', async (req, res) 
       }
     }
 
-    const gmbClient = getBusinessProfileClient(accessToken);
-    
-    try {
-      const locationsResponse = await gmbClient.accounts.locations.list({
+    // Multi-profile: try each connected OAuth token until one returns the
+    // location with media URIs populated.
+    const mediaAttempt = await tryWithEachBusinessToken(userId, accessToken, async (tok) => {
+      const gmbClient = getBusinessProfileClient(tok);
+      const r = await gmbClient.accounts.locations.list({
         parent: `accounts/${accountId}`,
         readMask: 'name,title,storeCode,websiteUri,storefrontAddress,phoneNumbers,profile,regularHours,metadata,latlng,openInfo,labels,serviceArea,categories'
       });
-      
-      const location = locationsResponse.data.locations?.find(loc => 
+      const loc = r?.data?.locations?.find(l => l.name === `accounts/${accountId}/locations/${locationId}`);
+      if (!loc) return null; // try next token
+      return r;
+    });
+
+    try {
+      if (!mediaAttempt.ok) {
+        return res.json({ success: true, media: [], logos: [], photos: [], profilePicture: null, message: 'No connected Google profile has media for this location' });
+      }
+      const locationsResponse = mediaAttempt.result;
+
+      const location = locationsResponse.data.locations?.find(loc =>
         loc.name === `accounts/${accountId}/locations/${locationId}`
       );
       
