@@ -530,13 +530,17 @@ router.get('/accounts/:accountId/locations/:locationId/media', async (req, res) 
         });
         return null;
       }
-      const loc = r?.data?.locations?.find(l => l.name === `accounts/${accountId}/locations/${locationId}`);
+      // v1 GMB API returns `locations/XXX`; v4 returns `accounts/X/locations/XXX`. Accept either.
+      const _target = `locations/${locationId}`;
+      const _target2 = `accounts/${accountId}/locations/${locationId}`;
+      const loc = r?.data?.locations?.find(l => l.name === _target || l.name === _target2 || l.name?.endsWith('/' + _target));
       if (!loc) {
         logger.info('gmb.media.token_attempt_miss', {
           account_id: accountId,
           location_id: locationId,
           token_index: tokensTried,
           returned_location_count: r?.data?.locations?.length ?? 0,
+          returned_location_names: (r?.data?.locations || []).slice(0, 5).map(l => l.name),
         });
         return null;
       }
@@ -555,8 +559,10 @@ router.get('/accounts/:accountId/locations/:locationId/media', async (req, res) 
       }
       const locationsResponse = mediaAttempt.result;
 
+      const __target = `locations/${locationId}`;
+      const __target2 = `accounts/${accountId}/locations/${locationId}`;
       const location = locationsResponse.data.locations?.find(loc =>
-        loc.name === `accounts/${accountId}/locations/${locationId}`
+        loc.name === __target || loc.name === __target2 || loc.name?.endsWith('/' + __target)
       );
       
       if (location) {
