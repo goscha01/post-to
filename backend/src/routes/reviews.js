@@ -17,6 +17,8 @@ const supabase = createClient(
 // don't get blocked when a user's GMB token is revoked or expired.
 router.use(authMiddleware);
 
+const { tryWithEachBusinessToken } = require('../utils/businessTokens');
+
 // Helper function to save review to database
 const saveReviewToDatabase = async (userId, reviewData) => {
   try {
@@ -202,54 +204,48 @@ router.get('/accounts/:accountId/locations/:locationId/reviews', requireBusiness
       });
     }
     
-    try {
-      const axios = require('axios');
-      const gmbUrl = `https://mybusiness.googleapis.com/v4/accounts/${accountId}/locations/${locationId}/reviews`;
-      
-      
-      const reviews = await axios.get(gmbUrl, {
-        headers: {
-          'Authorization': `Bearer ${req.businessToken}`,
-          'Content-Type': 'application/json'
-        }
+    const axios = require('axios');
+    const gmbUrl = `https://mybusiness.googleapis.com/v4/accounts/${accountId}/locations/${locationId}/reviews`;
+
+    // Try each connected profile's token until one returns reviews for this location.
+    const attempt = await tryWithEachBusinessToken(userId, req.businessToken, async (accessToken) => {
+      const r = await axios.get(gmbUrl, {
+        headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' }
       });
-      
-      
-      // Save existing reviews to database
-      if (reviews.data.reviews && reviews.data.reviews.length > 0) {
-        await saveExistingReviewsToDatabase(
-          req.user.userId,
-          reviews.data.reviews,
-          locationId,
-          accountId,
-          'google'
-        );
+      return r.data;
+    });
+
+    if (!attempt.ok) {
+      if (attempt.allUnauthorized) {
+        // No connected profile has access — return empty list rather than 404 the UI.
+        return res.json({ success: true, reviews: [], cached: false, source: 'GMB_V4_API', note: 'No connected Google profile has access to this location' });
       }
-      
-      const responseData = {
-        success: true,
-        reviews: reviews.data.reviews || [],
-        cached: false,
-        source: 'GMB_V4_API'
-      };
-      
-      
-      res.json(responseData);
-      
-    } catch (gmbV4Error) {
-      if (gmbV4Error.response?.status === 401) {
-        return res.status(401).json({ 
-          error: 'Business authentication expired for reviews. Please reconnect your Google My Business account.',
-          needsBusinessAuth: true
-        });
-      }
-      
-      res.status(gmbV4Error.response?.status || 500).json({
+      return res.status(500).json({
         success: false,
         error: 'Failed to fetch reviews from GMB API',
-        details: gmbV4Error.message
+        details: attempt.error?.message
       });
     }
+
+    const data = attempt.result;
+
+    // Save reviews to database
+    if (data.reviews && data.reviews.length > 0) {
+      await saveExistingReviewsToDatabase(
+        req.user.userId,
+        data.reviews,
+        locationId,
+        accountId,
+        'google'
+      );
+    }
+
+    res.json({
+      success: true,
+      reviews: data.reviews || [],
+      cached: false,
+      source: 'GMB_V4_API'
+    });
 
   } catch (error) {
     res.status(500).json({ 
