@@ -1243,6 +1243,20 @@ const BusinessProfiles = () => {
 
       {/* Business Profiles List */}
       <div className="space-y-6">
+        {profiles.length > 0 && !authDisconnected && (
+          <div className="flex justify-end">
+            <button
+              onClick={handleConnect}
+              disabled={isConnecting}
+              className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-primary-600 hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <svg className="w-4 h-4 mr-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+              </svg>
+              {isConnecting ? 'Connecting…' : 'Connect Another Business Profile'}
+            </button>
+          </div>
+        )}
         {profiles.length > 0 && !authDisconnected ? (
           profiles.map((profile) => (
             <div key={profile.name} className="bg-white shadow rounded-lg">
