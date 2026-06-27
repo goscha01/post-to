@@ -4,6 +4,7 @@ const { createClient } = require('@supabase/supabase-js');
 const authMiddleware = require('../middleware/authMiddleware');
 const requireBusinessAuth = require('../middleware/businessAuth');
 const { getOrDownloadImage } = require('../utils/imageCache');
+const { tryWithEachBusinessToken } = require('../utils/businessTokens');
 const router = express.Router();
 
 // Initialize Supabase client with service role for server-side operations
@@ -272,17 +273,16 @@ async function getCachedLocations(accountId, userId) {
   }
 }
 
-// Get locations for a specific account
+// Get locations for a specific account — multi-profile aware.
+// Tries every stored OAuth token until one returns locations for this account.
 router.get('/accounts/:accountId/locations', async (req, res) => {
   try {
     let { accountId } = req.params;
-    const accessToken = req.businessToken;
     const userId = req.user?.userId;
     const { cached_only } = req.query;
 
     accountId = accountId.replace('accounts/', '');
 
-    // If cached_only=true, return only cached data
     if (cached_only === 'true') {
       const cachedLocations = await getCachedLocations(accountId, userId);
       return res.json({
@@ -293,40 +293,38 @@ router.get('/accounts/:accountId/locations', async (req, res) => {
       });
     }
 
-    const gmbClient = getBusinessProfileClient(accessToken);
     const accountName = `accounts/${accountId}`;
-
     const readMask = 'name,title,storeCode,websiteUri,storefrontAddress,phoneNumbers,profile,regularHours,metadata,latlng,openInfo,labels,serviceArea,categories';
 
-    let locationsResponse;
-    try {
-      locationsResponse = await gmbClient.accounts.locations.list({
-        parent: accountName,
-        readMask: readMask
-      });
-    } catch (apiError) {
-      // Handle 404 - account not found or no access
-      if (apiError.code === 404 || apiError.status === 404) {
-        // Remove invalid account and its locations from database
+    const attempt = await tryWithEachBusinessToken(userId, req.businessToken, async (accessToken) => {
+      const gmbClient = getBusinessProfileClient(accessToken);
+      const r = await gmbClient.accounts.locations.list({ parent: accountName, readMask });
+      // No locations from this token? Signal "try next" by returning null.
+      if (!r?.data?.locations || r.data.locations.length === 0) return null;
+      return r.data.locations;
+    });
+
+    if (!attempt.ok) {
+      if (attempt.allUnauthorized) {
+        // Every token said 401/403/404 — clean up stale rows and return empty.
         if (userId) {
           try {
             await supabase.from('gmb_locations').delete().eq('account_id', accountId).eq('user_id', userId);
             await supabase.from('gmb_accounts').delete().eq('account_id', accountId).eq('user_id', userId);
-          } catch (dbError) {
-            // Ignore cleanup errors
-          }
+          } catch (_) { /* ignore */ }
         }
-
         return res.json({
           success: true,
           locations: [],
-          message: 'Account not found or no access'
+          message: 'No connected Google profile has access to this account'
         });
       }
-
-      // For other errors, re-throw to be caught by outer catch
-      throw apiError;
+      throw attempt.error || new Error('All business tokens failed');
     }
+
+    // Wrap the locations array into the legacy `locationsResponse` shape so the
+    // rest of the handler below doesn't need rewiring.
+    const locationsResponse = { data: { locations: attempt.result } };
 
     if (!locationsResponse.data.locations) {
       return res.json({
