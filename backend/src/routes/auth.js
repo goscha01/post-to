@@ -352,7 +352,15 @@ router.get('/google/business', smartRateLimitMiddleware('business_oauth'), async
       .single();
 
     if (userError || !user) {
-      return res.status(400).json({ error: 'Invalid user ID' });
+      console.error('[auth/google/business] user lookup failed', {
+        user_id,
+        userError_message: userError?.message,
+        userError_code: userError?.code,
+        userError_details: userError?.details,
+        userError_hint: userError?.hint,
+        user_is_null: !user
+      });
+      return res.status(400).json({ error: 'Invalid user ID', _debug: { userError, user_id } });
     }
 
     const cacheKey = `business_oauth_${user_id}`;
