@@ -10,6 +10,7 @@ const { cacheMiddleware, invalidateCacheMiddleware } = require('../middleware/ca
 const { generateCacheKey } = require('../utils/cacheUtils');
 const { processImages } = require('../utils/imageCache');
 const { tryWithEachBusinessToken } = require('../utils/businessTokens');
+const logger = require('../utils/logger');
 const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
@@ -1182,21 +1183,48 @@ router.get('/accounts/:accountId/locations/:locationId/media', cacheMiddleware({
     accountId = accountId.replace('accounts/', '');
     locationId = locationId.replace('locations/', '');
 
+    logger.info('posts.media.request', { accountId, locationId, userId });
+
     // Multi-profile: iterate every connected OAuth token until one returns
     // the target location. We then reuse THAT token for every downstream
     // call below (v1 media.list, v4 media, Places, Drive).
-    const tokenAttempt = await tryWithEachBusinessToken(userId, req.businessToken, async (tok) => {
-      const c = getBusinessProfileClient(tok);
-      const r = await c.accounts.locations.list({
-        parent: `accounts/${accountId}`,
-        readMask: 'name,title,storeCode,websiteUri,storefrontAddress,phoneNumbers,profile,regularHours,metadata,latlng,openInfo,labels,serviceArea,categories'
-      });
-      const loc = r?.data?.locations?.find(l => l.name === `accounts/${accountId}/locations/${locationId}`);
-      if (!loc) return null;            // try next token
-      return { response: r, token: tok };
+    let tokenIdx = -1;
+    const tokenAttempt = await tryWithEachBusinessToken(userId, req.businessToken, async (tok, meta) => {
+      tokenIdx++;
+      try {
+        const c = getBusinessProfileClient(tok);
+        const r = await c.accounts.locations.list({
+          parent: `accounts/${accountId}`,
+          readMask: 'name,title,storeCode,websiteUri,storefrontAddress,phoneNumbers,profile,regularHours,metadata,latlng,openInfo,labels,serviceArea,categories'
+        });
+        const locs = r?.data?.locations || [];
+        const hit = locs.find(l => l.name === `accounts/${accountId}/locations/${locationId}`);
+        logger.info('posts.media.token_attempt', {
+          accountId, locationId, token_index: tokenIdx,
+          profile_email: meta?.email || null,
+          returned_location_count: locs.length,
+          returned_location_names: locs.slice(0, 5).map(l => l.name),
+          hit: !!hit
+        });
+        if (!hit) return null;
+        return { response: r, token: tok };
+      } catch (err) {
+        logger.warn('posts.media.token_attempt_error', {
+          accountId, locationId, token_index: tokenIdx,
+          profile_email: meta?.email || null,
+          status: err?.response?.status || err?.code,
+          error: (err?.message || '').slice(0, 300)
+        });
+        throw err;
+      }
     });
 
     if (!tokenAttempt.ok) {
+      logger.warn('posts.media.all_tokens_failed', {
+        accountId, locationId,
+        tried: tokenAttempt.tried,
+        last_error: (tokenAttempt.error?.message || '').slice(0, 300)
+      });
       return res.json({
         success: true,
         media: [],
