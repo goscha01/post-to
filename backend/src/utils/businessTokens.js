@@ -18,7 +18,12 @@ const supabase = createClient(
 );
 
 function statusOf(err) {
-  return err?.code || err?.status || err?.response?.status || null;
+  // Prefer the HTTP response status (always numeric) over axios's `err.code`
+  // which is a string like 'ERR_BAD_REQUEST' / 'ERR_NETWORK' for HTTP failures.
+  if (err?.response?.status) return err.response.status;
+  if (typeof err?.status === 'number') return err.status;
+  if (typeof err?.code === 'number') return err.code;
+  return null;
 }
 
 async function tryWithEachBusinessToken(userId, fallbackToken, fn) {
@@ -65,9 +70,11 @@ async function tryWithEachBusinessToken(userId, fallbackToken, fn) {
         lastError = err;
         continue;
       }
+      console.error('[businessTokens] non-retryable error from', t.email || '(token)', '— status:', s, 'msg:', err.message);
       return { ok: false, error: err, profile: t, tried };
     }
   }
+  console.error('[businessTokens] all tokens (' + tried.join(', ') + ') returned 401/403/404; lastError:', lastError?.message);
   return { ok: false, error: lastError, allUnauthorized: true, tried };
 }
 
