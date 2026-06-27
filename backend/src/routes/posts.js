@@ -9,6 +9,7 @@ const { google } = require('googleapis');
 const { cacheMiddleware, invalidateCacheMiddleware } = require('../middleware/cacheMiddleware');
 const { generateCacheKey } = require('../utils/cacheUtils');
 const { processImages } = require('../utils/imageCache');
+const { tryWithEachBusinessToken } = require('../utils/businessTokens');
 const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
@@ -1175,27 +1176,45 @@ router.delete('/:postId', invalidateCacheMiddleware({ pattern: 'user:*:posts*' }
 router.get('/accounts/:accountId/locations/:locationId/media', cacheMiddleware({ ttl: 1800 }), async (req, res) => {
   try {
     let { accountId, locationId } = req.params;
-    const accessToken = req.businessToken;
-    
+    const userId = req.user?.userId;
+
     // Remove "accounts/" and "locations/" prefixes if present
     accountId = accountId.replace('accounts/', '');
     locationId = locationId.replace('locations/', '');
-    
-    
-    
-    // Use Business Profile API for media (photos, logos, videos)
-    const gmbClient = getBusinessProfileClient(accessToken);
-    
-    try {
-      // Business Profile API v1 doesn't have direct location.get() method
-      // We'll use the locations.list() method and filter for the specific location
-      const locationsResponse = await gmbClient.accounts.locations.list({
+
+    // Multi-profile: iterate every connected OAuth token until one returns
+    // the target location. We then reuse THAT token for every downstream
+    // call below (v1 media.list, v4 media, Places, Drive).
+    const tokenAttempt = await tryWithEachBusinessToken(userId, req.businessToken, async (tok) => {
+      const c = getBusinessProfileClient(tok);
+      const r = await c.accounts.locations.list({
         parent: `accounts/${accountId}`,
         readMask: 'name,title,storeCode,websiteUri,storefrontAddress,phoneNumbers,profile,regularHours,metadata,latlng,openInfo,labels,serviceArea,categories'
       });
-      
+      const loc = r?.data?.locations?.find(l => l.name === `accounts/${accountId}/locations/${locationId}`);
+      if (!loc) return null;            // try next token
+      return { response: r, token: tok };
+    });
+
+    if (!tokenAttempt.ok) {
+      return res.json({
+        success: true,
+        media: [],
+        logos: [],
+        photos: [],
+        profilePicture: null,
+        message: 'No connected Google profile has media for this location'
+      });
+    }
+
+    const accessToken = tokenAttempt.result.token;
+    const gmbClient = getBusinessProfileClient(accessToken);
+
+    try {
+      const locationsResponse = tokenAttempt.result.response;
+
       // Find the specific location
-      const location = locationsResponse.data.locations?.find(loc => 
+      const location = locationsResponse.data.locations?.find(loc =>
         loc.name === `accounts/${accountId}/locations/${locationId}`
       );
       
