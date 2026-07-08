@@ -181,6 +181,13 @@ router.get('/customers', async (req, res) => {
       count: deduped.length,
       accounts_tried: effectiveTokens.length,
       accounts_failed: errors.length,
+      // Per-token detail — critical for diagnosing "connect ads didn't work".
+      // Includes the API status + first 200 chars of message. No token material.
+      failures: errors.map(e => ({
+        email: e.ownerEmail,
+        status: e.status,
+        message: String(e.message || '').slice(0, 200),
+      })),
     });
 
     if (errors.length === effectiveTokens.length && errors.every(e => e.status === 403 || e.status === 401)) {
