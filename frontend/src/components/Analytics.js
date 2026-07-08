@@ -292,6 +292,9 @@ const Analytics = () => {
             <p className="text-xs text-gray-500 mb-4">
               Property: <span className="font-medium text-gray-700">{selectedProperty.displayName}</span>{' '}
               <span className="text-gray-400">({selectedProperty.propertyId})</span>
+              {selectedProperty.ownerEmail && (
+                <> · <span className="text-gray-500">owned by {selectedProperty.ownerEmail}</span></>
+              )}
             </p>
           )}
 
@@ -362,6 +365,7 @@ const PropertySelector = ({ properties, value, onChange }) => (
       {properties.map(p => (
         <option key={p.propertyId} value={p.propertyId}>
           {p.displayName}
+          {p.ownerEmail ? ` — ${p.ownerEmail}` : ''}
         </option>
       ))}
     </select>
@@ -699,6 +703,7 @@ const GeographyTable = ({ rows, loading }) => {
 const PropertyPickerModal = ({ onClose, onConnected }) => {
   const { loginForBusiness } = useAuth();
   const [properties, setProperties] = useState([]);
+  const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
   const [needsReauth, setNeedsReauth] = useState(false);
@@ -710,8 +715,12 @@ const PropertyPickerModal = ({ onClose, onConnected }) => {
       setErr('');
       setNeedsReauth(false);
       try {
-        const rows = await analyticsService.listAvailableProperties();
+        const [rows, accts] = await Promise.all([
+          analyticsService.listAvailableProperties(),
+          analyticsService.listConnectedAccounts().catch(() => []),
+        ]);
         setProperties(rows);
+        setAccounts(accts);
       } catch (e) {
         const status = e.response?.status;
         if (status === 403 && e.response?.data?.needsReauth) {
@@ -734,6 +743,8 @@ const PropertyPickerModal = ({ onClose, onConnected }) => {
         propertyId: prop.propertyId,
         displayName: prop.displayName,
         accountId: prop.accountId,
+        ownerGoogleId: prop.ownerGoogleId,
+        ownerEmail: prop.ownerEmail,
       });
       onConnected(row);
     } catch (e) {
@@ -741,6 +752,18 @@ const PropertyPickerModal = ({ onClose, onConnected }) => {
       setSelecting(null);
     }
   };
+
+  // Group properties by owning Google account for a clearer picker UX when
+  // the user has connected multiple accounts.
+  const grouped = React.useMemo(() => {
+    const map = new Map();
+    properties.forEach(p => {
+      const key = p.ownerEmail || p.ownerGoogleId || '__unknown__';
+      if (!map.has(key)) map.set(key, { ownerEmail: p.ownerEmail, ownerGoogleId: p.ownerGoogleId, props: [] });
+      map.get(key).props.push(p);
+    });
+    return Array.from(map.values());
+  }, [properties]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
@@ -789,45 +812,76 @@ const PropertyPickerModal = ({ onClose, onConnected }) => {
               <p className="text-sm text-gray-500 mb-4">
                 No GA4 properties found on your Google account.
               </p>
+              {accounts.length > 0 && (
+                <p className="text-xs text-gray-500 mb-4">
+                  Connected Google accounts: {accounts.map(a => a.email || a.googleId).join(', ')}
+                </p>
+              )}
+              <button
+                onClick={() => loginForBusiness()}
+                className="px-4 py-2 text-sm font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700"
+              >
+                Connect another Google account
+              </button>
               {err && (
-                <div className="p-3 bg-red-50 border border-red-200 rounded text-sm text-red-800">{err}</div>
+                <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded text-sm text-red-800">{err}</div>
               )}
             </div>
           ) : (
             <div>
-              <p className="text-sm text-gray-500 mb-4">
-                Pick a property to connect. You can connect multiple.
-              </p>
+              <div className="flex items-start justify-between gap-3 mb-4">
+                <p className="text-sm text-gray-500">
+                  Pick a property to connect. You can connect multiple.
+                </p>
+                <button
+                  onClick={() => loginForBusiness()}
+                  className="flex-shrink-0 text-xs font-medium text-primary-600 hover:text-primary-700 whitespace-nowrap"
+                  title="Sign in with a different Google account to see its GA4 properties"
+                >
+                  + Add Google account
+                </button>
+              </div>
               {err && (
                 <div className="p-3 bg-red-50 border border-red-200 rounded text-sm text-red-800 mb-3">{err}</div>
               )}
-              <ul className="divide-y divide-gray-100 border border-gray-200 rounded-md">
-                {properties.map(p => (
-                  <li key={p.propertyId} className="p-3 flex items-center justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium text-gray-900 truncate">{p.displayName}</p>
-                      <p className="text-xs text-gray-500">
-                        Property {p.propertyId}
-                        {p.accountName && <> · Account: {p.accountName}</>}
+              <div className="space-y-4">
+                {grouped.map(group => (
+                  <div key={group.ownerEmail || group.ownerGoogleId || 'unknown'}>
+                    {(grouped.length > 1 || group.ownerEmail) && (
+                      <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1.5">
+                        {group.ownerEmail || 'Unknown Google account'}
                       </p>
-                    </div>
-                    <button
-                      onClick={() => handleSelect(p)}
-                      disabled={!!selecting}
-                      className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-white bg-primary-600 rounded hover:bg-primary-700 disabled:opacity-50"
-                    >
-                      {selecting === p.propertyId ? (
-                        'Saving…'
-                      ) : (
-                        <>
-                          <Check className="h-3 w-3" />
-                          Connect
-                        </>
-                      )}
-                    </button>
-                  </li>
+                    )}
+                    <ul className="divide-y divide-gray-100 border border-gray-200 rounded-md">
+                      {group.props.map(p => (
+                        <li key={p.propertyId} className="p-3 flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="text-sm font-medium text-gray-900 truncate">{p.displayName}</p>
+                            <p className="text-xs text-gray-500">
+                              Property {p.propertyId}
+                              {p.accountName && <> · Account: {p.accountName}</>}
+                            </p>
+                          </div>
+                          <button
+                            onClick={() => handleSelect(p)}
+                            disabled={!!selecting}
+                            className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-white bg-primary-600 rounded hover:bg-primary-700 disabled:opacity-50"
+                          >
+                            {selecting === p.propertyId ? (
+                              'Saving…'
+                            ) : (
+                              <>
+                                <Check className="h-3 w-3" />
+                                Connect
+                              </>
+                            )}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
                 ))}
-              </ul>
+              </div>
             </div>
           )}
         </div>

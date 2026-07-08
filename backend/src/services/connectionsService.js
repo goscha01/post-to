@@ -241,13 +241,19 @@ async function upsertGoogleBusiness({ userId, businessGoogleId, businessEmail, d
 // property shows up alongside GMB / website in the unified list. Tokens live
 // on users.business_profiles (same OAuth grant as GMB); this row only mirrors
 // the property identity for the UI list + business filter.
-async function upsertGoogleAnalytics({ userId, propertyId, displayName, accountId, businessGoogleId }) {
+async function upsertGoogleAnalytics({ userId, propertyId, displayName, accountId, businessGoogleId, ownerGoogleId, ownerEmail }) {
   if (!userId || !propertyId) throw new Error('userId and propertyId required');
   const externalId = `ga4:${propertyId}`;
   const metadata = {
     property_id: propertyId,
     account_id: accountId || null,
     business_google_id: businessGoogleId || null,
+    // Which connected Google account owns this GA4 property. Used to route
+    // report API calls to the correct OAuth token when multiple Google
+    // accounts are connected. Null for rows saved before multi-account
+    // support landed — those fall back to the top-level business token.
+    owner_google_id: ownerGoogleId || null,
+    owner_email: ownerEmail || null,
     connected_at: new Date().toISOString(),
   };
 

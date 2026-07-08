@@ -153,4 +153,40 @@ async function tryWithEachBusinessToken(userId, fallbackToken, fn) {
   return { ok: false, error: lastError, allUnauthorized: true, tried };
 }
 
-module.exports = { tryWithEachBusinessToken };
+// Returns every business_profile token for the user, with expired ones
+// proactively refreshed (patched back to disk). Callers that want to fan
+// out an API call across every connected Google account (e.g. GA4 property
+// discovery) should use this instead of req.businessToken — which only
+// reflects the most-recently-connected account.
+async function getAllBusinessTokens(userId) {
+  if (!userId) return [];
+  const { data } = await supabase
+    .from('users')
+    .select('business_profiles')
+    .eq('id', userId)
+    .single();
+  const list = Array.isArray(data?.business_profiles) ? data.business_profiles : [];
+  const tokens = list
+    .filter(p => p && p.access_token)
+    .map(p => ({
+      access_token: p.access_token,
+      refresh_token: p.refresh_token,
+      token_expiry: p.token_expiry,
+      email: p.business_email || null,
+      google_id: p.business_google_id || null,
+    }));
+
+  // Proactive refresh — same pattern as tryWithEachBusinessToken above.
+  await Promise.all(tokens.map(async (t, i) => {
+    if (!t.refresh_token || !isExpired(t.token_expiry)) return;
+    try {
+      const newToken = await refreshOneToken(userId, t);
+      tokens[i] = { ...t, access_token: newToken };
+    } catch (e) {
+      console.warn('[businessTokens] getAllBusinessTokens refresh failed for', t.email || '(unknown)', '-', e.message);
+    }
+  }));
+  return tokens;
+}
+
+module.exports = { tryWithEachBusinessToken, getAllBusinessTokens, refreshOneToken };

@@ -17,11 +17,13 @@ const listAvailableProperties = async () => {
   return res.data?.properties || [];
 };
 
-const selectProperty = async ({ propertyId, displayName, accountId }) => {
+const selectProperty = async ({ propertyId, displayName, accountId, ownerGoogleId, ownerEmail }) => {
   const res = await axios.post('/api/analytics/properties', {
     propertyId,
     displayName,
     accountId,
+    ownerGoogleId,
+    ownerEmail,
   });
   return res.data?.connection;
 };
@@ -29,6 +31,11 @@ const selectProperty = async ({ propertyId, displayName, accountId }) => {
 const listConnectedProperties = async () => {
   const res = await axios.get('/api/analytics/connected');
   return res.data?.properties || [];
+};
+
+const listConnectedAccounts = async () => {
+  const res = await axios.get('/api/analytics/accounts');
+  return res.data?.accounts || [];
 };
 
 // ---- Reports ----
@@ -72,6 +79,7 @@ const analyticsService = {
   listAvailableProperties,
   selectProperty,
   listConnectedProperties,
+  listConnectedAccounts,
   getOverview,
   getTraffic,
   getLandingPages,

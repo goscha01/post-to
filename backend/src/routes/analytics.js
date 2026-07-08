@@ -38,6 +38,7 @@ const authMiddleware = require('../middleware/authMiddleware');
 const requireBusinessAuth = require('../middleware/businessAuth');
 const analytics = require('../services/analyticsService');
 const connections = require('../services/connectionsService');
+const { getAllBusinessTokens, refreshOneToken } = require('../utils/businessTokens');
 const logger = require('../utils/logger');
 const { createClient } = require('@supabase/supabase-js');
 
@@ -50,6 +51,26 @@ const supabase = createClient(
 
 router.use(authMiddleware);
 router.use(requireBusinessAuth);
+
+// Given a saved GA4 property (connected_accounts row), find the OAuth token
+// for the Google account that actually owns it. Falls back to req.businessToken
+// (the middleware default) if the property has no owner recorded — happens for
+// rows saved before multi-account support landed.
+async function tokenForProperty(req, propertyId) {
+  const { data: rows } = await supabase
+    .from('connected_accounts')
+    .select('metadata')
+    .eq('user_id', req.user.userId)
+    .eq('provider', 'google_analytics')
+    .eq('external_id', `ga4:${propertyId}`)
+    .limit(1);
+  const ownerGoogleId = rows && rows[0]?.metadata?.owner_google_id;
+  if (!ownerGoogleId) return req.businessToken;
+
+  const tokens = await getAllBusinessTokens(req.user.userId);
+  const match = tokens.find(t => t.google_id === ownerGoogleId);
+  return match?.access_token || req.businessToken;
+}
 
 // ---------- Diagnostics ----------
 //
@@ -150,8 +171,13 @@ function reportHandler(serviceFn, name) {
         });
       }
       const days = parseDays(req);
+      // Route the report call to whichever Google account owns this property.
+      // Multi-account: user may have connected two Google accounts, each owning
+      // different GA4 properties. req.businessToken alone would only work for
+      // properties owned by the most-recently-connected account.
+      const token = await tokenForProperty(req, propertyId);
       const t0 = Date.now();
-      const result = await serviceFn(req.businessToken, propertyId, days);
+      const result = await serviceFn(token, propertyId, days);
       logger.info(`analytics.${name}.ok`, {
         userId: req.user.userId,
         propertyId,
@@ -173,32 +199,83 @@ function reportHandler(serviceFn, name) {
 
 router.get('/properties', async (req, res) => {
   try {
-    const props = await analytics.listProperties(req.businessToken);
+    // Fan out across every connected Google account. Each token can see a
+    // different set of GA4 properties (its own analytics access). We tag each
+    // returned property with owner_google_id + owner_email so the caller can
+    // save + route later reports to the right token.
+    const tokens = await getAllBusinessTokens(req.user.userId);
+    // Fallback: no tokens in business_profiles[] yet — use req.businessToken
+    // (older users may not have the multi-profile shape yet).
+    const effectiveTokens = tokens.length > 0 ? tokens : [{
+      access_token: req.businessToken,
+      email: null,
+      google_id: null,
+    }];
+
+    const results = await Promise.allSettled(
+      effectiveTokens.map(async t => {
+        const props = await analytics.listProperties(t.access_token);
+        return props.map(p => ({
+          ...p,
+          ownerGoogleId: t.google_id || null,
+          ownerEmail: t.email || null,
+        }));
+      })
+    );
+
+    const merged = [];
+    const errors = [];
+    results.forEach((r, i) => {
+      if (r.status === 'fulfilled') {
+        merged.push(...r.value);
+      } else {
+        errors.push({
+          ownerEmail: effectiveTokens[i].email,
+          status: r.reason?.response?.status || null,
+          message: r.reason?.message || 'unknown',
+        });
+      }
+    });
+
+    // Dedupe on propertyId — same property could theoretically be visible to
+    // two connected accounts (rare, but harmless dedupe).
+    const seen = new Set();
+    const deduped = merged.filter(p => {
+      if (seen.has(p.propertyId)) return false;
+      seen.add(p.propertyId);
+      return true;
+    });
+
     logger.info('analytics.properties.list_ok', {
       userId: req.user.userId,
-      count: props.length,
+      count: deduped.length,
+      accounts_tried: effectiveTokens.length,
+      accounts_failed: errors.length,
     });
-    res.json({ properties: props });
+
+    // If EVERY account failed with 403, surface needsReauth. If some worked and
+    // some 403'd, that's normal (an account might not have analytics.readonly).
+    if (errors.length === effectiveTokens.length && errors.every(e => e.status === 403)) {
+      return res.status(403).json({
+        error: 'None of the connected Google accounts granted analytics.readonly',
+        needsReauth: true,
+        errors,
+      });
+    }
+
+    res.json({ properties: deduped, errors: errors.length ? errors : undefined });
   } catch (err) {
     const norm = analytics.normalizeApiError(err, {
       endpoint: 'properties.list',
       userId: req.user.userId,
     });
-    // 403 usually means analytics.readonly wasn't granted on this OAuth
-    // consent — the frontend can prompt the user to reconnect.
-    if (norm.status === 403) {
-      return res.status(403).json({
-        error: norm.message,
-        needsReauth: true,
-      });
-    }
     res.status(norm.status || 500).json({ error: norm.message });
   }
 });
 
 router.post('/properties', express.json(), async (req, res) => {
   try {
-    const { propertyId, displayName, accountId } = req.body || {};
+    const { propertyId, displayName, accountId, ownerGoogleId, ownerEmail } = req.body || {};
     if (!propertyId) {
       return res.status(400).json({ error: 'propertyId required' });
     }
@@ -207,11 +284,14 @@ router.post('/properties', express.json(), async (req, res) => {
       propertyId: String(propertyId).trim(),
       displayName: displayName || `GA4 Property ${propertyId}`,
       accountId: accountId ? String(accountId).trim() : null,
+      ownerGoogleId: ownerGoogleId || null,
+      ownerEmail: ownerEmail || null,
     });
     logger.info('analytics.property.connected', {
       userId: req.user.userId,
       propertyId,
       connectionId: row.id,
+      ownerGoogleId: ownerGoogleId || null,
     });
     res.status(201).json({ connection: row });
   } catch (err) {
@@ -220,6 +300,28 @@ router.post('/properties', express.json(), async (req, res) => {
       error: err.message,
     });
     res.status(500).json({ error: err.message || 'Failed to save property' });
+  }
+});
+
+// Convenience: list the Google accounts currently connected on the user's
+// business_profiles. Useful for the frontend to show "Connect another Google
+// account" and to display owner emails on the property picker.
+router.get('/accounts', async (req, res) => {
+  try {
+    const tokens = await getAllBusinessTokens(req.user.userId);
+    res.json({
+      accounts: tokens.map(t => ({
+        googleId: t.google_id,
+        email: t.email,
+        hasRefreshToken: !!t.refresh_token,
+      })),
+    });
+  } catch (err) {
+    logger.error('analytics.accounts.failed', {
+      userId: req.user.userId,
+      error: err.message,
+    });
+    res.status(500).json({ error: err.message || 'Failed to list accounts' });
   }
 });
 
@@ -237,6 +339,8 @@ router.get('/connected', async (req, res) => {
           propertyId: r.metadata?.property_id,
           displayName: r.display_name,
           accountId: r.metadata?.account_id || null,
+          ownerGoogleId: r.metadata?.owner_google_id || null,
+          ownerEmail: r.metadata?.owner_email || null,
           status: r.status,
           connectedAt: r.metadata?.connected_at || r.created_at,
         })),
