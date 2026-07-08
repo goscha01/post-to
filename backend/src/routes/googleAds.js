@@ -160,10 +160,17 @@ router.get('/customers', async (req, res) => {
       if (r.status === 'fulfilled') {
         merged.push(...r.value);
       } else {
+        // Grab the full Google Ads error body — that's where DEVELOPER_TOKEN_NOT_APPROVED,
+        // AUTHENTICATION_ERROR etc live. Without this, all 400s look identical.
+        const apiError = r.reason?.response?.data?.error;
+        const detail = apiError?.details?.[0]?.errors?.[0];
         errors.push({
           ownerEmail: effectiveTokens[i].email,
           status: r.reason?.response?.status || null,
           message: r.reason?.message || 'unknown',
+          apiMessage: apiError?.message || null,
+          errorCode: detail?.errorCode || null,
+          errorMessage: detail?.message || null,
         });
       }
     });
