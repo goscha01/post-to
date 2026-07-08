@@ -31,10 +31,14 @@ const SCOPES = [
   'https://www.googleapis.com/auth/userinfo.profile'
 ];
 
-// Business OAuth scopes - for business profile connection
+// Business OAuth scopes - for business profile connection.
+// analytics.readonly is bundled in so a single Google consent grants access to
+// GMB + GA4 read from the same refresh token. Foundation for future Google Ads
+// integration: adding adwords scope here later reuses the same refresh flow.
 const BUSINESS_SCOPES = [
   'https://www.googleapis.com/auth/business.manage',
   'https://www.googleapis.com/auth/plus.business.manage', // Add this missing scope
+  'https://www.googleapis.com/auth/analytics.readonly',
   'https://www.googleapis.com/auth/userinfo.email',
   'https://www.googleapis.com/auth/userinfo.profile'
 ];

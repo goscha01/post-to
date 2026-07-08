@@ -7,6 +7,7 @@ import {
   FileText,
   MessageSquare,
   BarChart3,
+  LineChart,
   Settings,
   Link2,
   Menu,
@@ -30,6 +31,7 @@ const Layout = ({ children }) => {
     { name: 'Posts', href: '/posts', icon: FileText },
     { name: 'Reviews', href: '/reviews', icon: MessageSquare },
     { name: 'Insights', href: '/insights', icon: BarChart3 },
+    { name: 'Analytics', href: '/analytics', icon: LineChart },
     { name: 'Services', href: '/services', icon: Settings },
   ];
 

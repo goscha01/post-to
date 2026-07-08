@@ -237,12 +237,66 @@ async function upsertGoogleBusiness({ userId, businessGoogleId, businessEmail, d
   return data;
 }
 
+// Called from the analytics property-selection endpoint so a picked GA4
+// property shows up alongside GMB / website in the unified list. Tokens live
+// on users.business_profiles (same OAuth grant as GMB); this row only mirrors
+// the property identity for the UI list + business filter.
+async function upsertGoogleAnalytics({ userId, propertyId, displayName, accountId, businessGoogleId }) {
+  if (!userId || !propertyId) throw new Error('userId and propertyId required');
+  const externalId = `ga4:${propertyId}`;
+  const metadata = {
+    property_id: propertyId,
+    account_id: accountId || null,
+    business_google_id: businessGoogleId || null,
+    connected_at: new Date().toISOString(),
+  };
+
+  const { data: existing } = await supabase
+    .from(TABLE)
+    .select('id')
+    .eq('user_id', userId)
+    .eq('provider', 'google_analytics')
+    .eq('external_id', externalId)
+    .maybeSingle();
+
+  if (existing) {
+    const { data, error } = await supabase
+      .from(TABLE)
+      .update({
+        display_name: displayName || `GA4 Property ${propertyId}`,
+        metadata,
+        status: 'active',
+      })
+      .eq('id', existing.id)
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  }
+
+  const { data, error } = await supabase
+    .from(TABLE)
+    .insert({
+      user_id: userId,
+      provider: 'google_analytics',
+      display_name: displayName || `GA4 Property ${propertyId}`,
+      external_id: externalId,
+      metadata,
+      status: 'active',
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
 module.exports = {
   listForUser,
   getForUser,
   deleteForUser,
   upsertWebsite,
   upsertGoogleBusiness,
+  upsertGoogleAnalytics,
   // exposed for tests / future callers
   _internal: { normalizeUrl, hostOf, extractMeta, fetchSiteMeta },
 };

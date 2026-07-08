@@ -8,6 +8,7 @@ import Connections from './components/Connections';
 import Posts from './components/Posts';
 import Reviews from './components/Reviews';
 import Insights from './components/Insights';
+import Analytics from './components/Analytics';
 import Services from './components/Services';
 import Layout from './components/Layout';
 import BusinessSuccessCallback from './components/BusinessSuccessCallback'; 
@@ -107,6 +108,16 @@ const AppContent = () => {
             <ProtectedRoute>
               <Layout>
                 <Services />
+              </Layout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/analytics"
+          element={
+            <ProtectedRoute>
+              <Layout>
+                <Analytics />
               </Layout>
             </ProtectedRoute>
           }
