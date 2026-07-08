@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import Login from './components/Login';
+import Landing from './components/Landing/Landing';
 import Dashboard from './components/Dashboard';
 import BusinessProfiles from './components/BusinessProfiles';
 import Connections from './components/Connections';
@@ -41,7 +42,7 @@ const AppContent = () => {
         <Route path="/auth/business/callback" element={<BusinessAuthCallback />} />
         <Route path="/auth/business/success" element={<BusinessSuccessCallback />} />
         <Route path="/auth/error" element={<AuthError />} />
-        <Route path="/" element={<Navigate to="/dashboard" />} />
+        <Route path="/" element={isAuthenticated ? <Navigate to="/dashboard" /> : <Landing />} />
         <Route
           path="/dashboard"
           element={
