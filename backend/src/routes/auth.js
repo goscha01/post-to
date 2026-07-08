@@ -381,12 +381,19 @@ router.get('/google/business', smartRateLimitMiddleware('business_oauth'), async
     //   include_granted_scopes: merges any previously-granted scopes onto the
     //     new grant instead of replacing them — matters when the app account
     //     and the business account are the same Google user.
-    //   prompt: 'consent' forces the consent screen so users can approve any
-    //     newly-added scopes (like analytics.readonly).
+    //   prompt: 'select_account consent' does two things at once:
+    //     - select_account forces Google to show its account chooser even when
+    //       one Google account is already active in the browser session. This
+    //       is essential for a multi-account app — otherwise Google silently
+    //       reuses whichever account the browser is currently signed into,
+    //       making it impossible to add a *different* Google account without
+    //       going incognito.
+    //     - consent forces the consent screen so users can approve any newly
+    //       added scopes (adwords, analytics.readonly, etc).
     const authUrl = businessOAuth2Client.generateAuthUrl({
       access_type: 'offline',
       scope: BUSINESS_SCOPES,
-      prompt: 'consent',
+      prompt: 'select_account consent',
       include_granted_scopes: true,
       state: `business_${user_id}_${Date.now()}`
     });
