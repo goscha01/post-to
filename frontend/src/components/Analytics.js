@@ -16,6 +16,7 @@ import {
   AlertCircle,
   Plus,
   Link2,
+  Download,
   X,
   Check,
 } from 'lucide-react';
@@ -82,6 +83,42 @@ const Analytics = () => {
     () => connectedProperties.find(p => p.propertyId === selectedPropertyId) || null,
     [connectedProperties, selectedPropertyId]
   );
+
+  // Client-side JSON export of every table + overview currently rendered.
+  // Filename embeds property + range + date so multiple exports don't collide.
+  const handleExportJson = () => {
+    const payload = {
+      exportedAt: new Date().toISOString(),
+      property: selectedProperty
+        ? {
+            propertyId: selectedProperty.propertyId,
+            displayName: selectedProperty.displayName,
+            accountId: selectedProperty.accountId,
+          }
+        : { propertyId: selectedPropertyId },
+      rangeDays: days,
+      overview,
+      trafficSources: traffic,
+      landingPages: landing,
+      campaigns,
+      devices,
+      events: events.rows,
+      highlightedEvents: events.highlighted,
+      geography,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const stamp = new Date().toISOString().slice(0, 10);
+    a.download = `analytics-${selectedPropertyId || 'unknown'}-${days}d-${stamp}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const canExport = !!overview && !loadingReports;
 
   const loadConnected = useCallback(async () => {
     setLoading(true);
@@ -186,6 +223,15 @@ const Analytics = () => {
           >
             <RefreshCw className={`h-4 w-4 ${loadingReports ? 'animate-spin' : ''}`} />
             Refresh
+          </button>
+          <button
+            onClick={handleExportJson}
+            disabled={!canExport}
+            className="inline-flex items-center gap-1.5 px-3 py-2 border border-gray-300 rounded-md text-sm text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50"
+            title="Download all tables as JSON"
+          >
+            <Download className="h-4 w-4" />
+            JSON
           </button>
           <button
             onClick={() => setPickerOpen(true)}
