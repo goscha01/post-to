@@ -33,7 +33,9 @@
 const axios = require('axios');
 const logger = require('../utils/logger');
 
-const API_VERSION = process.env.GOOGLE_ADS_API_VERSION || 'v18';
+// v20 as of 2026-07 — v15-v19 are all sunset. Override via env if you need
+// to test against a newer version (e.g. v21 has been GA since Q1 2026).
+const API_VERSION = process.env.GOOGLE_ADS_API_VERSION || 'v20';
 const BASE_URL = `https://googleads.googleapis.com/${API_VERSION}`;
 
 function developerToken() {
