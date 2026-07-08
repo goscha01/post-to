@@ -3,6 +3,7 @@ const { google } = require('googleapis');
 const jwt = require('jsonwebtoken');
 const { createClient } = require('@supabase/supabase-js');
 const connectionsService = require('../services/connectionsService');
+const logger = require('../utils/logger');
 const router = express.Router();
 
 // Initialize Supabase client
@@ -368,24 +369,26 @@ router.get('/google/business', smartRateLimitMiddleware('business_oauth'), async
       return res.status(400).json({ error: 'Invalid user ID', _debug: { userError, user_id } });
     }
 
+    // No cache: this URL is cheap to generate and caching bites us hard when
+    // BUSINESS_SCOPES changes (e.g. adding analytics.readonly) — a stale cached
+    // URL sends users into a consent screen missing the new scope. Also blow
+    // away any pre-existing cache entry for this user for the same reason.
     const cacheKey = `business_oauth_${user_id}`;
-    
-    // Check cache first
-    const cachedUrl = await dbCache.get(cacheKey);
-    if (cachedUrl) {
-      return res.json({ authUrl: cachedUrl });
-    }
+    await dbCache.delete(cacheKey);
 
-    // Generate new business auth URL
+    // Generate business auth URL.
+    //   include_granted_scopes: merges any previously-granted scopes onto the
+    //     new grant instead of replacing them — matters when the app account
+    //     and the business account are the same Google user.
+    //   prompt: 'consent' forces the consent screen so users can approve any
+    //     newly-added scopes (like analytics.readonly).
     const authUrl = businessOAuth2Client.generateAuthUrl({
       access_type: 'offline',
       scope: BUSINESS_SCOPES,
       prompt: 'consent',
+      include_granted_scopes: true,
       state: `business_${user_id}_${Date.now()}`
     });
-
-    // Cache for 3 minutes
-    await dbCache.set(cacheKey, authUrl, 180000);
 
     res.json({ authUrl });
 
@@ -422,6 +425,21 @@ router.get('/google/business/callback', async (req, res) => {
     // Exchange code for tokens using business OAuth client
     const { tokens } = await businessOAuth2Client.getToken(code);
     businessOAuth2Client.setCredentials(tokens);
+
+    // Log the scopes Google actually granted so we can verify from Loki whether
+    // analytics.readonly (or any newly-added scope) actually made it through the
+    // consent screen. This is the single most useful signal for debugging
+    // "reconnected but analytics still missing".
+    const grantedScopes = (tokens.scope || '').split(/\s+/).filter(Boolean);
+    logger.info('auth.business.tokens_received', {
+      user_id: extractedUserId,
+      granted_scopes: grantedScopes,
+      requested_scopes: BUSINESS_SCOPES,
+      has_analytics: grantedScopes.includes('https://www.googleapis.com/auth/analytics.readonly'),
+      has_business_manage: grantedScopes.includes('https://www.googleapis.com/auth/business.manage'),
+      has_refresh_token: !!tokens.refresh_token,
+      expiry_date: tokens.expiry_date,
+    });
 
     // Get business user info from Google
     const oauth2 = google.oauth2({ version: 'v2', auth: businessOAuth2Client });

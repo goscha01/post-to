@@ -206,8 +206,23 @@ const Analytics = () => {
                 Analytics permission missing
               </p>
               <p className="text-sm text-amber-800 mt-1">
-                Your Google connection needs the Analytics read scope. Reconnect your Google Business Profile
-                from the Connections page to grant Analytics access — this uses the same Google account.
+                Reconnecting Google Business Profile grants the Analytics scope <em>only if</em> the
+                scope is enabled in your Google Cloud Console. If reconnecting didn't help, check:
+              </p>
+              <ol className="text-sm text-amber-800 mt-2 ml-4 list-decimal space-y-1">
+                <li>
+                  <strong>Google Cloud Console → APIs &amp; Services → OAuth consent screen → Scopes</strong>:
+                  add <code className="text-xs px-1 py-0.5 bg-amber-100 rounded">.../auth/analytics.readonly</code>.
+                </li>
+                <li>
+                  <strong>APIs &amp; Services → Enabled APIs</strong>: enable
+                  <em> Google Analytics Admin API</em> and <em>Google Analytics Data API</em>.
+                </li>
+                <li>Then reconnect Google Business Profile again.</li>
+              </ol>
+              <p className="text-sm text-amber-800 mt-2">
+                To see exactly which scopes your current token has, open{' '}
+                <code className="text-xs px-1 py-0.5 bg-amber-100 rounded">/api/analytics/_diagnose</code> in a new tab.
               </p>
             </div>
           </div>
@@ -695,9 +710,26 @@ const PropertyPickerModal = ({ onClose, onConnected }) => {
             <p className="text-sm text-gray-500">Loading properties…</p>
           ) : needsReauth ? (
             <div>
-              <div className="p-3 bg-amber-50 border border-amber-200 rounded text-sm text-amber-800 mb-4">
-                Your Google connection doesn't have Analytics permission. Reconnect your Google Business Profile
-                to grant Analytics read access — same Google account, expanded scope.
+              <div className="p-3 bg-amber-50 border border-amber-200 rounded text-sm text-amber-800 mb-4 space-y-2">
+                <p className="font-medium">Your Google connection doesn't have Analytics permission.</p>
+                <p>
+                  Before clicking reconnect, make sure the following are set in your{' '}
+                  <strong>Google Cloud Console</strong>:
+                </p>
+                <ol className="ml-4 list-decimal space-y-1">
+                  <li>
+                    <strong>OAuth consent screen → Scopes</strong>: add
+                    {' '}<code className="text-xs px-1 py-0.5 bg-amber-100 rounded">.../auth/analytics.readonly</code>
+                  </li>
+                  <li>
+                    <strong>Enabled APIs</strong>: enable both
+                    <em> Google Analytics Admin API</em> and <em>Google Analytics Data API</em>
+                  </li>
+                </ol>
+                <p className="text-xs">
+                  Without these two, reconnecting silently drops the analytics scope on Google's side —
+                  you'll come back with the same permissions you had before.
+                </p>
               </div>
               <button
                 onClick={() => loginForBusiness()}

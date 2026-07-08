@@ -51,6 +51,56 @@ const supabase = createClient(
 router.use(authMiddleware);
 router.use(requireBusinessAuth);
 
+// ---------- Diagnostics ----------
+//
+// GET /api/analytics/_diagnose
+// Introspects the current business access token via Google's tokeninfo endpoint
+// and returns the exact scopes attached to it. Use this to verify whether a
+// reconnect actually granted analytics.readonly. Not sensitive — only reports
+// scope strings, no token material.
+router.get('/_diagnose', async (req, res) => {
+  try {
+    const axios = require('axios');
+    const { data } = await axios.get('https://oauth2.googleapis.com/tokeninfo', {
+      params: { access_token: req.businessToken },
+      timeout: 8000,
+      validateStatus: s => s < 500,
+    });
+    const grantedScopes = (data.scope || '').split(/\s+/).filter(Boolean);
+    const hasAnalytics = grantedScopes.includes('https://www.googleapis.com/auth/analytics.readonly');
+    const hasBusiness = grantedScopes.includes('https://www.googleapis.com/auth/business.manage');
+    logger.info('analytics.diagnose', {
+      userId: req.user.userId,
+      granted_scopes: grantedScopes,
+      hasAnalytics,
+      hasBusiness,
+    });
+    res.json({
+      grantedScopes,
+      hasAnalyticsReadonly: hasAnalytics,
+      hasBusinessManage: hasBusiness,
+      audience: data.aud || null,
+      expiresIn: data.expires_in || null,
+      tokenInfoError: data.error || null,
+      guidance: hasAnalytics ? null : {
+        message: 'The current business OAuth token was not granted analytics.readonly.',
+        possibleCauses: [
+          'The scope is not listed in the Google Cloud OAuth Consent Screen (Console → APIs & Services → OAuth consent screen → Scopes).',
+          'The Google Analytics Admin API or Analytics Data API is not enabled in the Google Cloud project (Console → APIs & Services → Enabled APIs).',
+          'The user unchecked the Analytics permission on the consent screen.',
+          'The user reconnected before the latest deploy went live.',
+        ],
+      },
+    });
+  } catch (err) {
+    logger.error('analytics.diagnose.failed', {
+      userId: req.user.userId,
+      error: err.message,
+    });
+    res.status(500).json({ error: err.message || 'Failed to introspect token' });
+  }
+});
+
 // ---------- helpers ----------
 
 // Resolve which GA4 property the caller wants a report for.
