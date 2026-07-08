@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Globe, Building2, Instagram, Facebook, LineChart, Plus, Trash2, ExternalLink, X, Check, AlertCircle } from 'lucide-react';
+import { Globe, Building2, Instagram, Facebook, LineChart, Megaphone, Plus, Trash2, ExternalLink, X, Check, AlertCircle } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import connectionsService from '../services/connectionsService';
 
@@ -22,6 +22,12 @@ const PROVIDER_META = {
     icon: LineChart,
     color: 'text-orange-600',
     bg: 'bg-orange-50',
+  },
+  google_ads: {
+    label: 'Google Ads',
+    icon: Megaphone,
+    color: 'text-purple-600',
+    bg: 'bg-purple-50',
   },
   instagram: {
     label: 'Instagram',
@@ -227,6 +233,13 @@ const ConnectPickerModal = ({ onClose, onConnected }) => {
     navigate('/analytics');
   };
 
+  const handleAds = () => {
+    // Google Ads tokens also ride on the same OAuth grant (adwords is in
+    // BUSINESS_SCOPES). Customer selection happens inside the Ads page.
+    onClose();
+    navigate('/ads');
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
       <div className="bg-white rounded-lg shadow-xl max-w-lg w-full" onClick={e => e.stopPropagation()}>
@@ -244,6 +257,7 @@ const ConnectPickerModal = ({ onClose, onConnected }) => {
               onPickWebsite={() => setStep('website')}
               onPickGoogle={handleGoogle}
               onPickAnalytics={handleAnalytics}
+              onPickAds={handleAds}
             />
           ) : (
             <WebsiteForm onCancel={() => setStep('pick')} onConnected={onConnected} />
@@ -254,11 +268,12 @@ const ConnectPickerModal = ({ onClose, onConnected }) => {
   );
 };
 
-const PickerTiles = ({ onPickWebsite, onPickGoogle, onPickAnalytics }) => {
+const PickerTiles = ({ onPickWebsite, onPickGoogle, onPickAnalytics, onPickAds }) => {
   const tiles = [
     { key: 'website', label: 'Website', desc: 'Connect by URL for AI blogs', icon: Globe, color: 'text-emerald-600', bg: 'bg-emerald-50', onClick: onPickWebsite, enabled: true },
     { key: 'google', label: 'Google Business Profile', desc: 'Reviews, posts, insights', icon: Building2, color: 'text-blue-600', bg: 'bg-blue-50', onClick: onPickGoogle, enabled: true },
     { key: 'analytics', label: 'Google Analytics', desc: 'GA4 sessions, conversions, campaigns', icon: LineChart, color: 'text-orange-600', bg: 'bg-orange-50', onClick: onPickAnalytics, enabled: true },
+    { key: 'ads', label: 'Google Ads', desc: 'Read-only campaign diagnostics', icon: Megaphone, color: 'text-purple-600', bg: 'bg-purple-50', onClick: onPickAds, enabled: true },
     { key: 'instagram', label: 'Instagram', desc: 'Coming soon', icon: Instagram, color: 'text-pink-600', bg: 'bg-pink-50', enabled: false },
     { key: 'facebook', label: 'Facebook', desc: 'Coming soon', icon: Facebook, color: 'text-indigo-600', bg: 'bg-indigo-50', enabled: false },
   ];

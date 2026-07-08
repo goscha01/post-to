@@ -8,6 +8,7 @@ import {
   MessageSquare,
   BarChart3,
   LineChart,
+  Megaphone,
   Settings,
   Link2,
   Menu,
@@ -32,6 +33,7 @@ const Layout = ({ children }) => {
     { name: 'Reviews', href: '/reviews', icon: MessageSquare },
     { name: 'Insights', href: '/insights', icon: BarChart3 },
     { name: 'Analytics', href: '/analytics', icon: LineChart },
+    { name: 'Ads', href: '/ads', icon: Megaphone },
     { name: 'Services', href: '/services', icon: Settings },
   ];
 

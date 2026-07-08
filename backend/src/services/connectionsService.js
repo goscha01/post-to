@@ -296,6 +296,75 @@ async function upsertGoogleAnalytics({ userId, propertyId, displayName, accountI
   return data;
 }
 
+// Called from the Google Ads customer-selection endpoint so a picked Ads
+// account shows up alongside GMB / GA4 / website. Tokens live on
+// users.business_profiles (same OAuth grant); this row only mirrors the
+// customer identity for the UI + business filter.
+async function upsertGoogleAds({
+  userId,
+  customerId,
+  descriptiveName,
+  managerCustomerId,
+  currencyCode,
+  timeZone,
+  ownerGoogleId,
+  ownerEmail,
+}) {
+  if (!userId || !customerId) throw new Error('userId and customerId required');
+  const externalId = `ads:${customerId}`;
+  const metadata = {
+    customer_id: customerId,
+    manager_customer_id: managerCustomerId || null,
+    currency_code: currencyCode || null,
+    time_zone: timeZone || null,
+    // Which connected Google account owns this Ads customer. Used to route
+    // report API calls to the correct OAuth token when the user has multiple
+    // Google accounts connected. Null for rows saved before multi-account
+    // support — fall back to the top-level business token.
+    owner_google_id: ownerGoogleId || null,
+    owner_email: ownerEmail || null,
+    connected_at: new Date().toISOString(),
+  };
+
+  const { data: existing } = await supabase
+    .from(TABLE)
+    .select('id')
+    .eq('user_id', userId)
+    .eq('provider', 'google_ads')
+    .eq('external_id', externalId)
+    .maybeSingle();
+
+  if (existing) {
+    const { data, error } = await supabase
+      .from(TABLE)
+      .update({
+        display_name: descriptiveName || `Google Ads ${customerId}`,
+        metadata,
+        status: 'active',
+      })
+      .eq('id', existing.id)
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  }
+
+  const { data, error } = await supabase
+    .from(TABLE)
+    .insert({
+      user_id: userId,
+      provider: 'google_ads',
+      display_name: descriptiveName || `Google Ads ${customerId}`,
+      external_id: externalId,
+      metadata,
+      status: 'active',
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
 module.exports = {
   listForUser,
   getForUser,
@@ -303,6 +372,7 @@ module.exports = {
   upsertWebsite,
   upsertGoogleBusiness,
   upsertGoogleAnalytics,
+  upsertGoogleAds,
   // exposed for tests / future callers
   _internal: { normalizeUrl, hostOf, extractMeta, fetchSiteMeta },
 };
