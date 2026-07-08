@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Globe, Building2, Instagram, Facebook, LineChart, Megaphone, Plus, Trash2, ExternalLink, X, Check, AlertCircle } from 'lucide-react';
+import { Globe, Building2, Instagram, Facebook, LineChart, Megaphone, Plus, Trash2, ExternalLink, X, Check, AlertCircle, RefreshCw } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import connectionsService from '../services/connectionsService';
 
@@ -152,6 +152,7 @@ const EmptyState = ({ onConnect }) => (
 );
 
 const ConnectionCard = ({ connection, onDelete }) => {
+  const { loginForBusiness } = useAuth();
   const meta = PROVIDER_META[connection.provider] || {
     label: connection.provider,
     icon: Globe,
@@ -162,6 +163,22 @@ const ConnectionCard = ({ connection, onDelete }) => {
   const host = connection.metadata?.host;
   const url = connection.metadata?.url || connection.external_id;
   const status = connection.status;
+
+  // Any google_* provider mirrors a Google OAuth grant on business_profiles.
+  // Reconnecting re-runs the consent flow so newly-added scopes (adwords,
+  // analytics.readonly) are actually granted on the refresh token.
+  const isGoogleProvider = connection.provider?.startsWith('google_');
+  const [reconnecting, setReconnecting] = React.useState(false);
+
+  const handleReconnect = async () => {
+    setReconnecting(true);
+    try {
+      await loginForBusiness();
+    } catch (e) {
+      // loginForBusiness redirects on success; if it throws we clear the spinner.
+      setReconnecting(false);
+    }
+  };
 
   return (
     <li className="bg-white border border-gray-200 rounded-lg p-4 flex items-start gap-3">
@@ -198,6 +215,17 @@ const ConnectionCard = ({ connection, onDelete }) => {
         )}
         {connection.metadata?.description && (
           <p className="text-xs text-gray-600 mt-2 line-clamp-2">{connection.metadata.description}</p>
+        )}
+        {isGoogleProvider && (
+          <button
+            onClick={handleReconnect}
+            disabled={reconnecting}
+            className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-primary-600 hover:text-primary-700 disabled:opacity-50"
+            title="Re-run Google's consent flow to grant any newly-added scopes (e.g. adwords, analytics.readonly)"
+          >
+            <RefreshCw className={`h-3 w-3 ${reconnecting ? 'animate-spin' : ''}`} />
+            {reconnecting ? 'Redirecting…' : 'Reconnect Google'}
+          </button>
         )}
       </div>
       <button
