@@ -3,6 +3,8 @@ import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate } from 'r
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import Login from './components/Login';
 import Landing from './components/Landing/Landing';
+import PrivacyPolicy from './components/Landing/PrivacyPolicy';
+import TermsOfService from './components/Landing/TermsOfService';
 import Dashboard from './components/Dashboard';
 import BusinessProfiles from './components/BusinessProfiles';
 import Connections from './components/Connections';
@@ -43,6 +45,8 @@ const AppContent = () => {
         <Route path="/auth/business/success" element={<BusinessSuccessCallback />} />
         <Route path="/auth/error" element={<AuthError />} />
         <Route path="/" element={isAuthenticated ? <Navigate to="/dashboard" /> : <Landing />} />
+        <Route path="/privacy" element={<PrivacyPolicy />} />
+        <Route path="/terms" element={<TermsOfService />} />
         <Route
           path="/dashboard"
           element={

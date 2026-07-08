@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { Check, Sparkles, ArrowRight, ChevronDown } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
@@ -261,19 +262,56 @@ const FinalCta = ({ onCtaClick }) => (
 // Footer
 // ---------------------------------------------------------------------------
 const Footer = () => (
-  <footer className="border-t border-slate-200 py-10">
-    <div className="max-w-7xl mx-auto px-6 lg:px-8 flex flex-col md:flex-row items-center justify-between gap-4 text-sm text-slate-500">
-      <div className="flex items-center gap-2">
-        <div className="w-6 h-6 rounded-md bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center">
-          <Sparkles className="w-3 h-3 text-white" />
+  <footer className="border-t border-slate-200 pt-12 pb-8">
+    <div className="max-w-7xl mx-auto px-6 lg:px-8">
+      <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-8">
+        <div className="max-w-sm">
+          <div className="flex items-center gap-2">
+            <div className="w-7 h-7 rounded-md bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center">
+              <Sparkles className="w-3.5 h-3.5 text-white" />
+            </div>
+            <span className="font-bold text-slate-900">Post-To</span>
+          </div>
+          <p className="mt-3 text-sm text-slate-500 leading-relaxed">
+            AI marketing manager for local businesses. Connect once, and marketing runs itself.
+          </p>
         </div>
-        <span className="font-semibold text-slate-700">Post-To</span>
-        <span className="text-slate-400">— AI marketing for local businesses</span>
+
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-8 text-sm">
+          <div>
+            <div className="text-xs font-semibold text-slate-900 uppercase tracking-wide mb-3">Product</div>
+            <ul className="space-y-2 text-slate-500">
+              <li><a href="#workflow" className="hover:text-slate-800">How it works</a></li>
+              <li><a href="#features" className="hover:text-slate-800">Features</a></li>
+              <li><a href="#pricing" className="hover:text-slate-800">Pricing</a></li>
+              <li><a href="#faq" className="hover:text-slate-800">FAQ</a></li>
+            </ul>
+          </div>
+          <div>
+            <div className="text-xs font-semibold text-slate-900 uppercase tracking-wide mb-3">Account</div>
+            <ul className="space-y-2 text-slate-500">
+              <li><a href="/login" className="hover:text-slate-800">Sign in</a></li>
+              <li><a href="/login" className="hover:text-slate-800">Start free trial</a></li>
+              <li><a href="mailto:support@post-to.app" className="hover:text-slate-800">Support</a></li>
+            </ul>
+          </div>
+          <div>
+            <div className="text-xs font-semibold text-slate-900 uppercase tracking-wide mb-3">Legal</div>
+            <ul className="space-y-2 text-slate-500">
+              <li><Link to="/privacy" className="hover:text-slate-800">Privacy Policy</Link></li>
+              <li><Link to="/terms" className="hover:text-slate-800">Terms of Service</Link></li>
+              <li><a href="mailto:legal@post-to.app" className="hover:text-slate-800">Contact legal</a></li>
+            </ul>
+          </div>
+        </div>
       </div>
-      <div className="flex gap-6">
-        <a href="#pricing" className="hover:text-slate-800">Pricing</a>
-        <a href="#faq" className="hover:text-slate-800">FAQ</a>
-        <a href="/login" className="hover:text-slate-800">Sign in</a>
+
+      <div className="mt-10 pt-6 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-400">
+        <div>© {new Date().getFullYear()} Post-To. All rights reserved.</div>
+        <div className="flex gap-5">
+          <Link to="/privacy" className="hover:text-slate-700">Privacy</Link>
+          <Link to="/terms" className="hover:text-slate-700">Terms</Link>
+        </div>
       </div>
     </div>
   </footer>
