@@ -50,10 +50,44 @@ app.use(cors({
   credentials: true
 }));
 
-// Rate limiting
+// Rate limiting.
+//
+// The old 100/15min/IP was set when this was a single-page GMB tool. Modern
+// dashboards fan out heavily: /ads alone fires 16 report endpoints in
+// parallel + connected + customers. Analytics fan-out is similar. A user
+// hopping between /ads → /analytics → /gmb in a minute easily hits 100 and
+// then the whole app dies with 429 until the window resets. Two changes:
+//
+//   1. Raise the base cap to something a real dashboard user cannot trip
+//      just by opening a page.
+//   2. Key on JWT userId when available so multiple users behind a shared
+//      IP (office NAT, VPN, corporate proxy) don't compete for the same
+//      bucket. Fall back to IP for pre-auth traffic.
+//
+// Health/log-ingest paths are also skipped so backend self-checks and the
+// FixLoop/LogHub client don't count against a user.
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100 // limit each IP to 100 requests per windowMs
+  windowMs: 15 * 60 * 1000,
+  max: 2000,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    if (req.user?.userId) return `u:${req.user.userId}`;
+    // Try the Authorization header — auth middleware hasn't run at this
+    // point, but a JWT sub is stable enough to key on. Best-effort only.
+    const auth = req.headers['authorization'];
+    if (auth && auth.startsWith('Bearer ')) {
+      try {
+        const payload = JSON.parse(Buffer.from(auth.slice(7).split('.')[1], 'base64').toString('utf8'));
+        if (payload?.userId) return `u:${payload.userId}`;
+      } catch { /* ignore, fall through to IP */ }
+    }
+    return `ip:${req.ip}`;
+  },
+  skip: (req) => {
+    const p = req.path || '';
+    return p === '/health' || p.startsWith('/api/client-log');
+  },
 });
 app.use(limiter);
 
