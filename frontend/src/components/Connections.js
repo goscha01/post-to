@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Globe, Building2, Instagram, Facebook, LineChart, Megaphone, Plus, Trash2, ExternalLink, X, Check, AlertCircle, RefreshCw } from 'lucide-react';
+import { Globe, Building2, Instagram, Facebook, LineChart, Megaphone, Plus, Trash2, ExternalLink, X, Check, AlertCircle, RefreshCw, Sparkles } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import connectionsService from '../services/connectionsService';
 
@@ -153,6 +153,7 @@ const EmptyState = ({ onConnect }) => (
 
 const ConnectionCard = ({ connection, onDelete }) => {
   const { loginForBusiness } = useAuth();
+  const navigate = useNavigate();
   const meta = PROVIDER_META[connection.provider] || {
     label: connection.provider,
     icon: Globe,
@@ -226,6 +227,23 @@ const ConnectionCard = ({ connection, onDelete }) => {
             <RefreshCw className={`h-3 w-3 ${reconnecting ? 'animate-spin' : ''}`} />
             {reconnecting ? 'Redirecting…' : 'Reconnect Google'}
           </button>
+        )}
+        {connection.provider === 'website' && (
+          <div className="mt-2 flex items-center gap-3">
+            <button
+              onClick={() => navigate(`/blogs?connectionId=${connection.id}&generate=1`)}
+              className="inline-flex items-center gap-1 text-xs font-medium text-primary-600 hover:text-primary-700"
+            >
+              <Sparkles className="h-3 w-3" />
+              Generate blog
+            </button>
+            <button
+              onClick={() => navigate(`/blogs?connectionId=${connection.id}`)}
+              className="text-xs font-medium text-gray-500 hover:text-gray-700"
+            >
+              View blogs
+            </button>
+          </div>
         )}
       </div>
       <button

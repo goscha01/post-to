@@ -113,6 +113,7 @@ router.post(
         .insert({
           user_id: userId,
           business_profile_id: req.body.businessProfileId || null,
+          connection_id: connection?.id || null,
           business_name: input.businessName,
           business_type: input.businessType,
           service: input.service,
