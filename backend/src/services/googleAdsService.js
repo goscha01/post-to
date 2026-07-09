@@ -938,11 +938,14 @@ async function getQuality(accessToken, customerId, days, opts = {}) {
 }
 
 async function getChangeHistory(accessToken, customerId, days, opts = {}) {
-  const n = Math.max(1, Math.min(90, parseInt(days, 10) || 30));
+  // change_event has a hard 30-day cap on Google's side. Clamp to 29 days to
+  // leave a safety buffer for timezone drift between our UTC computation and
+  // the account's local timezone (their check is inclusive; going right up to
+  // the edge trips "start date too old").
+  const n = Math.max(1, Math.min(29, parseInt(days, 10) || 29));
   const end = new Date();
   const start = new Date(end.getTime() - (n - 1) * 24 * 3600 * 1000);
   const iso = d => d.toISOString().replace('T', ' ').slice(0, 19);
-  // change_event is capped at 30 days; but we still respect the caller's days.
   const rows = await search(accessToken, customerId, `
     SELECT
       change_event.change_date_time,
