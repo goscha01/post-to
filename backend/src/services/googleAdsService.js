@@ -33,9 +33,10 @@
 const axios = require('axios');
 const logger = require('../utils/logger');
 
-// v20 as of 2026-07 — v15-v19 are all sunset. Override via env if you need
-// to test against a newer version (e.g. v21 has been GA since Q1 2026).
-const API_VERSION = process.env.GOOGLE_ADS_API_VERSION || 'v20';
+// v21 as of 2026-07 — v20 was deprecated (returns UNSUPPORTED_VERSION).
+// Whenever a version returns UNSUPPORTED_VERSION, bump this and update the
+// Railway env var. Also probe via curl to verify: 401 = alive, 404 = sunset.
+const API_VERSION = process.env.GOOGLE_ADS_API_VERSION || 'v21';
 const BASE_URL = `https://googleads.googleapis.com/${API_VERSION}`;
 
 function developerToken() {
