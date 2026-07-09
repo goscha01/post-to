@@ -299,7 +299,7 @@ async function generateReport({
 
   const [
     campaigns, adGroups, keywords, searchTerms, adsList, assets,
-    recommendations, conversions, devices, locations, dayHour,
+    recommendations, conversions, devices, locations, hourDay,
     audience, auctionInsights, quality, changeHistory, diagnostics,
     ga4Overview, ga4LandingPages, ga4TrafficSources, ga4EventsRes,
     ga4Campaigns, ga4Geography, ga4Devices,
