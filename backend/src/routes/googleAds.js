@@ -366,6 +366,14 @@ function parseDays(req, defaultDays = 30) {
   return raw;
 }
 
+// Optional campaign filter — numeric CID only, sanitized. Reports that don't
+// naturally have a campaign relationship (conversions, devices, day/hour)
+// ignore this value on the service side.
+function parseCampaignId(req) {
+  const raw = String(req.query.campaignId || '').replace(/[^0-9]/g, '');
+  return raw || null;
+}
+
 // Every report endpoint follows the same pattern: resolve customer, route to
 // correct token, call service method, translate errors.
 function reportHandler(serviceFn, name, { supportsDays = true } = {}) {
@@ -379,20 +387,24 @@ function reportHandler(serviceFn, name, { supportsDays = true } = {}) {
         });
       }
       const days = supportsDays ? parseDays(req) : undefined;
+      const campaignId = parseCampaignId(req);
       const { accessToken, loginCustomerId } = await tokenForCustomer(req, customerId);
+      const opts = { loginCustomerId, campaignId };
       const t0 = Date.now();
       const result = supportsDays
-        ? await serviceFn(accessToken, customerId, days, { loginCustomerId })
-        : await serviceFn(accessToken, customerId, { loginCustomerId });
+        ? await serviceFn(accessToken, customerId, days, opts)
+        : await serviceFn(accessToken, customerId, opts);
       logger.info(`googleAds.${name}.ok`, {
         userId: req.user.userId,
         customerId,
         days: days || null,
+        campaignId: campaignId || null,
         rowCount: Array.isArray(result) ? result.length : null,
         duration_ms: Date.now() - t0,
       });
       const payload = { customerId, [name]: result };
       if (days) payload.days = days;
+      if (campaignId) payload.campaignId = campaignId;
       res.json(payload);
     } catch (err) {
       const norm = ads.normalizeApiError(err, {

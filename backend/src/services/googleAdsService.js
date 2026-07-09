@@ -247,6 +247,18 @@ function dateRangeClause(days) {
   };
 }
 
+// Emits an `AND campaign.id = X` fragment when a campaign filter is active,
+// otherwise returns empty string. Only append this to queries whose FROM
+// resource has a campaign relationship (campaign, ad_group, keyword_view,
+// search_term_view, ad_group_ad, geographic_view, age_range_view,
+// gender_view). Do NOT append to FROM customer queries — Google Ads
+// rejects them with UNSUPPORTED_FIELD_IN_WHERE_CLAUSE.
+function campaignFilter(campaignId) {
+  if (!campaignId) return '';
+  const cid = String(campaignId).replace(/[^0-9]/g, '');
+  return cid ? ` AND campaign.id = ${cid}` : '';
+}
+
 // ---------- Metric helpers ----------
 
 // Google Ads returns money as micros (1,000,000 = one unit of currency).
@@ -294,7 +306,7 @@ async function getCampaigns(accessToken, customerId, days, opts = {}) {
       metrics.search_rank_lost_impression_share,
       metrics.search_absolute_top_impression_share
     FROM campaign
-    WHERE ${dr.clause}
+    WHERE ${dr.clause}${campaignFilter(opts.campaignId)}
     ORDER BY metrics.cost_micros DESC
   `, opts);
 
@@ -351,7 +363,7 @@ async function getAdGroups(accessToken, customerId, days, opts = {}) {
       metrics.conversions,
       metrics.cost_per_conversion
     FROM ad_group
-    WHERE ${dr.clause}
+    WHERE ${dr.clause}${campaignFilter(opts.campaignId)}
     ORDER BY metrics.cost_micros DESC
     LIMIT 500
   `, opts);
@@ -398,7 +410,7 @@ async function getKeywords(accessToken, customerId, days, opts = {}) {
       metrics.conversions,
       metrics.cost_per_conversion
     FROM keyword_view
-    WHERE ${dr.clause}
+    WHERE ${dr.clause}${campaignFilter(opts.campaignId)}
     ORDER BY metrics.cost_micros DESC
     LIMIT 1000
   `, opts);
@@ -450,7 +462,7 @@ async function getSearchTerms(accessToken, customerId, days, opts = {}) {
       metrics.conversions,
       metrics.conversions_value
     FROM search_term_view
-    WHERE ${dr.clause}
+    WHERE ${dr.clause}${campaignFilter(opts.campaignId)}
     ORDER BY metrics.cost_micros DESC
     LIMIT 2000
   `, opts);
@@ -498,7 +510,7 @@ async function getAds(accessToken, customerId, days, opts = {}) {
       metrics.cost_micros,
       metrics.conversions
     FROM ad_group_ad
-    WHERE ${dr.clause}
+    WHERE ${dr.clause}${campaignFilter(opts.campaignId)}
     ORDER BY metrics.impressions DESC
     LIMIT 500
   `, opts);
@@ -555,7 +567,7 @@ async function getAssets(accessToken, customerId, days, opts = {}) {
       metrics.cost_micros,
       metrics.conversions
     FROM campaign_asset
-    WHERE ${dr.clause}
+    WHERE ${dr.clause}${campaignFilter(opts.campaignId)}
     ORDER BY metrics.impressions DESC
     LIMIT 500
   `, opts);
@@ -743,7 +755,7 @@ async function getLocations(accessToken, customerId, days, opts = {}) {
       metrics.conversions,
       metrics.cost_per_conversion
     FROM geographic_view
-    WHERE ${dr.clause}
+    WHERE ${dr.clause}${campaignFilter(opts.campaignId)}
     ORDER BY metrics.cost_micros DESC
     LIMIT 500
   `, opts);
@@ -813,7 +825,7 @@ async function getAudience(accessToken, customerId, days, opts = {}) {
       metrics.cost_micros,
       metrics.conversions
     FROM age_range_view
-    WHERE ${dr.clause}
+    WHERE ${dr.clause}${campaignFilter(opts.campaignId)}
     LIMIT 200
   `, opts);
 
@@ -828,7 +840,7 @@ async function getAudience(accessToken, customerId, days, opts = {}) {
       metrics.cost_micros,
       metrics.conversions
     FROM gender_view
-    WHERE ${dr.clause}
+    WHERE ${dr.clause}${campaignFilter(opts.campaignId)}
     LIMIT 200
   `, opts);
 
@@ -870,7 +882,7 @@ async function getAuctionInsights(accessToken, customerId, days, opts = {}) {
         metrics.search_rank_lost_impression_share,
         metrics.search_budget_lost_impression_share
       FROM campaign
-      WHERE ${dr.clause}
+      WHERE ${dr.clause}${campaignFilter(opts.campaignId)}
       ORDER BY metrics.search_impression_share DESC
       LIMIT 200
     `, opts);
@@ -911,7 +923,7 @@ async function getQuality(accessToken, customerId, days, opts = {}) {
       metrics.impressions,
       metrics.clicks
     FROM keyword_view
-    WHERE ${dr.clause}
+    WHERE ${dr.clause}${campaignFilter(opts.campaignId)}
       AND ad_group_criterion.quality_info.quality_score IS NOT NULL
     ORDER BY ad_group_criterion.quality_info.quality_score ASC
     LIMIT 500

@@ -96,6 +96,12 @@ const GoogleAds = () => {
   const [connectedCustomers, setConnectedCustomers] = useState([]);
   const [selectedCustomerId, setSelectedCustomerId] = useState(null);
   const [days, setDays] = useState(30);
+  // Optional campaign filter. null = "All campaigns". Available options come
+  // from the Campaigns tab (always fetched first), so once we load them the
+  // dropdown is ready to switch to a single campaign, which re-fetches every
+  // report scoped to it.
+  const [campaignId, setCampaignId] = useState(null);
+  const [allCampaignOptions, setAllCampaignOptions] = useState([]);
 
   const [campaigns, setCampaigns] = useState([]);
   const [adGroups, setAdGroups] = useState([]);
@@ -219,33 +225,52 @@ const GoogleAds = () => {
     }
   }, []);
 
-  const loadReports = useCallback(async (customerId, rangeDays) => {
+  const loadReports = useCallback(async (customerId, rangeDays, filterCampaignId) => {
     if (!customerId) return;
     setLoadingReports(true);
     setError('');
     try {
       // Fan out — each endpoint is independent so we parallelize the whole set.
+      // Campaign filter is applied where it makes sense (campaign, ad_group,
+      // keyword_view, search_term_view, ad_group_ad, campaign_asset,
+      // geographic_view, age_range_view, gender_view, quality). Devices,
+      // day/hour, and conversions are FROM customer resources that don't
+      // support a campaign WHERE clause — those tabs will always show
+      // customer-wide numbers regardless of the campaign filter.
       const [
         cs, ag, kw, st, adResp, ast, rec, conv, dv, loc, dh, aud, ai, ql, ch, diag,
       ] = await Promise.all([
-        googleAdsService.getCampaigns(customerId, rangeDays),
-        googleAdsService.getAdGroups(customerId, rangeDays),
-        googleAdsService.getKeywords(customerId, rangeDays),
-        googleAdsService.getSearchTerms(customerId, rangeDays),
-        googleAdsService.getAds(customerId, rangeDays),
-        googleAdsService.getAssets(customerId, rangeDays),
+        googleAdsService.getCampaigns(customerId, rangeDays, filterCampaignId),
+        googleAdsService.getAdGroups(customerId, rangeDays, filterCampaignId),
+        googleAdsService.getKeywords(customerId, rangeDays, filterCampaignId),
+        googleAdsService.getSearchTerms(customerId, rangeDays, filterCampaignId),
+        googleAdsService.getAds(customerId, rangeDays, filterCampaignId),
+        googleAdsService.getAssets(customerId, rangeDays, filterCampaignId),
         googleAdsService.getRecommendations(customerId),
         googleAdsService.getConversions(customerId, rangeDays),
         googleAdsService.getDevices(customerId, rangeDays),
-        googleAdsService.getLocations(customerId, rangeDays),
+        googleAdsService.getLocations(customerId, rangeDays, filterCampaignId),
         googleAdsService.getDayHour(customerId, rangeDays),
-        googleAdsService.getAudience(customerId, rangeDays),
-        googleAdsService.getAuctionInsights(customerId, rangeDays),
-        googleAdsService.getQuality(customerId, rangeDays),
+        googleAdsService.getAudience(customerId, rangeDays, filterCampaignId),
+        googleAdsService.getAuctionInsights(customerId, rangeDays, filterCampaignId),
+        googleAdsService.getQuality(customerId, rangeDays, filterCampaignId),
         googleAdsService.getChangeHistory(customerId, rangeDays),
-        googleAdsService.getDiagnostics(customerId, rangeDays),
+        googleAdsService.getDiagnostics(customerId, rangeDays, filterCampaignId),
       ]);
       setCampaigns(cs.campaigns || []);
+      // Keep the campaign-picker options in sync with the *unfiltered* campaign
+      // list. When a filter is active, cs.campaigns is scoped to a single
+      // campaign — don't clobber the dropdown or the user can never switch
+      // back to another one. We refresh options only when no filter is set.
+      if (!filterCampaignId) {
+        setAllCampaignOptions(
+          (cs.campaigns || []).map(c => ({
+            id: c.campaignId,
+            name: c.name || `Campaign ${c.campaignId}`,
+            status: c.status,
+          }))
+        );
+      }
       setAdGroups(ag.adGroups || []);
       setKeywords(kw.keywords || []);
       setSearchTerms(st.searchTerms || []);
@@ -288,9 +313,16 @@ const GoogleAds = () => {
   useEffect(() => {
     if (selectedCustomerId) {
       localStorage.setItem('gmb_google_ads_customer_id', selectedCustomerId);
-      loadReports(selectedCustomerId, days);
+      loadReports(selectedCustomerId, days, campaignId);
     }
-  }, [selectedCustomerId, days, loadReports]);
+  }, [selectedCustomerId, days, campaignId, loadReports]);
+
+  // When the customer or date range changes the underlying campaign list can
+  // change too — a campaign that existed in the last 30d might not exist in
+  // the last 7d. Reset the filter so we don't stay stuck on a stale id.
+  useEffect(() => {
+    setCampaignId(null);
+  }, [selectedCustomerId]);
 
   return (
     <div>
@@ -313,8 +345,15 @@ const GoogleAds = () => {
             />
           )}
           <DayRangeSelector value={days} onChange={setDays} />
+          {allCampaignOptions.length > 0 && (
+            <CampaignFilter
+              value={campaignId}
+              onChange={setCampaignId}
+              options={allCampaignOptions}
+            />
+          )}
           <button
-            onClick={() => selectedCustomerId && loadReports(selectedCustomerId, days)}
+            onClick={() => selectedCustomerId && loadReports(selectedCustomerId, days, campaignId)}
             disabled={!selectedCustomerId || loadingReports}
             className="inline-flex items-center gap-1.5 px-3 py-2 border border-gray-300 rounded-md text-sm text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50"
             title="Refresh"
@@ -446,6 +485,22 @@ const DayRangeSelector = ({ value, onChange }) => (
       </button>
     ))}
   </div>
+);
+
+const CampaignFilter = ({ value, onChange, options }) => (
+  <select
+    value={value || ''}
+    onChange={e => onChange(e.target.value || null)}
+    className="border border-gray-300 rounded-md px-3 py-2 text-sm text-gray-700 bg-white hover:bg-gray-50 max-w-xs truncate"
+    title={value ? `Filtering by campaign ${value}` : 'All campaigns'}
+  >
+    <option value="">All campaigns</option>
+    {options.map(c => (
+      <option key={c.id} value={c.id}>
+        {c.name}{c.status && c.status !== 'ENABLED' ? ` · ${c.status.toLowerCase()}` : ''}
+      </option>
+    ))}
+  </select>
 );
 
 const SectionTabs = ({ value, onChange }) => (
