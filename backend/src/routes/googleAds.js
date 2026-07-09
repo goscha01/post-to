@@ -143,14 +143,44 @@ router.get('/customers', async (req, res) => {
 
     const results = await Promise.allSettled(
       effectiveTokens.map(async t => {
-        const cids = await ads.listAccessibleCustomers(t.access_token);
+        const ownerEmail = t.email || null;
+        const cids = await ads.listAccessibleCustomers(t.access_token, { ownerEmail });
         if (!cids.length) return [];
-        const described = await ads.describeCustomers(t.access_token, cids);
-        return described.customers.map(c => ({
+        const described = await ads.describeCustomers(t.access_token, cids, { ownerEmail });
+
+        // If any accessible customer is a manager (MCC), enumerate the
+        // customers under it — that's the only way sub-customers show up in
+        // the picker for users whose only access is via a manager account.
+        const managerCids = described.customers.filter(c => c.manager).map(c => c.customerId);
+        const childCustomers = [];
+        for (const managerCid of managerCids) {
+          const children = await ads.enumerateManagerChildren(t.access_token, managerCid, { ownerEmail });
+          for (const child of children) {
+            // Skip the manager itself (customer_client includes level=0 = self)
+            if (child.cid === managerCid) continue;
+            childCustomers.push({
+              customerId: child.cid,
+              descriptiveName: child.descriptiveName,
+              currencyCode: child.currencyCode,
+              timeZone: child.timeZone,
+              manager: child.manager,
+              testAccount: false,
+              autoTaggingEnabled: false,
+              status: child.status,
+              managerCustomerId: managerCid,
+              ownerGoogleId: t.google_id || null,
+              ownerEmail,
+            });
+          }
+        }
+
+        const directCustomers = described.customers.map(c => ({
           ...c,
           ownerGoogleId: t.google_id || null,
-          ownerEmail: t.email || null,
+          ownerEmail,
         }));
+
+        return [...directCustomers, ...childCustomers];
       })
     );
 

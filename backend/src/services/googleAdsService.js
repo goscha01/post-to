@@ -69,18 +69,29 @@ function headers(accessToken, loginCustomerId) {
 // GET /vNN/customers:listAccessibleCustomers → returns every CID this OAuth
 // token can see (both direct accounts and accounts under any manager the user
 // touches). Response is resource names like "customers/1234567890".
-async function listAccessibleCustomers(accessToken) {
+async function listAccessibleCustomers(accessToken, { ownerEmail = null } = {}) {
   const url = `${BASE_URL}/customers:listAccessibleCustomers`;
   const { data } = await axios.get(url, { headers: headers(accessToken), timeout: 15000 });
   const resourceNames = data.resourceNames || [];
-  return resourceNames.map(rn => stripCid(rn));
+  const cids = resourceNames.map(rn => stripCid(rn));
+  logger.info('googleAds.listAccessibleCustomers.raw', {
+    ownerEmail,
+    apiVersion: API_VERSION,
+    resourceNamesCount: resourceNames.length,
+    cids,
+    rawKeys: Object.keys(data || {}),
+    rawSample: (() => {
+      try { return JSON.stringify(data).slice(0, 500); } catch { return String(data).slice(0, 500); }
+    })(),
+  });
+  return cids;
 }
 
 // Enrich each accessible customer with name/currency/timezone/manager status
 // via a customer-level GAQL. Runs one query per CID — the alternative
 // (a single query against a manager) requires knowing the manager up front.
 // Skips CIDs that error (cancelled accounts, no permission, etc.).
-async function describeCustomers(accessToken, customerIds) {
+async function describeCustomers(accessToken, customerIds, { ownerEmail = null } = {}) {
   const out = [];
   const errors = [];
   await Promise.all(customerIds.map(async (cid) => {
@@ -110,12 +121,81 @@ async function describeCustomers(accessToken, customerIds) {
           autoTaggingEnabled: !!c.autoTaggingEnabled,
           status: c.status || null,
         });
+        logger.info('googleAds.describeCustomers.hit', {
+          ownerEmail,
+          cid: String(c.id),
+          descriptiveName: c.descriptiveName || null,
+          manager: !!c.manager,
+          status: c.status || null,
+        });
+      } else {
+        logger.warn('googleAds.describeCustomers.no_customer_row', { ownerEmail, cid });
       }
     } catch (err) {
+      const detail = err?.response?.data?.error?.details?.[0]?.errors?.[0];
       errors.push({ customerId: cid, status: err?.response?.status || null, message: err?.message });
+      logger.warn('googleAds.describeCustomers.error', {
+        ownerEmail,
+        cid,
+        status: err?.response?.status || null,
+        apiMessage: err?.response?.data?.error?.message || null,
+        errorCode: detail?.errorCode ? JSON.stringify(detail.errorCode) : null,
+        errorMessage: detail?.message || null,
+      });
     }
   }));
   return { customers: out, errors };
+}
+
+// For each manager CID discovered via listAccessibleCustomers, enumerate the
+// customer_client tree beneath it. Returns the flat CID list (children plus
+// grandchildren, deduped, non-managers). Uses the manager itself as
+// login-customer-id, per Google Ads MCC access rules.
+async function enumerateManagerChildren(accessToken, managerCid, { ownerEmail = null } = {}) {
+  try {
+    const rows = await search(accessToken, managerCid, `
+      SELECT
+        customer_client.client_customer,
+        customer_client.id,
+        customer_client.descriptive_name,
+        customer_client.currency_code,
+        customer_client.time_zone,
+        customer_client.manager,
+        customer_client.status,
+        customer_client.level
+      FROM customer_client
+    `, { loginCustomerId: managerCid });
+    const children = rows
+      .map(r => r.customerClient)
+      .filter(Boolean)
+      .map(cc => ({
+        cid: String(cc.id),
+        descriptiveName: cc.descriptiveName || `Customer ${cc.id}`,
+        currencyCode: cc.currencyCode || null,
+        timeZone: cc.timeZone || null,
+        manager: !!cc.manager,
+        status: cc.status || null,
+        level: cc.level != null ? Number(cc.level) : null,
+      }));
+    logger.info('googleAds.enumerateManagerChildren.ok', {
+      ownerEmail,
+      managerCid,
+      childCount: children.length,
+      childCids: children.map(c => c.cid),
+    });
+    return children;
+  } catch (err) {
+    const detail = err?.response?.data?.error?.details?.[0]?.errors?.[0];
+    logger.warn('googleAds.enumerateManagerChildren.error', {
+      ownerEmail,
+      managerCid,
+      status: err?.response?.status || null,
+      apiMessage: err?.response?.data?.error?.message || null,
+      errorCode: detail?.errorCode ? JSON.stringify(detail.errorCode) : null,
+      errorMessage: detail?.message || null,
+    });
+    return [];
+  }
 }
 
 // ---------- Query runner (GAQL search) ----------
@@ -1113,6 +1193,7 @@ function normalizeApiError(err, context) {
 module.exports = {
   listAccessibleCustomers,
   describeCustomers,
+  enumerateManagerChildren,
   getCampaigns,
   getAdGroups,
   getKeywords,

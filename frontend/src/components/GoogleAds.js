@@ -1361,7 +1361,7 @@ const CustomerPickerModal = ({ onClose, onConnected }) => {
       const row = await googleAdsService.selectCustomer({
         customerId: c.customerId,
         descriptiveName: c.descriptiveName,
-        managerCustomerId: c.manager ? null : null, // manager id is set by fan-out later if needed
+        managerCustomerId: c.managerCustomerId || null,
         currencyCode: c.currencyCode,
         timeZone: c.timeZone,
         ownerGoogleId: c.ownerGoogleId,
