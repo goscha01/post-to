@@ -202,9 +202,12 @@ async function enumerateManagerChildren(accessToken, managerCid, { ownerEmail = 
 
 // POST /vNN/customers/{cid}/googleAds:search  (paginated JSON) — we use this
 // instead of searchStream because searchStream returns newline-delimited
-// JSON in a single response which axios doesn't parse natively. The API
-// caps a single page at 10,000 rows; nextPageToken is followed until empty.
-async function search(accessToken, customerId, query, { loginCustomerId, pageSize = 10000 } = {}) {
+// JSON in a single response which axios doesn't parse natively. Follow
+// nextPageToken until empty.
+//
+// NOTE: v21 removed the `pageSize` parameter — passing it returns
+// PAGE_SIZE_NOT_SUPPORTED (400). Do not add it back.
+async function search(accessToken, customerId, query, { loginCustomerId } = {}) {
   const cid = stripCid(customerId);
   const login = loginCustomerId ? stripCid(loginCustomerId) : cid;
   const url = `${BASE_URL}/customers/${cid}/googleAds:search`;
@@ -212,7 +215,7 @@ async function search(accessToken, customerId, query, { loginCustomerId, pageSiz
   const results = [];
   let pageToken;
   do {
-    const body = { query, pageSize };
+    const body = { query };
     if (pageToken) body.pageToken = pageToken;
     const { data } = await axios.post(url, body, {
       headers: headers(accessToken, login),
