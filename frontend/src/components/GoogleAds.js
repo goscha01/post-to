@@ -195,6 +195,30 @@ const GoogleAds = () => {
     URL.revokeObjectURL(url);
   };
 
+  const handleDownloadOptimizationReport = async () => {
+    if (!selectedCustomerId) return;
+    setError('');
+    try {
+      const data = await googleAdsService.getOptimizationReport({
+        customerId: selectedCustomerId,
+        days,
+        campaignId: campaignId || undefined,
+      });
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const stamp = new Date().toISOString().slice(0, 10);
+      a.download = `optimization-report-${selectedCustomerId}-${days}d-${stamp}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setError(e.response?.data?.error || e.message || 'Failed to build optimization report');
+    }
+  };
+
   const canExport = !!overview && !loadingReports;
 
   const loadConnected = useCallback(async () => {
@@ -369,6 +393,15 @@ const GoogleAds = () => {
           >
             <Download className="h-4 w-4" />
             JSON
+          </button>
+          <button
+            onClick={handleDownloadOptimizationReport}
+            disabled={!selectedCustomerId || loadingReports}
+            className="inline-flex items-center gap-1.5 px-3 py-2 border border-primary-300 rounded-md text-sm text-primary-700 bg-primary-50 hover:bg-primary-100 disabled:opacity-50"
+            title="Download the consolidated Ads + GA4 report intended for ChatGPT ingestion"
+          >
+            <Download className="h-4 w-4" />
+            AI Report
           </button>
           <button
             onClick={() => setPickerOpen(true)}

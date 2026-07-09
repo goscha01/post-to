@@ -15,6 +15,7 @@ const aiRoutes = require('./routes/ai');
 const connectionsRoutes = require('./routes/connections');
 const analyticsRoutes = require('./routes/analytics');
 const googleAdsRoutes = require('./routes/googleAds');
+const optimizationReportRoutes = require('./routes/optimizationReport');
 const clientLogRoutes = require('./routes/clientLog');
 const apiLogger = require('./middleware/apiLogger');
 
@@ -110,6 +111,7 @@ app.use('/api/ai', aiRoutes);
 app.use('/api/connections', connectionsRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/google-ads', googleAdsRoutes);
+app.use('/api/optimization-report', optimizationReportRoutes);
 app.use('/api/client-log', clientLogRoutes);
 
 // Health check endpoint

@@ -68,11 +68,30 @@ const getQuality         = async (cid, days, campaignId)       => (await axios.g
 const getChangeHistory   = async (cid, days)                   => (await axios.get('/api/google-ads/change-history',   withCustomerDays(cid, days))).data;
 const getDiagnostics     = async (cid, days, campaignId)       => (await axios.get('/api/google-ads/diagnostics',      withCustomerDays(cid, days, campaignId))).data;
 
+// One-shot consolidated Ads + GA4 report intended for ChatGPT ingestion.
+// Route lives under /api/optimization-report (its own express router, not
+// under /api/google-ads).
+const getOptimizationReport = async ({ customerId, days, campaignId, propertyId } = {}) => {
+  const params = {};
+  if (customerId) params.customerId = customerId;
+  if (days) params.days = days;
+  if (campaignId) params.campaignId = campaignId;
+  if (propertyId) params.propertyId = propertyId;
+  const res = await axios.get('/api/optimization-report', {
+    params,
+    // Report fans out ~20 upstream API calls; the default 10s axios timeout
+    // is too tight when GA4 or Ads is slow. Give it a full 60s.
+    timeout: 60000,
+  });
+  return res.data;
+};
+
 const googleAdsService = {
   listAvailableCustomers,
   selectCustomer,
   listConnectedCustomers,
   diagnoseAuth,
+  getOptimizationReport,
   getCampaigns,
   getAdGroups,
   getKeywords,
