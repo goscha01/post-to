@@ -35,6 +35,8 @@ const DAY_RANGES = [
   { label: '7 days', value: 7 },
   { label: '30 days', value: 30 },
   { label: '90 days', value: 90 },
+  { label: '180 days', value: 180 },
+  { label: '365 days', value: 365 },
 ];
 
 const SECTIONS = [
@@ -109,7 +111,7 @@ const GoogleAds = () => {
   const [audience, setAudience] = useState({ ageRanges: [], genders: [] });
   const [auctionInsights, setAuctionInsights] = useState([]);
   const [quality, setQuality] = useState([]);
-  const [changeHistory, setChangeHistory] = useState([]);
+  const [changeHistory, setChangeHistory] = useState({ events: [], summary: [], caps: null, requestedDays: null, unavailableBeyondDays: null });
   const [diagnostics, setDiagnostics] = useState(null);
 
   const [loading, setLoading] = useState(true);
@@ -257,7 +259,15 @@ const GoogleAds = () => {
       setAudience(aud.audience || { ageRanges: [], genders: [] });
       setAuctionInsights(ai.auctionInsights || []);
       setQuality(ql.quality || []);
-      setChangeHistory(ch.changeHistory || []);
+      setChangeHistory(ch.changeHistory && typeof ch.changeHistory === 'object' && !Array.isArray(ch.changeHistory)
+        ? {
+            events: ch.changeHistory.events || [],
+            summary: ch.changeHistory.summary || [],
+            caps: ch.changeHistory.caps || null,
+            requestedDays: ch.changeHistory.requestedDays || null,
+            unavailableBeyondDays: ch.changeHistory.unavailableBeyondDays || null,
+          }
+        : { events: Array.isArray(ch.changeHistory) ? ch.changeHistory : [], summary: [], caps: null, requestedDays: null, unavailableBeyondDays: null });
       setDiagnostics(diag.diagnostics || null);
     } catch (err) {
       const status = err.response?.status;
@@ -381,7 +391,7 @@ const GoogleAds = () => {
             {activeSection === 'audience'        && <AudienceView data={audience} loading={loadingReports} currency={currency} />}
             {activeSection === 'auctionInsights' && <AuctionInsightsTable rows={auctionInsights} loading={loadingReports} />}
             {activeSection === 'quality'         && <QualityTable rows={quality} loading={loadingReports} />}
-            {activeSection === 'changeHistory'   && <ChangeHistoryTable rows={changeHistory} loading={loadingReports} />}
+            {activeSection === 'changeHistory'   && <ChangeHistoryTable data={changeHistory} loading={loadingReports} />}
           </div>
         </>
       )}
@@ -1286,41 +1296,111 @@ const QualityTable = ({ rows, loading }) => {
   );
 };
 
-const ChangeHistoryTable = ({ rows, loading }) => {
+const ChangeHistoryTable = ({ data, loading }) => {
   if (loading) return <TableLoading />;
-  if (!rows || rows.length === 0) return <TableEmpty msg="No account changes in this range." />;
+  const events = data?.events || [];
+  const summary = data?.summary || [];
+  const requestedDays = data?.requestedDays || null;
+  const unavailableBeyondDays = data?.unavailableBeyondDays || null;
+  const hasSummary = summary.length > 0 || (requestedDays && requestedDays > 30);
+
   return (
-    <Panel>
-      <div className="overflow-x-auto max-h-[70vh] overflow-y-auto">
-        <table className="min-w-full divide-y divide-gray-100">
-          <thead className="bg-gray-50 sticky top-0">
-            <tr>
-              <Th>When</Th>
-              <Th>User</Th>
-              <Th>Client</Th>
-              <Th>Resource</Th>
-              <Th>Op</Th>
-              <Th>Fields</Th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-100">
-            {rows.map((r, i) => (
-              <tr key={i}>
-                <Td className="text-xs font-mono flex items-center gap-1.5">
-                  <History className="h-3 w-3 text-gray-400" />
-                  {r.changeDateTime}
-                </Td>
-                <Td className="text-xs">{r.userEmail || '—'}</Td>
-                <Td className="text-xs">{r.clientType}</Td>
-                <Td className="text-xs">{r.resourceType}</Td>
-                <Td className="text-xs">{r.operation}</Td>
-                <Td className="text-xs">{truncate(JSON.stringify(r.changedFields || ''), 60)}</Td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+    <div className="space-y-4">
+      <div className="p-3 bg-blue-50 border border-blue-200 rounded text-xs text-blue-900">
+        <p className="font-medium mb-1">Google Ads API change-history windows</p>
+        <ul className="list-disc pl-5 space-y-0.5">
+          <li><strong>Last 30 days</strong> — detailed events (who changed which field, per row).</li>
+          <li><strong>Last 90 days</strong> — resource-level summary (which resources changed and when, no per-field detail).</li>
+          {unavailableBeyondDays && (
+            <li className="text-blue-800"><strong>Beyond {unavailableBeyondDays} days</strong> — not exposed by the Google Ads API. The Web UI can show more; the API cannot.</li>
+          )}
+        </ul>
       </div>
-    </Panel>
+
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="text-sm font-semibold text-gray-900">Detailed events (last 30 days)</h3>
+          <span className="text-xs text-gray-500">{events.length} row{events.length === 1 ? '' : 's'}</span>
+        </div>
+        {events.length === 0 ? (
+          <TableEmpty msg="No detailed changes in the last 30 days." />
+        ) : (
+          <Panel>
+            <div className="overflow-x-auto max-h-[50vh] overflow-y-auto">
+              <table className="min-w-full divide-y divide-gray-100">
+                <thead className="bg-gray-50 sticky top-0">
+                  <tr>
+                    <Th>When</Th>
+                    <Th>User</Th>
+                    <Th>Client</Th>
+                    <Th>Resource</Th>
+                    <Th>Op</Th>
+                    <Th>Fields</Th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {events.map((r, i) => (
+                    <tr key={i}>
+                      <Td className="text-xs font-mono flex items-center gap-1.5">
+                        <History className="h-3 w-3 text-gray-400" />
+                        {r.changeDateTime}
+                      </Td>
+                      <Td className="text-xs">{r.userEmail || '—'}</Td>
+                      <Td className="text-xs">{r.clientType}</Td>
+                      <Td className="text-xs">{r.resourceType}</Td>
+                      <Td className="text-xs">{r.operation}</Td>
+                      <Td className="text-xs">{truncate(JSON.stringify(r.changedFields || ''), 60)}</Td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Panel>
+        )}
+      </div>
+
+      {hasSummary && (
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-sm font-semibold text-gray-900">Resource-level summary (30–90 days)</h3>
+            <span className="text-xs text-gray-500">{summary.length} row{summary.length === 1 ? '' : 's'}</span>
+          </div>
+          {summary.length === 0 ? (
+            <TableEmpty msg="No resource-level changes in the 30–90 day window." />
+          ) : (
+            <Panel>
+              <div className="overflow-x-auto max-h-[50vh] overflow-y-auto">
+                <table className="min-w-full divide-y divide-gray-100">
+                  <thead className="bg-gray-50 sticky top-0">
+                    <tr>
+                      <Th>Last change</Th>
+                      <Th>Resource type</Th>
+                      <Th>Status</Th>
+                      <Th>Campaign</Th>
+                      <Th>Ad group</Th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {summary.map((r, i) => (
+                      <tr key={i}>
+                        <Td className="text-xs font-mono flex items-center gap-1.5">
+                          <History className="h-3 w-3 text-gray-400" />
+                          {r.changeDateTime}
+                        </Td>
+                        <Td className="text-xs">{r.resourceType}</Td>
+                        <Td className="text-xs">{r.resourceStatus}</Td>
+                        <Td className="text-xs">{truncate(r.campaign || '—', 40)}</Td>
+                        <Td className="text-xs">{truncate(r.adGroup || '—', 40)}</Td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Panel>
+          )}
+        </div>
+      )}
+    </div>
   );
 };
 

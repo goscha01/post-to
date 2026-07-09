@@ -937,15 +937,19 @@ async function getQuality(accessToken, customerId, days, opts = {}) {
   });
 }
 
-async function getChangeHistory(accessToken, customerId, days, opts = {}) {
-  // change_event has a hard 30-day cap on Google's side. Clamp to 29 days to
-  // leave a safety buffer for timezone drift between our UTC computation and
-  // the account's local timezone (their check is inclusive; going right up to
-  // the edge trips "start date too old").
-  const n = Math.max(1, Math.min(29, parseInt(days, 10) || 29));
+// GAQL date-time literal helper. Format: 'YYYY-MM-DD HH:MM:SS' (UTC).
+function gaqlDatetime(d) {
+  return d.toISOString().replace('T', ' ').slice(0, 19);
+}
+
+// Detailed change events (per-field, who/when/what). Google caps
+// change_event at 30 days from now. We stay 5 minutes inside that boundary
+// to survive clock skew between our clock and Google's.
+async function getChangeEventDetails(accessToken, customerId, days, opts = {}) {
+  const requested = Math.max(1, parseInt(days, 10) || 30);
+  const capped = Math.min(30, requested);
   const end = new Date();
-  const start = new Date(end.getTime() - (n - 1) * 24 * 3600 * 1000);
-  const iso = d => d.toISOString().replace('T', ' ').slice(0, 19);
+  const start = new Date(end.getTime() - (capped * 24 * 3600 * 1000 - 5 * 60 * 1000));
   const rows = await search(accessToken, customerId, `
     SELECT
       change_event.change_date_time,
@@ -958,8 +962,8 @@ async function getChangeHistory(accessToken, customerId, days, opts = {}) {
       change_event.asset,
       change_event.changed_fields
     FROM change_event
-    WHERE change_event.change_date_time >= '${iso(start)}'
-      AND change_event.change_date_time <= '${iso(end)}'
+    WHERE change_event.change_date_time >= '${gaqlDatetime(start)}'
+      AND change_event.change_date_time <= '${gaqlDatetime(end)}'
     ORDER BY change_event.change_date_time DESC
     LIMIT 500
   `, opts);
@@ -977,6 +981,92 @@ async function getChangeHistory(accessToken, customerId, days, opts = {}) {
       changedFields: e.changedFields || null,
     };
   });
+}
+
+// Summary-only change tracking. change_status returns which resources
+// were ADDED/CHANGED/REMOVED and when — but NOT the field-level detail or
+// user email. Google caps this at 90 days. We stay 5 minutes inside.
+async function getChangeStatusSummary(accessToken, customerId, days, opts = {}) {
+  const requested = Math.max(1, parseInt(days, 10) || 90);
+  const capped = Math.min(90, requested);
+  const end = new Date();
+  const start = new Date(end.getTime() - (capped * 24 * 3600 * 1000 - 5 * 60 * 1000));
+  const rows = await search(accessToken, customerId, `
+    SELECT
+      change_status.last_change_date_time,
+      change_status.resource_type,
+      change_status.resource_status,
+      change_status.campaign,
+      change_status.ad_group,
+      change_status.ad_group_ad,
+      change_status.ad_group_criterion,
+      change_status.campaign_criterion
+    FROM change_status
+    WHERE change_status.last_change_date_time >= '${gaqlDatetime(start)}'
+      AND change_status.last_change_date_time <= '${gaqlDatetime(end)}'
+    ORDER BY change_status.last_change_date_time DESC
+    LIMIT 10000
+  `, opts);
+
+  return rows.map(r => {
+    const s = r.changeStatus || {};
+    return {
+      changeDateTime: s.lastChangeDateTime || null,
+      resourceType: enumLabel(s.resourceType),
+      resourceStatus: enumLabel(s.resourceStatus),
+      campaign: s.campaign || null,
+      adGroup: s.adGroup || null,
+      adGroupAd: s.adGroupAd || null,
+      adGroupCriterion: s.adGroupCriterion || null,
+      campaignCriterion: s.campaignCriterion || null,
+    };
+  });
+}
+
+// Combined change history — the frontend renders both halves.
+//
+// Google Ads API has two separate change-tracking resources with different
+// windows and detail levels:
+//   change_event  — field-by-field, user email, up to 30 days
+//   change_status — resource-level summary, up to 90 days
+//
+// A single "give me the last N days" request maps to:
+//   N ≤ 30 → detailed events only
+//   30 < N ≤ 90 → detailed events (last 30d) + summary (30-N days)
+//   N > 90 → same as N=90; anything older is unavailable via the API and
+//            surfaced to the UI via unavailableBeyondDays.
+async function getChangeHistory(accessToken, customerId, days, opts = {}) {
+  const requested = Math.max(1, Math.min(365, parseInt(days, 10) || 30));
+
+  const events = await getChangeEventDetails(accessToken, customerId, Math.min(requested, 30), opts).catch(err => {
+    logger.warn('googleAds.changeHistory.events_failed', {
+      customerId,
+      status: err?.response?.status || null,
+      apiMessage: err?.response?.data?.error?.message || err.message,
+    });
+    return [];
+  });
+
+  let summary = [];
+  if (requested > 30) {
+    summary = await getChangeStatusSummary(accessToken, customerId, Math.min(requested, 90), opts).catch(err => {
+      logger.warn('googleAds.changeHistory.summary_failed', {
+        customerId,
+        status: err?.response?.status || null,
+        apiMessage: err?.response?.data?.error?.message || err.message,
+      });
+      return [];
+    });
+  }
+
+  return {
+    events,
+    summary,
+    caps: { eventMaxDays: 30, summaryMaxDays: 90 },
+    requestedDays: requested,
+    availableDays: Math.min(requested, 90),
+    unavailableBeyondDays: requested > 90 ? 90 : null,
+  };
 }
 
 // ---------- Diagnostics aggregator ----------
