@@ -586,18 +586,15 @@ async function getAssets(accessToken, customerId, days, opts = {}) {
 // remove redundant keywords, …). This is the goldmine for ChatGPT — surface
 // exactly what Google is already flagging.
 async function getRecommendations(accessToken, customerId, opts = {}) {
+  // v21 removed recommendation.impact.{base,potential}_metrics.* as selectable
+  // columns — the impact object still exists on the resource but its child
+  // metric fields are no longer queryable. We select only what v21 accepts and
+  // expose the recommendation surface (type, campaign, dismissed) which is
+  // enough for the "what does Google itself suggest?" diagnostic.
   const rows = await search(accessToken, customerId, `
     SELECT
       recommendation.resource_name,
       recommendation.type,
-      recommendation.impact.base_metrics.impressions,
-      recommendation.impact.base_metrics.clicks,
-      recommendation.impact.base_metrics.cost_micros,
-      recommendation.impact.base_metrics.conversions,
-      recommendation.impact.potential_metrics.impressions,
-      recommendation.impact.potential_metrics.clicks,
-      recommendation.impact.potential_metrics.cost_micros,
-      recommendation.impact.potential_metrics.conversions,
       recommendation.campaign,
       recommendation.campaign_budget,
       recommendation.dismissed
@@ -606,26 +603,14 @@ async function getRecommendations(accessToken, customerId, opts = {}) {
 
   return rows.map(r => {
     const rec = r.recommendation || {};
-    const base = rec.impact?.baseMetrics || {};
-    const pot = rec.impact?.potentialMetrics || {};
     return {
       resourceName: rec.resourceName || '',
       type: enumLabel(rec.type),
       campaign: rec.campaign || null,
       campaignBudget: rec.campaignBudget || null,
       dismissed: !!rec.dismissed,
-      base: {
-        impressions: num(base.impressions),
-        clicks: num(base.clicks),
-        cost: fromMicros(base.costMicros),
-        conversions: num(base.conversions),
-      },
-      potential: {
-        impressions: num(pot.impressions),
-        clicks: num(pot.clicks),
-        cost: fromMicros(pot.costMicros),
-        conversions: num(pot.conversions),
-      },
+      base: { impressions: 0, clicks: 0, cost: 0, conversions: 0 },
+      potential: { impressions: 0, clicks: 0, cost: 0, conversions: 0 },
     };
   });
 }
@@ -651,6 +636,10 @@ async function getConversions(accessToken, customerId, days, opts = {}) {
     LIMIT 500
   `, opts);
 
+  // v21: segments.conversion_action_name / conversion_action_category cannot
+  // be combined with metrics.cost_micros in the same query
+  // (PROHIBITED_SEGMENT_WITH_METRIC_IN_SELECT_OR_WHERE_CLAUSE). We don't use
+  // cost_micros in the per-action aggregation, so just drop it.
   const metricsRows = await search(accessToken, customerId, `
     SELECT
       segments.conversion_action_name,
@@ -658,8 +647,7 @@ async function getConversions(accessToken, customerId, days, opts = {}) {
       metrics.all_conversions,
       metrics.all_conversions_value,
       metrics.conversions,
-      metrics.conversions_value,
-      metrics.cost_micros
+      metrics.conversions_value
     FROM customer
     WHERE ${dr.clause}
   `, opts);
@@ -964,8 +952,6 @@ async function getChangeHistory(accessToken, customerId, days, opts = {}) {
       change_event.resource_change_operation,
       change_event.campaign,
       change_event.ad_group,
-      change_event.feed,
-      change_event.feed_item,
       change_event.asset,
       change_event.changed_fields
     FROM change_event
