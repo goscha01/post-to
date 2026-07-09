@@ -162,15 +162,30 @@ router.get('/customers', async (req, res) => {
       } else {
         // Grab the full Google Ads error body — that's where DEVELOPER_TOKEN_NOT_APPROVED,
         // AUTHENTICATION_ERROR etc live. Without this, all 400s look identical.
-        const apiError = r.reason?.response?.data?.error;
+        // Also capture the raw response.data body as a string so we can see
+        // exactly what Google returned even when it isn't the expected
+        // GoogleAdsFailure structure (some 400s from Ads API v20 return a
+        // plain google.rpc.Status body with only code+message).
+        const responseData = r.reason?.response?.data;
+        const apiError = responseData?.error;
         const detail = apiError?.details?.[0]?.errors?.[0];
+        let rawBody;
+        try {
+          rawBody = typeof responseData === 'string'
+            ? responseData.slice(0, 800)
+            : JSON.stringify(responseData || {}).slice(0, 800);
+        } catch {
+          rawBody = String(responseData).slice(0, 800);
+        }
         errors.push({
           ownerEmail: effectiveTokens[i].email,
           status: r.reason?.response?.status || null,
           message: r.reason?.message || 'unknown',
           apiMessage: apiError?.message || null,
-          errorCode: detail?.errorCode || null,
+          apiStatus: apiError?.status || null,
+          errorCode: detail?.errorCode ? JSON.stringify(detail.errorCode) : null,
           errorMessage: detail?.message || null,
+          rawBody,
         });
       }
     });
