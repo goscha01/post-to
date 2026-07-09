@@ -204,11 +204,19 @@ router.get('/customers', async (req, res) => {
       accounts_tried: effectiveTokens.length,
       accounts_failed: errors.length,
       // Per-token detail — critical for diagnosing "connect ads didn't work".
-      // Includes the API status + first 200 chars of message. No token material.
+      // Pass through every enriched field we captured above (apiMessage,
+      // apiStatus, errorCode, errorMessage, rawBody) — earlier version of this
+      // map picked only email/status/message which silently stripped the
+      // Google-side error we actually need to see.
       failures: errors.map(e => ({
         email: e.ownerEmail,
         status: e.status,
         message: String(e.message || '').slice(0, 200),
+        apiMessage: e.apiMessage,
+        apiStatus: e.apiStatus,
+        errorCode: e.errorCode,
+        errorMessage: e.errorMessage,
+        rawBody: e.rawBody,
       })),
     });
 
