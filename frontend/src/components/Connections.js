@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Globe, Building2, Instagram, Facebook, LineChart, Megaphone, Bot, Plus, Trash2, ExternalLink, X, Check, AlertCircle, RefreshCw, Sparkles } from 'lucide-react';
+import { Globe, Building2, Instagram, Facebook, LineChart, Megaphone, Bot, Search, Plus, Trash2, ExternalLink, X, Check, AlertCircle, RefreshCw, Sparkles } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import connectionsService from '../services/connectionsService';
 
@@ -28,6 +28,12 @@ const PROVIDER_META = {
     icon: Megaphone,
     color: 'text-purple-600',
     bg: 'bg-purple-50',
+  },
+  google_search_console: {
+    label: 'Google Search Console',
+    icon: Search,
+    color: 'text-yellow-700',
+    bg: 'bg-yellow-50',
   },
   instagram: {
     label: 'Instagram',
@@ -292,6 +298,14 @@ const ConnectPickerModal = ({ onClose, onConnected }) => {
     navigate('/ads');
   };
 
+  const handleSearchConsole = () => {
+    // GSC tokens ride on the same OAuth grant (webmasters.readonly is in
+    // BUSINESS_SCOPES). Site selection happens inside the Blogs page's
+    // "Top keywords" flow — first-load there prompts to pick a site.
+    onClose();
+    navigate('/blogs');
+  };
+
   const titles = {
     pick: 'Connect an account',
     website: 'Connect website',
@@ -314,6 +328,7 @@ const ConnectPickerModal = ({ onClose, onConnected }) => {
               onPickGoogle={handleGoogle}
               onPickAnalytics={handleAnalytics}
               onPickAds={handleAds}
+              onPickSearchConsole={handleSearchConsole}
               onPickOpenAiAds={() => setStep('openai_ads')}
             />
           )}
@@ -329,12 +344,13 @@ const ConnectPickerModal = ({ onClose, onConnected }) => {
   );
 };
 
-const PickerTiles = ({ onPickWebsite, onPickGoogle, onPickAnalytics, onPickAds, onPickOpenAiAds }) => {
+const PickerTiles = ({ onPickWebsite, onPickGoogle, onPickAnalytics, onPickAds, onPickSearchConsole, onPickOpenAiAds }) => {
   const tiles = [
     { key: 'website', label: 'Website', desc: 'Connect by URL for AI blogs', icon: Globe, color: 'text-emerald-600', bg: 'bg-emerald-50', onClick: onPickWebsite, enabled: true },
     { key: 'google', label: 'Google Business Profile', desc: 'Reviews, posts, insights', icon: Building2, color: 'text-blue-600', bg: 'bg-blue-50', onClick: onPickGoogle, enabled: true },
     { key: 'analytics', label: 'Google Analytics', desc: 'GA4 sessions, conversions, campaigns', icon: LineChart, color: 'text-orange-600', bg: 'bg-orange-50', onClick: onPickAnalytics, enabled: true },
     { key: 'ads', label: 'Google Ads', desc: 'Read-only campaign diagnostics', icon: Megaphone, color: 'text-purple-600', bg: 'bg-purple-50', onClick: onPickAds, enabled: true },
+    { key: 'search_console', label: 'Google Search Console', desc: 'Top keywords → blog topics', icon: Search, color: 'text-yellow-700', bg: 'bg-yellow-50', onClick: onPickSearchConsole, enabled: true },
     { key: 'openai_ads', label: 'OpenAI Ads', desc: 'API key from ads.openai.com', icon: Bot, color: 'text-gray-900', bg: 'bg-gray-100', onClick: onPickOpenAiAds, enabled: true },
     { key: 'instagram', label: 'Instagram', desc: 'Coming soon', icon: Instagram, color: 'text-pink-600', bg: 'bg-pink-50', enabled: false },
     { key: 'facebook', label: 'Facebook', desc: 'Coming soon', icon: Facebook, color: 'text-indigo-600', bg: 'bg-indigo-50', enabled: false },

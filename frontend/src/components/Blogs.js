@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Plus, Sparkles, Trash2, Edit3, Globe, X, AlertCircle, Check, FileText } from 'lucide-react';
+import { Plus, Sparkles, Trash2, Edit3, Globe, Search, X, AlertCircle, Check, FileText, RefreshCw } from 'lucide-react';
+import { useAuth } from '../contexts/AuthContext';
 import blogsService from '../services/blogsService';
 import connectionsService from '../services/connectionsService';
+import gscService from '../services/gscService';
 
 const STATUS_STYLES = {
   draft: 'bg-gray-100 text-gray-700',
@@ -22,6 +24,7 @@ const Blogs = () => {
   const [connectionFilter, setConnectionFilter] = useState(initialConnectionId);
   const [editingId, setEditingId] = useState(null);
   const [generatorOpen, setGeneratorOpen] = useState(initialGenerate);
+  const [presetKeyword, setPresetKeyword] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -54,6 +57,16 @@ const Blogs = () => {
     () => connections.filter(c => c.provider === 'website'),
     [connections]
   );
+
+  const gscConnections = useMemo(
+    () => connections.filter(c => c.provider === 'google_search_console'),
+    [connections]
+  );
+
+  const openGeneratorWithKeyword = (keyword) => {
+    setPresetKeyword(keyword);
+    setGeneratorOpen(true);
+  };
 
   const handleDelete = async (id) => {
     if (!window.confirm('Delete this blog draft?')) return;
@@ -122,6 +135,12 @@ const Blogs = () => {
           <span>{error}</span>
         </div>
       )}
+
+      <GscKeywordsPanel
+        gscConnections={gscConnections}
+        onGenerate={openGeneratorWithKeyword}
+        onSiteConnected={(row) => setConnections(prev => [row, ...prev.filter(c => c.id !== row.id)])}
+      />
 
       {loading ? (
         <div className="text-sm text-gray-500">Loading…</div>
@@ -201,8 +220,15 @@ const Blogs = () => {
         <GeneratorModal
           connections={websiteConnections}
           defaultConnectionId={initialConnectionId || connectionFilter}
-          onClose={() => setGeneratorOpen(false)}
-          onGenerated={handleGenerated}
+          defaultKeyword={presetKeyword}
+          onClose={() => {
+            setGeneratorOpen(false);
+            setPresetKeyword('');
+          }}
+          onGenerated={(row) => {
+            setPresetKeyword('');
+            handleGenerated(row);
+          }}
         />
       )}
 
@@ -260,9 +286,9 @@ const BlogsEmptyState = ({ hasWebsiteConnection, onGenerate }) => {
   );
 };
 
-const GeneratorModal = ({ connections, defaultConnectionId, onClose, onGenerated }) => {
+const GeneratorModal = ({ connections, defaultConnectionId, defaultKeyword = '', onClose, onGenerated }) => {
   const [connectionId, setConnectionId] = useState(defaultConnectionId || (connections[0]?.id || ''));
-  const [keyword, setKeyword] = useState('');
+  const [keyword, setKeyword] = useState(defaultKeyword);
   const [tone, setTone] = useState('');
   const [targetAudience, setTargetAudience] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -575,5 +601,305 @@ const Modal = ({ title, onClose, children }) => (
     </div>
   </div>
 );
+
+// GscKeywordsPanel — Top-keywords-from-Search-Console section.
+//
+// Behavior:
+//   - No GSC connections yet + user has a business auth → offer to pick a site
+//     from /api/gsc/sites, save via /api/gsc/sites POST.
+//   - No GSC connections + no business auth → prompt to Reconnect Google so
+//     webmasters.readonly is granted, then the site picker appears.
+//   - Has connections → dropdown of sites, days selector, table of top queries,
+//     per-row "Generate blog" button that opens the generator with the keyword
+//     pre-filled.
+const GscKeywordsPanel = ({ gscConnections, onGenerate, onSiteConnected }) => {
+  const { loginForBusiness } = useAuth();
+  const [siteConnectionId, setSiteConnectionId] = useState(gscConnections[0]?.id || '');
+  const [days, setDays] = useState(7);
+  const [loading, setLoading] = useState(false);
+  const [rows, setRows] = useState([]);
+  const [err, setErr] = useState('');
+  const [needsReauth, setNeedsReauth] = useState(false);
+
+  // Keep the picker in sync with the current list of GSC connections.
+  useEffect(() => {
+    if (!gscConnections.length) {
+      setSiteConnectionId('');
+      setRows([]);
+      return;
+    }
+    if (!gscConnections.find(c => c.id === siteConnectionId)) {
+      setSiteConnectionId(gscConnections[0].id);
+    }
+  }, [gscConnections, siteConnectionId]);
+
+  const load = useCallback(async () => {
+    if (!siteConnectionId) return;
+    setLoading(true);
+    setErr('');
+    setNeedsReauth(false);
+    try {
+      const data = await gscService.topQueries({ connectionId: siteConnectionId, days, limit: 25 });
+      setRows(data.rows || []);
+    } catch (e) {
+      const status = e.response?.status;
+      const msg = e.response?.data?.error || e.message || 'Failed to fetch queries';
+      setErr(msg);
+      if (status === 403 || /reauth|scope/i.test(msg)) setNeedsReauth(true);
+    } finally {
+      setLoading(false);
+    }
+  }, [siteConnectionId, days]);
+
+  useEffect(() => {
+    if (siteConnectionId) load();
+  }, [siteConnectionId, days, load]);
+
+  return (
+    <div className="mb-6 bg-white border border-gray-200 rounded-lg overflow-hidden">
+      <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-b border-gray-100 bg-yellow-50">
+        <div className="flex items-center gap-2">
+          <Search className="h-4 w-4 text-yellow-700" />
+          <div>
+            <p className="text-sm font-medium text-gray-900">Top keywords from Search Console</p>
+            <p className="text-xs text-gray-500">Your best-performing queries — pick one to generate a blog.</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          {gscConnections.length > 0 && (
+            <>
+              <select
+                value={siteConnectionId}
+                onChange={e => setSiteConnectionId(e.target.value)}
+                className="px-2 py-1 border border-gray-300 rounded-md text-xs bg-white"
+              >
+                {gscConnections.map(c => (
+                  <option key={c.id} value={c.id}>{c.display_name || c.metadata?.site_url}</option>
+                ))}
+              </select>
+              <select
+                value={days}
+                onChange={e => setDays(Number(e.target.value))}
+                className="px-2 py-1 border border-gray-300 rounded-md text-xs bg-white"
+              >
+                <option value={7}>Last 7 days</option>
+                <option value={14}>Last 14 days</option>
+                <option value={28}>Last 28 days</option>
+                <option value={90}>Last 90 days</option>
+              </select>
+              <button
+                onClick={load}
+                disabled={loading}
+                className="inline-flex items-center gap-1 px-2 py-1 text-xs text-gray-600 hover:text-gray-900 disabled:opacity-50"
+                title="Refresh"
+              >
+                <RefreshCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} />
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {gscConnections.length === 0 ? (
+        <GscSitePicker
+          onSaved={onSiteConnected}
+          onReconnectGoogle={() => loginForBusiness()}
+        />
+      ) : (
+        <div>
+          {err && (
+            <div className="px-4 py-3 bg-red-50 border-b border-red-100 text-xs text-red-800 flex items-start gap-2">
+              <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+              <div className="flex-1">
+                <div>{err}</div>
+                {needsReauth && (
+                  <button
+                    onClick={() => loginForBusiness()}
+                    className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-primary-600 hover:text-primary-700"
+                  >
+                    <RefreshCw className="h-3 w-3" />
+                    Reconnect Google to grant Search Console access
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+          {loading ? (
+            <div className="px-4 py-6 text-sm text-gray-500">Loading queries…</div>
+          ) : rows.length === 0 ? (
+            <div className="px-4 py-6 text-sm text-gray-500">No queries in this window.</div>
+          ) : (
+            <table className="min-w-full text-sm">
+              <thead className="bg-gray-50 text-left">
+                <tr>
+                  <th className="px-4 py-2 font-medium text-gray-600">Keyword</th>
+                  <th className="px-4 py-2 font-medium text-gray-600 text-right">Clicks</th>
+                  <th className="px-4 py-2 font-medium text-gray-600 text-right">Impressions</th>
+                  <th className="px-4 py-2 font-medium text-gray-600 text-right">CTR</th>
+                  <th className="px-4 py-2 font-medium text-gray-600 text-right">Position</th>
+                  <th className="px-4 py-2"></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {rows.map((row, i) => (
+                  <tr key={row.query + i} className="hover:bg-gray-50">
+                    <td className="px-4 py-2 text-gray-900">{row.query}</td>
+                    <td className="px-4 py-2 text-right tabular-nums">{row.clicks}</td>
+                    <td className="px-4 py-2 text-right tabular-nums">{row.impressions}</td>
+                    <td className="px-4 py-2 text-right tabular-nums">{((row.ctr || 0) * 100).toFixed(1)}%</td>
+                    <td className="px-4 py-2 text-right tabular-nums">{row.position ? row.position.toFixed(1) : '—'}</td>
+                    <td className="px-4 py-2 text-right">
+                      <button
+                        onClick={() => onGenerate(row.query)}
+                        className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-primary-600 hover:text-primary-700"
+                      >
+                        <Sparkles className="h-3 w-3" />
+                        Generate
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const GscSitePicker = ({ onSaved, onReconnectGoogle }) => {
+  const [state, setState] = useState('idle'); // idle | loading | picking | saving | error
+  const [sites, setSites] = useState([]);
+  const [err, setErr] = useState('');
+  const [selected, setSelected] = useState('');
+
+  const loadSites = async () => {
+    setState('loading');
+    setErr('');
+    try {
+      const data = await gscService.listSites();
+      setSites(data.sites || []);
+      setSelected(data.sites?.[0]?.siteUrl || '');
+      setState('picking');
+    } catch (e) {
+      const status = e.response?.status;
+      const msg = e.response?.data?.error || e.message || 'Failed to load sites';
+      setErr(msg);
+      if (status === 401 || status === 403 || /reauth|business|scope/i.test(msg)) {
+        setState('needsReauth');
+      } else {
+        setState('error');
+      }
+    }
+  };
+
+  const save = async () => {
+    if (!selected) return;
+    setState('saving');
+    setErr('');
+    try {
+      const chosen = sites.find(s => s.siteUrl === selected) || { siteUrl: selected };
+      const row = await gscService.saveSite({
+        siteUrl: chosen.siteUrl,
+        permissionLevel: chosen.permissionLevel,
+        ownerGoogleId: chosen.ownerGoogleId,
+        ownerEmail: chosen.ownerEmail,
+      });
+      onSaved(row);
+    } catch (e) {
+      setErr(e.response?.data?.error || e.message || 'Failed to save');
+      setState('picking');
+    }
+  };
+
+  return (
+    <div className="p-6">
+      {state === 'idle' && (
+        <div className="text-center">
+          <p className="text-sm text-gray-700 mb-3">
+            Connect a Search Console property to see your top-ranking keywords here.
+          </p>
+          <button
+            onClick={loadSites}
+            className="inline-flex items-center gap-2 px-4 py-2 bg-primary-600 text-white text-sm font-medium rounded-md hover:bg-primary-700"
+          >
+            <Search className="h-4 w-4" />
+            Choose a Search Console site
+          </button>
+        </div>
+      )}
+      {state === 'loading' && <div className="text-sm text-gray-500">Loading your sites…</div>}
+      {state === 'picking' && (
+        <div>
+          {sites.length === 0 ? (
+            <p className="text-sm text-gray-500">No Search Console sites found on your Google account.</p>
+          ) : (
+            <>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Pick a site</label>
+              <select
+                value={selected}
+                onChange={e => setSelected(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+              >
+                {sites.map(s => (
+                  <option key={s.siteUrl} value={s.siteUrl}>
+                    {s.siteUrl}{s.permissionLevel ? ` — ${s.permissionLevel}` : ''}
+                  </option>
+                ))}
+              </select>
+              {err && (
+                <div className="mt-2 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-800">{err}</div>
+              )}
+              <div className="mt-3 flex justify-end gap-2">
+                <button
+                  onClick={loadSites}
+                  className="px-3 py-1.5 text-xs text-gray-600 hover:text-gray-900"
+                >
+                  Refresh
+                </button>
+                <button
+                  onClick={save}
+                  disabled={!selected}
+                  className="px-3 py-1.5 text-sm text-white bg-primary-600 rounded-md hover:bg-primary-700 disabled:opacity-50"
+                >
+                  Save
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+      {state === 'saving' && <div className="text-sm text-gray-500">Saving…</div>}
+      {state === 'needsReauth' && (
+        <div className="text-center">
+          <p className="text-sm text-gray-700 mb-3">
+            Search Console access wasn't granted on your Google connection. Reconnect Google and approve the new permission.
+          </p>
+          {err && <div className="mb-3 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-800">{err}</div>}
+          <button
+            onClick={onReconnectGoogle}
+            className="inline-flex items-center gap-2 px-4 py-2 bg-primary-600 text-white text-sm font-medium rounded-md hover:bg-primary-700"
+          >
+            <RefreshCw className="h-4 w-4" />
+            Reconnect Google
+          </button>
+        </div>
+      )}
+      {state === 'error' && (
+        <div className="text-center">
+          <p className="text-sm text-red-700 mb-3">{err}</p>
+          <button
+            onClick={loadSites}
+            className="inline-flex items-center gap-2 px-3 py-1.5 border border-gray-300 rounded-md text-sm text-gray-700 hover:bg-gray-50"
+          >
+            <RefreshCw className="h-4 w-4" />
+            Try again
+          </button>
+        </div>
+      )}
+    </div>
+  );
+};
 
 export default Blogs;

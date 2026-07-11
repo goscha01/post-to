@@ -474,6 +474,64 @@ async function upsertOpenAiAds({ userId, apiKey, adAccountId, accountName }) {
   return stripSensitiveMetadata(data);
 }
 
+// Called from the Search Console site-selection endpoint so a picked GSC
+// property shows up alongside GMB / GA4 / Ads / website. Tokens live on
+// users.business_profiles (same OAuth grant — webmasters.readonly added to
+// BUSINESS_SCOPES); this row only mirrors the site identity for the UI +
+// per-connection GSC queries.
+async function upsertGoogleSearchConsole({ userId, siteUrl, displayName, permissionLevel, ownerGoogleId, ownerEmail }) {
+  if (!userId || !siteUrl) throw new Error('userId and siteUrl required');
+  const externalId = `gsc:${siteUrl}`;
+  const metadata = {
+    site_url: siteUrl,
+    permission_level: permissionLevel || null,
+    // Which connected Google account owns this GSC property. Used to route
+    // searchanalytics.query calls to the correct OAuth token when multiple
+    // Google accounts are connected.
+    owner_google_id: ownerGoogleId || null,
+    owner_email: ownerEmail || null,
+    connected_at: new Date().toISOString(),
+  };
+
+  const { data: existing } = await supabase
+    .from(TABLE)
+    .select('id')
+    .eq('user_id', userId)
+    .eq('provider', 'google_search_console')
+    .eq('external_id', externalId)
+    .maybeSingle();
+
+  if (existing) {
+    const { data, error } = await supabase
+      .from(TABLE)
+      .update({
+        display_name: displayName || siteUrl,
+        metadata,
+        status: 'active',
+      })
+      .eq('id', existing.id)
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  }
+
+  const { data, error } = await supabase
+    .from(TABLE)
+    .insert({
+      user_id: userId,
+      provider: 'google_search_console',
+      display_name: displayName || siteUrl,
+      external_id: externalId,
+      metadata,
+      status: 'active',
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
 module.exports = {
   listForUser,
   getForUser,
@@ -483,6 +541,7 @@ module.exports = {
   upsertGoogleBusiness,
   upsertGoogleAnalytics,
   upsertGoogleAds,
+  upsertGoogleSearchConsole,
   upsertOpenAiAds,
   // exposed for tests / future callers
   _internal: { normalizeUrl, hostOf, extractMeta, fetchSiteMeta, maskApiKey, normalizeAdAccountId, stripSensitiveMetadata },

@@ -34,13 +34,15 @@ const SCOPES = [
 
 // Business OAuth scopes - for business profile connection.
 // One Google consent covers GMB (business.manage), GA4 (analytics.readonly),
-// and Google Ads (adwords) — all reads live on the same refresh token so we
-// don't need a separate consent flow per Google product.
+// Google Ads (adwords), and Search Console (webmasters.readonly) — all reads
+// live on the same refresh token so we don't need a separate consent flow per
+// Google product.
 const BUSINESS_SCOPES = [
   'https://www.googleapis.com/auth/business.manage',
   'https://www.googleapis.com/auth/plus.business.manage', // Add this missing scope
   'https://www.googleapis.com/auth/analytics.readonly',
   'https://www.googleapis.com/auth/adwords',
+  'https://www.googleapis.com/auth/webmasters.readonly',
   'https://www.googleapis.com/auth/userinfo.email',
   'https://www.googleapis.com/auth/userinfo.profile'
 ];
@@ -444,6 +446,8 @@ router.get('/google/business/callback', async (req, res) => {
       granted_scopes: grantedScopes,
       requested_scopes: BUSINESS_SCOPES,
       has_analytics: grantedScopes.includes('https://www.googleapis.com/auth/analytics.readonly'),
+      has_adwords: grantedScopes.includes('https://www.googleapis.com/auth/adwords'),
+      has_webmasters: grantedScopes.includes('https://www.googleapis.com/auth/webmasters.readonly'),
       has_business_manage: grantedScopes.includes('https://www.googleapis.com/auth/business.manage'),
       has_refresh_token: !!tokens.refresh_token,
       expiry_date: tokens.expiry_date,
