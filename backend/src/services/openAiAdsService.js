@@ -72,6 +72,26 @@ function normalizeApiError(err) {
   return makeError(status || 500, code, upstreamMessage, { upstream: body });
 }
 
+// OpenAI Ads uses bracket-array URL params (segments[], filters[], fields[],
+// time_ranges[]). Axios' default paramsSerializer doesn't emit brackets, so
+// arrays get flattened wrong and the API rejects the request with
+// "expected an array of strings, but got a string instead". Custom serializer
+// keeps scalars as k=v and expands arrays to k[]=v repeats.
+function serializeParams(params) {
+  const parts = [];
+  for (const [k, v] of Object.entries(params || {})) {
+    if (v === undefined || v === null) continue;
+    if (Array.isArray(v)) {
+      for (const item of v) {
+        parts.push(`${encodeURIComponent(k)}[]=${encodeURIComponent(item)}`);
+      }
+    } else {
+      parts.push(`${encodeURIComponent(k)}=${encodeURIComponent(v)}`);
+    }
+  }
+  return parts.join('&');
+}
+
 function client(apiKey) {
   return axios.create({
     baseURL: API_BASE,
@@ -81,6 +101,7 @@ function client(apiKey) {
       Accept: 'application/json',
     },
     validateStatus: s => s >= 200 && s < 300,
+    paramsSerializer: { serialize: serializeParams },
   });
 }
 
@@ -121,14 +142,16 @@ async function getAds({ userId, connectionId }) {
   return fetchListAllPages(apiKey, '/ads');
 }
 
-// Build a time_ranges JSON payload for the insights API: a single date range
-// covering the last `days` days (inclusive of today). Insights expect a JSON
-// array serialized to a string in the query param.
+// Build the time_ranges query param for the insights API. Each element is a
+// JSON-encoded time-range object; the request format is
+// time_ranges[]=<json>&time_ranges[]=<json>... — see paramsSerializer above.
+// Currently we only send one date range covering the last N days, but the
+// array shape leaves room for later comparison queries.
 function buildDateRangeParam(days) {
   const end = new Date();
   const start = new Date(end.getTime() - (Math.max(1, days) - 1) * 86400000);
   const fmt = d => d.toISOString().slice(0, 10);
-  return JSON.stringify([{ date_range: { start: fmt(start), end: fmt(end) } }]);
+  return [JSON.stringify({ date_range: { start: fmt(start), end: fmt(end) } })];
 }
 
 async function getInsights({ userId, connectionId, scope = 'account', days = 30, granularity = 'daily', aggregationLevel = null, id = null }) {
@@ -193,5 +216,5 @@ module.exports = {
   getInsights,
   diagnose,
   normalizeApiError,
-  _internal: { resolveApiKey, buildDateRangeParam, fetchListAllPages },
+  _internal: { resolveApiKey, buildDateRangeParam, fetchListAllPages, serializeParams },
 };
