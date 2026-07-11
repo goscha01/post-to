@@ -97,6 +97,11 @@ const OpenAiAds = () => {
   const [adsList, setAdsList] = useState([]);
   const [accountInsights, setAccountInsights] = useState([]);
   const [campaignInsights, setCampaignInsights] = useState([]);
+  // Set true once loadConnected has resolved. Guards loadAll from firing
+  // before we know whether the user has any openai_ads connections — without
+  // this we call every endpoint with connectionId=undefined, which returns
+  // 400 API_KEY_MISSING because the backend has no env fallback either.
+  const [connectedLoaded, setConnectedLoaded] = useState(false);
 
   const selectedConnection = useMemo(
     () => connections.find(c => c.id === selectedConnectionId) || null,
@@ -140,27 +145,43 @@ const OpenAiAds = () => {
       setError(e.response?.data?.error || e.message || 'Failed to load connections');
     } finally {
       setLoading(false);
+      setConnectedLoaded(true);
     }
   }, []);
 
   const loadAll = useCallback(async (connectionId) => {
-    if (!connectionId && connections.length > 0) return;
+    if (!connectionId) return;
     setLoadingReports(true);
     setError('');
     try {
-      const params = connectionId ? { connectionId } : {};
-      const [d, cList, aList, adList, acctIns, campIns] = await Promise.all([
+      const params = { connectionId };
+      // Fire diagnose + list resources first. Insights sometimes 400s when
+      // OpenAI Ads' feature flags for this account aren't ready — we still
+      // want the resource tables to render.
+      const [d, cList, aList, adList] = await Promise.all([
         openAiAdsService.diagnose(params).catch(() => null),
         openAiAdsService.getCampaigns(params).catch(() => []),
         openAiAdsService.getAdGroups(params).catch(() => []),
         openAiAdsService.getAds(params).catch(() => []),
-        openAiAdsService.getInsights({ ...params, scope: 'account', days, granularity: 'daily' }).catch(() => []),
-        openAiAdsService.getInsights({ ...params, scope: 'account', days, granularity: 'none', aggregationLevel: 'campaign' }).catch(() => []),
       ]);
       setDiag(d);
       setCampaigns(cList);
       setAdGroups(aList);
       setAdsList(adList);
+      const [acctIns, campIns] = await Promise.all([
+        openAiAdsService.getInsights({ ...params, scope: 'account', days, granularity: 'daily' }).catch(err => {
+          // Log the actual upstream body so we can debug in the browser
+          // console until the network tab shows it too.
+          // eslint-disable-next-line no-console
+          console.warn('openai-ads insights (daily) failed:', err?.response?.data);
+          return [];
+        }),
+        openAiAdsService.getInsights({ ...params, scope: 'account', days, granularity: 'none', aggregationLevel: 'campaign' }).catch(err => {
+          // eslint-disable-next-line no-console
+          console.warn('openai-ads insights (by campaign) failed:', err?.response?.data);
+          return [];
+        }),
+      ]);
       setAccountInsights(acctIns);
       setCampaignInsights(campIns);
     } catch (e) {
@@ -168,19 +189,23 @@ const OpenAiAds = () => {
     } finally {
       setLoadingReports(false);
     }
-  }, [days, connections.length]);
+  }, [days]);
 
   useEffect(() => { loadConnected(); }, [loadConnected]);
 
   useEffect(() => {
+    // Wait for loadConnected to finish. Firing loadAll before we know the
+    // real connection id calls every endpoint with connectionId=undefined,
+    // which triggers backend 400s (API_KEY_MISSING) unless
+    // OPENAI_ADS_API_KEY is set in the env.
+    if (!connectedLoaded) return;
     if (selectedConnectionId) {
       localStorage.setItem('post_to_openai_ads_connection_id', selectedConnectionId);
-    }
-    // Fire loadAll whenever the connection or day range changes.
-    if (selectedConnectionId || connections.length === 0) {
       loadAll(selectedConnectionId);
     }
-  }, [selectedConnectionId, days, loadAll, connections.length]);
+    // If there are zero connections AND no env fallback expected, we
+    // deliberately skip the load — the ConnectPrompt is shown instead.
+  }, [connectedLoaded, selectedConnectionId, days, loadAll]);
 
   const handleExportJson = () => {
     const payload = {
@@ -216,7 +241,7 @@ const OpenAiAds = () => {
 
   const canExport = !loadingReports && (accountInsights.length > 0 || campaigns.length > 0);
 
-  const showConnectPrompt = !loading && connections.length === 0 && !diag?.hasKey;
+  const showConnectPrompt = connectedLoaded && !loading && connections.length === 0;
 
   return (
     <div>

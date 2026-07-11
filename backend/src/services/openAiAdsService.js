@@ -38,16 +38,23 @@ async function resolveApiKey({ userId, connectionId }) {
   throw makeError(400, 'API_KEY_MISSING', 'No OpenAI Ads connection selected and OPENAI_ADS_API_KEY env is not set');
 }
 
+// Brand for errors created by makeError. We cannot duck-type on
+// (status && code) because axios 1.6+ AxiosError also sets both on the root,
+// so an early-return check treated upstream axios errors as "already ours"
+// and never extracted the upstream body.
+const OWNED_ERROR = Symbol.for('post_to.openai_ads.owned_error');
+
 function makeError(status, code, message, extra) {
   const err = new Error(message);
   err.status = status;
   err.code = code;
+  err[OWNED_ERROR] = true;
   if (extra) err.extra = extra;
   return err;
 }
 
 function normalizeApiError(err) {
-  if (err && err.status && err.code) return err; // already ours
+  if (err && err[OWNED_ERROR]) return err;
   const status = err?.response?.status;
   const body = err?.response?.data;
   const upstreamMessage =

@@ -25,9 +25,16 @@ function parseDays(raw, fallback = 30) {
 
 function sendUpstream(res, err, event) {
   const status = err.status || 500;
+  const upstream = err.extra?.upstream || null;
   const payload = { error: err.message, code: err.code };
   if (err.code === 'UNAUTHORIZED') payload.needsReauth = true;
-  logger.warn(event, { status, code: err.code, message: err.message });
+  if (upstream) payload.upstream = upstream;
+  logger.warn(event, {
+    status,
+    code: err.code,
+    message: err.message,
+    upstream: upstream ? JSON.stringify(upstream).slice(0, 1500) : null,
+  });
   res.status(status).json(payload);
 }
 
