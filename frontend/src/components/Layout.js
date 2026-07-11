@@ -10,6 +10,7 @@ import {
   BarChart3,
   LineChart,
   Megaphone,
+  Bot,
   Settings,
   Link2,
   Menu,
@@ -36,6 +37,7 @@ const Layout = ({ children }) => {
     { name: 'Insights', href: '/insights', icon: BarChart3 },
     { name: 'Analytics', href: '/analytics', icon: LineChart },
     { name: 'Ads', href: '/ads', icon: Megaphone },
+    { name: 'OpenAI Ads', href: '/openai-ads', icon: Bot },
     { name: 'Services', href: '/services', icon: Settings },
   ];
 

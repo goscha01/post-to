@@ -16,6 +16,7 @@ const blogsRoutes = require('./routes/blogs');
 const connectionsRoutes = require('./routes/connections');
 const analyticsRoutes = require('./routes/analytics');
 const googleAdsRoutes = require('./routes/googleAds');
+const openAiAdsRoutes = require('./routes/openAiAds');
 const optimizationReportRoutes = require('./routes/optimizationReport');
 const clientLogRoutes = require('./routes/clientLog');
 const apiLogger = require('./middleware/apiLogger');
@@ -113,6 +114,7 @@ app.use('/api/blogs', blogsRoutes);
 app.use('/api/connections', connectionsRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/google-ads', googleAdsRoutes);
+app.use('/api/openai-ads', openAiAdsRoutes);
 app.use('/api/optimization-report', optimizationReportRoutes);
 app.use('/api/client-log', clientLogRoutes);
 

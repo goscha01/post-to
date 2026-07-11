@@ -14,6 +14,7 @@ import Reviews from './components/Reviews';
 import Insights from './components/Insights';
 import Analytics from './components/Analytics';
 import GoogleAds from './components/GoogleAds';
+import OpenAiAds from './components/OpenAiAds';
 import Services from './components/Services';
 import Layout from './components/Layout';
 import BusinessSuccessCallback from './components/BusinessSuccessCallback'; 
@@ -145,6 +146,16 @@ const AppContent = () => {
             <ProtectedRoute>
               <Layout>
                 <GoogleAds />
+              </Layout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/openai-ads"
+          element={
+            <ProtectedRoute>
+              <Layout>
+                <OpenAiAds />
               </Layout>
             </ProtectedRoute>
           }
