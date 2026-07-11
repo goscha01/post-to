@@ -85,6 +85,18 @@ async function fetchSiteMeta(url) {
   }
 }
 
+// Fields inside metadata that must never leave the server (BYO API keys etc.).
+// Strip before returning to the caller. Callers that need the raw value should
+// call getRawForUser instead.
+const SENSITIVE_METADATA_KEYS = ['api_key'];
+
+function stripSensitiveMetadata(row) {
+  if (!row || !row.metadata) return row;
+  const meta = { ...row.metadata };
+  for (const k of SENSITIVE_METADATA_KEYS) delete meta[k];
+  return { ...row, metadata: meta };
+}
+
 async function listForUser(userId) {
   const { data, error } = await supabase
     .from(TABLE)
@@ -92,10 +104,27 @@ async function listForUser(userId) {
     .eq('user_id', userId)
     .order('created_at', { ascending: false });
   if (error) throw error;
-  return data || [];
+  return (data || []).map(stripSensitiveMetadata);
 }
 
 async function getForUser(userId, id) {
+  const { data, error } = await supabase
+    .from(TABLE)
+    .select('*')
+    .eq('user_id', userId)
+    .eq('id', id)
+    .single();
+  if (error) {
+    if (error.code === 'PGRST116') return null;
+    throw error;
+  }
+  return stripSensitiveMetadata(data);
+}
+
+// Same as getForUser but preserves sensitive metadata (api_key etc.). Only
+// server-side call sites that need to actually hit the provider API should use
+// this — never expose the result to the client.
+async function getRawForUser(userId, id) {
   const { data, error } = await supabase
     .from(TABLE)
     .select('*')
@@ -365,14 +394,96 @@ async function upsertGoogleAds({
   return data;
 }
 
+// OpenAI Ads (ads.openai.com). Unlike the google_* providers, this is a
+// bring-your-own API key flow, not OAuth — users create a key at
+// ads.openai.com/settings and paste it in. The key lives in metadata.api_key
+// and is stripped from list/get responses by stripSensitiveMetadata. Only
+// server-side callers that actually hit the OpenAI Ads API should look it up
+// via getRawForUser.
+function maskApiKey(key) {
+  if (!key || typeof key !== 'string') return null;
+  const trimmed = key.trim();
+  if (trimmed.length <= 8) return '••••';
+  return `${trimmed.slice(0, 3)}…${trimmed.slice(-4)}`;
+}
+
+function normalizeAdAccountId(raw) {
+  if (!raw || typeof raw !== 'string') return null;
+  const s = raw.trim();
+  if (!s) return null;
+  // Users paste either the raw id (adacct_…) or the full settings URL. Pull
+  // the adacct_… segment out either way.
+  const m = s.match(/adacct_[A-Za-z0-9]+/);
+  if (m) return m[0];
+  // Fall back to whatever the user typed if it looks id-shaped.
+  if (/^[A-Za-z0-9_-]+$/.test(s)) return s;
+  return null;
+}
+
+async function upsertOpenAiAds({ userId, apiKey, adAccountId, accountName }) {
+  if (!userId) throw new Error('userId required');
+  if (!apiKey || typeof apiKey !== 'string' || !apiKey.trim()) {
+    throw new Error('API key required');
+  }
+  const cleanKey = apiKey.trim();
+  const normalizedAcct = normalizeAdAccountId(adAccountId);
+  if (!normalizedAcct) throw new Error('Invalid ad account ID');
+
+  const externalId = `openai_ads:${normalizedAcct}`;
+  const metadata = {
+    ad_account_id: normalizedAcct,
+    account_name: accountName || null,
+    api_key: cleanKey,
+    api_key_mask: maskApiKey(cleanKey),
+    connected_at: new Date().toISOString(),
+  };
+  const displayName = accountName || `OpenAI Ads ${normalizedAcct}`;
+
+  const { data: existing } = await supabase
+    .from(TABLE)
+    .select('id')
+    .eq('user_id', userId)
+    .eq('provider', 'openai_ads')
+    .eq('external_id', externalId)
+    .maybeSingle();
+
+  if (existing) {
+    const { data, error } = await supabase
+      .from(TABLE)
+      .update({ display_name: displayName, metadata, status: 'active' })
+      .eq('id', existing.id)
+      .select()
+      .single();
+    if (error) throw error;
+    return stripSensitiveMetadata(data);
+  }
+
+  const { data, error } = await supabase
+    .from(TABLE)
+    .insert({
+      user_id: userId,
+      provider: 'openai_ads',
+      display_name: displayName,
+      external_id: externalId,
+      metadata,
+      status: 'active',
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return stripSensitiveMetadata(data);
+}
+
 module.exports = {
   listForUser,
   getForUser,
+  getRawForUser,
   deleteForUser,
   upsertWebsite,
   upsertGoogleBusiness,
   upsertGoogleAnalytics,
   upsertGoogleAds,
+  upsertOpenAiAds,
   // exposed for tests / future callers
-  _internal: { normalizeUrl, hostOf, extractMeta, fetchSiteMeta },
+  _internal: { normalizeUrl, hostOf, extractMeta, fetchSiteMeta, maskApiKey, normalizeAdAccountId, stripSensitiveMetadata },
 };

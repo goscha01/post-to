@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Globe, Building2, Instagram, Facebook, LineChart, Megaphone, Plus, Trash2, ExternalLink, X, Check, AlertCircle, RefreshCw, Sparkles } from 'lucide-react';
+import { Globe, Building2, Instagram, Facebook, LineChart, Megaphone, Bot, Plus, Trash2, ExternalLink, X, Check, AlertCircle, RefreshCw, Sparkles } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import connectionsService from '../services/connectionsService';
 
@@ -40,6 +40,12 @@ const PROVIDER_META = {
     icon: Facebook,
     color: 'text-indigo-600',
     bg: 'bg-indigo-50',
+  },
+  openai_ads: {
+    label: 'OpenAI Ads',
+    icon: Bot,
+    color: 'text-gray-900',
+    bg: 'bg-gray-100',
   },
 };
 
@@ -258,7 +264,7 @@ const ConnectionCard = ({ connection, onDelete }) => {
 };
 
 const ConnectPickerModal = ({ onClose, onConnected }) => {
-  const [step, setStep] = useState('pick'); // 'pick' | 'website'
+  const [step, setStep] = useState('pick'); // 'pick' | 'website' | 'openai_ads'
   const { loginForBusiness } = useAuth();
   const navigate = useNavigate();
 
@@ -286,27 +292,36 @@ const ConnectPickerModal = ({ onClose, onConnected }) => {
     navigate('/ads');
   };
 
+  const titles = {
+    pick: 'Connect an account',
+    website: 'Connect website',
+    openai_ads: 'Connect OpenAI Ads',
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
       <div className="bg-white rounded-lg shadow-xl max-w-lg w-full" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
-          <h2 className="text-lg font-semibold text-gray-900">
-            {step === 'pick' ? 'Connect an account' : 'Connect website'}
-          </h2>
+          <h2 className="text-lg font-semibold text-gray-900">{titles[step] || titles.pick}</h2>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
             <X className="h-5 w-5" />
           </button>
         </div>
         <div className="p-6">
-          {step === 'pick' ? (
+          {step === 'pick' && (
             <PickerTiles
               onPickWebsite={() => setStep('website')}
               onPickGoogle={handleGoogle}
               onPickAnalytics={handleAnalytics}
               onPickAds={handleAds}
+              onPickOpenAiAds={() => setStep('openai_ads')}
             />
-          ) : (
+          )}
+          {step === 'website' && (
             <WebsiteForm onCancel={() => setStep('pick')} onConnected={onConnected} />
+          )}
+          {step === 'openai_ads' && (
+            <OpenAiAdsForm onCancel={() => setStep('pick')} onConnected={onConnected} />
           )}
         </div>
       </div>
@@ -314,12 +329,13 @@ const ConnectPickerModal = ({ onClose, onConnected }) => {
   );
 };
 
-const PickerTiles = ({ onPickWebsite, onPickGoogle, onPickAnalytics, onPickAds }) => {
+const PickerTiles = ({ onPickWebsite, onPickGoogle, onPickAnalytics, onPickAds, onPickOpenAiAds }) => {
   const tiles = [
     { key: 'website', label: 'Website', desc: 'Connect by URL for AI blogs', icon: Globe, color: 'text-emerald-600', bg: 'bg-emerald-50', onClick: onPickWebsite, enabled: true },
     { key: 'google', label: 'Google Business Profile', desc: 'Reviews, posts, insights', icon: Building2, color: 'text-blue-600', bg: 'bg-blue-50', onClick: onPickGoogle, enabled: true },
     { key: 'analytics', label: 'Google Analytics', desc: 'GA4 sessions, conversions, campaigns', icon: LineChart, color: 'text-orange-600', bg: 'bg-orange-50', onClick: onPickAnalytics, enabled: true },
     { key: 'ads', label: 'Google Ads', desc: 'Read-only campaign diagnostics', icon: Megaphone, color: 'text-purple-600', bg: 'bg-purple-50', onClick: onPickAds, enabled: true },
+    { key: 'openai_ads', label: 'OpenAI Ads', desc: 'API key from ads.openai.com', icon: Bot, color: 'text-gray-900', bg: 'bg-gray-100', onClick: onPickOpenAiAds, enabled: true },
     { key: 'instagram', label: 'Instagram', desc: 'Coming soon', icon: Instagram, color: 'text-pink-600', bg: 'bg-pink-50', enabled: false },
     { key: 'facebook', label: 'Facebook', desc: 'Coming soon', icon: Facebook, color: 'text-indigo-600', bg: 'bg-indigo-50', enabled: false },
   ];
@@ -399,6 +415,98 @@ const WebsiteForm = ({ onCancel, onConnected }) => {
         <button
           type="submit"
           disabled={submitting || !url.trim()}
+          className="px-4 py-2 text-sm font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {submitting ? 'Connecting…' : 'Connect'}
+        </button>
+      </div>
+    </form>
+  );
+};
+
+const OpenAiAdsForm = ({ onCancel, onConnected }) => {
+  const [apiKey, setApiKey] = useState('');
+  const [adAccountId, setAdAccountId] = useState('');
+  const [accountName, setAccountName] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [err, setErr] = useState('');
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!apiKey.trim() || !adAccountId.trim()) return;
+    setSubmitting(true);
+    setErr('');
+    try {
+      const row = await connectionsService.connectOpenAiAds({
+        apiKey: apiKey.trim(),
+        adAccountId: adAccountId.trim(),
+        accountName: accountName.trim() || undefined,
+      });
+      onConnected(row);
+    } catch (e2) {
+      setErr(e2.response?.data?.error || e2.message || 'Failed to connect OpenAI Ads');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <form onSubmit={submit}>
+      <div className="mb-3 rounded-md bg-gray-50 border border-gray-200 p-3 text-xs text-gray-600">
+        <p className="font-medium text-gray-800 mb-1">Where to find these</p>
+        <ol className="list-decimal ml-4 space-y-0.5">
+          <li>Open <a href="https://ads.openai.com/settings" target="_blank" rel="noreferrer" className="text-primary-600 hover:underline">ads.openai.com → Settings</a></li>
+          <li>Under <strong>API Keys</strong>, click <em>Create New Key</em> and copy the value</li>
+          <li>Ad account ID is the <code>adacct_…</code> value in the URL (or paste the full URL — we'll extract it)</li>
+        </ol>
+      </div>
+
+      <label className="block text-sm font-medium text-gray-700 mb-1">Ad account ID</label>
+      <input
+        type="text"
+        value={adAccountId}
+        onChange={e => setAdAccountId(e.target.value)}
+        placeholder="adacct_6a3c21ff2230819095920c43858e0e3c"
+        autoFocus
+        className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+      />
+
+      <label className="block text-sm font-medium text-gray-700 mb-1 mt-4">API key</label>
+      <input
+        type="password"
+        value={apiKey}
+        onChange={e => setApiKey(e.target.value)}
+        placeholder="sk-…"
+        autoComplete="off"
+        className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+      />
+      <p className="text-xs text-gray-500 mt-1">Stored server-side, never returned to the browser again.</p>
+
+      <label className="block text-sm font-medium text-gray-700 mb-1 mt-4">
+        Account name <span className="font-normal text-gray-400">(optional)</span>
+      </label>
+      <input
+        type="text"
+        value={accountName}
+        onChange={e => setAccountName(e.target.value)}
+        placeholder="Spotless Homes Florida LLC"
+        className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+      />
+
+      {err && (
+        <div className="mt-3 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-800">{err}</div>
+      )}
+      <div className="flex justify-end gap-2 mt-5">
+        <button
+          type="button"
+          onClick={onCancel}
+          className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
+        >
+          Back
+        </button>
+        <button
+          type="submit"
+          disabled={submitting || !apiKey.trim() || !adAccountId.trim()}
           className="px-4 py-2 text-sm font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {submitting ? 'Connecting…' : 'Connect'}

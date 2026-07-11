@@ -54,6 +54,39 @@ router.post(
   }
 );
 
+router.post(
+  '/openai-ads',
+  [
+    body('apiKey').isString().isLength({ min: 8, max: 500 }),
+    body('adAccountId').isString().isLength({ min: 3, max: 200 }),
+    body('accountName').optional({ nullable: true }).isString().isLength({ max: 200 }),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Invalid input', details: errors.array() });
+    }
+    try {
+      const row = await connections.upsertOpenAiAds({
+        userId: req.user.userId,
+        apiKey: req.body.apiKey,
+        adAccountId: req.body.adAccountId,
+        accountName: req.body.accountName,
+      });
+      logger.info('connections.openai_ads.connected', {
+        userId: req.user.userId,
+        connectionId: row.id,
+        ad_account_id: row.metadata?.ad_account_id,
+      });
+      res.status(201).json({ connection: row });
+    } catch (err) {
+      logger.error('connections.openai_ads.failed', { error: err.message });
+      const status = err.message === 'Invalid ad account ID' || err.message === 'API key required' ? 400 : 500;
+      res.status(status).json({ error: err.message || 'Failed to connect OpenAI Ads' });
+    }
+  }
+);
+
 router.delete('/:id', async (req, res) => {
   try {
     const existing = await connections.getForUser(req.user.userId, req.params.id);

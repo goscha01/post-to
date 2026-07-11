@@ -10,10 +10,19 @@ const connectWebsite = async (url) => {
   return res.data?.connection;
 };
 
+const connectOpenAiAds = async ({ apiKey, adAccountId, accountName }) => {
+  const res = await axios.post('/api/connections/openai-ads', {
+    apiKey,
+    adAccountId,
+    accountName: accountName || undefined,
+  });
+  return res.data?.connection;
+};
+
 const remove = async (id) => {
   const res = await axios.delete(`/api/connections/${id}`);
   return res.data;
 };
 
-const connectionsService = { list, connectWebsite, remove };
+const connectionsService = { list, connectWebsite, connectOpenAiAds, remove };
 export default connectionsService;
