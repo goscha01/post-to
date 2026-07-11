@@ -145,13 +145,18 @@ async function getAds({ userId, connectionId }) {
 // Build the time_ranges query param for the insights API. Each element is a
 // JSON-encoded time-range object; the request format is
 // time_ranges[]=<json>&time_ranges[]=<json>... — see paramsSerializer above.
-// Currently we only send one date range covering the last N days, but the
-// array shape leaves room for later comparison queries.
+//
+// Range object shape: { type: 'date_range' | 'unix_range' | 'hour_range',
+// start, end }. The `type` field is a discriminator — API rejects the request
+// as "time_ranges[0].type must be one of..." if omitted or when we nest the
+// dates under a key named `date_range` instead of setting `type: 'date_range'`.
+// Currently we send one date range covering the last N days; the array shape
+// leaves room for later comparison queries.
 function buildDateRangeParam(days) {
   const end = new Date();
   const start = new Date(end.getTime() - (Math.max(1, days) - 1) * 86400000);
   const fmt = d => d.toISOString().slice(0, 10);
-  return [JSON.stringify({ date_range: { start: fmt(start), end: fmt(end) } })];
+  return [JSON.stringify({ type: 'date_range', start: fmt(start), end: fmt(end) })];
 }
 
 async function getInsights({ userId, connectionId, scope = 'account', days = 30, granularity = 'daily', aggregationLevel = null, id = null }) {
