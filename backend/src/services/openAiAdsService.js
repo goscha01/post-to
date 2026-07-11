@@ -163,11 +163,18 @@ function buildDateRangeParam(days) {
   })];
 }
 
-async function getInsights({ userId, connectionId, scope = 'account', days = 30, granularity = 'daily', aggregationLevel = null, id = null }) {
+// The insights API defaults `fields[]` to just `impressions` + entity name,
+// so every other metric column comes back empty. We ask for the full set the
+// dashboard renders. Extra fields on scopes that don't have them come back
+// as 0/null rather than erroring.
+const DEFAULT_INSIGHTS_FIELDS = ['impressions', 'clicks', 'spend', 'ctr', 'cpc', 'cpm'];
+
+async function getInsights({ userId, connectionId, scope = 'account', days = 30, granularity = 'daily', aggregationLevel = null, id = null, fields = DEFAULT_INSIGHTS_FIELDS }) {
   const { apiKey } = await resolveApiKey({ userId, connectionId });
   const params = {
     time_granularity: granularity,
     time_ranges: buildDateRangeParam(days),
+    fields,
   };
   if (aggregationLevel) params.aggregation_level = aggregationLevel;
 
