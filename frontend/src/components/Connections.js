@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Globe, Building2, Instagram, Facebook, LineChart, Megaphone, Bot, Search, Plus, Trash2, ExternalLink, X, Check, AlertCircle, RefreshCw, Sparkles } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import connectionsService from '../services/connectionsService';
@@ -62,7 +62,9 @@ const Connections = () => {
   const [connections, setConnections] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [flash, setFlash] = useState('');
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -80,6 +82,30 @@ const Connections = () => {
   useEffect(() => {
     load();
   }, [load]);
+
+  // Handle Meta OAuth callback redirect: /connections?meta_connected=1&pages=N&ig=N
+  // (or ?meta_error=... on failure). Show a brief flash, then strip params.
+  useEffect(() => {
+    const metaConnected = searchParams.get('meta_connected');
+    const metaError = searchParams.get('meta_error');
+    const metaWarning = searchParams.get('meta_warning');
+    if (metaConnected) {
+      const pages = searchParams.get('pages') || '0';
+      const ig = searchParams.get('ig') || '0';
+      if (metaWarning === 'no_pages_found') {
+        setError(
+          'Connected to Facebook, but no Pages were found. Make sure your Facebook account admins at least one Page, then reconnect.'
+        );
+      } else {
+        setFlash(`Connected ${pages} Facebook Page${pages === '1' ? '' : 's'} and ${ig} Instagram account${ig === '1' ? '' : 's'}.`);
+      }
+      setSearchParams({}, { replace: true });
+    } else if (metaError) {
+      setError(`Facebook connection failed: ${metaError}`);
+      setSearchParams({}, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
 
   const handleDelete = async (id) => {
     if (!window.confirm('Disconnect this account?')) return;
@@ -114,6 +140,13 @@ const Connections = () => {
         <div className="mb-4 flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-md text-sm text-red-800">
           <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
           <span>{error}</span>
+        </div>
+      )}
+
+      {flash && (
+        <div className="mb-4 flex items-start gap-2 p-3 bg-green-50 border border-green-200 rounded-md text-sm text-green-800">
+          <Check className="h-4 w-4 mt-0.5 flex-shrink-0" />
+          <span>{flash}</span>
         </div>
       )}
 
@@ -168,7 +201,7 @@ const EmptyState = ({ onConnect }) => (
 );
 
 const ConnectionCard = ({ connection, onDelete }) => {
-  const { loginForBusiness } = useAuth();
+  const { loginForBusiness, loginForFacebook } = useAuth();
   const navigate = useNavigate();
   const meta = PROVIDER_META[connection.provider] || {
     label: connection.provider,
@@ -185,14 +218,18 @@ const ConnectionCard = ({ connection, onDelete }) => {
   // Reconnecting re-runs the consent flow so newly-added scopes (adwords,
   // analytics.readonly) are actually granted on the refresh token.
   const isGoogleProvider = connection.provider?.startsWith('google_');
+  // facebook + instagram both derive from a single Meta OAuth grant;
+  // reconnecting refreshes Page Access Tokens (60d expiry) for every Page.
+  const isMetaProvider = connection.provider === 'facebook' || connection.provider === 'instagram';
   const [reconnecting, setReconnecting] = React.useState(false);
 
   const handleReconnect = async () => {
     setReconnecting(true);
     try {
-      await loginForBusiness();
+      if (isMetaProvider) await loginForFacebook();
+      else await loginForBusiness();
     } catch (e) {
-      // loginForBusiness redirects on success; if it throws we clear the spinner.
+      // loginForBusiness/loginForFacebook redirect on success; if they throw we clear the spinner.
       setReconnecting(false);
     }
   };
@@ -244,6 +281,17 @@ const ConnectionCard = ({ connection, onDelete }) => {
             {reconnecting ? 'Redirecting…' : 'Reconnect Google'}
           </button>
         )}
+        {isMetaProvider && (
+          <button
+            onClick={handleReconnect}
+            disabled={reconnecting}
+            className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-primary-600 hover:text-primary-700 disabled:opacity-50"
+            title="Re-run Meta's consent flow to refresh Page Access Tokens (they expire ~60 days after issue)"
+          >
+            <RefreshCw className={`h-3 w-3 ${reconnecting ? 'animate-spin' : ''}`} />
+            {reconnecting ? 'Redirecting…' : 'Reconnect Facebook'}
+          </button>
+        )}
         {connection.provider === 'website' && (
           <div className="mt-2 flex items-center gap-3">
             <button
@@ -275,7 +323,7 @@ const ConnectionCard = ({ connection, onDelete }) => {
 
 const ConnectPickerModal = ({ onClose, onConnected }) => {
   const [step, setStep] = useState('pick'); // 'pick' | 'website' | 'openai_ads'
-  const { loginForBusiness } = useAuth();
+  const { loginForBusiness, loginForFacebook } = useAuth();
   const navigate = useNavigate();
 
   const handleGoogle = async () => {
@@ -285,6 +333,18 @@ const ConnectPickerModal = ({ onClose, onConnected }) => {
       // loginForBusiness redirects on success; if it throws, fall back to error message
       // eslint-disable-next-line no-console
       console.error('Google connect failed', e);
+    }
+  };
+
+  const handleFacebook = async () => {
+    // One Meta OAuth grant covers both FB Pages + linked Instagram Business
+    // accounts. Backend callback enumerates /me/accounts and creates one
+    // connected_accounts row per Page + per IG.
+    try {
+      await loginForFacebook();
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error('Facebook connect failed', e);
     }
   };
 
@@ -334,6 +394,7 @@ const ConnectPickerModal = ({ onClose, onConnected }) => {
               onPickAds={handleAds}
               onPickSearchConsole={handleSearchConsole}
               onPickOpenAiAds={() => setStep('openai_ads')}
+              onPickFacebook={handleFacebook}
             />
           )}
           {step === 'website' && (
@@ -348,7 +409,7 @@ const ConnectPickerModal = ({ onClose, onConnected }) => {
   );
 };
 
-const PickerTiles = ({ onPickWebsite, onPickGoogle, onPickAnalytics, onPickAds, onPickSearchConsole, onPickOpenAiAds }) => {
+const PickerTiles = ({ onPickWebsite, onPickGoogle, onPickAnalytics, onPickAds, onPickSearchConsole, onPickOpenAiAds, onPickFacebook }) => {
   const tiles = [
     { key: 'website', label: 'Website', desc: 'Connect by URL for AI blogs', icon: Globe, color: 'text-emerald-600', bg: 'bg-emerald-50', onClick: onPickWebsite, enabled: true },
     { key: 'google', label: 'Google Account', desc: 'Business Profile, Drive, Analytics, Ads, Search Console — one grant', icon: Building2, color: 'text-blue-600', bg: 'bg-blue-50', onClick: onPickGoogle, enabled: true },
@@ -356,8 +417,11 @@ const PickerTiles = ({ onPickWebsite, onPickGoogle, onPickAnalytics, onPickAds, 
     { key: 'ads', label: 'Google Ads', desc: 'Read-only campaign diagnostics', icon: Megaphone, color: 'text-purple-600', bg: 'bg-purple-50', onClick: onPickAds, enabled: true },
     { key: 'search_console', label: 'Google Search Console', desc: 'Top keywords → blog topics', icon: Search, color: 'text-yellow-700', bg: 'bg-yellow-50', onClick: onPickSearchConsole, enabled: true },
     { key: 'openai_ads', label: 'OpenAI Ads', desc: 'API key from ads.openai.com', icon: Bot, color: 'text-gray-900', bg: 'bg-gray-100', onClick: onPickOpenAiAds, enabled: true },
-    { key: 'instagram', label: 'Instagram', desc: 'Coming soon', icon: Instagram, color: 'text-pink-600', bg: 'bg-pink-50', enabled: false },
-    { key: 'facebook', label: 'Facebook', desc: 'Coming soon', icon: Facebook, color: 'text-indigo-600', bg: 'bg-indigo-50', enabled: false },
+    // One Meta OAuth grant links every FB Page + IG Business account, so both
+    // tiles route through the same flow. IG requires the IG account to be a
+    // Business or Creator account linked to a FB Page.
+    { key: 'facebook', label: 'Facebook', desc: 'Pages you admin — post + read engagement', icon: Facebook, color: 'text-indigo-600', bg: 'bg-indigo-50', onClick: onPickFacebook, enabled: true },
+    { key: 'instagram', label: 'Instagram', desc: 'IG Business accounts linked to your Pages', icon: Instagram, color: 'text-pink-600', bg: 'bg-pink-50', onClick: onPickFacebook, enabled: true },
   ];
 
   return (

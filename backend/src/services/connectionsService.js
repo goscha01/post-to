@@ -85,10 +85,10 @@ async function fetchSiteMeta(url) {
   }
 }
 
-// Fields inside metadata that must never leave the server (BYO API keys etc.).
-// Strip before returning to the caller. Callers that need the raw value should
-// call getRawForUser instead.
-const SENSITIVE_METADATA_KEYS = ['api_key'];
+// Fields inside metadata that must never leave the server (BYO API keys, OAuth
+// tokens etc.). Strip before returning to the caller. Callers that need the
+// raw value should call getRawForUser instead.
+const SENSITIVE_METADATA_KEYS = ['api_key', 'page_access_token', 'user_access_token'];
 
 function stripSensitiveMetadata(row) {
   if (!row || !row.metadata) return row;
@@ -532,6 +532,138 @@ async function upsertGoogleSearchConsole({ userId, siteUrl, displayName, permiss
   return data;
 }
 
+// Facebook Page — one row per FB Page the user admins. Page Access Token
+// lives in metadata.page_access_token (stripped by SENSITIVE_METADATA_KEYS on
+// read). Fetched via /me/accounts during the Meta OAuth callback in auth.js.
+async function upsertFacebookPage({
+  userId,
+  pageId,
+  pageName,
+  category,
+  pageAccessToken,
+  metaUserId,
+  ownerUserToken,
+  ownerUserTokenExpiresAt,
+  pictureUrl,
+  tasks,
+}) {
+  if (!userId || !pageId) throw new Error('userId and pageId required');
+  if (!pageAccessToken) throw new Error('pageAccessToken required');
+  const externalId = `fb_page:${pageId}`;
+  const metadata = {
+    page_id: pageId,
+    page_name: pageName || null,
+    category: category || null,
+    tasks: Array.isArray(tasks) ? tasks : null,
+    picture_url: pictureUrl || null,
+    page_access_token: pageAccessToken, // stripped on read
+    meta_user_id: metaUserId || null,
+    owner_user_token: ownerUserToken || null, // stripped on read
+    owner_user_token_expires_at: ownerUserTokenExpiresAt || null,
+    connected_at: new Date().toISOString(),
+  };
+
+  const { data: existing } = await supabase
+    .from(TABLE)
+    .select('id')
+    .eq('user_id', userId)
+    .eq('provider', 'facebook')
+    .eq('external_id', externalId)
+    .maybeSingle();
+
+  if (existing) {
+    const { data, error } = await supabase
+      .from(TABLE)
+      .update({
+        display_name: pageName || `Facebook Page ${pageId}`,
+        metadata,
+        status: 'active',
+      })
+      .eq('id', existing.id)
+      .select()
+      .single();
+    if (error) throw error;
+    return stripSensitiveMetadata(data);
+  }
+
+  const { data, error } = await supabase
+    .from(TABLE)
+    .insert({
+      user_id: userId,
+      provider: 'facebook',
+      display_name: pageName || `Facebook Page ${pageId}`,
+      external_id: externalId,
+      metadata,
+      status: 'active',
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return stripSensitiveMetadata(data);
+}
+
+// Instagram Business account — always associated with a FB Page. We store the
+// SAME page_access_token here (posting to IG uses the linked Page's token,
+// per Graph API design) plus the fb_page connected_accounts.id for join
+// convenience. Dedupe on the IG business id.
+async function upsertInstagramBusiness({
+  userId,
+  igBusinessId,
+  igUsername,
+  linkedPageId,
+  linkedPageConnectionId,
+  pageAccessToken,
+  pictureUrl,
+}) {
+  if (!userId || !igBusinessId) throw new Error('userId and igBusinessId required');
+  if (!pageAccessToken) throw new Error('pageAccessToken required');
+  const externalId = `ig_business:${igBusinessId}`;
+  const metadata = {
+    ig_business_id: igBusinessId,
+    ig_username: igUsername || null,
+    linked_page_id: linkedPageId || null,
+    linked_page_connection_id: linkedPageConnectionId || null,
+    picture_url: pictureUrl || null,
+    page_access_token: pageAccessToken, // stripped on read
+    connected_at: new Date().toISOString(),
+  };
+  const displayName = igUsername ? `@${igUsername}` : `Instagram ${igBusinessId}`;
+
+  const { data: existing } = await supabase
+    .from(TABLE)
+    .select('id')
+    .eq('user_id', userId)
+    .eq('provider', 'instagram')
+    .eq('external_id', externalId)
+    .maybeSingle();
+
+  if (existing) {
+    const { data, error } = await supabase
+      .from(TABLE)
+      .update({ display_name: displayName, metadata, status: 'active' })
+      .eq('id', existing.id)
+      .select()
+      .single();
+    if (error) throw error;
+    return stripSensitiveMetadata(data);
+  }
+
+  const { data, error } = await supabase
+    .from(TABLE)
+    .insert({
+      user_id: userId,
+      provider: 'instagram',
+      display_name: displayName,
+      external_id: externalId,
+      metadata,
+      status: 'active',
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return stripSensitiveMetadata(data);
+}
+
 // Backfill missing google_business rows for a user by walking their
 // users.business_profiles JSONB. Older OAuth grants (pre-2026-06-26, before
 // upsertGoogleBusiness was wired into the callback) exist in
@@ -605,6 +737,8 @@ module.exports = {
   upsertGoogleAds,
   upsertGoogleSearchConsole,
   upsertOpenAiAds,
+  upsertFacebookPage,
+  upsertInstagramBusiness,
   // exposed for tests / future callers
   _internal: { normalizeUrl, hostOf, extractMeta, fetchSiteMeta, maskApiKey, normalizeAdAccountId, stripSensitiveMetadata },
 };

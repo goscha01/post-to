@@ -22,6 +22,7 @@ const optimizationReportRoutes = require('./routes/optimizationReport');
 const clientLogRoutes = require('./routes/clientLog');
 const calendarRoutes = require('./routes/calendar');
 const driveRoutes = require('./routes/drive');
+const socialRoutes = require('./routes/social');
 const scheduledPublisher = require('./workers/scheduledPublisher');
 const apiLogger = require('./middleware/apiLogger');
 
@@ -124,6 +125,7 @@ app.use('/api/optimization-report', optimizationReportRoutes);
 app.use('/api/client-log', clientLogRoutes);
 app.use('/api/calendar', calendarRoutes);
 app.use('/api/drive', driveRoutes);
+app.use('/api/social', socialRoutes);
 
 // Health check endpoint
 app.get('/health', (req, res) => {

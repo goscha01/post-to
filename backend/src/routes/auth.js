@@ -3,6 +3,7 @@ const { google } = require('googleapis');
 const jwt = require('jsonwebtoken');
 const { createClient } = require('@supabase/supabase-js');
 const connectionsService = require('../services/connectionsService');
+const metaService = require('../services/metaService');
 const authMiddleware = require('../middleware/authMiddleware');
 const logger = require('../utils/logger');
 const router = express.Router();
@@ -741,6 +742,148 @@ router.delete('/business-profile/:businessGoogleId', authMiddleware, async (req,
   } catch (err) {
     logger.error('auth.business_profile.delete_unhandled', { error: err?.message, stack: err?.stack?.slice(0, 1500) });
     return res.status(500).json({ error: 'Failed to remove business profile' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Meta (Facebook + Instagram Business) OAuth
+// ---------------------------------------------------------------------------
+// One OAuth grant covers both providers — Instagram Business accounts are
+// always linked to a Facebook Page, so we discover them via /me/accounts and
+// upsert one connected_accounts row per FB Page + one per linked IG account.
+
+router.get('/facebook', smartRateLimitMiddleware('business_oauth'), async (req, res) => {
+  try {
+    const { user_id } = req.query;
+    if (!user_id) return res.status(400).json({ error: 'User ID required' });
+
+    const { data: user, error: userError } = await supabase
+      .from('users').select('id').eq('id', user_id).single();
+    if (userError || !user) {
+      logger.warn('auth.facebook.user_not_found', { user_id, error: userError?.message });
+      return res.status(400).json({ error: 'Invalid user ID' });
+    }
+
+    // State carries user_id + nonce so the callback can bind the returned
+    // token to the right app user. Not signed — anyone forging state can only
+    // authenticate as themselves (Meta still validates the OAuth code).
+    const state = `meta_${user_id}_${Date.now()}`;
+    const authUrl = metaService.buildAuthUrl({ state });
+    logger.info('auth.facebook.url_issued', { user_id });
+    res.json({ authUrl });
+  } catch (err) {
+    logger.error('auth.facebook.url_failed', { error: err.message });
+    res.status(500).json({ error: 'Failed to generate Facebook authorization URL' });
+  }
+});
+
+router.get('/facebook/callback', async (req, res) => {
+  const frontend = process.env.FRONTEND_URL || 'http://localhost:3000';
+  try {
+    const { code, state, error, error_description } = req.query;
+
+    // User cancelled or Meta rejected — bounce back with the reason.
+    if (error) {
+      logger.warn('auth.facebook.oauth_error', { error, error_description });
+      return res.redirect(
+        `${frontend}/connections?meta_error=${encodeURIComponent(error_description || error)}`
+      );
+    }
+    if (!code) return res.redirect(`${frontend}/connections?meta_error=no_code`);
+
+    let extractedUserId = null;
+    if (state && state.startsWith('meta_')) {
+      const parts = state.split('_');
+      if (parts.length >= 3) extractedUserId = parts[1];
+    }
+    if (!extractedUserId) return res.redirect(`${frontend}/connections?meta_error=invalid_state`);
+
+    // 1. Short-lived user token → 2. Long-lived user token (~60d)
+    const short = await metaService.exchangeCodeForToken({ code });
+    const long = await metaService.getLongLivedUserToken(short.access_token);
+    const longToken = long.access_token;
+    const expiresAt = long.expires_in
+      ? new Date(Date.now() + long.expires_in * 1000).toISOString()
+      : null;
+
+    // 3. Who is this Meta user?
+    const me = await metaService.getMe(longToken);
+
+    // 4. Enumerate Pages the user admins + linked IG business accounts
+    const pages = await metaService.listPages(longToken);
+
+    logger.info('auth.facebook.callback_ok', {
+      user_id: extractedUserId,
+      meta_user_id: me?.id,
+      pages_count: pages.length,
+      pages_with_ig: pages.filter(p => p.instagram_business_account).length,
+      token_expires_at: expiresAt,
+    });
+
+    const created = { pages: 0, instagrams: 0, errors: [] };
+    for (const page of pages) {
+      try {
+        const pageRow = await connectionsService.upsertFacebookPage({
+          userId: extractedUserId,
+          pageId: page.id,
+          pageName: page.name,
+          category: page.category,
+          tasks: page.tasks,
+          pictureUrl: page.picture?.data?.url,
+          pageAccessToken: page.access_token,
+          metaUserId: me?.id,
+          ownerUserToken: longToken,
+          ownerUserTokenExpiresAt: expiresAt,
+        });
+        created.pages += 1;
+
+        if (page.instagram_business_account?.id) {
+          try {
+            await connectionsService.upsertInstagramBusiness({
+              userId: extractedUserId,
+              igBusinessId: page.instagram_business_account.id,
+              igUsername: page.instagram_business_account.username,
+              linkedPageId: page.id,
+              linkedPageConnectionId: pageRow.id,
+              pageAccessToken: page.access_token,
+              pictureUrl: page.instagram_business_account.profile_picture_url,
+            });
+            created.instagrams += 1;
+          } catch (e) {
+            created.errors.push({ page: page.id, kind: 'ig', message: e.message });
+            logger.warn('auth.facebook.ig_upsert_failed', { page_id: page.id, error: e.message });
+          }
+        }
+      } catch (e) {
+        created.errors.push({ page: page.id, kind: 'page', message: e.message });
+        logger.warn('auth.facebook.page_upsert_failed', { page_id: page.id, error: e.message });
+      }
+    }
+
+    logger.info('auth.facebook.connected', {
+      user_id: extractedUserId,
+      pages_created: created.pages,
+      instagrams_created: created.instagrams,
+      error_count: created.errors.length,
+    });
+
+    // If the user granted the app but admins zero Pages, still redirect with a
+    // hint — otherwise the UI shows a silently-empty Connections list.
+    const query = new URLSearchParams({
+      meta_connected: '1',
+      pages: String(created.pages),
+      ig: String(created.instagrams),
+    });
+    if (created.pages === 0) query.set('meta_warning', 'no_pages_found');
+    res.redirect(`${frontend}/connections?${query.toString()}`);
+  } catch (err) {
+    const normalized = err.response?.data?.error?.message || err.message;
+    logger.error('auth.facebook.callback_failed', {
+      error: normalized,
+      status: err.response?.status,
+      stack: err.stack?.slice(0, 1500),
+    });
+    res.redirect(`${frontend}/connections?meta_error=${encodeURIComponent(normalized)}`);
   }
 });
 

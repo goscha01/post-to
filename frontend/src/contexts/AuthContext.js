@@ -144,6 +144,26 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
+  // Kicks off Meta OAuth (Facebook + Instagram). One grant enumerates every
+  // FB Page the user admins + linked IG Business accounts; the backend
+  // callback creates one connected_accounts row per Page + per IG.
+  const loginForFacebook = async () => {
+    try {
+      if (!user?.id) {
+        throw new Error('User must be authenticated to connect Facebook');
+      }
+      const response = await axios.get(`/auth/facebook?user_id=${user.id}`);
+      window.location.href = response.data.authUrl;
+    } catch (error) {
+      if (error.response?.status === 429) {
+        const retryAfter = error.response.data.retryAfter || 2;
+        alert(`Too many requests. Please wait ${retryAfter} seconds and try again.`);
+      } else {
+        alert('Failed to initiate Facebook authentication. Please try again.');
+      }
+    }
+  };
+
   const handleAuthCallback = async (newToken, googleAccessToken, googleRefreshToken, isBusinessConnection = false) => {
     rlog('info', 'AuthContext', 'handleAuthCallback.start', {
       hasNewToken: !!newToken,
@@ -406,6 +426,7 @@ export const AuthProvider = ({ children }) => {
     isDisconnected,
     login,
     loginForBusiness,
+    loginForFacebook,
     logout,
     softDisconnect,
     reconnect,
