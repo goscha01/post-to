@@ -419,7 +419,10 @@ async function fetchImagePart({ userId, url }) {
 router.post(
   '/post-from-image',
   [
-    body('imageUrls').isArray({ min: 1, max: 4 }),
+    // GBP supports up to ~10 photos per post. Cap the vision request at 10
+    // as well — larger sets balloon prompt-image tokens without meaningfully
+    // improving the caption.
+    body('imageUrls').isArray({ min: 1, max: 10 }),
     body('imageUrls.*').isString().isLength({ min: 5, max: 2000 }),
     // optional({ nullable: true, checkFalsy: true }) — express-validator's
     // default optional() only skips `undefined`; the frontend sends `null`

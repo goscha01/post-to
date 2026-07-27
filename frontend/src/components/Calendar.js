@@ -877,6 +877,7 @@ const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationK
   const [aiGenerating, setAiGenerating] = useState(false);
   const [aiError, setAiError] = useState(null);
   const [aiJustFilled, setAiJustFilled] = useState(false);
+  const [aiImageDescriptions, setAiImageDescriptions] = useState([]);
 
   const accountsCount = (profiles || []).filter((p) => (p.locations || []).length > 0).length;
   const locationsCount = (profiles || []).reduce((acc, p) => acc + (p.locations?.length || 0), 0);
@@ -937,9 +938,11 @@ const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationK
       '';
 
     setAiGenerating(true);
+    setAiImageDescriptions([]);
     try {
       const resp = await axios.post('/api/ai/post-from-image', {
-        imageUrls: validUrls.slice(0, 4),
+        // GBP supports up to ~10 photos per post; matches the backend cap.
+        imageUrls: validUrls.slice(0, 10),
         businessName,
         businessType,
         city,
@@ -950,6 +953,7 @@ const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationK
       if (resp.data?.text) {
         setSummary(resp.data.text);
         setAiJustFilled(true);
+        setAiImageDescriptions(Array.isArray(resp.data.imageDescriptions) ? resp.data.imageDescriptions : []);
       } else {
         setAiError('AI returned an empty response — try again or edit manually.');
       }
@@ -1343,6 +1347,20 @@ const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationK
                     ✨ AI-generated from your image{validUrls.length > 1 ? 's' : ''} — edit before scheduling if anything is off.
                   </p>
                 )}
+                {aiImageDescriptions.length > 0 && (
+                  <details className="mt-2 rounded-md border border-gray-200 bg-gray-50">
+                    <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-gray-700 select-none">
+                      What the AI saw ({aiImageDescriptions.length} image{aiImageDescriptions.length === 1 ? '' : 's'})
+                    </summary>
+                    <ul className="px-3 pb-3 pt-1 space-y-1 text-xs text-gray-700">
+                      {aiImageDescriptions.map((desc, i) => (
+                        <li key={i}>
+                          <span className="font-medium text-gray-500">Image {i + 1}:</span> {desc}
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
               </div>
 
               {/* CTA */}
@@ -1386,16 +1404,36 @@ const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationK
                 <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
                   <h3 className="text-base font-medium text-gray-900 mb-3">Post Preview</h3>
                   <div className="space-y-3">
-                    {previewImage ? (
-                      <SmartPreviewImage
-                        url={previewImage}
-                        className="w-full h-48 object-cover rounded-lg border shadow-sm"
-                      />
-                    ) : (
+                    {validUrls.length === 0 ? (
                       <div className="w-full h-40 bg-gray-200 rounded-lg border-2 border-dashed border-gray-300 flex items-center justify-center">
                         <div className="text-center">
                           <ImageIcon className="h-8 w-8 text-gray-400 mx-auto mb-1" />
                           <p className="text-xs text-gray-500">No images</p>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        {/* Hero: the first selected image */}
+                        <SmartPreviewImage
+                          url={validUrls[0]}
+                          className="w-full h-48 object-cover rounded-lg border shadow-sm"
+                        />
+                        {/* Grid of the rest — 3 columns, square tiles, so
+                            an 8-image set shows a hero + 7 in a 3x3-ish
+                            grid without dominating the panel. */}
+                        {validUrls.length > 1 && (
+                          <div className="grid grid-cols-3 gap-1.5">
+                            {validUrls.slice(1).map((u, i) => (
+                              <SmartPreviewImage
+                                key={u + i}
+                                url={u}
+                                className="w-full aspect-square object-cover rounded border"
+                              />
+                            ))}
+                          </div>
+                        )}
+                        <div className="text-[10px] text-gray-500 text-right">
+                          {validUrls.length} image{validUrls.length === 1 ? '' : 's'}
                         </div>
                       </div>
                     )}

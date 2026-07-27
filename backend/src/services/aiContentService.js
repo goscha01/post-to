@@ -405,21 +405,27 @@ async function generatePostFromImages(input) {
   const system =
     'You are the business owner writing a Google Business Profile post. Look at the images and write a caption that reflects what is actually visible. Always reply with valid JSON only — no prose, no code fences.';
 
+  const multi = images.length > 1;
   const userText = `Business: ${businessName}
 Business type: ${businessType}${city ? `\nLocation: ${city}` : ''}
 Post type: ${postType}
 Tone: ${tone}${additionalContext ? `\nExtra context: ${additionalContext}` : ''}
 
-Look at the ${images.length === 1 ? 'image' : `${images.length} images`} provided and:
-1. Identify what is shown (before/after, team, equipment, completed job, product, etc.).
-2. Write a natural Google Business Profile caption (100-350 chars) that reflects what is actually visible.
+You are looking at ${images.length === 1 ? 'one image' : `${images.length} images`}, in the order provided.
+
+Do this:
+1. Describe what is in each image, one line per image, referring to them as Image 1, Image 2, etc. Be concrete — mention rooms, surfaces, tools, before/after, team members, results.
+2. Write a single Google Business Profile caption (150-500 chars) that reflects the full set: if images are a before/after pair, call that out; if it's a job walkthrough, reference the sequence; if unrelated, pick the strongest one or two visual details to lead with.
 3. Sound like the owner — conversational, not agency-speak.
 4. No hashtags. Use emoji sparingly and only when natural.
-5. Do not invent facts (prices, awards, guarantees) that aren't grounded in the image or the business context above.
+5. Do not invent facts (prices, awards, guarantees) that aren't grounded in what is visible or the business context above.
 ${includeCallToAction ? `6. End with a soft CTA appropriate for a ${ctaType || 'BOOK'} action.` : '6. No hard sell.'}
 
 Return valid JSON with exactly these keys:
-{ "text": string, "imageDescription": string }`;
+{
+  "text": string,${multi ? '\n  "imageDescriptions": string[]  // one per image, in order,' : ''}
+  "imageDescription": string  // one-sentence summary of the whole set
+}`;
 
   const model = input.model || DEFAULT_MODEL;
   const result = await callOpenAIVision({
@@ -428,7 +434,9 @@ Return valid JSON with exactly these keys:
     images,
     model,
     temperature: 0.7,
-    maxTokens: 500,
+    // Scaled by image count — per-image descriptions + main caption need
+    // room to breathe on larger sets.
+    maxTokens: Math.min(2000, 400 + images.length * 120),
   });
   const data = extractJson(result.raw);
   if (typeof data.text !== 'string' || !data.text.trim()) {
@@ -436,7 +444,13 @@ Return valid JSON with exactly these keys:
   }
 
   return {
-    data: { text: data.text.trim(), imageDescription: (data.imageDescription || '').trim() },
+    data: {
+      text: data.text.trim(),
+      imageDescription: (data.imageDescription || '').trim(),
+      imageDescriptions: Array.isArray(data.imageDescriptions)
+        ? data.imageDescriptions.map((s) => (s || '').toString().trim()).filter(Boolean)
+        : [],
+    },
     raw: result.raw,
     prompt: userText,
     model: result.model,
