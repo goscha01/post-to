@@ -858,25 +858,37 @@ const POST_TYPES = [
 ];
 
 const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationKeys, onReloadAccounts, onClose, onDone }) => {
-  // Preselect the first sidebar-checked location, then first available.
-  const initialLocation = useMemo(() => {
-    const checkedKey = [...(selectedLocationKeys || [])][0];
-    if (checkedKey) {
-      const hit = locations.find((l) => l.key === checkedKey);
-      if (hit) return `accounts/${hit.accountId}/locations/${hit.locationId}`;
-    }
-    // Fall back to the first location on the first profile.
-    for (const p of profiles || []) {
-      for (const l of p.locations || []) {
-        if (l.fullPath) return l.fullPath;
-      }
-    }
-    return '';
-  }, [profiles, locations, selectedLocationKeys]);
+  // Flat list of every profile × location combo the user can pick.
+  const allLocationOptions = useMemo(() => {
+    const out = [];
+    (profiles || []).forEach((profile) => {
+      (profile.locations || []).forEach((loc) => {
+        if (!loc.fullPath) return;
+        out.push({
+          fullPath: loc.fullPath,
+          accountLabel: profile.accountName || profile.displayName || 'Google Account',
+          accountEmail: profile.connected_via_email || null,
+          accountGoogleId: profile.connected_via_google_id || null,
+          title: loc.title || loc.locationName || 'Untitled Location',
+          key: (profile?.name?.split('/').pop() || '') + ':' + (loc?.name?.split('/').pop() || ''),
+        });
+      });
+    });
+    return out;
+  }, [profiles]);
+
+  // Preselect: everything the sidebar had checked. Fallback: first location.
+  const initialPaths = useMemo(() => {
+    const checked = selectedLocationKeys || new Set();
+    const hits = allLocationOptions.filter((o) => checked.has(o.key));
+    if (hits.length > 0) return hits.map((o) => o.fullPath);
+    if (allLocationOptions.length > 0) return [allLocationOptions[0].fullPath];
+    return [];
+  }, [allLocationOptions, selectedLocationKeys]);
 
   const isFutureDefault = defaultDate && new Date(defaultDate).getTime() > Date.now() + 60_000;
 
-  const [locationPath, setLocationPath] = useState(initialLocation);
+  const [locationPaths, setLocationPaths] = useState(initialPaths);
   const [when, setWhen] = useState(() => toLocalInputValue(new Date(defaultDate || Date.now() + 60 * 60 * 1000)));
   const [mode, setMode] = useState(isFutureDefault ? 'later' : 'now'); // 'now' | 'later'
   const [postType, setPostType] = useState('UPDATE');
@@ -892,6 +904,8 @@ const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationK
   const [aiError, setAiError] = useState(null);
   const [aiJustFilled, setAiJustFilled] = useState(false);
   const [aiImageDescriptions, setAiImageDescriptions] = useState([]);
+  // After submit, per-location outcomes: { fullPath, title, ok, error? }
+  const [postResults, setPostResults] = useState(null);
 
   const accountsCount = (profiles || []).filter((p) => (p.locations || []).length > 0).length;
   const locationsCount = (profiles || []).reduce((acc, p) => acc + (p.locations?.length || 0), 0);
@@ -935,12 +949,13 @@ const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationK
       setAiError('Add at least one image URL first — the AI writes the caption from what it sees.');
       return;
     }
-    // Pull business context from the picked location so the caption sounds
-    // grounded in the actual business.
+    // Pull business context from the first picked location so the caption
+    // sounds grounded. Multi-account posts share the same caption anyway.
+    const primaryPath = locationPaths[0] || '';
     const target =
       (profiles || [])
         .flatMap((p) => (p.locations || []).map((l) => ({ ...l, accountName: p.accountName || p.displayName })))
-        .find((l) => l.fullPath === locationPath) || null;
+        .find((l) => l.fullPath === primaryPath) || null;
     const businessName = target?.title || target?.locationName || target?.accountName || 'the business';
     const businessType =
       target?.primaryCategory?.displayName ||
@@ -987,17 +1002,16 @@ const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationK
   const submit = async (e) => {
     e.preventDefault();
     setError(null);
+    setPostResults(null);
 
     if (!summary.trim()) {
       setError('Description is required.');
       return;
     }
-    const { accountId, locationId } = splitFullPath(locationPath);
-    if (!accountId || !locationId) {
-      setError('Pick a business profile.');
+    if (!Array.isArray(locationPaths) || locationPaths.length === 0) {
+      setError('Pick at least one business profile.');
       return;
     }
-    // Guard bad URLs early — matches Posts.js validation.
     for (const u of validUrls) {
       try {
         // eslint-disable-next-line no-new
@@ -1032,51 +1046,60 @@ const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationK
       }
     }
 
+    // Precompute the CTA payload once — same across every location.
+    const ctaPayload =
+      callToAction.type && callToAction.url.trim()
+        ? {
+            actionType: callToAction.type,
+            url: isCallCta(callToAction.type)
+              ? `tel:${digitsOnly(callToAction.url).startsWith('+') ? '' : '+'}${digitsOnly(callToAction.url).replace(/^\+/, '')}`
+              : callToAction.url.trim(),
+          }
+        : null;
+
+    // Schedule-mode preconditions.
+    let scheduledDate = null;
+    if (mode === 'later') {
+      if (uploadedFiles.length > 0) {
+        setError('Direct file uploads are not yet supported for scheduled posts — paste image URLs instead.');
+        return;
+      }
+      scheduledDate = new Date(when);
+      if (Number.isNaN(scheduledDate.getTime())) {
+        setError('Invalid scheduled time.');
+        return;
+      }
+      if (scheduledDate.getTime() < Date.now() - 60_000) {
+        setError('Scheduled time must be in the future.');
+        return;
+      }
+    }
+
     setSubmitting(true);
-    try {
+
+    // Fan out across every picked location. Promise.allSettled so one
+    // 500 doesn't block the rest — users see per-location outcomes below.
+    const runOne = async (fullPath) => {
+      const { accountId, locationId } = splitFullPath(fullPath);
+      const option = allLocationOptions.find((o) => o.fullPath === fullPath);
+      const title = option?.title || fullPath;
+      if (!accountId || !locationId) {
+        throw new Error('Malformed profile path');
+      }
       if (mode === 'now') {
-        // Multipart POST to /api/posts — same shape Posts.js uses.
         const fd = new FormData();
         fd.append('platforms', JSON.stringify(['google']));
         fd.append('content', summary.trim());
         fd.append('gmbAccountId', accountId);
         fd.append('gmbLocationId', locationId);
         fd.append('postType', postType);
-        if (callToAction.type && callToAction.url.trim()) {
-          const raw = callToAction.url.trim();
-          const url = isCallCta(callToAction.type)
-            ? `tel:${digitsOnly(raw).startsWith('+') ? '' : '+'}${digitsOnly(raw).replace(/^\+/, '')}`
-            : raw;
-          fd.append('callToAction', JSON.stringify({ actionType: callToAction.type, url }));
-        }
+        if (ctaPayload) fd.append('callToAction', JSON.stringify(ctaPayload));
         if (validUrls.length > 0) {
-          fd.append(
-            'media',
-            JSON.stringify(validUrls.map((sourceUrl) => ({ mediaFormat: 'PHOTO', sourceUrl })))
-          );
+          fd.append('media', JSON.stringify(validUrls.map((sourceUrl) => ({ mediaFormat: 'PHOTO', sourceUrl }))));
         }
         uploadedFiles.forEach((f) => fd.append('images', f));
-        await axios.post('/api/posts', fd, {
-          headers: { 'Content-Type': 'multipart/form-data' },
-        });
+        await axios.post('/api/posts', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
       } else {
-        // Scheduled path — file uploads not supported yet on this endpoint.
-        if (uploadedFiles.length > 0) {
-          setError('Direct file uploads are not yet supported for scheduled posts — paste image URLs instead.');
-          setSubmitting(false);
-          return;
-        }
-        const scheduledDate = new Date(when);
-        if (Number.isNaN(scheduledDate.getTime())) {
-          setError('Invalid scheduled time.');
-          setSubmitting(false);
-          return;
-        }
-        if (scheduledDate.getTime() < Date.now() - 60_000) {
-          setError('Scheduled time must be in the future.');
-          setSubmitting(false);
-          return;
-        }
         await calendarService.schedule({
           content: summary.trim(),
           media: validUrls.map((sourceUrl) => ({ sourceUrl, mediaFormat: 'PHOTO' })),
@@ -1084,22 +1107,33 @@ const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationK
           gmbLocationId: locationId,
           scheduledTime: scheduledDate,
           postType,
-          callToAction:
-            callToAction.type && callToAction.url.trim()
-              ? {
-                  actionType: callToAction.type,
-                  url: isCallCta(callToAction.type)
-                    ? `tel:${digitsOnly(callToAction.url).startsWith('+') ? '' : '+'}${digitsOnly(callToAction.url).replace(/^\+/, '')}`
-                    : callToAction.url.trim(),
-                }
-              : null,
+          callToAction: ctaPayload,
         });
       }
+      return { fullPath, title, ok: true };
+    };
+
+    const settled = await Promise.allSettled(locationPaths.map(runOne));
+    const results = settled.map((s, i) => {
+      const fullPath = locationPaths[i];
+      const option = allLocationOptions.find((o) => o.fullPath === fullPath);
+      const title = option?.title || fullPath;
+      if (s.status === 'fulfilled') return { fullPath, title, ok: true };
+      const err = s.reason;
+      return {
+        fullPath,
+        title,
+        ok: false,
+        error: err?.response?.data?.error || err?.message || 'Failed',
+      };
+    });
+    setPostResults(results);
+    setSubmitting(false);
+
+    // If every location succeeded, close and refresh. Otherwise leave the
+    // modal open so the user can see per-location failures.
+    if (results.every((r) => r.ok)) {
       onDone?.();
-    } catch (err) {
-      setError(err?.response?.data?.error || err?.message || 'Failed to submit');
-    } finally {
-      setSubmitting(false);
     }
   };
 
@@ -1148,12 +1182,29 @@ const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationK
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <div className="flex items-center justify-between mb-1">
-                <label className="block text-sm font-medium text-gray-700">Business profile</label>
-                <div className="flex items-center gap-2 text-xs text-gray-500">
-                  <span>
-                    {accountsCount} {accountsCount === 1 ? 'account' : 'accounts'} · {locationsCount}{' '}
-                    {locationsCount === 1 ? 'location' : 'locations'}
+                <label className="block text-sm font-medium text-gray-700">
+                  Business profiles
+                  <span className="ml-2 text-xs font-normal text-gray-500">
+                    ({locationPaths.length} selected)
                   </span>
+                </label>
+                <div className="flex items-center gap-2 text-xs text-gray-500">
+                  <button
+                    type="button"
+                    onClick={() => setLocationPaths(allLocationOptions.map((o) => o.fullPath))}
+                    className="text-primary-600 hover:underline"
+                  >
+                    All
+                  </button>
+                  <span className="text-gray-300">·</span>
+                  <button
+                    type="button"
+                    onClick={() => setLocationPaths([])}
+                    className="text-gray-500 hover:underline"
+                  >
+                    Clear
+                  </button>
+                  <span className="text-gray-300">·</span>
                   <button
                     type="button"
                     onClick={handleReload}
@@ -1165,27 +1216,51 @@ const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationK
                   </button>
                 </div>
               </div>
-              <select
-                value={locationPath}
-                onChange={(e) => setLocationPath(e.target.value)}
-                className="block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
-                disabled={!hasProfiles}
-              >
-                <option value="">Select a profile…</option>
-                {(profiles || []).map((profile, pi) =>
-                  (profile.locations || []).map((location) => (
-                    <option key={location.fullPath} value={location.fullPath}>
-                      {(profile.accountName || profile.displayName || `Account ${pi + 1}`)}
-                      {' — '}
-                      {location.title || location.locationName || 'Untitled Location'}
-                    </option>
-                  ))
+              <div className="rounded-md border border-gray-300 max-h-40 overflow-y-auto divide-y divide-gray-100 bg-white">
+                {allLocationOptions.length === 0 ? (
+                  <div className="p-3 text-xs text-gray-500">
+                    No connected business profiles found.
+                  </div>
+                ) : (
+                  allLocationOptions.map((opt) => {
+                    const checked = locationPaths.includes(opt.fullPath);
+                    return (
+                      <label
+                        key={opt.key}
+                        className="flex items-start gap-2 px-3 py-2 hover:bg-gray-50 cursor-pointer"
+                      >
+                        <input
+                          type="checkbox"
+                          className="mt-0.5 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                          checked={checked}
+                          onChange={() =>
+                            setLocationPaths((prev) =>
+                              checked
+                                ? prev.filter((p) => p !== opt.fullPath)
+                                : [...prev, opt.fullPath]
+                            )
+                          }
+                        />
+                        <span className="flex-1 min-w-0">
+                          <span className="block text-sm text-gray-900 truncate">{opt.title}</span>
+                          <span className="block text-[11px] text-gray-500 truncate">
+                            {opt.accountLabel}
+                            {opt.accountEmail ? ` · ${opt.accountEmail}` : ''}
+                          </span>
+                        </span>
+                      </label>
+                    );
+                  })
                 )}
-              </select>
-              {locationsCount === 0 && (
+              </div>
+              <p className="mt-1 text-xs text-gray-500">
+                The same post will publish{mode === 'later' ? '/schedule' : ''} to every selected
+                profile — one API call per location.
+              </p>
+              {accountsCount === 0 && locationsCount === 0 && (
                 <p className="text-xs text-amber-700 mt-1">
                   No locations returned by the GMB API. Try Reload; if still empty, reconnect the
-                  profile from Connections.
+                  profile from Integrations.
                 </p>
               )}
             </div>
@@ -1534,6 +1609,23 @@ const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationK
           </div>
         </div>
 
+        {/* Per-location results (shown after any failed run) */}
+        {postResults && postResults.some((r) => !r.ok) && (
+          <div className="mx-6 mb-2 rounded-md border border-amber-200 bg-amber-50 p-3">
+            <div className="text-xs font-semibold text-amber-900 mb-1">
+              {postResults.filter((r) => r.ok).length} of {postResults.length} succeeded
+            </div>
+            <ul className="text-xs space-y-0.5">
+              {postResults.map((r) => (
+                <li key={r.fullPath} className={r.ok ? 'text-emerald-800' : 'text-red-800'}>
+                  {r.ok ? '✓' : '✗'} {r.title}
+                  {!r.ok && r.error ? ` — ${r.error}` : ''}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
         {/* Footer */}
         <div className="px-6 py-4 border-t border-gray-200 flex justify-end gap-2 sticky bottom-0 bg-white">
           <button
@@ -1545,13 +1637,17 @@ const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationK
           </button>
           <button
             type="submit"
-            disabled={submitting || !hasProfiles}
+            disabled={submitting || !hasProfiles || locationPaths.length === 0}
             className="inline-flex items-center gap-1.5 px-5 py-2 text-sm font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 disabled:opacity-60"
           >
             {mode === 'later' ? <Clock className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
             {submitting
-              ? mode === 'later' ? 'Scheduling…' : 'Publishing…'
-              : mode === 'later' ? 'Schedule' : 'Publish'}
+              ? mode === 'later'
+                ? `Scheduling to ${locationPaths.length}…`
+                : `Publishing to ${locationPaths.length}…`
+              : mode === 'later'
+                ? `Schedule${locationPaths.length > 1 ? ` to ${locationPaths.length} profiles` : ''}`
+                : `Publish${locationPaths.length > 1 ? ` to ${locationPaths.length} profiles` : ''}`}
           </button>
         </div>
       </form>
@@ -1559,29 +1655,33 @@ const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationK
       {drivePickerOpen && (
         <DrivePickerModal
           existingUrls={validUrls}
-          // Scope the picker to the Google account that owns the currently-
-          // picked business location, so folders/files from OTHER connected
-          // accounts don't bleed in. `connected_via_google_id` is set on
-          // every account object by /api/gmb/accounts.
+          // Scope by default only when the composer targets a single
+          // location — a multi-account post should default to browsing
+          // every Drive so the user can grab shared/general assets. The
+          // dropdown in the picker header always lets them narrow later.
           initialGoogleId={
-            (() => {
-              const parts = (locationPath || '').split('/');
-              const accId = parts[1];
-              const acct = (profiles || []).find(
-                (p) => (p?.name || '').split('/').pop() === accId
-              );
-              return acct?.connected_via_google_id || null;
-            })()
+            locationPaths.length === 1
+              ? (() => {
+                  const parts = (locationPaths[0] || '').split('/');
+                  const accId = parts[1];
+                  const acct = (profiles || []).find(
+                    (p) => (p?.name || '').split('/').pop() === accId
+                  );
+                  return acct?.connected_via_google_id || null;
+                })()
+              : null
           }
           initialEmail={
-            (() => {
-              const parts = (locationPath || '').split('/');
-              const accId = parts[1];
-              const acct = (profiles || []).find(
-                (p) => (p?.name || '').split('/').pop() === accId
-              );
-              return acct?.connected_via_email || null;
-            })()
+            locationPaths.length === 1
+              ? (() => {
+                  const parts = (locationPaths[0] || '').split('/');
+                  const accId = parts[1];
+                  const acct = (profiles || []).find(
+                    (p) => (p?.name || '').split('/').pop() === accId
+                  );
+                  return acct?.connected_via_email || null;
+                })()
+              : null
           }
           onClose={() => setDrivePickerOpen(false)}
           onPick={(picked) => {
