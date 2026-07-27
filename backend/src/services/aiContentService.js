@@ -161,6 +161,57 @@ Return valid JSON only with exactly these keys:
   return { system, user };
 }
 
+function buildReviewReplyPrompt(input) {
+  const {
+    businessName = 'the business',
+    businessType = 'local service business',
+    city = '',
+    reviewText = '',
+    reviewRating = null,
+    reviewerName = '',
+    tone = 'warm, professional, personal',
+    existingReply = ''
+  } = input || {};
+
+  const ratingNum = Number(reviewRating);
+  const isPositive = ratingNum >= 4;
+  const isNegative = ratingNum > 0 && ratingNum <= 3;
+  const stance = isPositive
+    ? 'The review is positive. Thank the customer warmly and reinforce one specific thing they mentioned.'
+    : isNegative
+      ? 'The review is negative or mixed. Acknowledge their experience, apologize sincerely for what they described, avoid being defensive, and invite them to contact the business directly to make it right. Do not include a phone number, email, or URL unless it is present in the input.'
+      : 'Rating is unknown. Respond warmly and briefly.';
+
+  const system = 'You are the business owner replying directly to a customer review on Google Business Profile. You always reply with valid JSON only — no prose, no code fences.';
+
+  const user = `You are the owner of ${businessName} (${businessType}) replying to a customer review on Google Business Profile${city ? ` in ${city}` : ''}.
+
+Reviewer name: ${reviewerName || 'unknown'}
+Review rating: ${reviewRating !== null && reviewRating !== undefined ? reviewRating : 'unknown'}
+Review text: ${reviewText || '(no written comment — rating only)'}
+${existingReply ? `Existing draft to improve on: ${existingReply}` : ''}
+Tone: ${tone}
+
+${stance}
+
+Rules:
+- Address the reviewer by first name only if provided; otherwise a warm generic opener.
+- Sound human — this is the owner replying, not a marketing bot.
+- Reference something specific from the review when possible (a room, a service, a detail).
+- No hashtags. No emojis. No calls to book. This is a reply, not a promo post.
+- Do not include private info (last names, addresses, phone, email) unless present in the review itself.
+- Do not invent facts, discounts, or promises the business hasn't made.
+- Keep it 2–5 sentences, under 800 characters.
+- If the review is empty (rating only), keep it very short — 1–2 sentences — and don't quote or invent anything.
+
+Return valid JSON only with exactly this key:
+{
+  "reply": string
+}`;
+
+  return { system, user };
+}
+
 function buildReviewPostPrompt(input) {
   const {
     businessName = 'the business',
@@ -237,6 +288,26 @@ async function generateArticle(input) {
   };
 }
 
+async function generateReviewReply(input) {
+  const model = input.model || DEFAULT_MODEL;
+  const { system, user } = buildReviewReplyPrompt(input);
+  const result = await callLLM({ system, user, model, temperature: 0.7, maxTokens: 500 });
+  const data = extractJson(result.raw);
+
+  if (typeof data.reply !== 'string' || !data.reply.trim()) {
+    throw new Error('LLM response missing non-empty "reply" string');
+  }
+
+  return {
+    data,
+    raw: result.raw,
+    prompt: user,
+    model: result.model,
+    usage: result.usage,
+    costUsd: estimateCostUsd(result.model, result.usage)
+  };
+}
+
 async function generateReviewPost(input) {
   const model = input.model || DEFAULT_MODEL;
   const { system, user } = buildReviewPostPrompt(input);
@@ -264,6 +335,7 @@ async function generateReviewPost(input) {
 module.exports = {
   generateArticle,
   generateReviewPost,
+  generateReviewReply,
   // exported for tests
-  _internal: { extractJson, buildArticlePrompt, buildReviewPostPrompt, estimateCostUsd }
+  _internal: { extractJson, buildArticlePrompt, buildReviewPostPrompt, buildReviewReplyPrompt, estimateCostUsd }
 };

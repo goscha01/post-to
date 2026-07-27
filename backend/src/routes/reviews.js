@@ -483,7 +483,29 @@ router.delete('/accounts/:accountId/locations/:locationId/reviews/:reviewId/repl
 // then delegates to the shared handler in routes/ai.js. Saves draft to
 // ai_generated_posts and logs the job in ai_jobs.
 // ---------------------------------------------------------------------------
-const { generateReviewPostHandler } = require('./ai');
+const { generateReviewPostHandler, generateReviewReplyHandler } = require('./ai');
+
+// Shared helper: load a stored review by UUID or by GMB review_id string,
+// filtered to the current user. Returns null if not found.
+async function loadReviewForUser(reviewIdParam, userId) {
+  const uuidLike = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(reviewIdParam);
+  if (uuidLike) {
+    const { data } = await supabase
+      .from('gmb_reviews')
+      .select('*')
+      .eq('id', reviewIdParam)
+      .eq('user_id', userId)
+      .single();
+    if (data) return data;
+  }
+  const { data } = await supabase
+    .from('gmb_reviews')
+    .select('*')
+    .eq('review_id', reviewIdParam)
+    .eq('user_id', userId)
+    .single();
+  return data || null;
+}
 
 router.post('/:reviewId/generate-post', async (req, res) => {
   try {
@@ -554,6 +576,56 @@ router.post('/:reviewId/generate-post', async (req, res) => {
   } catch (err) {
     console.error('reviews/:reviewId/generate-post failed:', err.message);
     return res.status(500).json({ error: 'Failed to generate review post', message: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// AI: Draft an owner-to-customer reply for a stored review.
+// Returns the reply text — does NOT persist a draft. User posts it via the
+// existing PUT /accounts/:accountId/locations/:locationId/reviews/:reviewId/reply.
+// No requireBusinessAuth (no Google API call), same as generate-post.
+// ---------------------------------------------------------------------------
+router.post('/:reviewId/generate-reply', async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const review = await loadReviewForUser(req.params.reviewId, userId);
+    if (!review) {
+      return res.status(404).json({ error: 'Review not found' });
+    }
+
+    let businessName = req.body.businessName || null;
+    let city = req.body.city || null;
+    if (review.location_id && (!businessName || !city)) {
+      const { data: location } = await supabase
+        .from('gmb_locations')
+        .select('business_name, location_name, address')
+        .eq('location_id', review.location_id)
+        .eq('user_id', userId)
+        .single();
+      if (location && !businessName) {
+        businessName = location.business_name || location.location_name || null;
+      }
+    }
+
+    req.body = {
+      ...req.body,
+      businessName: businessName || req.body.businessName,
+      businessType: req.body.businessType,
+      city: city || req.body.city,
+      reviewText: req.body.reviewText || review.comment || '',
+      reviewRating: req.body.reviewRating ?? review.star_rating ?? null,
+      reviewerName: req.body.reviewerName || review.reviewer_name || '',
+      tone: req.body.tone,
+      existingReply: req.body.existingReply || review.reply_comment || ''
+    };
+
+    return generateReviewReplyHandler(req, res, {
+      sourceType: 'review',
+      sourceId: review.id
+    });
+  } catch (err) {
+    console.error('reviews/:reviewId/generate-reply failed:', err.message);
+    return res.status(500).json({ error: 'Failed to generate review reply', message: err.message });
   }
 });
 

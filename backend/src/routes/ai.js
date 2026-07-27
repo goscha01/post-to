@@ -255,6 +255,103 @@ async function generateReviewPostHandler(req, res, options = {}) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Review-reply generation. Drafts an owner-to-customer reply for GBP.
+// No DB persistence for the draft itself — the ai_jobs row logs the run
+// (tokens, cost, prompt); the reply text is returned once and thrown away
+// if the user doesn't post it via the existing GMB reply endpoint.
+// ---------------------------------------------------------------------------
+async function generateReviewReplyHandler(req, res, options = {}) {
+  const userId = req.user.userId;
+  const kind = 'review_reply_generation';
+
+  const used = await aiJobs.countTodayByKind(userId, kind);
+  const cap = aiJobs.dailyCapFor(kind);
+  if (used >= cap) {
+    return res.status(429).json({
+      error: 'Daily AI review-reply generation limit reached',
+      used,
+      cap
+    });
+  }
+
+  const input = {
+    businessName: req.body.businessName || 'the business',
+    businessType: req.body.businessType || 'local service business',
+    city: req.body.city || '',
+    reviewText: req.body.reviewText || '',
+    reviewRating: req.body.reviewRating ?? null,
+    reviewerName: req.body.reviewerName || '',
+    tone: req.body.tone || 'warm, professional, personal',
+    existingReply: req.body.existingReply || ''
+  };
+
+  const sourceType = options.sourceType || 'review';
+  const sourceId = options.sourceId || req.body.reviewId || null;
+
+  let job;
+  try {
+    job = await aiJobs.createJob({
+      userId,
+      kind,
+      model: process.env.AI_MODEL || null,
+      inputJson: { ...input, sourceType, sourceId }
+    });
+  } catch (e) {
+    console.error('createJob failed:', e.message);
+    return res.status(500).json({ error: 'Could not create AI job' });
+  }
+
+  try {
+    const result = await aiContent.generateReviewReply(input);
+    const ai = result.data;
+
+    await aiJobs.completeJob(job.id, {
+      prompt: result.prompt,
+      outputJson: ai,
+      model: result.model,
+      usage: result.usage,
+      costUsd: result.costUsd,
+      resultTable: null,
+      resultId: null
+    });
+
+    return res.status(200).json({
+      jobId: job.id,
+      reply: ai.reply,
+      model: result.model,
+      usage: result.usage,
+      costUsd: result.costUsd
+    });
+  } catch (err) {
+    console.error('review-reply generation failed:', err.message);
+    await aiJobs.failJob(job.id, err.message);
+    return res.status(502).json({ error: 'AI review-reply generation failed', message: err.message, jobId: job.id });
+  }
+}
+
+router.post(
+  '/review-reply',
+  [
+    body('reviewText').optional().isString().isLength({ max: 8000 }),
+    body('reviewRating').optional().isInt({ min: 1, max: 5 }),
+    body('reviewerName').optional().isString().isLength({ max: 255 }),
+    body('businessName').optional().isString().isLength({ max: 255 }),
+    body('businessType').optional().isString().isLength({ max: 255 }),
+    body('city').optional().isString().isLength({ max: 255 }),
+    body('tone').optional().isString().isLength({ max: 255 }),
+    body('existingReply').optional().isString().isLength({ max: 8000 }),
+    body('reviewId').optional().isString()
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Invalid input', details: errors.array() });
+    }
+    return generateReviewReplyHandler(req, res);
+  }
+);
+
 router.post(
   '/review-post',
   [
@@ -279,3 +376,4 @@ router.post(
 
 module.exports = router;
 module.exports.generateReviewPostHandler = generateReviewPostHandler;
+module.exports.generateReviewReplyHandler = generateReviewReplyHandler;

@@ -13,7 +13,8 @@ import {
   Clock,
   User,
   CheckCircle,
-  RefreshCw
+  RefreshCw,
+  Sparkles
 } from 'lucide-react';
 
 // Profile Image Component
@@ -91,6 +92,53 @@ const Reviews = () => {
   const [selectedProfile, setSelectedProfile] = useState('');
   const [replyText, setReplyText] = useState('');
   const [replyingTo, setReplyingTo] = useState(null);
+  const [draftingFor, setDraftingFor] = useState(null);
+  const [draftError, setDraftError] = useState(null);
+
+  // Normalize GMB star rating (string like "FIVE" or number) to 1-5 int.
+  const parseStarRating = (rating) => {
+    if (typeof rating === 'number') return rating;
+    if (typeof rating === 'string') {
+      const map = { ONE: 1, TWO: 2, THREE: 3, FOUR: 4, FIVE: 5 };
+      return map[rating] ?? (parseInt(rating, 10) || null);
+    }
+    return null;
+  };
+
+  const handleDraftReply = async (review) => {
+    const reviewKey = review.reviewId || review.name;
+    setDraftingFor(reviewKey);
+    setDraftError(null);
+
+    // Look up the profile/location title so the LLM has a business name to work with.
+    const profile = profiles.find(p =>
+      p.locations && p.locations.some(loc => loc.name === selectedProfile)
+    );
+    const location = profile?.locations?.find(loc => loc.name === selectedProfile);
+    const businessName = location?.title || profile?.accountName || 'the business';
+
+    try {
+      const response = await axios.post('/api/ai/review-reply', {
+        businessName,
+        reviewText: review.comment || '',
+        reviewRating: parseStarRating(review.starRating || review.rating),
+        reviewerName: review.reviewer?.displayName || '',
+        existingReply: review.reviewReply?.comment || replyText || ''
+      });
+
+      if (response.data?.reply) {
+        setReplyingTo(reviewKey);
+        setReplyText(response.data.reply);
+      } else {
+        setDraftError('AI returned no reply');
+      }
+    } catch (err) {
+      const msg = err.response?.data?.error || err.response?.data?.message || err.message || 'Failed to draft reply';
+      setDraftError(msg);
+    } finally {
+      setDraftingFor(null);
+    }
+  };
 
   useEffect(() => {
     if (isAuthenticated && !isDisconnected) {
@@ -559,13 +607,21 @@ const Reviews = () => {
                           </div>
                         </div>
                       ) : (
-                        <div className="mt-3">
+                        <div className="mt-3 flex flex-wrap gap-2">
                           <button
                             onClick={() => setReplyingTo(review.reviewId || review.name)}
                             className="inline-flex items-center px-3 py-1 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50"
                           >
                             <Reply className="h-3 w-3 mr-1" />
                             Reply
+                          </button>
+                          <button
+                            onClick={() => handleDraftReply(review)}
+                            disabled={draftingFor === (review.reviewId || review.name)}
+                            className="inline-flex items-center px-3 py-1 border border-primary-300 shadow-sm text-sm font-medium rounded-md text-primary-700 bg-primary-50 hover:bg-primary-100 disabled:opacity-60 disabled:cursor-not-allowed"
+                          >
+                            <Sparkles className="h-3 w-3 mr-1" />
+                            {draftingFor === (review.reviewId || review.name) ? 'Drafting…' : 'Draft with AI'}
                           </button>
                         </div>
                       )}
@@ -576,11 +632,14 @@ const Reviews = () => {
                           <textarea
                             value={replyText}
                             onChange={(e) => setReplyText(e.target.value)}
-                            rows={3}
+                            rows={4}
                             className="block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
                             placeholder="Write your reply..."
                           />
-                          <div className="mt-2 flex space-x-2">
+                          {draftError && (
+                            <p className="mt-1 text-xs text-red-600">AI draft failed: {draftError}</p>
+                          )}
+                          <div className="mt-2 flex flex-wrap gap-2">
                             <button
                               onClick={() => {
                                 if (review.reviewReply) {
@@ -594,9 +653,20 @@ const Reviews = () => {
                               {review.reviewReply ? 'Update Reply' : 'Post Reply'}
                             </button>
                             <button
+                              onClick={() => handleDraftReply(review)}
+                              disabled={draftingFor === (review.reviewId || review.name)}
+                              className="inline-flex items-center px-3 py-1 border border-primary-300 shadow-sm text-sm font-medium rounded-md text-primary-700 bg-primary-50 hover:bg-primary-100 disabled:opacity-60 disabled:cursor-not-allowed"
+                            >
+                              <Sparkles className="h-3 w-3 mr-1" />
+                              {draftingFor === (review.reviewId || review.name)
+                                ? 'Drafting…'
+                                : (replyText ? 'Regenerate with AI' : 'Draft with AI')}
+                            </button>
+                            <button
                               onClick={() => {
                                 setReplyingTo(null);
                                 setReplyText('');
+                                setDraftError(null);
                               }}
                               className="inline-flex items-center px-3 py-1 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50"
                             >
