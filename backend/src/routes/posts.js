@@ -395,27 +395,48 @@ router.get('/location/:locationId', async (req, res) => {
   try {
     const { locationId } = req.params;
     const { cached_only } = req.query; // Add query parameter for cache-only requests
-    const accessToken = req.businessToken;
     const userId = req.user?.userId;
+    const accountId = req.headers['x-gmb-account-id'];
 
-    // If cached_only=true, return only cached data
+    // Requiring the header (no hardcoded fallback to a specific business) is
+    // the only way this route can work with more than one connected Google
+    // account. The previous fallback to Tampa's account_id silently returned
+    // 404s for every other business.
+    if (!accountId) {
+      logger.warn('posts.location.missing_account_id', { user_id: userId, location_id: locationId });
+      return res.status(400).json({
+        success: false,
+        error: 'x-gmb-account-id header is required',
+      });
+    }
+
+    logger.info('posts.location.request', {
+      user_id: userId,
+      account_id: accountId,
+      location_id: locationId,
+      cached_only: cached_only === 'true',
+    });
+
+    // If cached_only=true, return only cached data. When zero rows exist for
+    // this location we return cached:false so the frontend falls through to
+    // a live fetch — otherwise a never-hydrated location shows "no posts"
+    // forever because the empty cache is treated as authoritative.
     if (cached_only === 'true') {
-      const accountId = req.headers['x-gmb-account-id'] || '109194636448236279020';
       const cachedPosts = await getCachedPosts(locationId, userId, accountId);
       return res.json({
         success: true,
         posts: cachedPosts,
-        cached: true,
-        message: 'Cached data only'
+        cached: cachedPosts.length > 0,
+        message: cachedPosts.length > 0
+          ? `Found ${cachedPosts.length} cached posts`
+          : 'No cached posts yet — fetch live to hydrate',
       });
     }
 
-    // Try to fetch real posts from Google My Business first
-    try {
-      // Extract account ID from the location path (assuming format: accounts/{accountId}/locations/{locationId})
-      const accountId = req.headers['x-gmb-account-id'] || '109194636448236279020'; // fallback
-
-      // Try direct API call first
+    // Try each connected OAuth token until one returns posts for this
+    // account+location. Only the token that OAuth'd the specific Google
+    // account owning this GMB account will succeed — the others 404.
+    const fetchAttempt = await tryWithEachBusinessToken(userId, req.businessToken, async (accessToken) => {
       try {
         const gmbResponse = await axios.get(
           `https://mybusiness.googleapis.com/v4/accounts/${accountId}/locations/${locationId}/localPosts`,
@@ -426,6 +447,33 @@ router.get('/location/:locationId', async (req, res) => {
             }
           }
         );
+        return gmbResponse;
+      } catch (err) {
+        // Let tryWithEachBusinessToken decide whether to retry the next
+        // token: 401/403/404 → next; anything else → hard fail.
+        throw err;
+      }
+    });
+
+    try {
+      if (!fetchAttempt.ok) {
+        logger.warn('posts.location.all_tokens_failed', {
+          user_id: userId,
+          account_id: accountId,
+          location_id: locationId,
+          tried: fetchAttempt.tried,
+          all_unauthorized: !!fetchAttempt.allUnauthorized,
+          last_error: fetchAttempt.error?.message,
+        });
+        return res.json({
+          success: true,
+          posts: [],
+          note: 'No connected Google profile has access to posts for this location',
+        });
+      }
+      const gmbResponse = fetchAttempt.result;
+      // Re-enter the original success flow with the fetched response.
+      {
 
         if (gmbResponse.data.localPosts && gmbResponse.data.localPosts.length > 0) {
           // Convert GMB posts to our format and sort by creation date (newest first)
@@ -518,167 +566,48 @@ router.get('/location/:locationId', async (req, res) => {
           // Save existing posts to database
           const savedPosts = await saveExistingPostsToDatabase(req.user.userId, realPosts, 'google');
 
-          return res.json({
-            posts: realPosts,
-            savedToDatabase: savedPosts.length
+          logger.info('posts.location.response', {
+            user_id: userId,
+            account_id: accountId,
+            location_id: locationId,
+            post_count: realPosts.length,
+            saved_to_db: savedPosts.length,
           });
-        }
-      } catch (v4Error) {
-        // Try alternative endpoint
-        const gmbResponse = await axios.get(
-          `https://mybusinessaccountmanagement.googleapis.com/v1/accounts/${accountId}/locations/${locationId}/localPosts`,
-          {
-            headers: {
-              'Authorization': `Bearer ${accessToken}`,
-              'Content-Type': 'application/json'
-            }
-          }
-        );
-
-        if (gmbResponse.data.localPosts && gmbResponse.data.localPosts.length > 0) {
-          // Convert GMB posts to our format and sort by creation date (newest first)
-          const realPosts = await Promise.all(gmbResponse.data.localPosts.map(async (post) => {
-            // Try to fetch media for this post
-            let media = [];
-            try {
-              if (post.media && post.media.length > 0) {
-                // Extract media information from the post
-                media = post.media.map(mediaItem => {
-                  const extracted = {
-                    id: mediaItem.name?.split('/').pop() || `media-${Date.now()}`,
-                    mediaFormat: mediaItem.mediaFormat || 'PHOTO',
-                    sourceUrl: mediaItem.googleUrl || mediaItem.sourceUrl || mediaItem.url || mediaItem.mediaUrl || null,
-                    thumbnailUrl: mediaItem.thumbnailUrl || mediaItem.thumbnail || null,
-                    altText: mediaItem.altText || 'Post image'
-                  };
-                  
-                  // Ensure Google Photos URLs have the proper format with query parameters
-                  if (extracted.sourceUrl && extracted.sourceUrl.includes('lh3.googleusercontent.com')) {
-                    // If the URL doesn't have query parameters, add them
-                    if (!extracted.sourceUrl.includes('=')) {
-                      extracted.sourceUrl = `${extracted.sourceUrl}=h305-no`;
-                    } else {
-                      // If it already has parameters, ensure it has the right format
-                      if (!extracted.sourceUrl.includes('h305-no')) {
-                        extracted.sourceUrl = `${extracted.sourceUrl}=h305-no`;
-                      }
-                    }
-                  }
-                  
-                  return extracted;
-                });
-              }
-            } catch (mediaError) {
-              // Ignore media errors
-            }
-
-            const processedPost = {
-              id: post.name.split('/').pop(),
-              content: post.summary,
-              postType: mapTopicTypeToPostType(post.topicType) || 'UPDATE',
-              platform: 'google',
-              createdAt: post.createTime || new Date().toISOString(),
-              status: 'published',
-              media: media,
-              callToAction: post.callToAction || null,
-              accountId: accountId, // Add GMB account ID
-              locationId: locationId, // Add location ID
-              gmbPost: post
-            };
-            
-            return processedPost;
-          }));
-          
-          // Sort by creation date (newest first)
-          realPosts.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-
-          // Save existing posts to database
-          const savedPosts = await saveExistingPostsToDatabase(req.user.userId, realPosts, 'google');
-
           return res.json({
             posts: realPosts,
             savedToDatabase: savedPosts.length
           });
         }
       }
+
+      // Token succeeded but returned no localPosts — location has no posts.
+      logger.info('posts.location.response', {
+        user_id: userId,
+        account_id: accountId,
+        location_id: locationId,
+        post_count: 0,
+      });
+      return res.json({ posts: [] });
     } catch (gmbError) {
-      // Continue to fallback
+      logger.error('posts.location.processing_error', {
+        user_id: userId,
+        account_id: accountId,
+        location_id: locationId,
+        error: gmbError?.message,
+        stack: gmbError?.stack?.slice(0, 1500),
+      });
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to process posts from GMB',
+        details: gmbError.message,
+      });
     }
-    
-    // Fallback to mock data if GMB API fails
-    const mockPosts = [
-      {
-        id: '1',
-        content: 'Welcome to our business! We offer the best services in town.',
-        postType: 'UPDATE',
-        platform: 'google',
-        createdAt: new Date().toISOString(),
-        status: 'published',
-        media: [
-          {
-            id: 'media-1',
-            mediaFormat: 'PHOTO',
-            sourceUrl: 'https://picsum.photos/400/300?random=1',
-            thumbnailUrl: 'https://picsum.photos/200/150?random=1',
-            altText: 'Clean office space'
-          }
-        ]
-      },
-      {
-        id: '2',
-        content: 'Special offer this week - 20% off all services!',
-        postType: 'OFFER',
-        platform: 'google',
-        createdAt: new Date(Date.now() - 86400000).toISOString(), // 1 day ago
-        status: 'published',
-        callToAction: {
-          actionType: 'BOOK',
-          url: 'https://example.com/book-now'
-        },
-        media: [
-          {
-            id: 'media-2',
-            mediaFormat: 'PHOTO',
-            sourceUrl: 'https://picsum.photos/400/300?random=2',
-            thumbnailUrl: 'https://picsum.photos/200/150?random=2',
-            altText: 'Special offer banner'
-          }
-        ]
-      }
-    ];
-    
-    // Sort mock posts by creation date (newest first) - ensure proper date parsing
-    const sortedMockPosts = mockPosts.sort((a, b) => {
-      const dateA = new Date(a.createdAt);
-      const dateB = new Date(b.createdAt);
-      
-      // Handle invalid dates
-      if (isNaN(dateA.getTime()) || isNaN(dateB.getTime())) {
-        return 0;
-      }
-      
-      return dateB.getTime() - dateA.getTime(); // Newest first
-    });
-
-    // Save mock posts to database for caching
-    const accountId = req.headers['x-gmb-account-id'] || '109194636448236279020';
-
-    // Add locationId and accountId to mock posts
-    const mockPostsWithIds = sortedMockPosts.map(post => ({
-      ...post,
-      accountId: accountId,
-      locationId: locationId
-    }));
-
-    const savedMockPosts = await saveExistingPostsToDatabase(req.user?.userId, mockPostsWithIds, 'google');
-
-    res.json({
-      posts: sortedMockPosts,
-      savedToDatabase: savedMockPosts.length,
-      source: 'mock_fallback'
-    });
   } catch (error) {
-    console.error('Error fetching posts:', error);
+    logger.error('posts.location.unhandled', {
+      location_id: req.params.locationId,
+      error: error?.message,
+      stack: error?.stack?.slice(0, 1500),
+    });
     res.status(500).json({
       error: 'Failed to fetch posts',
       details: error.message
