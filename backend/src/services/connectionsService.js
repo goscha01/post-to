@@ -532,6 +532,67 @@ async function upsertGoogleSearchConsole({ userId, siteUrl, displayName, permiss
   return data;
 }
 
+// Backfill missing google_business rows for a user by walking their
+// users.business_profiles JSONB. Older OAuth grants (pre-2026-06-26, before
+// upsertGoogleBusiness was wired into the callback) exist in
+// business_profiles but have no matching connected_accounts row — the
+// Connections page therefore doesn't show them. Called on every GET
+// /api/connections so the list is self-healing: cheap on steady state
+// (a single SELECT + zero writes when nothing is missing), safe to re-run.
+async function reconcileGoogleBusiness(userId) {
+  if (!userId) return { added: 0, skipped: 0 };
+  const { data: userRow, error: userErr } = await supabase
+    .from('users')
+    .select('business_profiles')
+    .eq('id', userId)
+    .single();
+  if (userErr || !userRow) return { added: 0, skipped: 0 };
+  const profiles = Array.isArray(userRow.business_profiles) ? userRow.business_profiles : [];
+  if (profiles.length === 0) return { added: 0, skipped: 0 };
+
+  const { data: existingRows, error: existingErr } = await supabase
+    .from(TABLE)
+    .select('external_id')
+    .eq('user_id', userId)
+    .eq('provider', 'google_business');
+  if (existingErr) return { added: 0, skipped: 0 };
+  const have = new Set((existingRows || []).map((r) => r.external_id));
+
+  let added = 0;
+  let skipped = 0;
+  for (const p of profiles) {
+    const googleId = p?.business_google_id;
+    if (!googleId) {
+      skipped += 1;
+      continue;
+    }
+    const externalId = `google:${googleId}`;
+    if (have.has(externalId)) {
+      skipped += 1;
+      continue;
+    }
+    try {
+      await upsertGoogleBusiness({
+        userId,
+        businessGoogleId: googleId,
+        businessEmail: p.business_email || null,
+        displayName: p.business_email || 'Google Business Profile',
+      });
+      added += 1;
+    } catch (e) {
+      logger.warn('connections.reconcile_google_business_error', {
+        user_id: userId,
+        google_id: googleId,
+        error: e?.message,
+      });
+    }
+  }
+  if (added > 0) {
+    logger.info('connections.reconcile_google_business', { user_id: userId, added, skipped });
+  }
+  return { added, skipped };
+}
+
 module.exports = {
   listForUser,
   getForUser,
@@ -539,6 +600,7 @@ module.exports = {
   deleteForUser,
   upsertWebsite,
   upsertGoogleBusiness,
+  reconcileGoogleBusiness,
   upsertGoogleAnalytics,
   upsertGoogleAds,
   upsertGoogleSearchConsole,

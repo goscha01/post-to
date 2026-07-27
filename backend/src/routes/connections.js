@@ -18,6 +18,14 @@ router.use(authMiddleware);
 
 router.get('/', async (req, res) => {
   try {
+    // Self-heal: mirror any OAuth grants in users.business_profiles that
+    // pre-date the upsertGoogleBusiness callback wire-up so the Connections
+    // page shows every connected Google account, not just recent ones.
+    try {
+      await connections.reconcileGoogleBusiness(req.user.userId);
+    } catch (e) {
+      // Non-fatal — the list still returns whatever's already there.
+    }
     const rows = await connections.listForUser(req.user.userId);
     res.json({ connections: rows });
   } catch (err) {
