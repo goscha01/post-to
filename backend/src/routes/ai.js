@@ -421,18 +421,37 @@ router.post(
   [
     body('imageUrls').isArray({ min: 1, max: 4 }),
     body('imageUrls.*').isString().isLength({ min: 5, max: 2000 }),
-    body('businessName').optional().isString().isLength({ max: 255 }),
-    body('businessType').optional().isString().isLength({ max: 255 }),
-    body('city').optional().isString().isLength({ max: 255 }),
-    body('tone').optional().isString().isLength({ max: 255 }),
-    body('additionalContext').optional().isString().isLength({ max: 1000 }),
-    body('postType').optional().isIn(['UPDATE', 'OFFER', 'EVENT']),
-    body('includeCallToAction').optional().isBoolean(),
-    body('ctaType').optional().isString().isLength({ max: 64 }),
+    // optional({ nullable: true, checkFalsy: true }) — express-validator's
+    // default optional() only skips `undefined`; the frontend sends `null`
+    // for ctaType when no CTA is picked, which was tripping .isString()
+    // and returning a bare 400 with no field-level hint.
+    body('businessName').optional({ nullable: true, checkFalsy: true }).isString().isLength({ max: 255 }),
+    body('businessType').optional({ nullable: true, checkFalsy: true }).isString().isLength({ max: 255 }),
+    body('city').optional({ nullable: true, checkFalsy: true }).isString().isLength({ max: 255 }),
+    body('tone').optional({ nullable: true, checkFalsy: true }).isString().isLength({ max: 255 }),
+    body('additionalContext').optional({ nullable: true, checkFalsy: true }).isString().isLength({ max: 1000 }),
+    body('postType').optional({ nullable: true, checkFalsy: true }).isIn(['UPDATE', 'OFFER', 'EVENT']),
+    body('includeCallToAction').optional({ nullable: true }).isBoolean(),
+    body('ctaType').optional({ nullable: true, checkFalsy: true }).isString().isLength({ max: 64 }),
   ],
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
+      // Emit the exact validator failures so future 400s show which field
+      // tripped the check. Without this the frontend just gets a generic
+      // "Invalid input" with no way to diagnose.
+      logger.warn('ai.post_from_image.validation_error', {
+        user_id: req.user?.userId,
+        errors: errors.array().slice(0, 10),
+        image_url_count: Array.isArray(req.body?.imageUrls) ? req.body.imageUrls.length : null,
+        image_url_lengths: Array.isArray(req.body?.imageUrls)
+          ? req.body.imageUrls.map((u) => (typeof u === 'string' ? u.length : typeof u))
+          : null,
+        body_keys: req.body ? Object.keys(req.body) : null,
+        post_type: req.body?.postType,
+        include_cta: req.body?.includeCallToAction,
+        cta_type: req.body?.ctaType,
+      });
       return res.status(400).json({ error: 'Invalid input', details: errors.array() });
     }
 
