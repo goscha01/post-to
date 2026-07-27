@@ -99,20 +99,35 @@ router.get('/images', async (req, res) => {
     q = '',
     pageSize = '50',
     folderId = '',
+    // 'images' = image files only (default; backwards compatible)
+    // 'folders' = subfolders only
+    // 'both' = folders + images (what the picker uses to browse a folder)
+    type = 'images',
   } = req.query;
 
   const pageSizeNum = Math.max(1, Math.min(200, parseInt(pageSize, 10) || 50));
 
-  // Build the Drive q filter. Always scope to images and only files the user
-  // hasn't deleted. Trashed=false — the Drive API defaults to including
-  // trashed files, which is almost never what people want.
-  const filters = ['mimeType contains "image/"', 'trashed = false'];
+  // Build the Drive q filter. Always scope to non-trashed items. Trashed
+  // defaults to inclusive in Drive's API which is almost never what people
+  // actually want.
+  const filters = ['trashed = false'];
+  const FOLDER_MIME = 'application/vnd.google-apps.folder';
+  if (type === 'folders') {
+    filters.push(`mimeType = '${FOLDER_MIME}'`);
+  } else if (type === 'both') {
+    filters.push(`(mimeType contains 'image/' or mimeType = '${FOLDER_MIME}')`);
+  } else {
+    filters.push('mimeType contains "image/"');
+  }
   if (folderId) {
-    // Drive uses parent-id membership; escape single quotes.
     filters.push(`'${folderId.replace(/'/g, "\\'")}' in parents`);
+  } else if (type === 'both' || type === 'folders') {
+    // At the root show only items directly under "My Drive". Without this,
+    // the API returns every file in the account, defeating the point of
+    // folder navigation.
+    filters.push(`'root' in parents`);
   }
   if (q && q.trim()) {
-    // Substring match on the file name.
     const safe = q.trim().replace(/'/g, "\\'");
     filters.push(`name contains '${safe}'`);
   }
@@ -176,11 +191,13 @@ router.get('/images', async (req, res) => {
     const normalize = (s) => (s || '').toString().trim().toLowerCase();
 
     const items = Array.from(seen.values()).map((f) => {
-      const usedRec = usedMap.get(normalize(f.name));
+      const isFolder = f.mimeType === FOLDER_MIME;
+      const usedRec = isFolder ? null : usedMap.get(normalize(f.name));
       return {
         id: f.id,
         name: f.name,
         mimeType: f.mimeType,
+        isFolder,
         thumbnailLink: f.thumbnailLink || null,
         webViewLink: f.webViewLink || null,
         webContentLink: f.webContentLink || null,
@@ -195,8 +212,9 @@ router.get('/images', async (req, res) => {
       };
     });
 
-    // Sort: unused first, then by modifiedTime desc.
+    // Sort: folders first, then unused images, then by modifiedTime desc.
     items.sort((a, b) => {
+      if (a.isFolder !== b.isFolder) return a.isFolder ? -1 : 1;
       if (a.used !== b.used) return a.used ? 1 : -1;
       return String(b.modifiedTime || '').localeCompare(String(a.modifiedTime || ''));
     });

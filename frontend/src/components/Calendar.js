@@ -16,6 +16,9 @@ import {
   CheckCircle2,
   AlertCircle,
   Sparkles,
+  Folder,
+  ChevronRight as ChevronRightIcon,
+  Home as HomeIcon,
 } from 'lucide-react';
 import axios from '../utils/axiosConfig';
 import { useAuth } from '../contexts/AuthContext';
@@ -1581,7 +1584,15 @@ const DrivePickerModal = ({ existingUrls, onClose, onPick }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [needsReauth, setNeedsReauth] = useState(false);
-  const [selected, setSelected] = useState(() => new Set());
+  const [selected, setSelected] = useState(() => new Set()); // ids of image files chosen so far
+  const [selectedFiles, setSelectedFiles] = useState(new Map()); // id -> file object, preserved across folder navigation
+  // Breadcrumb: empty array = My Drive root. Each entry: { id, name }.
+  const [folderPath, setFolderPath] = useState([]);
+
+  const currentFolderId = folderPath.length > 0 ? folderPath[folderPath.length - 1].id : '';
+  // Search-mode: when the user types a query, we search across everything
+  // (no folder scope) to match how users think of Drive search.
+  const isSearching = !!debouncedQ;
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedQ(query.trim()), 300);
@@ -1595,7 +1606,14 @@ const DrivePickerModal = ({ existingUrls, onClose, onPick }) => {
       setError(null);
       setNeedsReauth(false);
       try {
-        const data = await driveService.listImages({ q: debouncedQ, pageSize: 100 });
+        const data = await driveService.listImages({
+          q: debouncedQ,
+          pageSize: 100,
+          folderId: isSearching ? '' : currentFolderId,
+          // Show folders + images when browsing. In search mode we want
+          // images only so results don't fill up with folder matches.
+          type: isSearching ? 'images' : 'both',
+        });
         if (cancelled) return;
         setItems(Array.isArray(data.items) ? data.items : []);
       } catch (err) {
@@ -1604,7 +1622,7 @@ const DrivePickerModal = ({ existingUrls, onClose, onPick }) => {
         const code = err?.response?.data?.code;
         if (status === 403 && (code === 'DRIVE_NEEDS_REAUTH' || err?.response?.data?.needsReauth)) {
           setNeedsReauth(true);
-          setError('Google Drive access hasn\'t been granted. Reconnect your business profile to enable it.');
+          setError("Google Drive access hasn't been granted. Reconnect your business profile to enable it.");
         } else {
           setError(err?.response?.data?.error || err?.message || 'Failed to load Drive images');
         }
@@ -1615,21 +1633,46 @@ const DrivePickerModal = ({ existingUrls, onClose, onPick }) => {
     return () => {
       cancelled = true;
     };
-  }, [debouncedQ]);
+  }, [debouncedQ, currentFolderId, isSearching]);
 
-  const toggle = (fileId) => {
+  const toggle = (file) => {
     setSelected((prev) => {
       const next = new Set(prev);
-      if (next.has(fileId)) next.delete(fileId);
-      else next.add(fileId);
+      if (next.has(file.id)) next.delete(file.id);
+      else next.add(file.id);
+      return next;
+    });
+    setSelectedFiles((prev) => {
+      const next = new Map(prev);
+      if (next.has(file.id)) next.delete(file.id);
+      else next.set(file.id, file);
       return next;
     });
   };
 
+  const enterFolder = (folder) => {
+    setFolderPath((prev) => [...prev, { id: folder.id, name: folder.name }]);
+    setQuery(''); // clear search when navigating
+  };
+  const gotoRoot = () => {
+    setFolderPath([]);
+    setQuery('');
+  };
+  const gotoCrumb = (idx) => {
+    setFolderPath((prev) => prev.slice(0, idx + 1));
+    setQuery('');
+  };
+
   const confirm = () => {
-    const urls = items.filter((f) => selected.has(f.id)).map(fileToPublicUrl);
+    // Use the preserved selectedFiles map so choices made in one folder
+    // survive when the user navigates to a different folder before hitting
+    // Add.
+    const urls = Array.from(selectedFiles.values()).map(fileToPublicUrl);
     onPick(urls);
   };
+
+  const folders = items.filter((f) => f.isFolder);
+  const files = items.filter((f) => !f.isFolder);
 
   return (
     <div
@@ -1661,7 +1704,7 @@ const DrivePickerModal = ({ existingUrls, onClose, onPick }) => {
           </button>
         </div>
 
-        <div className="px-5 py-3 border-b border-gray-200">
+        <div className="px-5 py-3 border-b border-gray-200 space-y-2">
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
             <input
@@ -1672,6 +1715,41 @@ const DrivePickerModal = ({ existingUrls, onClose, onPick }) => {
               className="block w-full pl-9 pr-3 py-2 border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 text-sm"
             />
           </div>
+          {/* Breadcrumb — hidden while searching (search is unscoped) */}
+          {!isSearching && (
+            <nav className="flex items-center gap-1 text-xs text-gray-600 flex-wrap">
+              <button
+                type="button"
+                onClick={gotoRoot}
+                className={`inline-flex items-center gap-1 px-2 py-1 rounded hover:bg-gray-100 ${
+                  folderPath.length === 0 ? 'text-primary-700 font-medium' : ''
+                }`}
+              >
+                <HomeIcon className="h-3.5 w-3.5" />
+                My Drive
+              </button>
+              {folderPath.map((crumb, i) => (
+                <React.Fragment key={crumb.id}>
+                  <ChevronRightIcon className="h-3 w-3 text-gray-300" />
+                  <button
+                    type="button"
+                    onClick={() => gotoCrumb(i)}
+                    className={`px-2 py-1 rounded hover:bg-gray-100 truncate max-w-[12rem] ${
+                      i === folderPath.length - 1 ? 'text-primary-700 font-medium' : ''
+                    }`}
+                    title={crumb.name}
+                  >
+                    {crumb.name}
+                  </button>
+                </React.Fragment>
+              ))}
+            </nav>
+          )}
+          {selectedFiles.size > 0 && (
+            <div className="text-xs text-gray-500">
+              {selectedFiles.size} selected across folders — will be added when you click "Add"
+            </div>
+          )}
         </div>
 
         <div className="flex-1 overflow-y-auto p-5">
@@ -1698,79 +1776,110 @@ const DrivePickerModal = ({ existingUrls, onClose, onPick }) => {
             </div>
           ) : items.length === 0 ? (
             <div className="p-10 text-center text-sm text-gray-500">
-              {debouncedQ ? 'No matches.' : 'No images found in your Drive.'}
+              {debouncedQ
+                ? 'No matches.'
+                : folderPath.length > 0
+                ? 'This folder is empty.'
+                : 'No images or folders found in your Drive root.'}
             </div>
           ) : (
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-              {items.map((f) => {
-                const isSelected = selected.has(f.id);
-                const alreadyInComposer = existingUrls?.includes(fileToPublicUrl(f));
-                return (
-                  <button
-                    key={f.id}
-                    type="button"
-                    onClick={() => toggle(f.id)}
-                    className={`relative text-left rounded-lg border-2 overflow-hidden transition-colors ${
-                      isSelected
-                        ? 'border-primary-500 ring-2 ring-primary-200'
-                        : 'border-gray-200 hover:border-gray-300'
-                    } ${f.used ? 'opacity-90' : ''}`}
-                  >
-                    <div className="w-full aspect-square bg-gray-100 relative">
-                      {f.thumbnailLink ? (
-                        <img
-                          src={f.thumbnailLink}
-                          alt={f.name}
-                          className="w-full h-full object-cover"
-                          referrerPolicy="no-referrer"
-                          onError={(e) => {
-                            e.currentTarget.style.display = 'none';
-                          }}
-                        />
-                      ) : (
-                        <div className="w-full h-full flex items-center justify-center">
-                          <ImageIcon className="h-8 w-8 text-gray-400" />
-                        </div>
-                      )}
-                      {f.used && (
-                        <span
-                          className="absolute top-1.5 left-1.5 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/95 text-white shadow"
-                          title={
-                            f.usedAt
-                              ? `Used on ${new Date(f.usedAt).toLocaleDateString()}`
-                              : 'Used in a previous post'
-                          }
-                        >
-                          Already used
+            <div className="space-y-4">
+              {folders.length > 0 && !isSearching && (
+                <div>
+                  <div className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 mb-2">
+                    Folders
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
+                    {folders.map((f) => (
+                      <button
+                        key={f.id}
+                        type="button"
+                        onClick={() => enterFolder(f)}
+                        className="flex items-center gap-2 px-3 py-2 rounded-md border border-gray-200 hover:border-gray-300 hover:bg-gray-50 text-left"
+                      >
+                        <Folder className="h-5 w-5 text-primary-600 flex-none" />
+                        <span className="text-sm text-gray-900 truncate" title={f.name}>
+                          {f.name}
                         </span>
-                      )}
-                      {isSelected && (
-                        <span className="absolute top-1.5 right-1.5 rounded-full bg-primary-600 text-white p-0.5 shadow">
-                          <CheckCircle2 className="h-4 w-4" />
-                        </span>
-                      )}
-                      {alreadyInComposer && !isSelected && (
-                        <span
-                          className="absolute bottom-1.5 right-1.5 inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-gray-800/80 text-white"
-                          title="Already in the current post draft"
-                        >
-                          In draft
-                        </span>
-                      )}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {files.length > 0 && (
+                <div>
+                  {folders.length > 0 && !isSearching && (
+                    <div className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 mb-2">
+                      Files
                     </div>
-                    <div className="p-2">
-                      <div className="text-xs text-gray-900 truncate" title={f.name}>
-                        {f.name}
-                      </div>
-                      {f.modifiedTime && (
-                        <div className="text-[10px] text-gray-500 mt-0.5">
-                          {new Date(f.modifiedTime).toLocaleDateString()}
-                        </div>
-                      )}
-                    </div>
-                  </button>
-                );
-              })}
+                  )}
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+                    {files.map((f) => {
+                      const isSelected = selected.has(f.id);
+                      const alreadyInComposer = existingUrls?.includes(fileToPublicUrl(f));
+                      return (
+                        <button
+                          key={f.id}
+                          type="button"
+                          onClick={() => toggle(f)}
+                          className={`relative text-left rounded-lg border-2 overflow-hidden transition-colors ${
+                            isSelected
+                              ? 'border-primary-500 ring-2 ring-primary-200'
+                              : 'border-gray-200 hover:border-gray-300'
+                          } ${f.used ? 'opacity-90' : ''}`}
+                        >
+                          <div className="w-full aspect-square bg-gray-100 relative">
+                            {/* Auth'd proxy — reliable regardless of the
+                                user's Google browser session. Drive's own
+                                thumbnailLink CDN needs a Google cookie and
+                                often falls back to a generic placeholder. */}
+                            <SmartPreviewImage
+                              url={fileToPublicUrl(f)}
+                              className="w-full h-full object-cover"
+                              alt={f.name}
+                            />
+                            {f.used && (
+                              <span
+                                className="absolute top-1.5 left-1.5 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/95 text-white shadow"
+                                title={
+                                  f.usedAt
+                                    ? `Used on ${new Date(f.usedAt).toLocaleDateString()}`
+                                    : 'Used in a previous post'
+                                }
+                              >
+                                Already used
+                              </span>
+                            )}
+                            {isSelected && (
+                              <span className="absolute top-1.5 right-1.5 rounded-full bg-primary-600 text-white p-0.5 shadow">
+                                <CheckCircle2 className="h-4 w-4" />
+                              </span>
+                            )}
+                            {alreadyInComposer && !isSelected && (
+                              <span
+                                className="absolute bottom-1.5 right-1.5 inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-gray-800/80 text-white"
+                                title="Already in the current post draft"
+                              >
+                                In draft
+                              </span>
+                            )}
+                          </div>
+                          <div className="p-2">
+                            <div className="text-xs text-gray-900 truncate" title={f.name}>
+                              {f.name}
+                            </div>
+                            {f.modifiedTime && (
+                              <div className="text-[10px] text-gray-500 mt-0.5">
+                                {new Date(f.modifiedTime).toLocaleDateString()}
+                              </div>
+                            )}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
