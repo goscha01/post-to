@@ -969,16 +969,23 @@ const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationK
     setAiGenerating(true);
     setAiImageDescriptions([]);
     try {
-      const resp = await axios.post('/api/ai/post-from-image', {
-        // GBP supports up to ~10 photos per post; matches the backend cap.
-        imageUrls: validUrls.slice(0, 10),
-        businessName,
-        businessType,
-        city,
-        postType,
-        includeCallToAction: !!callToAction.type,
-        ctaType: callToAction.type || null,
-      });
+      const resp = await axios.post(
+        '/api/ai/post-from-image',
+        {
+          // GBP supports up to ~10 photos per post; matches the backend cap.
+          imageUrls: validUrls.slice(0, 10),
+          businessName,
+          businessType,
+          city,
+          postType,
+          includeCallToAction: !!callToAction.type,
+          ctaType: callToAction.type || null,
+        },
+        // Vision on 8-10 images: server-side fetch of each Drive file +
+        // base64 + OpenAI vision inference. 90s inline cap so the frontend
+        // isn't the bottleneck.
+        { timeout: 120000 }
+      );
       if (resp.data?.text) {
         setSummary(resp.data.text);
         setAiJustFilled(true);
