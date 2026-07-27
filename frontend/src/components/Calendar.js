@@ -827,15 +827,29 @@ const splitFullPath = (fullPath) => {
   };
 };
 
+// Labels match Google Business Profile's Add-post UI exactly. Values are
+// the GMB API actionType enums. Buy maps to SHOP under the hood; Call now
+// takes a phone number rather than a URL (see CALL handling in submit).
 const CTA_OPTIONS = [
   { v: '', label: 'None' },
   { v: 'BOOK', label: 'Book' },
-  { v: 'ORDER', label: 'Order' },
-  { v: 'SHOP', label: 'Shop' },
+  { v: 'ORDER', label: 'Order online' },
+  { v: 'SHOP', label: 'Buy' },
   { v: 'LEARN_MORE', label: 'Learn more' },
   { v: 'SIGN_UP', label: 'Sign up' },
-  { v: 'CALL', label: 'Call' },
+  { v: 'CALL', label: 'Call now' },
 ];
+
+const isCallCta = (type) => type === 'CALL';
+
+// Loose US-style formatter: keeps whatever the user typed but stores the
+// digits-only version for the tel: URL we send to GMB. Accepts a leading +
+// and country code so international numbers work too.
+const digitsOnly = (s) => (s || '').toString().replace(/[^\d+]/g, '');
+const looksLikePhone = (s) => {
+  const d = digitsOnly(s).replace(/^\+/, '');
+  return d.length >= 7 && d.length <= 15;
+};
 
 const POST_TYPES = [
   { v: 'UPDATE', label: 'Update' },
@@ -993,9 +1007,29 @@ const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationK
         return;
       }
     }
-    if (callToAction.type && !callToAction.url.trim()) {
-      setError('Add a URL for the call to action, or clear the CTA type.');
-      return;
+    if (callToAction.type) {
+      const raw = (callToAction.url || '').trim();
+      if (!raw) {
+        setError(
+          isCallCta(callToAction.type)
+            ? 'Add a phone number for the Call now button, or clear the CTA type.'
+            : 'Add a URL for the call to action, or clear the CTA type.'
+        );
+        return;
+      }
+      if (isCallCta(callToAction.type) && !looksLikePhone(raw)) {
+        setError('Enter a valid phone number (7-15 digits, optional leading +).');
+        return;
+      }
+      if (!isCallCta(callToAction.type)) {
+        try {
+          // eslint-disable-next-line no-new
+          new URL(raw);
+        } catch {
+          setError(`Enter a valid URL for the ${CTA_OPTIONS.find(o => o.v === callToAction.type)?.label} action.`);
+          return;
+        }
+      }
     }
 
     setSubmitting(true);
@@ -1009,10 +1043,11 @@ const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationK
         fd.append('gmbLocationId', locationId);
         fd.append('postType', postType);
         if (callToAction.type && callToAction.url.trim()) {
-          fd.append(
-            'callToAction',
-            JSON.stringify({ actionType: callToAction.type, url: callToAction.url.trim() })
-          );
+          const raw = callToAction.url.trim();
+          const url = isCallCta(callToAction.type)
+            ? `tel:${digitsOnly(raw).startsWith('+') ? '' : '+'}${digitsOnly(raw).replace(/^\+/, '')}`
+            : raw;
+          fd.append('callToAction', JSON.stringify({ actionType: callToAction.type, url }));
         }
         if (validUrls.length > 0) {
           fd.append(
@@ -1051,7 +1086,12 @@ const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationK
           postType,
           callToAction:
             callToAction.type && callToAction.url.trim()
-              ? { actionType: callToAction.type, url: callToAction.url.trim() }
+              ? {
+                  actionType: callToAction.type,
+                  url: isCallCta(callToAction.type)
+                    ? `tel:${digitsOnly(callToAction.url).startsWith('+') ? '' : '+'}${digitsOnly(callToAction.url).replace(/^\+/, '')}`
+                    : callToAction.url.trim(),
+                }
               : null,
         });
       }
@@ -1368,7 +1408,16 @@ const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationK
                 <label className="block text-sm font-medium text-gray-700">Call to Action Type</label>
                 <select
                   value={callToAction.type}
-                  onChange={(e) => setCallToAction((prev) => ({ ...prev, type: e.target.value }))}
+                  onChange={(e) => {
+                    const nextType = e.target.value;
+                    setCallToAction((prev) => {
+                      // Clear the URL/phone value when switching between
+                      // phone- and URL-shaped inputs — the old value won't
+                      // validate as the new kind and only confuses the user.
+                      const switchingKind = isCallCta(prev.type) !== isCallCta(nextType);
+                      return { type: nextType, url: switchingKind ? '' : prev.url };
+                    });
+                  }}
                   className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
                 >
                   {CTA_OPTIONS.map((o) => (
@@ -1380,14 +1429,21 @@ const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationK
               </div>
               {callToAction.type && (
                 <div>
-                  <label className="block text-sm font-medium text-gray-700">Call to Action URL</label>
+                  <label className="block text-sm font-medium text-gray-700">
+                    {isCallCta(callToAction.type) ? 'Phone number' : 'Call to Action URL'}
+                  </label>
                   <input
-                    type="url"
+                    type={isCallCta(callToAction.type) ? 'tel' : 'url'}
                     value={callToAction.url}
                     onChange={(e) => setCallToAction((prev) => ({ ...prev, url: e.target.value }))}
-                    placeholder="https://example.com"
+                    placeholder={isCallCta(callToAction.type) ? '(904) 902-0402' : 'https://example.com'}
                     className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
                   />
+                  <p className="mt-1 text-xs text-gray-500">
+                    {isCallCta(callToAction.type)
+                      ? 'Customers will call this number when they tap the button.'
+                      : 'Where the button sends people when tapped.'}
+                  </p>
                 </div>
               )}
 
@@ -1465,7 +1521,7 @@ const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationK
                             !callToAction.url ? 'pointer-events-none' : ''
                           }`}
                         >
-                          {callToAction.type.charAt(0) + callToAction.type.slice(1).toLowerCase().replace('_', ' ')}
+                          {CTA_OPTIONS.find((o) => o.v === callToAction.type)?.label || callToAction.type}
                         </a>
                       ) : (
                         <span className="text-sm text-gray-400 italic">No CTA</span>
