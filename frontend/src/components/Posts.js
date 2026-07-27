@@ -20,8 +20,19 @@ import {
   Heart,
   MessageCircle,
   Share,
-  RefreshCw
+  RefreshCw,
+  HardDrive,
+  Sparkles,
 } from 'lucide-react';
+import {
+  CTA_OPTIONS,
+  isCallCta,
+  looksLikePhone,
+  toTelUrl,
+  digitsOnly, // eslint-disable-line no-unused-vars
+  SmartPreviewImage,
+  DrivePickerModal,
+} from './composerShared';
 
 // Post Image Component
 const PostImage = ({ imageUrl, altText, mediaFormat, mediaData }) => {
@@ -125,6 +136,13 @@ const Posts = () => {
    
    // File upload state
    const [uploadedFiles, setUploadedFiles] = useState([]);
+
+   // Drive picker + AI composer state (shared behavior with Calendar composer)
+   const [drivePickerOpen, setDrivePickerOpen] = useState(false);
+   const [aiGenerating, setAiGenerating] = useState(false);
+   const [aiError, setAiError] = useState(null);
+   const [aiJustFilled, setAiJustFilled] = useState(false);
+   const [aiImageDescriptions, setAiImageDescriptions] = useState([]);
    
    // Edit post state
    const [editingPost, setEditingPost] = useState(null);
@@ -300,10 +318,32 @@ const Posts = () => {
     if (invalidUrls.length > 0) {
 
       alert('Please enter valid image URLs for all media files.');
+      setCreatingPost(false);
       return;
     }
 
-    
+    // CTA validation: CALL needs a valid phone; other types need a URL.
+    if (formData.callToAction.type && formData.callToAction.url) {
+      const raw = formData.callToAction.url.trim();
+      if (isCallCta(formData.callToAction.type)) {
+        if (!looksLikePhone(raw)) {
+          alert('Enter a valid phone number for the Call now button (7-15 digits, optional leading +).');
+          setCreatingPost(false);
+          return;
+        }
+      } else if (raw) {
+        try {
+          // eslint-disable-next-line no-new
+          new URL(raw);
+        } catch {
+          alert('Enter a valid URL for the call to action.');
+          setCreatingPost(false);
+          return;
+        }
+      }
+    }
+
+
     try {
       // Extract account and location IDs from selectedProfile
       const profileParts = selectedProfile.split('/');
@@ -335,7 +375,9 @@ const Posts = () => {
            formData.callToAction.url && formData.callToAction.url.trim() !== '') {
          postData.callToAction = {
            actionType: formData.callToAction.type,
-           url: formData.callToAction.url.trim()
+           url: isCallCta(formData.callToAction.type)
+             ? toTelUrl(formData.callToAction.url)
+             : formData.callToAction.url.trim()
          };
 
        } else if (formData.callToAction.type && formData.callToAction.type.trim() !== '') {
@@ -742,7 +784,9 @@ const Posts = () => {
            editFormData.callToAction.url && editFormData.callToAction.url.trim() !== '') {
          updateData.callToAction = {
            actionType: editFormData.callToAction.type,
-           url: editFormData.callToAction.url.trim()
+           url: isCallCta(editFormData.callToAction.type)
+             ? toTelUrl(editFormData.callToAction.url)
+             : editFormData.callToAction.url.trim()
          };
        } else if (editFormData.callToAction.type && editFormData.callToAction.type.trim() !== '') {
          // Warning: CTA type selected but no URL provided
@@ -857,7 +901,111 @@ const Posts = () => {
   const removeUploadedFile = (index) => {
     setUploadedFiles(prev => prev.filter((_, i) => i !== index));
   };
-  
+
+  // ── Drive picker + AI (shared with Calendar composer) ──
+  const currentMediaUrls = () => {
+    const fd = editingPost ? editFormData : formData;
+    return (fd.mediaUrls || []).map((u) => (u || '').trim()).filter(Boolean);
+  };
+
+  const setMediaUrlsOnActive = (updater) => {
+    if (editingPost) {
+      setEditFormData((prev) => ({ ...prev, mediaUrls: updater(prev.mediaUrls || []) }));
+    } else {
+      setFormData((prev) => ({ ...prev, mediaUrls: updater(prev.mediaUrls || []) }));
+    }
+  };
+
+  const handleDrivePicked = (picked) => {
+    setMediaUrlsOnActive((prev) => {
+      const next = [...prev];
+      for (const url of picked) {
+        if (next.includes(url)) continue;
+        const emptyIdx = next.findIndex((v) => !v || !v.trim());
+        if (emptyIdx >= 0) next[emptyIdx] = url;
+        else next.push(url);
+      }
+      return next;
+    });
+    setDrivePickerOpen(false);
+  };
+
+  const handleGenerateAi = async () => {
+    setAiError(null);
+    setAiJustFilled(false);
+    const urls = currentMediaUrls();
+    if (urls.length === 0) {
+      setAiError('Add at least one image URL first — the AI writes the caption from what it sees.');
+      return;
+    }
+    // Pull business context from the currently-selected profile so the
+    // caption sounds grounded in the actual business.
+    const profileParts = (selectedProfile || '').split('/');
+    const targetAccountId = profileParts[1];
+    const targetLocationId = profileParts[profileParts.length - 1];
+    let businessName = 'the business';
+    let businessType = 'local service business';
+    let city = '';
+    for (const p of profiles) {
+      const accId = p?.name?.split('/').pop();
+      if (accId !== targetAccountId) continue;
+      const loc = (p.locations || []).find(
+        (l) => (l?.name?.split('/').pop() || l?.fullPath?.split('/').pop()) === targetLocationId
+      );
+      if (loc) {
+        businessName = loc.title || loc.locationName || p.accountName || businessName;
+        businessType =
+          loc.primaryCategory?.displayName ||
+          loc.categories?.primaryCategory?.displayName ||
+          businessType;
+        city = loc.storefrontAddress?.locality || loc.address?.locality || '';
+      }
+      break;
+    }
+
+    setAiGenerating(true);
+    setAiImageDescriptions([]);
+    const currentPostType = editingPost ? editFormData.postType : formData.postType;
+    const currentCta = editingPost ? editFormData.callToAction : formData.callToAction;
+    try {
+      const resp = await axios.post(
+        '/api/ai/post-from-image',
+        {
+          imageUrls: urls.slice(0, 10),
+          businessName,
+          businessType,
+          city,
+          postType: currentPostType,
+          includeCallToAction: !!currentCta.type,
+          ctaType: currentCta.type || null,
+        },
+        { timeout: 120000 }
+      );
+      if (resp.data?.text) {
+        if (editingPost) {
+          setEditFormData((prev) => ({ ...prev, summary: resp.data.text }));
+        } else {
+          setFormData((prev) => ({ ...prev, summary: resp.data.text }));
+        }
+        setAiJustFilled(true);
+        setAiImageDescriptions(Array.isArray(resp.data.imageDescriptions) ? resp.data.imageDescriptions : []);
+      } else {
+        setAiError('AI returned an empty response — try again or edit manually.');
+      }
+    } catch (err) {
+      const status = err?.response?.status;
+      const detail = err?.response?.data?.error || err?.message;
+      if (status === 429) {
+        setAiError(`Daily AI cap reached (${err?.response?.data?.used}/${err?.response?.data?.cap}).`);
+      } else {
+        setAiError(detail || 'AI generation failed');
+      }
+    } finally {
+      setAiGenerating(false);
+    }
+  };
+
+
   // Toggle expanded state for a post
   const toggleExpanded = (postId) => {
     setExpandedPosts(prev => {
@@ -1183,19 +1331,61 @@ const Posts = () => {
                        )}
                      </button>
                    </div>
+
+                   {/* Google Drive picker — same as the Calendar composer */}
+                   <div>
+                     <label className="block text-sm font-medium text-gray-700 mb-2">
+                       Pick from Google Drive
+                     </label>
+                     <button
+                       type="button"
+                       onClick={() => setDrivePickerOpen(true)}
+                       className="inline-flex items-center px-4 py-3 border border-primary-300 shadow-sm text-sm font-medium rounded-md text-primary-700 bg-primary-50 hover:bg-primary-100"
+                     >
+                       <HardDrive className="h-5 w-5 mr-2" />
+                       Browse Drive
+                     </button>
+                     <p className="mt-1 text-xs text-gray-500">
+                       Browse folders across every connected Google account. Duplicates are flagged.
+                     </p>
+                   </div>
                  </div>
-                 
+
 
                </div>
 
                                {/* Description Section */}
                 <div>
-                  <label className="block text-sm font-medium text-gray-700">
-                    Description
-                    <span className="text-gray-500 font-normal ml-2">
-                      ({(editingPost ? editFormData.summary : formData.summary).length}/1500)
-                    </span>
-                  </label>
+                  <div className="flex items-center justify-between">
+                    <label className="block text-sm font-medium text-gray-700">
+                      Description
+                      <span className="text-gray-500 font-normal ml-2">
+                        ({(editingPost ? editFormData.summary : formData.summary).length}/1500)
+                      </span>
+                    </label>
+                    <button
+                      type="button"
+                      onClick={handleGenerateAi}
+                      disabled={aiGenerating || currentMediaUrls().length === 0}
+                      className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border transition-colors ${
+                        aiGenerating || currentMediaUrls().length === 0
+                          ? 'text-gray-400 border-gray-200 bg-white cursor-not-allowed'
+                          : 'text-primary-700 border-primary-300 bg-primary-50 hover:bg-primary-100'
+                      }`}
+                      title={
+                        currentMediaUrls().length === 0
+                          ? 'Add at least one image URL to generate a caption from it'
+                          : 'Write a caption from the selected image(s)'
+                      }
+                    >
+                      <Sparkles className={`h-3.5 w-3.5 ${aiGenerating ? 'animate-pulse' : ''}`} />
+                      {aiGenerating
+                        ? 'Generating…'
+                        : (editingPost ? editFormData.summary : formData.summary)
+                        ? 'Regenerate with AI'
+                        : 'Generate with AI'}
+                    </button>
+                  </div>
                   <textarea
                     value={editingPost ? editFormData.summary : formData.summary}
                     onChange={(e) => {
@@ -1217,6 +1407,28 @@ const Posts = () => {
                   <div className="mt-1 text-xs text-gray-500 text-right">
                     {(editingPost ? editFormData.summary : formData.summary).length}/1500 characters
                   </div>
+                  {aiError && (
+                    <p className="mt-1 text-xs text-red-700">{aiError}</p>
+                  )}
+                  {aiJustFilled && (
+                    <p className="mt-1 text-xs text-primary-700">
+                      ✨ AI-generated from your image{currentMediaUrls().length > 1 ? 's' : ''} — edit before posting if anything is off.
+                    </p>
+                  )}
+                  {aiImageDescriptions.length > 0 && (
+                    <details className="mt-2 rounded-md border border-gray-200 bg-gray-50">
+                      <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-gray-700 select-none">
+                        What the AI saw ({aiImageDescriptions.length} image{aiImageDescriptions.length === 1 ? '' : 's'})
+                      </summary>
+                      <ul className="px-3 pb-3 pt-1 space-y-1 text-xs text-gray-700">
+                        {aiImageDescriptions.map((desc, i) => (
+                          <li key={i}>
+                            <span className="font-medium text-gray-500">Image {i + 1}:</span> {desc}
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
+                  )}
                 </div>
 
                                {/* Post Type Section - Hidden since we have buttons above */}
@@ -1237,39 +1449,49 @@ const Posts = () => {
                   </select>
                 </div>
 
-               {/* Call to Action Type Section */}
+               {/* Call to Action Type — labels match Google Business Profile Add-post UI */}
                <div>
                  <label className="block text-sm font-medium text-gray-700">Call to Action Type</label>
                  <select
                    value={editingPost ? editFormData.callToAction.type : formData.callToAction.type}
-                   onChange={(e) => editingPost
-                     ? setEditFormData({
-                         ...editFormData,
-                         callToAction: { ...editFormData.callToAction, type: e.target.value }
-                       })
-                     : setFormData({
-                         ...formData,
-                         callToAction: { ...formData.callToAction, type: e.target.value }
-                       })
-                   }
+                   onChange={(e) => {
+                     const nextType = e.target.value;
+                     const prev = editingPost ? editFormData.callToAction : formData.callToAction;
+                     // Clear the URL/phone value when switching between phone- and
+                     // URL-shaped inputs — the old value won't validate as the new
+                     // kind and only confuses the user.
+                     const switching = isCallCta(prev.type) !== isCallCta(nextType);
+                     const nextCta = { type: nextType, url: switching ? '' : prev.url };
+                     if (editingPost) {
+                       setEditFormData({ ...editFormData, callToAction: nextCta });
+                     } else {
+                       setFormData({ ...formData, callToAction: nextCta });
+                     }
+                   }}
                    className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
                  >
-                   <option value="">None</option>
-                   <option value="BOOK">Book</option>
-                   <option value="ORDER">Order</option>
-                   <option value="SHOP">Shop</option>
-                                       <option value="LEARN_MORE">Learn more</option>
-                   <option value="SIGN_UP">Sign Up</option>
-                   <option value="CALL">Call</option>
+                   {CTA_OPTIONS.map((o) => (
+                     <option key={o.v || 'none'} value={o.v}>
+                       {o.label}
+                     </option>
+                   ))}
                  </select>
                </div>
 
-               {/* Call to Action URL */}
+               {/* Call to Action URL or Phone Number */}
                {(editingPost ? editFormData.callToAction.type : formData.callToAction.type) && (
                  <div>
-                   <label className="block text-sm font-medium text-gray-700">Call to Action URL</label>
+                   <label className="block text-sm font-medium text-gray-700">
+                     {isCallCta(editingPost ? editFormData.callToAction.type : formData.callToAction.type)
+                       ? 'Phone number'
+                       : 'Call to Action URL'}
+                   </label>
                    <input
-                     type="url"
+                     type={
+                       isCallCta(editingPost ? editFormData.callToAction.type : formData.callToAction.type)
+                         ? 'tel'
+                         : 'url'
+                     }
                      value={editingPost ? editFormData.callToAction.url : formData.callToAction.url}
                      onChange={(e) => editingPost
                        ? setEditFormData({
@@ -1282,8 +1504,17 @@ const Posts = () => {
                          })
                      }
                      className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
-                     placeholder="https://example.com"
+                     placeholder={
+                       isCallCta(editingPost ? editFormData.callToAction.type : formData.callToAction.type)
+                         ? '(904) 902-0402'
+                         : 'https://example.com'
+                     }
                    />
+                   <p className="mt-1 text-xs text-gray-500">
+                     {isCallCta(editingPost ? editFormData.callToAction.type : formData.callToAction.type)
+                       ? 'Customers will call this number when they tap the button.'
+                       : 'Where the button sends people when tapped.'}
+                   </p>
                  </div>
                )}
 
@@ -1333,18 +1564,14 @@ const Posts = () => {
                              .slice(0, 2) // Show only first 2 images in preview
                              .map((url, index) => (
                                <div key={`preview-${index}`} className="relative group">
-                                 <img
-                                   src={url}
+                                 {/* Drive-aware preview: auth'd proxy for
+                                     Drive URLs so files that haven't been
+                                     publicly shared still render. */}
+                                 <SmartPreviewImage
+                                   url={url}
                                    alt={`Preview ${index + 1}`}
                                    className="w-full h-56 object-cover rounded-lg border shadow-sm"
-                                   onError={(e) => {
-                                     e.target.style.display = 'none';
-                                     e.target.nextSibling.style.display = 'block';
-                                   }}
                                  />
-                                 <div className="hidden w-full h-56 bg-gray-200 rounded-lg border shadow-sm flex items-center justify-center text-xs text-gray-500">
-                                   Image
-                                 </div>
                                  {/* Delete Button */}
                                  <button
                                    onClick={() => handleDeleteImage(index)}
@@ -1625,9 +1852,14 @@ const Posts = () => {
         </div>
       )}
 
-      
+      {drivePickerOpen && (
+        <DrivePickerModal
+          existingUrls={currentMediaUrls()}
+          onClose={() => setDrivePickerOpen(false)}
+          onPick={handleDrivePicked}
+        />
+      )}
 
-      
     </div>
   );
 };
