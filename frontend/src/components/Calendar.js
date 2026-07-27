@@ -11,11 +11,16 @@ import {
   ExternalLink,
   Trash2,
   Plus,
+  HardDrive,
+  Search,
+  CheckCircle2,
+  AlertCircle,
 } from 'lucide-react';
 import axios from '../utils/axiosConfig';
 import { useAuth } from '../contexts/AuthContext';
 import businessProfileService from '../services/businessProfileService';
 import calendarService from '../services/calendarService';
+import driveService from '../services/driveService';
 
 // ── Date helpers ────────────────────────────────────────────
 
@@ -858,6 +863,7 @@ const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationK
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
   const [reloading, setReloading] = useState(false);
+  const [drivePickerOpen, setDrivePickerOpen] = useState(false);
 
   const accountsCount = (profiles || []).filter((p) => (p.locations || []).length > 0).length;
   const locationsCount = (profiles || []).reduce((acc, p) => acc + (p.locations?.length || 0), 0);
@@ -1199,14 +1205,25 @@ const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationK
                       </button>
                     </div>
                   ))}
-                  <button
-                    type="button"
-                    onClick={addUrlRow}
-                    className="inline-flex items-center gap-1 text-xs font-medium text-primary-600 hover:text-primary-700"
-                  >
-                    <Plus className="h-3.5 w-3.5" />
-                    Add another URL
-                  </button>
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={addUrlRow}
+                      className="inline-flex items-center gap-1 text-xs font-medium text-primary-600 hover:text-primary-700"
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                      Add another URL
+                    </button>
+                    <span className="text-gray-300 text-xs">·</span>
+                    <button
+                      type="button"
+                      onClick={() => setDrivePickerOpen(true)}
+                      className="inline-flex items-center gap-1 text-xs font-medium text-primary-600 hover:text-primary-700"
+                    >
+                      <HardDrive className="h-3.5 w-3.5" />
+                      Pick from Google Drive
+                    </button>
+                  </div>
                 </div>
               </div>
 
@@ -1349,6 +1366,275 @@ const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationK
           </button>
         </div>
       </form>
+
+      {drivePickerOpen && (
+        <DrivePickerModal
+          existingUrls={validUrls}
+          onClose={() => setDrivePickerOpen(false)}
+          onPick={(picked) => {
+            // Insert every selected URL into the media list, filling any empty
+            // rows first before appending new ones.
+            setMediaUrls((prev) => {
+              const next = [...prev];
+              for (const url of picked) {
+                if (next.includes(url)) continue;
+                const emptyIdx = next.findIndex((v) => !v || !v.trim());
+                if (emptyIdx >= 0) next[emptyIdx] = url;
+                else next.push(url);
+              }
+              return next;
+            });
+            setDrivePickerOpen(false);
+          }}
+        />
+      )}
+    </div>
+  );
+};
+
+// ── Google Drive picker ────────────────────────────────────
+//
+// Grid overlay for browsing image files across every connected business
+// profile's Google Drive. Each tile shows the file thumbnail, name, and an
+// "Already used" pill for files whose filename matches a previous post.
+// Selecting a tile inserts its public view URL into the composer's media
+// URL list.
+
+const fileToPublicUrl = (file) => {
+  // drive.google.com/uc?export=view&id=<id> is the canonical "download URL"
+  // that other services (including GMB) can fetch — but only when the file's
+  // Drive sharing is "Anyone with the link". Otherwise this returns HTML.
+  // We surface a warning in the picker so users know to check sharing first.
+  return `https://drive.google.com/uc?export=view&id=${file.id}`;
+};
+
+const DrivePickerModal = ({ existingUrls, onClose, onPick }) => {
+  const [query, setQuery] = useState('');
+  const [debouncedQ, setDebouncedQ] = useState('');
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [needsReauth, setNeedsReauth] = useState(false);
+  const [selected, setSelected] = useState(() => new Set());
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedQ(query.trim()), 300);
+    return () => clearTimeout(t);
+  }, [query]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      setError(null);
+      setNeedsReauth(false);
+      try {
+        const data = await driveService.listImages({ q: debouncedQ, pageSize: 100 });
+        if (cancelled) return;
+        setItems(Array.isArray(data.items) ? data.items : []);
+      } catch (err) {
+        if (cancelled) return;
+        const status = err?.response?.status;
+        const code = err?.response?.data?.code;
+        if (status === 403 && (code === 'DRIVE_NEEDS_REAUTH' || err?.response?.data?.needsReauth)) {
+          setNeedsReauth(true);
+          setError('Google Drive access hasn\'t been granted. Reconnect your business profile to enable it.');
+        } else {
+          setError(err?.response?.data?.error || err?.message || 'Failed to load Drive images');
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [debouncedQ]);
+
+  const toggle = (fileId) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(fileId)) next.delete(fileId);
+      else next.add(fileId);
+      return next;
+    });
+  };
+
+  const confirm = () => {
+    const urls = items.filter((f) => selected.has(f.id)).map(fileToPublicUrl);
+    onPick(urls);
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-lg shadow-xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between px-5 py-4 border-b border-gray-200">
+          <div>
+            <h3 className="text-base font-semibold text-gray-900 flex items-center gap-2">
+              <HardDrive className="h-5 w-5 text-primary-600" />
+              Google Drive images
+            </h3>
+            <p className="text-xs text-gray-500 mt-0.5">
+              Images across every connected business profile's Drive. Files already used in a post
+              show an "Already used" badge.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-gray-400 hover:text-gray-600 p-1 rounded"
+            aria-label="Close"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="px-5 py-3 border-b border-gray-200">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
+            <input
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search Drive images by name…"
+              className="block w-full pl-9 pr-3 py-2 border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 text-sm"
+            />
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-5">
+          {loading ? (
+            <div className="p-10 flex items-center justify-center">
+              <div className="animate-spin h-8 w-8 rounded-full border-b-2 border-primary-600" />
+            </div>
+          ) : error ? (
+            <div className="p-4 rounded-md bg-red-50 border border-red-200 text-sm text-red-800">
+              <div className="flex items-start gap-2">
+                <AlertCircle className="h-4 w-4 mt-0.5 flex-none" />
+                <div className="flex-1">
+                  <div>{error}</div>
+                  {needsReauth && (
+                    <a
+                      href="/connections"
+                      className="inline-block mt-2 text-primary-700 underline"
+                    >
+                      Go to Connections
+                    </a>
+                  )}
+                </div>
+              </div>
+            </div>
+          ) : items.length === 0 ? (
+            <div className="p-10 text-center text-sm text-gray-500">
+              {debouncedQ ? 'No matches.' : 'No images found in your Drive.'}
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+              {items.map((f) => {
+                const isSelected = selected.has(f.id);
+                const alreadyInComposer = existingUrls?.includes(fileToPublicUrl(f));
+                return (
+                  <button
+                    key={f.id}
+                    type="button"
+                    onClick={() => toggle(f.id)}
+                    className={`relative text-left rounded-lg border-2 overflow-hidden transition-colors ${
+                      isSelected
+                        ? 'border-primary-500 ring-2 ring-primary-200'
+                        : 'border-gray-200 hover:border-gray-300'
+                    } ${f.used ? 'opacity-90' : ''}`}
+                  >
+                    <div className="w-full aspect-square bg-gray-100 relative">
+                      {f.thumbnailLink ? (
+                        <img
+                          src={f.thumbnailLink}
+                          alt={f.name}
+                          className="w-full h-full object-cover"
+                          referrerPolicy="no-referrer"
+                          onError={(e) => {
+                            e.currentTarget.style.display = 'none';
+                          }}
+                        />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center">
+                          <ImageIcon className="h-8 w-8 text-gray-400" />
+                        </div>
+                      )}
+                      {f.used && (
+                        <span
+                          className="absolute top-1.5 left-1.5 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/95 text-white shadow"
+                          title={
+                            f.usedAt
+                              ? `Used on ${new Date(f.usedAt).toLocaleDateString()}`
+                              : 'Used in a previous post'
+                          }
+                        >
+                          Already used
+                        </span>
+                      )}
+                      {isSelected && (
+                        <span className="absolute top-1.5 right-1.5 rounded-full bg-primary-600 text-white p-0.5 shadow">
+                          <CheckCircle2 className="h-4 w-4" />
+                        </span>
+                      )}
+                      {alreadyInComposer && !isSelected && (
+                        <span
+                          className="absolute bottom-1.5 right-1.5 inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-gray-800/80 text-white"
+                          title="Already in the current post draft"
+                        >
+                          In draft
+                        </span>
+                      )}
+                    </div>
+                    <div className="p-2">
+                      <div className="text-xs text-gray-900 truncate" title={f.name}>
+                        {f.name}
+                      </div>
+                      {f.modifiedTime && (
+                        <div className="text-[10px] text-gray-500 mt-0.5">
+                          {new Date(f.modifiedTime).toLocaleDateString()}
+                        </div>
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="px-5 py-3 border-t border-gray-200 flex items-center justify-between gap-2">
+          <div className="text-xs text-gray-500">
+            {selected.size > 0
+              ? `${selected.size} selected · make sure the files are set to "Anyone with link" on Drive so GMB can fetch them.`
+              : 'Click images to select · files must be shared publicly on Drive for GMB to fetch them.'}
+          </div>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={confirm}
+              disabled={selected.size === 0}
+              className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 disabled:opacity-60"
+            >
+              <Plus className="h-4 w-4" />
+              Add {selected.size > 0 ? `${selected.size} ` : ''}image{selected.size === 1 ? '' : 's'}
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 };

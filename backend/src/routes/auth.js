@@ -44,6 +44,10 @@ const BUSINESS_SCOPES = [
   'https://www.googleapis.com/auth/analytics.readonly',
   'https://www.googleapis.com/auth/adwords',
   'https://www.googleapis.com/auth/webmasters.readonly',
+  // drive.readonly: powers the "Pick from Google Drive" image browser in the
+  // calendar composer. Existing users must reconnect once to grant it —
+  // /api/drive/images returns 403 with needsReauth until they do.
+  'https://www.googleapis.com/auth/drive.readonly',
   'https://www.googleapis.com/auth/userinfo.email',
   'https://www.googleapis.com/auth/userinfo.profile'
 ];
