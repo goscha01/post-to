@@ -30,7 +30,6 @@ const Layout = ({ children }) => {
 
   const navigation = [
     { name: 'Dashboard', href: '/dashboard', icon: Home },
-    { name: 'Connections', href: '/connections', icon: Link2 },
     { name: 'Business Profiles', href: '/profiles', icon: Building2 },
     { name: 'Blogs', href: '/blogs', icon: Newspaper },
     { name: 'Posts', href: '/posts', icon: FileText },
@@ -41,6 +40,7 @@ const Layout = ({ children }) => {
     { name: 'Ads', href: '/ads', icon: Megaphone },
     { name: 'OpenAI Ads', href: '/openai-ads', icon: Bot },
     { name: 'Services', href: '/services', icon: Settings },
+    { name: 'Integrations', href: '/connections', icon: Link2 },
   ];
 
   const handleLogout = () => {
