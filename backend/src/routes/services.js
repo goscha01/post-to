@@ -6,7 +6,18 @@ const { cacheMiddleware } = require('../middleware/cacheMiddleware');
 const { CacheUtils } = require('../utils/cacheUtils');
 const { google } = require('googleapis');
 const { createClient } = require('@supabase/supabase-js');
+const { tryWithEachBusinessToken } = require('../utils/businessTokens');
+const logger = require('../utils/logger');
 const router = express.Router();
+
+// Build a mybusinessbusinessinformation client bound to a specific access
+// token. Used inside the tryWithEachBusinessToken fanout so per-attempt
+// tokens don't leak into req.businessOAuth2Client.
+function gmbInfoClient(accessToken) {
+  const oauth2 = new google.auth.OAuth2();
+  oauth2.setCredentials({ access_token: accessToken });
+  return google.mybusinessbusinessinformation({ version: 'v1', auth: oauth2 });
+}
 
 // Initialize Supabase client
 const supabase = createClient(
@@ -420,45 +431,86 @@ router.get('/locations/:locationId/services', async (req, res) => {
     const userId = req.user?.userId;
     const { cached_only } = req.query;
 
-    // If cached_only=true, return only cached data
     if (cached_only === 'true') {
       const cachedServices = await getCachedServices(locationId, userId);
       return res.json({
         success: true,
         serviceItems: cachedServices,
         cached: true,
-        message: `Found ${cachedServices.length} cached services`
+        message: `Found ${cachedServices.length} cached services`,
       });
     }
 
-    const gmbClient = google.mybusinessbusinessinformation({
-      version: 'v1',
-      auth: req.businessOAuth2Client
+    // Fanout across every connected business OAuth token — the middleware
+    // only surfaces the legacy single token, which 404s for locations that
+    // belong to a different Google account. This matches the multi-token
+    // pattern used by posts/reviews/media.
+    let tokenIdx = -1;
+    const attempt = await tryWithEachBusinessToken(userId, req.businessToken, async (accessToken, meta) => {
+      tokenIdx += 1;
+      try {
+        const client = gmbInfoClient(accessToken);
+        const r = await client.locations.get({
+          name: `locations/${locationId}`,
+          readMask: 'serviceItems',
+        });
+        logger.info('services.location.token_attempt_ok', {
+          user_id: userId,
+          location_id: locationId,
+          token_index: tokenIdx,
+          profile_email: meta?.email || null,
+          returned_count: (r?.data?.serviceItems || []).length,
+        });
+        return r;
+      } catch (err) {
+        logger.warn('services.location.token_attempt_error', {
+          user_id: userId,
+          location_id: locationId,
+          token_index: tokenIdx,
+          profile_email: meta?.email || null,
+          status: err?.response?.status || err?.code || null,
+          error: (err?.message || '').slice(0, 300),
+        });
+        throw err;
+      }
     });
 
-    const response = await gmbClient.locations.get({
-      name: `locations/${locationId}`,
-      readMask: 'serviceItems'
-    });
+    if (!attempt.ok) {
+      logger.warn('services.location.all_tokens_failed', {
+        user_id: userId,
+        location_id: locationId,
+        tried: attempt.tried,
+        last_error: attempt.error?.message,
+      });
+      return res.json({
+        success: true,
+        serviceItems: [],
+        cached: false,
+        note: 'No connected Google profile has access to services for this location',
+      });
+    }
 
-    // Cache the fresh services
-    const serviceItems = response.data.serviceItems || [];
-    CacheUtils.cacheExistingServices(userId, locationId, serviceItems, 2 * 60 * 1000); // 2 minutes TTL
-
-    // Save services to database
+    const serviceItems = attempt.result?.data?.serviceItems || [];
+    CacheUtils.cacheExistingServices(userId, locationId, serviceItems, 2 * 60 * 1000);
     const savedServices = await saveExistingServicesToDatabase(req.user.userId, serviceItems, 'google');
 
     res.json({
       success: true,
-      serviceItems: serviceItems,
+      serviceItems,
       savedToDatabase: savedServices.length,
-      cached: false
+      cached: false,
     });
   } catch (error) {
+    logger.error('services.location.unhandled', {
+      user_id: req.user?.userId,
+      location_id: req.params.locationId,
+      error: error?.message,
+      stack: error?.stack?.slice(0, 1500),
+    });
     res.status(500).json({
       success: false,
       error: 'Failed to fetch location services',
-      details: error.message
+      details: error.message,
     });
   }
 });
