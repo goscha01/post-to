@@ -324,12 +324,49 @@ router.get('/accounts/:accountId/locations', async (req, res) => {
     const accountName = `accounts/${accountId}`;
     const readMask = 'name,title,storeCode,websiteUri,storefrontAddress,phoneNumbers,profile,regularHours,metadata,latlng,openInfo,labels,serviceArea,categories';
 
-    const attempt = await tryWithEachBusinessToken(userId, req.businessToken, async (accessToken) => {
+    logger.info('gmb.locations.request', { user_id: userId, account_id: accountId });
+
+    // Per-token diagnostic logging: each token's outcome is logged so we can
+    // see "token X returned 0 locations vs 401'd vs returned these specific
+    // locations". Filter on `gmb.locations.token_attempt_*` in Grafana.
+    let tokenIdx = -1;
+    const attempt = await tryWithEachBusinessToken(userId, req.businessToken, async (accessToken, profile) => {
+      tokenIdx += 1;
       const gmbClient = getBusinessProfileClient(accessToken);
-      const r = await gmbClient.accounts.locations.list({ parent: accountName, readMask });
-      // No locations from this token? Signal "try next" by returning null.
-      if (!r?.data?.locations || r.data.locations.length === 0) return null;
-      return r.data.locations;
+      let r;
+      try {
+        r = await gmbClient.accounts.locations.list({ parent: accountName, readMask });
+      } catch (err) {
+        logger.warn('gmb.locations.token_attempt_error', {
+          user_id: userId,
+          account_id: accountId,
+          token_index: tokenIdx,
+          token_email: profile?.email || null,
+          token_google_id: profile?.google_id || null,
+          status: err?.response?.status ?? err?.code ?? null,
+          error: err?.message,
+        });
+        throw err;
+      }
+      const locs = r?.data?.locations || [];
+      logger.info('gmb.locations.token_attempt_ok', {
+        user_id: userId,
+        account_id: accountId,
+        token_index: tokenIdx,
+        token_email: profile?.email || null,
+        token_google_id: profile?.google_id || null,
+        returned_count: locs.length,
+        // Cap for log-size safety; include title + locality so we can eyeball
+        // "which of my businesses is this account holding".
+        returned_locations: locs.slice(0, 20).map(l => ({
+          name: l.name,
+          title: l.title || l.profile?.businessName || null,
+          locality: l.storefrontAddress?.locality || null,
+          region: l.storefrontAddress?.administrativeArea || null,
+        })),
+      });
+      if (locs.length === 0) return null;
+      return locs;
     });
 
     if (!attempt.ok) {
