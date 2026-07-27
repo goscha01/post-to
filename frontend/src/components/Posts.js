@@ -6,6 +6,7 @@ import ImageUploader from './react_imgbb_uploader.js';
 import imageService from '../services/imageService';
 import businessProfileService from '../services/businessProfileService';
 import postsService from '../services/postsService';
+import calendarService from '../services/calendarService';
 import {
   FileText,
   Plus,
@@ -143,6 +144,14 @@ const Posts = () => {
    const [aiError, setAiError] = useState(null);
    const [aiJustFilled, setAiJustFilled] = useState(false);
    const [aiImageDescriptions, setAiImageDescriptions] = useState([]);
+
+   // Timing: publish now vs. schedule for later. Datetime default = 1h out.
+   const [postingMode, setPostingMode] = useState('now'); // 'now' | 'later'
+   const [scheduledAt, setScheduledAt] = useState(() => {
+     const d = new Date(Date.now() + 60 * 60 * 1000);
+     const pad = (n) => String(n).padStart(2, '0');
+     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+   });
    
    // Edit post state
    const [editingPost, setEditingPost] = useState(null);
@@ -419,45 +428,16 @@ const Posts = () => {
         };
       }
 
-      // Upload media first if provided
+      // Build the media array directly from the mediaUrls textboxes. We used
+      // to POST each URL through /api/posts/media first, but that endpoint
+      // just echoed the URL back — any single 4xx (timeout, transient
+      // network) blew up Promise.all and dropped every image with the
+      // "Some URLs failed to upload" warning. There's nothing useful to
+      // proxy through for URL-based media, so skip the roundtrip.
       const allMedia = [];
-
-      // Upload URLs
-      if (formData.mediaUrls.length > 0) {
-        try {
-
-
-          const validUrls = formData.mediaUrls.filter(url => url.trim() !== '');
-
-          
-           if (validUrls.length > 0) {
-          const urlPromises = validUrls.map(async (url, index) => {
-
-            try {
-              const mediaResponse = await axios.post('/api/posts/media', {
-                mediaFormat: 'PHOTO',
-                sourceUrl: url,
-                gmbAccountId: accountId,
-                gmbLocationId: locationId,
-                category: 'ADDITIONAL'
-              });
-
-              return mediaResponse.data.media;
-            } catch (error) {
-              throw error;
-            }
-          });
-
-          const uploadedUrls = await Promise.all(urlPromises);
-
-
-
-          allMedia.push(...uploadedUrls);
-
-           }
-        } catch (urlError) {
-          alert('Warning: Some URLs failed to upload. Post will be created without those images.');
-        }
+      const validUrls = formData.mediaUrls.filter((url) => url.trim() !== '');
+      for (const url of validUrls) {
+        allMedia.push({ mediaFormat: 'PHOTO', sourceUrl: url });
       }
 
              // Add all uploaded media to post data
@@ -526,11 +506,46 @@ const Posts = () => {
         });
       }
 
-      const response = await axios.post('/api/posts', formDataToSend, {
-        headers: {
-          'Content-Type': 'multipart/form-data',
-        },
-      });
+      let response;
+      if (postingMode === 'later') {
+        // Scheduled route — hits scheduled_posts, worker publishes at
+        // scheduled_time. File uploads not supported yet on this path
+        // (schedule endpoint accepts JSON, not multipart).
+        if (uploadedFiles.length > 0) {
+          alert(
+            'Direct file uploads are not yet supported for scheduled posts — remove the files or paste image URLs instead.'
+          );
+          setCreatingPost(false);
+          return;
+        }
+        const when = new Date(scheduledAt);
+        if (Number.isNaN(when.getTime())) {
+          alert('Invalid scheduled time.');
+          setCreatingPost(false);
+          return;
+        }
+        if (when.getTime() < Date.now() - 60_000) {
+          alert('Scheduled time must be in the future.');
+          setCreatingPost(false);
+          return;
+        }
+        response = { data: await calendarService.schedule({
+          content: postData.content,
+          media: (postData.media || []).map((m) => ({
+            sourceUrl: m.sourceUrl,
+            mediaFormat: m.mediaFormat || 'PHOTO',
+          })),
+          gmbAccountId: postData.gmbAccountId,
+          gmbLocationId: postData.gmbLocationId,
+          scheduledTime: when,
+          postType: postData.postType,
+          callToAction: postData.callToAction || null,
+        }) };
+      } else {
+        response = await axios.post('/api/posts', formDataToSend, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+        });
+      }
 
 
 
@@ -573,7 +588,12 @@ const Posts = () => {
       setExpandedPosts(new Set()); // Reset expanded posts
       
       // Show success message
-      showNotification('Post created successfully!', 'success');
+      showNotification(
+        postingMode === 'later'
+          ? `Post scheduled for ${new Date(scheduledAt).toLocaleString()}!`
+          : 'Post created successfully!',
+        'success'
+      );
       
       // Refresh posts list in background to get the real GMB post data
 
@@ -1244,6 +1264,46 @@ const Posts = () => {
          </div>
         
                  <form onSubmit={editingPost ? handleUpdatePost : handleCreatePost}>
+           {/* When: publish immediately or schedule (matches Calendar composer).
+               Hidden while editing an existing post — schedule vs publish
+               only applies to new drafts. */}
+           {!editingPost && (
+             <div className="mb-4 flex flex-col sm:flex-row sm:items-center gap-3">
+               <span className="text-sm font-medium text-gray-700">When:</span>
+               <div className="flex items-center gap-1">
+                 <button
+                   type="button"
+                   onClick={() => setPostingMode('now')}
+                   className={`px-3 py-1.5 text-sm font-medium rounded-md border ${
+                     postingMode === 'now'
+                       ? 'bg-primary-600 text-white border-primary-600'
+                       : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                   }`}
+                 >
+                   Publish now
+                 </button>
+                 <button
+                   type="button"
+                   onClick={() => setPostingMode('later')}
+                   className={`px-3 py-1.5 text-sm font-medium rounded-md border ${
+                     postingMode === 'later'
+                       ? 'bg-primary-600 text-white border-primary-600'
+                       : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                   }`}
+                 >
+                   Schedule for later
+                 </button>
+               </div>
+               {postingMode === 'later' && (
+                 <input
+                   type="datetime-local"
+                   value={scheduledAt}
+                   onChange={(e) => setScheduledAt(e.target.value)}
+                   className="block sm:w-auto border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 text-sm"
+                 />
+               )}
+             </div>
+           )}
            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
              {/* Left Column - Form */}
              <div className="lg:col-span-2 space-y-4">
@@ -1532,7 +1592,7 @@ const Posts = () => {
                    {creatingPost ? (
                      <>
                        <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mr-2 inline-block"></div>
-                       Creating Post...
+                       {postingMode === 'later' ? 'Scheduling…' : 'Creating Post...'}
                      </>
                    ) : updatingPost ? (
                      <>
@@ -1540,7 +1600,11 @@ const Posts = () => {
                        Updating Post...
                      </>
                    ) : (
-                     editingPost ? 'Update Post' : 'Create Post'
+                     editingPost
+                       ? 'Update Post'
+                       : postingMode === 'later'
+                       ? 'Schedule Post'
+                       : 'Create Post'
                    )}
                  </button>
                </div>
@@ -1615,7 +1679,16 @@ const Posts = () => {
                                            {/* Call to Action Link Preview */}
                       <div className="space-y-2">
                         <div>
-                          <h4 className="text-sm font-medium text-gray-500 mb-2">Aug 13, 2025</h4>
+                          <h4 className="text-sm font-medium text-gray-500 mb-2">
+                            {(postingMode === 'later' && scheduledAt
+                              ? new Date(scheduledAt)
+                              : new Date()
+                            ).toLocaleDateString(undefined, {
+                              month: 'short',
+                              day: 'numeric',
+                              year: 'numeric',
+                            })}
+                          </h4>
                                                    {(editingPost ? editFormData.callToAction.type : formData.callToAction.type) ? (
                             <a
                               href={(editingPost ? editFormData.callToAction.url : formData.callToAction.url) || '#'}
