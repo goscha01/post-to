@@ -12,7 +12,10 @@ const PROVIDER_META = {
     bg: 'bg-emerald-50',
   },
   google_business: {
-    label: 'Google Business Profile',
+    // Displayed on existing connection cards. Named "Google Account" because
+    // this OAuth grant now bundles Business Profile + Drive + Analytics +
+    // Ads + Search Console scopes — it isn't Business-Profile-only.
+    label: 'Google Account',
     icon: Building2,
     color: 'text-blue-600',
     bg: 'bg-blue-50',
@@ -94,7 +97,8 @@ const Connections = () => {
         <div>
           <h1 className="text-2xl font-semibold text-gray-900">Connected Accounts</h1>
           <p className="text-sm text-gray-500 mt-1">
-            Connect your website, Google Business Profile, and (soon) social platforms.
+            Connect your website, Google Account, and (soon) social platforms. One Google Account grants
+            Post-to access to Business Profile, Drive, Analytics, Ads and Search Console.
           </p>
         </div>
         <button
@@ -151,7 +155,7 @@ const EmptyState = ({ onConnect }) => (
     <Globe className="h-10 w-10 text-gray-400 mx-auto mb-3" />
     <h3 className="text-base font-medium text-gray-900">No accounts connected yet</h3>
     <p className="text-sm text-gray-500 mt-1 mb-4">
-      Connect a website to enable AI blog generation, or a Google Business Profile for reviews and posts.
+      Connect a website to enable AI blog generation, or a Google Account to unlock Business Profile, Drive, Analytics, Ads and Search Console.
     </p>
     <button
       onClick={onConnect}
@@ -347,7 +351,7 @@ const ConnectPickerModal = ({ onClose, onConnected }) => {
 const PickerTiles = ({ onPickWebsite, onPickGoogle, onPickAnalytics, onPickAds, onPickSearchConsole, onPickOpenAiAds }) => {
   const tiles = [
     { key: 'website', label: 'Website', desc: 'Connect by URL for AI blogs', icon: Globe, color: 'text-emerald-600', bg: 'bg-emerald-50', onClick: onPickWebsite, enabled: true },
-    { key: 'google', label: 'Google Business Profile', desc: 'Reviews, posts, insights', icon: Building2, color: 'text-blue-600', bg: 'bg-blue-50', onClick: onPickGoogle, enabled: true },
+    { key: 'google', label: 'Google Account', desc: 'Business Profile, Drive, Analytics, Ads, Search Console — one grant', icon: Building2, color: 'text-blue-600', bg: 'bg-blue-50', onClick: onPickGoogle, enabled: true },
     { key: 'analytics', label: 'Google Analytics', desc: 'GA4 sessions, conversions, campaigns', icon: LineChart, color: 'text-orange-600', bg: 'bg-orange-50', onClick: onPickAnalytics, enabled: true },
     { key: 'ads', label: 'Google Ads', desc: 'Read-only campaign diagnostics', icon: Megaphone, color: 'text-purple-600', bg: 'bg-purple-50', onClick: onPickAds, enabled: true },
     { key: 'search_console', label: 'Google Search Console', desc: 'Top keywords → blog topics', icon: Search, color: 'text-yellow-700', bg: 'bg-yellow-50', onClick: onPickSearchConsole, enabled: true },
