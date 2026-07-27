@@ -851,6 +851,21 @@ const looksLikePhone = (s) => {
   return d.length >= 7 && d.length <= 15;
 };
 
+// Convert whatever the user typed into an E.164 tel: URL. Rules:
+//   - If they included a leading '+', trust their country code.
+//   - 10 digits, no '+': assume US, prepend +1.
+//   - 11 digits starting with '1', no '+': treat as US with country code
+//     already present, prepend '+'.
+//   - Everything else: prepend '+' with whatever digits they provided
+//     (best effort — they might be international with no + prefix).
+const toTelUrl = (raw) => {
+  const d = digitsOnly(raw);
+  if (d.startsWith('+')) return `tel:${d}`;
+  if (d.length === 10) return `tel:+1${d}`;
+  if (d.length === 11 && d.startsWith('1')) return `tel:+${d}`;
+  return `tel:+${d}`;
+};
+
 const POST_TYPES = [
   { v: 'UPDATE', label: 'Update' },
   { v: 'OFFER', label: 'Offer' },
@@ -1059,7 +1074,7 @@ const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationK
         ? {
             actionType: callToAction.type,
             url: isCallCta(callToAction.type)
-              ? `tel:${digitsOnly(callToAction.url).startsWith('+') ? '' : '+'}${digitsOnly(callToAction.url).replace(/^\+/, '')}`
+              ? toTelUrl(callToAction.url)
               : callToAction.url.trim(),
           }
         : null;

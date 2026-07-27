@@ -38,6 +38,20 @@ function mapPostTypeToTopicType(postType) {
   }
 }
 
+// Defensive: normalize a tel: URL to a valid E.164 form so we don't POST
+// bad numbers to GMB. Historical rows scheduled before the frontend
+// learned to prepend +1 for bare 10-digit US numbers stored values like
+// tel:+9049020402 which GMB would reject or route wrong.
+function normalizeTelUrl(url) {
+  if (!url || typeof url !== 'string') return url;
+  if (!url.toLowerCase().startsWith('tel:')) return url;
+  const digitsAll = url.slice(4).replace(/[^\d+]/g, '');
+  const bare = digitsAll.replace(/^\+/, '');
+  if (bare.length === 10) return `tel:+1${bare}`; // 10 digits, no country code → assume US
+  if (bare.length === 11 && bare.startsWith('1')) return `tel:+${bare}`; // 1XXXXXXXXXX → +1XXX...
+  return `tel:+${bare}`; // trust whatever the caller passed
+}
+
 async function findDueScheduledPosts() {
   const nowIso = new Date(Date.now() + CLAIM_LOOKBACK_SECONDS * 1000).toISOString();
   const { data, error } = await supabase
@@ -135,7 +149,15 @@ async function publishOne(row) {
     topicType: mapPostTypeToTopicType(row.post_type),
     ...(media.length ? { media } : {}),
     ...(row.call_to_action && row.call_to_action.actionType && row.call_to_action.url
-      ? { callToAction: { actionType: row.call_to_action.actionType, url: row.call_to_action.url } }
+      ? {
+          callToAction: {
+            actionType: row.call_to_action.actionType,
+            url:
+              row.call_to_action.actionType === 'CALL'
+                ? normalizeTelUrl(row.call_to_action.url)
+                : row.call_to_action.url,
+          },
+        }
       : {}),
   };
 
