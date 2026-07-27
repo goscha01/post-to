@@ -103,6 +103,11 @@ router.get('/images', async (req, res) => {
     // 'folders' = subfolders only
     // 'both' = folders + images (what the picker uses to browse a folder)
     type = 'images',
+    // Optional: scope the fanout to a single connected Google account.
+    // Values: googleId (numeric string) or email address. When absent we
+    // fan out across every business_profiles token (union view).
+    googleId = '',
+    profileEmail = '',
   } = req.query;
 
   const pageSizeNum = Math.max(1, Math.min(200, parseInt(pageSize, 10) || 50));
@@ -135,14 +140,37 @@ router.get('/images', async (req, res) => {
 
   try {
     // Multi-profile fanout: hit Drive with every stored business token,
-    // dedupe by file id. Users with 1 profile just see 1 profile's Drive.
+    // dedupe by file id. When googleId/profileEmail is passed the fanout
+    // narrows to a single connected Google account — the composer sends
+    // this after the user picks a business profile so the picker only
+    // surfaces folders/files from THAT account's Drive.
     const tokens = await getAllBusinessTokens(userId);
-    const candidates = tokens.length > 0
+    let candidates = tokens.length > 0
       ? tokens
       : (req.businessToken ? [{ access_token: req.businessToken, email: null }] : []);
 
+    if (googleId || profileEmail) {
+      const before = candidates.length;
+      candidates = candidates.filter((t) =>
+        (googleId && t.google_id === googleId) ||
+        (profileEmail && (t.email || '').toLowerCase() === profileEmail.toLowerCase())
+      );
+      logger.info('drive.images.scoped', {
+        user_id: userId,
+        requested_google_id: googleId || null,
+        requested_email: profileEmail || null,
+        matched_tokens: candidates.length,
+        total_tokens: before,
+      });
+    }
+
     if (candidates.length === 0) {
-      return res.status(400).json({ success: false, error: 'No business OAuth tokens for user' });
+      return res.status(400).json({
+        success: false,
+        error: googleId || profileEmail
+          ? 'No connected Google account matches that filter — pick a different profile or reconnect.'
+          : 'No business OAuth tokens for user',
+      });
     }
 
     let missingScope = false;
@@ -232,6 +260,13 @@ router.get('/images', async (req, res) => {
       items,
       count: items.length,
       profileCount: candidates.length,
+      // Every connected Google account, regardless of the current filter,
+      // so the picker can render an account-switcher dropdown.
+      availableAccounts: tokens.map((t) => ({
+        googleId: t.google_id || null,
+        email: t.email || null,
+      })),
+      activeFilter: googleId || profileEmail ? { googleId: googleId || null, email: profileEmail || null } : null,
     });
   } catch (err) {
     logger.error('drive.images.unhandled', {

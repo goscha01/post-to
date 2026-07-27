@@ -1559,6 +1559,30 @@ const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationK
       {drivePickerOpen && (
         <DrivePickerModal
           existingUrls={validUrls}
+          // Scope the picker to the Google account that owns the currently-
+          // picked business location, so folders/files from OTHER connected
+          // accounts don't bleed in. `connected_via_google_id` is set on
+          // every account object by /api/gmb/accounts.
+          initialGoogleId={
+            (() => {
+              const parts = (locationPath || '').split('/');
+              const accId = parts[1];
+              const acct = (profiles || []).find(
+                (p) => (p?.name || '').split('/').pop() === accId
+              );
+              return acct?.connected_via_google_id || null;
+            })()
+          }
+          initialEmail={
+            (() => {
+              const parts = (locationPath || '').split('/');
+              const accId = parts[1];
+              const acct = (profiles || []).find(
+                (p) => (p?.name || '').split('/').pop() === accId
+              );
+              return acct?.connected_via_email || null;
+            })()
+          }
           onClose={() => setDrivePickerOpen(false)}
           onPick={(picked) => {
             // Insert every selected URL into the media list, filling any empty
@@ -1671,7 +1695,7 @@ const fileToPublicUrl = (file) => {
   return `https://drive.google.com/uc?export=view&id=${file.id}`;
 };
 
-const DrivePickerModal = ({ existingUrls, onClose, onPick }) => {
+const DrivePickerModal = ({ existingUrls, initialGoogleId, initialEmail, onClose, onPick }) => {
   const [query, setQuery] = useState('');
   const [debouncedQ, setDebouncedQ] = useState('');
   const [items, setItems] = useState([]);
@@ -1682,6 +1706,12 @@ const DrivePickerModal = ({ existingUrls, onClose, onPick }) => {
   const [selectedFiles, setSelectedFiles] = useState(new Map()); // id -> file object, preserved across folder navigation
   // Breadcrumb: empty array = My Drive root. Each entry: { id, name }.
   const [folderPath, setFolderPath] = useState([]);
+  // Account scope: '' = ALL connected Google accounts (union),
+  // 'google:<id>' = a specific one, 'email:<addr>' = fallback if no id.
+  const [accountScope, setAccountScope] = useState(
+    initialGoogleId ? `google:${initialGoogleId}` : initialEmail ? `email:${initialEmail}` : ''
+  );
+  const [availableAccounts, setAvailableAccounts] = useState([]);
 
   const currentFolderId = folderPath.length > 0 ? folderPath[folderPath.length - 1].id : '';
   // Search-mode: when the user types a query, we search across everything
@@ -1700,6 +1730,9 @@ const DrivePickerModal = ({ existingUrls, onClose, onPick }) => {
       setError(null);
       setNeedsReauth(false);
       try {
+        // Parse scope into query params.
+        const googleId = accountScope.startsWith('google:') ? accountScope.slice(7) : '';
+        const profileEmail = accountScope.startsWith('email:') ? accountScope.slice(6) : '';
         const data = await driveService.listImages({
           q: debouncedQ,
           pageSize: 100,
@@ -1707,9 +1740,12 @@ const DrivePickerModal = ({ existingUrls, onClose, onPick }) => {
           // Show folders + images when browsing. In search mode we want
           // images only so results don't fill up with folder matches.
           type: isSearching ? 'images' : 'both',
+          googleId,
+          profileEmail,
         });
         if (cancelled) return;
         setItems(Array.isArray(data.items) ? data.items : []);
+        if (Array.isArray(data.availableAccounts)) setAvailableAccounts(data.availableAccounts);
       } catch (err) {
         if (cancelled) return;
         const status = err?.response?.status;
@@ -1727,7 +1763,7 @@ const DrivePickerModal = ({ existingUrls, onClose, onPick }) => {
     return () => {
       cancelled = true;
     };
-  }, [debouncedQ, currentFolderId, isSearching]);
+  }, [debouncedQ, currentFolderId, isSearching, accountScope]);
 
   const toggle = (file) => {
     setSelected((prev) => {
@@ -1747,6 +1783,13 @@ const DrivePickerModal = ({ existingUrls, onClose, onPick }) => {
   const enterFolder = (folder) => {
     setFolderPath((prev) => [...prev, { id: folder.id, name: folder.name }]);
     setQuery(''); // clear search when navigating
+  };
+  const changeAccountScope = (nextScope) => {
+    // Folder ids are per-Drive, so a folderPath from one account is
+    // meaningless in another. Reset to root when switching.
+    setAccountScope(nextScope);
+    setFolderPath([]);
+    setQuery('');
   };
   const gotoRoot = () => {
     setFolderPath([]);
@@ -1799,6 +1842,27 @@ const DrivePickerModal = ({ existingUrls, onClose, onPick }) => {
         </div>
 
         <div className="px-5 py-3 border-b border-gray-200 space-y-2">
+          {availableAccounts.length > 1 && (
+            <div className="flex items-center gap-2">
+              <label className="text-xs font-medium text-gray-500 whitespace-nowrap">Drive:</label>
+              <select
+                value={accountScope}
+                onChange={(e) => changeAccountScope(e.target.value)}
+                className="flex-1 text-sm border-gray-300 rounded-md py-1.5 focus:ring-primary-500 focus:border-primary-500"
+              >
+                <option value="">All connected accounts (union)</option>
+                {availableAccounts.map((a) => {
+                  const label = a.email || a.googleId || 'Unnamed account';
+                  const val = a.googleId ? `google:${a.googleId}` : `email:${a.email}`;
+                  return (
+                    <option key={val} value={val}>
+                      {label}
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+          )}
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
             <input
