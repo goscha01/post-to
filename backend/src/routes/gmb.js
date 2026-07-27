@@ -153,13 +153,18 @@ router.get('/accounts', async (req, res) => {
       return res.json({ success: true, accounts: [] });
     }
 
-    // Hit GMB for each token in parallel; tolerate per-profile failures.
+    // Hit GMB for each token in parallel; tolerate per-profile failures. Every
+    // per-profile outcome is logged to Loki so we can answer "why is business X
+    // missing" without wondering if a token silently 401'd or returned zero
+    // accounts. Filter on `gmb.accounts.profile_*` in Grafana.
     const seen = new Map(); // dedupe by account.name across profiles
-    await Promise.all(profiles.map(async (p) => {
+    await Promise.all(profiles.map(async (p, idx) => {
       try {
         const gmbClient = getGmbAccountClient(p.access_token);
         const resp = await gmbClient.accounts.list();
-        for (const acc of (resp.data.accounts || [])) {
+        const returned = resp.data.accounts || [];
+        let added = 0;
+        for (const acc of returned) {
           if (!seen.has(acc.name)) {
             seen.set(acc.name, {
               name: acc.name,
@@ -171,14 +176,36 @@ router.get('/accounts', async (req, res) => {
               permissionLevel: acc.permissionLevel,
               connected_via_email: p.business_email || null
             });
+            added += 1;
           }
         }
+        logger.info('gmb.accounts.profile_ok', {
+          user_id: userId,
+          profile_index: idx,
+          business_email: p.business_email || null,
+          business_google_id: p.business_google_id || null,
+          returned_count: returned.length,
+          added_count: added,
+          returned_account_names: returned.slice(0, 10).map(a => a.name),
+        });
       } catch (err) {
-        console.error('[gmb/accounts] profile fetch failed for', p.business_email || '(unknown)', err.message);
+        logger.warn('gmb.accounts.profile_failed', {
+          user_id: userId,
+          profile_index: idx,
+          business_email: p.business_email || null,
+          business_google_id: p.business_google_id || null,
+          status: err?.response?.status ?? err?.code ?? null,
+          error: err?.message,
+        });
       }
     }));
 
     const accounts = Array.from(seen.values());
+    logger.info('gmb.accounts.summary', {
+      user_id: userId,
+      profile_count: profiles.length,
+      unique_account_count: accounts.length,
+    });
 
     // Save accounts to database for caching
     if (userId) {

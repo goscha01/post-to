@@ -191,16 +191,19 @@ router.get('/accounts/:accountId/locations/:locationId/reviews', requireBusiness
     const { cached_only } = req.query;
     const userId = req.user?.userId;
 
-    // If cached_only=true, return only cached data
+    // If cached_only=true, return only cached data. When the DB has zero rows
+    // for this location we return cached:false so the frontend falls through
+    // to a live GMB fetch — otherwise a never-hydrated location shows "0
+    // reviews" forever because the empty cache is treated as authoritative.
     if (cached_only === 'true') {
       const cachedReviews = await getCachedReviews(locationId, userId);
-      
-      
       return res.json({
         success: true,
         reviews: cachedReviews,
-        cached: true,
-        message: `Found ${cachedReviews.length} cached reviews`
+        cached: cachedReviews.length > 0,
+        message: cachedReviews.length > 0
+          ? `Found ${cachedReviews.length} cached reviews`
+          : 'No cached reviews yet — fetch live to hydrate',
       });
     }
     
