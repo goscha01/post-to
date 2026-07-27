@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import axios from '../utils/axiosConfig';
 import { useAuth } from '../contexts/AuthContext';
 import ImageUploader from './react_imgbb_uploader.js';
@@ -98,6 +99,7 @@ const PostImage = ({ imageUrl, altText, mediaFormat, mediaData }) => {
 
 const Posts = () => {
   const { isAuthenticated, isDisconnected } = useAuth();
+  const [searchParams] = useSearchParams();
   const [posts, setPosts] = useState([]);
   const [profiles, setProfiles] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -155,14 +157,21 @@ const Posts = () => {
       // Use centralized business profile service with caching
       const profilesWithLocations = await businessProfileService.getAccounts();
       setProfiles(profilesWithLocations);
-      if (profilesWithLocations.length > 0 && profilesWithLocations[0].locations.length > 0) {
+      // If Calendar (or any deep link) passed ?location=accounts/X/locations/Y,
+      // prefer that location — but only if it actually exists in the user's
+      // profile tree. Otherwise fall back to the first available.
+      const desired = searchParams.get('location');
+      const allPaths = profilesWithLocations.flatMap((p) => (p.locations || []).map((l) => l.fullPath));
+      if (desired && allPaths.includes(desired)) {
+        setSelectedProfile(desired);
+      } else if (profilesWithLocations.length > 0 && profilesWithLocations[0].locations.length > 0) {
         setSelectedProfile(profilesWithLocations[0].locations[0].fullPath);
       }
     } catch (error) {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [searchParams]);
 
   const fetchPosts = useCallback(async (locationId, page = 1, append = false, forceRefresh = false) => {
     if (!locationId) return;

@@ -21,6 +21,7 @@ const openAiAdsRoutes = require('./routes/openAiAds');
 const optimizationReportRoutes = require('./routes/optimizationReport');
 const clientLogRoutes = require('./routes/clientLog');
 const calendarRoutes = require('./routes/calendar');
+const scheduledPublisher = require('./workers/scheduledPublisher');
 const apiLogger = require('./middleware/apiLogger');
 
 const app = express();
@@ -156,4 +157,14 @@ process.on('unhandledRejection', (reason, promise) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+  // Kick off the scheduled-post publisher. Opt-out via
+  // DISABLE_SCHEDULED_PUBLISHER=1 (useful for local dev or if we ever run a
+  // dedicated worker process).
+  if (process.env.DISABLE_SCHEDULED_PUBLISHER !== '1') {
+    try {
+      scheduledPublisher.start();
+    } catch (err) {
+      console.error('scheduled_publisher.start_error', err?.message);
+    }
+  }
 });

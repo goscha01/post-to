@@ -9,6 +9,8 @@ import {
   X,
   Image as ImageIcon,
   ExternalLink,
+  Trash2,
+  Plus,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import businessProfileService from '../services/businessProfileService';
@@ -139,6 +141,7 @@ const Calendar = () => {
   const [error, setError] = useState(null);
   const [showKind, setShowKind] = useState('both'); // 'both' | 'scheduled' | 'published'
   const [detailItem, setDetailItem] = useState(null);
+  const [scheduleModal, setScheduleModal] = useState(null); // { defaultDate }
 
   // Load accounts + locations
   useEffect(() => {
@@ -244,21 +247,37 @@ const Calendar = () => {
   const selectAllLocations = () => setSelectedLocationKeys(new Set(locations.map((l) => l.key)));
   const clearAllLocations = () => setSelectedLocationKeys(new Set());
 
-  // Empty cell click → jump to /posts with location + date preselection
-  // (Posts.js reads `?location=<fullPath>&date=<iso>` — but even without
-  // that support, landing on /posts is a sensible fallback so the user
-  // can create a post.)
+  // Empty cell click → open the schedule modal with the clicked date as
+  // the default. If there are no connected profiles, bounce to Connections.
   const openCreateForDate = (day) => {
-    // Prefer the first selected location; fall back to the first available.
-    const firstSelected = locations.find((l) => selectedLocationKeys.has(l.key));
-    const target = firstSelected || locations[0];
-    if (!target) {
-      navigate('/posts');
+    if (locations.length === 0) {
+      navigate('/connections');
       return;
     }
-    const fullPath = `accounts/${target.accountId}/locations/${target.locationId}`;
-    const iso = new Date(day).toISOString();
-    navigate(`/posts?location=${encodeURIComponent(fullPath)}&date=${encodeURIComponent(iso)}`);
+    // Default the time to 9:00 AM local on the clicked day if that day is
+    // in the future; otherwise 1 hour from now.
+    const now = new Date();
+    const isFutureDay = new Date(day).setHours(23, 59, 59, 999) >= now.getTime();
+    const seed = new Date(day);
+    if (isFutureDay) {
+      seed.setHours(9, 0, 0, 0);
+      if (seed.getTime() < Date.now()) {
+        seed.setTime(Date.now() + 60 * 60 * 1000);
+      }
+    } else {
+      seed.setTime(Date.now() + 60 * 60 * 1000);
+    }
+    setScheduleModal({ defaultDate: seed });
+  };
+
+  const handleScheduled = () => {
+    setScheduleModal(null);
+    fetchRange({ silent: true });
+  };
+
+  const handleCancelled = () => {
+    setDetailItem(null);
+    fetchRange({ silent: true });
   };
 
   const today = startOfDay(new Date());
@@ -275,14 +294,23 @@ const Calendar = () => {
             Published posts and upcoming scheduled posts across your business profiles.
           </p>
         </div>
-        <button
-          onClick={() => fetchRange({ silent: true })}
-          disabled={refreshing}
-          className="inline-flex items-center gap-2 px-3 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-60"
-        >
-          <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
-          Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => fetchRange({ silent: true })}
+            disabled={refreshing}
+            className="inline-flex items-center gap-2 px-3 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-60"
+          >
+            <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
+            Refresh
+          </button>
+          <button
+            onClick={() => openCreateForDate(new Date())}
+            className="inline-flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium text-white bg-primary-600 hover:bg-primary-700"
+          >
+            <Plus className="h-4 w-4" />
+            Schedule post
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-[260px_1fr] gap-6">
@@ -449,6 +477,17 @@ const Calendar = () => {
           )}
           allLocations={locations}
           onClose={() => setDetailItem(null)}
+          onCancelled={handleCancelled}
+        />
+      )}
+
+      {scheduleModal && (
+        <ScheduleModal
+          defaultDate={scheduleModal.defaultDate}
+          locations={locations}
+          selectedLocationKeys={selectedLocationKeys}
+          onClose={() => setScheduleModal(null)}
+          onScheduled={handleScheduled}
         />
       )}
     </div>
@@ -595,10 +634,28 @@ const DayCell = ({ day, items, allLocations, isOtherMonth, isToday, isWeekendCol
 
 // ── Detail modal ───────────────────────────────────────────
 
-const DetailModal = ({ item, location, allLocations, onClose }) => {
+const DetailModal = ({ item, location, allLocations, onClose, onCancelled }) => {
   const when = new Date(item.when);
   const color = colorForLocation(item.locationId, allLocations);
   const isScheduled = item.kind === 'scheduled';
+  const [cancelling, setCancelling] = useState(false);
+  const [cancelError, setCancelError] = useState(null);
+
+  const handleCancel = async () => {
+    if (!isScheduled) return;
+    // eslint-disable-next-line no-restricted-globals, no-alert
+    if (!window.confirm('Cancel this scheduled post? It will not be published.')) return;
+    setCancelling(true);
+    setCancelError(null);
+    try {
+      await calendarService.cancel(item.id);
+      onCancelled?.();
+    } catch (err) {
+      setCancelError(err?.response?.data?.error || err?.message || 'Failed to cancel');
+    } finally {
+      setCancelling(false);
+    }
+  };
 
   return (
     <div
@@ -677,24 +734,278 @@ const DetailModal = ({ item, location, allLocations, onClose }) => {
           </dl>
         </div>
 
+        {cancelError && (
+          <div className="mx-4 mb-3 p-2 rounded-md bg-red-50 border border-red-200 text-xs text-red-800">
+            {cancelError}
+          </div>
+        )}
+        <div className="p-4 border-t border-gray-200 flex justify-between gap-2">
+          <div>
+            {isScheduled && (
+              <button
+                onClick={handleCancel}
+                disabled={cancelling}
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-red-700 bg-white border border-red-300 rounded-md hover:bg-red-50 disabled:opacity-60"
+              >
+                <Trash2 className="h-4 w-4" />
+                {cancelling ? 'Cancelling…' : 'Cancel'}
+              </button>
+            )}
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={onClose}
+              className="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
+            >
+              Close
+            </button>
+            {item.kind === 'published' && item.locationId && item.accountId && (
+              <a
+                href={`/posts`}
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700"
+              >
+                <ExternalLink className="h-4 w-4" />
+                Open in Posts
+              </a>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ── Schedule modal ─────────────────────────────────────────
+
+// Converts a Date to a value compatible with <input type="datetime-local">
+// (YYYY-MM-DDTHH:mm, local time, no timezone suffix).
+const toLocalInputValue = (d) => {
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+
+const ScheduleModal = ({ defaultDate, locations, selectedLocationKeys, onClose, onScheduled }) => {
+  // Pre-pick the first sidebar-selected location; fall back to first available.
+  const preselected =
+    locations.find((l) => selectedLocationKeys.has(l.key)) || locations[0] || null;
+
+  const [locationKey, setLocationKey] = useState(preselected?.key || '');
+  const [content, setContent] = useState('');
+  const [when, setWhen] = useState(() => toLocalInputValue(new Date(defaultDate)));
+  const [postType, setPostType] = useState('UPDATE');
+  const [mediaUrl, setMediaUrl] = useState('');
+  const [ctaType, setCtaType] = useState('');
+  const [ctaUrl, setCtaUrl] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState(null);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setError(null);
+    if (!content.trim()) {
+      setError('Content is required.');
+      return;
+    }
+    if (!locationKey) {
+      setError('Pick a business profile.');
+      return;
+    }
+    const target = locations.find((l) => l.key === locationKey);
+    if (!target) {
+      setError('Business profile not found.');
+      return;
+    }
+    const scheduledDate = new Date(when);
+    if (Number.isNaN(scheduledDate.getTime())) {
+      setError('Invalid date/time.');
+      return;
+    }
+    if (scheduledDate.getTime() < Date.now() - 60_000) {
+      setError('Scheduled time must be in the future.');
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      await calendarService.schedule({
+        content: content.trim(),
+        media: mediaUrl.trim() ? [{ sourceUrl: mediaUrl.trim(), mediaFormat: 'PHOTO' }] : [],
+        gmbAccountId: target.accountId,
+        gmbLocationId: target.locationId,
+        scheduledTime: scheduledDate,
+        postType,
+        callToAction:
+          ctaType && ctaUrl.trim() ? { actionType: ctaType, url: ctaUrl.trim() } : null,
+      });
+      onScheduled?.();
+    } catch (err) {
+      setError(err?.response?.data?.error || err?.message || 'Failed to schedule');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      onClick={onClose}
+    >
+      <form
+        className="bg-white rounded-lg shadow-xl max-w-lg w-full max-h-[90vh] overflow-y-auto"
+        onClick={(e) => e.stopPropagation()}
+        onSubmit={submit}
+      >
+        <div className="flex items-start justify-between p-5 border-b border-gray-200">
+          <div>
+            <h2 className="text-base font-semibold text-gray-900 flex items-center gap-2">
+              <Clock className="h-5 w-5 text-primary-600" />
+              Schedule a post
+            </h2>
+            <p className="text-xs text-gray-500 mt-1">
+              The publisher will POST this to Google Business Profile at the scheduled time.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-gray-400 hover:text-gray-600 p-1 rounded"
+            aria-label="Close"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="p-5 space-y-4">
+          {locations.length === 0 && (
+            <div className="p-3 rounded-md bg-amber-50 border border-amber-200 text-xs text-amber-900">
+              No connected business profiles. Connect one first.
+            </div>
+          )}
+
+          <div>
+            <label className="block text-xs font-medium text-gray-700 mb-1">Business profile</label>
+            <select
+              value={locationKey}
+              onChange={(e) => setLocationKey(e.target.value)}
+              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:ring-primary-500"
+              disabled={locations.length === 0}
+            >
+              {locations.map((loc) => (
+                <option key={loc.key} value={loc.key}>
+                  {loc.title}
+                  {loc.addressLine ? ` — ${loc.addressLine}` : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">Scheduled time</label>
+              <input
+                type="datetime-local"
+                value={when}
+                onChange={(e) => setWhen(e.target.value)}
+                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:ring-primary-500"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">Post type</label>
+              <select
+                value={postType}
+                onChange={(e) => setPostType(e.target.value)}
+                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:ring-primary-500"
+              >
+                <option value="UPDATE">Update</option>
+                <option value="EVENT">Event</option>
+                <option value="OFFER">Offer</option>
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-gray-700 mb-1">Content</label>
+            <textarea
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              rows={5}
+              placeholder="What do you want to post?"
+              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:ring-primary-500"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-gray-700 mb-1">
+              Image URL <span className="text-gray-400 font-normal">(optional)</span>
+            </label>
+            <input
+              type="url"
+              value={mediaUrl}
+              onChange={(e) => setMediaUrl(e.target.value)}
+              placeholder="https://…"
+              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:ring-primary-500"
+            />
+          </div>
+
+          <details className="rounded-md border border-gray-200">
+            <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-gray-700 select-none">
+              Call to action (optional)
+            </summary>
+            <div className="p-3 grid grid-cols-2 gap-3 border-t border-gray-200">
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Type</label>
+                <select
+                  value={ctaType}
+                  onChange={(e) => setCtaType(e.target.value)}
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
+                >
+                  <option value="">None</option>
+                  <option value="BOOK">Book</option>
+                  <option value="ORDER">Order</option>
+                  <option value="SHOP">Shop</option>
+                  <option value="LEARN_MORE">Learn more</option>
+                  <option value="SIGN_UP">Sign up</option>
+                  <option value="CALL">Call</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">URL</label>
+                <input
+                  type="url"
+                  value={ctaUrl}
+                  onChange={(e) => setCtaUrl(e.target.value)}
+                  placeholder="https://…"
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
+                />
+              </div>
+            </div>
+          </details>
+
+          {error && (
+            <div className="p-2 rounded-md bg-red-50 border border-red-200 text-xs text-red-800">
+              {error}
+            </div>
+          )}
+        </div>
+
         <div className="p-4 border-t border-gray-200 flex justify-end gap-2">
           <button
+            type="button"
             onClick={onClose}
             className="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
           >
-            Close
+            Cancel
           </button>
-          {item.kind === 'published' && item.locationId && item.accountId && (
-            <a
-              href={`/posts`}
-              className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700"
-            >
-              <ExternalLink className="h-4 w-4" />
-              Open in Posts
-            </a>
-          )}
+          <button
+            type="submit"
+            disabled={submitting || locations.length === 0}
+            className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 disabled:opacity-60"
+          >
+            <Clock className="h-4 w-4" />
+            {submitting ? 'Scheduling…' : 'Schedule'}
+          </button>
         </div>
-      </div>
+      </form>
     </div>
   );
 };
