@@ -20,6 +20,7 @@ const googleAdsRoutes = require('./routes/googleAds');
 const openAiAdsRoutes = require('./routes/openAiAds');
 const optimizationReportRoutes = require('./routes/optimizationReport');
 const clientLogRoutes = require('./routes/clientLog');
+const calendarRoutes = require('./routes/calendar');
 const apiLogger = require('./middleware/apiLogger');
 
 const app = express();
@@ -119,6 +120,7 @@ app.use('/api/google-ads', googleAdsRoutes);
 app.use('/api/openai-ads', openAiAdsRoutes);
 app.use('/api/optimization-report', optimizationReportRoutes);
 app.use('/api/client-log', clientLogRoutes);
+app.use('/api/calendar', calendarRoutes);
 
 // Health check endpoint
 app.get('/health', (req, res) => {

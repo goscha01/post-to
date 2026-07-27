@@ -10,6 +10,7 @@ import BusinessProfiles from './components/BusinessProfiles';
 import Connections from './components/Connections';
 import Blogs from './components/Blogs';
 import Posts from './components/Posts';
+import Calendar from './components/Calendar';
 import Reviews from './components/Reviews';
 import Insights from './components/Insights';
 import Analytics from './components/Analytics';
@@ -96,6 +97,16 @@ const AppContent = () => {
             <ProtectedRoute>
               <Layout>
                 <Posts />
+              </Layout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/calendar"
+          element={
+            <ProtectedRoute>
+              <Layout>
+                <Calendar />
               </Layout>
             </ProtectedRoute>
           }
