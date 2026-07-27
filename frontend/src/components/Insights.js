@@ -211,11 +211,11 @@ const Insights = () => {
 
 // Replace your fetchTimelineData function with this version that uses the working date range
 
-const fetchTimelineData = async (profileId, period, profilesData = profiles) => {
+const fetchTimelineData = async (profileId, period, profilesData = profiles, forceRefresh = false) => {
   if (!profileId) return;
-  
+
   try {
-    
+
     // Extract account ID and location ID from the profile
     let accountId, locationId;
     
@@ -267,11 +267,11 @@ const fetchTimelineData = async (profileId, period, profilesData = profiles) => 
     
     // Use cached insights service
     const timelineData = await insightsService.getTimelineData(
-      accountId, 
-      locationId, 
-      period, 
+      accountId,
+      locationId,
+      period,
       requestData.timeRange,
-      false // forceRefresh
+      forceRefresh
     );
     
     if (timelineData && timelineData.success !== false) {
@@ -578,13 +578,14 @@ const transformTimelineDataForChart = () => {
 
   const refreshInsights = async () => {
     if (!selectedProfile) return;
-    
+
     setRefreshing(true);
     try {
       // Use the working basic insights endpoint directly
       await fetchInsights(selectedProfile, selectedPeriod);
-      // Also refresh timeline data
-      await fetchTimelineData(selectedProfile, selectedPeriod);
+      // Force refresh timeline — bypass the in-memory cache so stale zeros from
+      // a previous session don't survive a Refresh click.
+      await fetchTimelineData(selectedProfile, selectedPeriod, profiles, true);
     } catch (error) {
     } finally {
       setRefreshing(false);
@@ -1014,7 +1015,7 @@ const getAuthHeaders = () => {
                   {showTimeline ? 'Hide Timeline' : 'Show Timeline'}
                 </button>
                 <button
-                  onClick={() => fetchTimelineData(selectedProfile, selectedPeriod)}
+                  onClick={() => fetchTimelineData(selectedProfile, selectedPeriod, profiles, true)}
                   disabled={timelineLoading}
                   className="inline-flex items-center px-3 py-1 border border-blue-300 text-sm font-medium rounded-md text-blue-700 bg-blue-50 hover:bg-blue-100 disabled:opacity-50"
                 >
