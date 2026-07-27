@@ -28,19 +28,36 @@ const Layout = ({ children }) => {
 
   // Debug user data
 
-  const navigation = [
-    { name: 'Dashboard', href: '/dashboard', icon: Home },
-    { name: 'Business Profiles', href: '/profiles', icon: Building2 },
-    { name: 'Blogs', href: '/blogs', icon: Newspaper },
-    { name: 'Posts', href: '/posts', icon: FileText },
-    { name: 'Calendar', href: '/calendar', icon: CalendarDays },
-    { name: 'Reviews', href: '/reviews', icon: MessageSquare },
-    { name: 'Insights', href: '/insights', icon: BarChart3 },
-    { name: 'Analytics', href: '/analytics', icon: LineChart },
-    { name: 'Ads', href: '/ads', icon: Megaphone },
-    { name: 'OpenAI Ads', href: '/openai-ads', icon: Bot },
-    { name: 'Services', href: '/services', icon: Settings },
-    { name: 'Integrations', href: '/connections', icon: Link2 },
+  // Grouped nav: sections with an optional label. Sections with a null label
+  // render as a plain block at the top (Dashboard / Business Profiles).
+  const navigationSections = [
+    {
+      label: null,
+      items: [
+        { name: 'Dashboard', href: '/dashboard', icon: Home },
+        { name: 'Business Profiles', href: '/profiles', icon: Building2 },
+      ],
+    },
+    {
+      label: 'Posting',
+      items: [
+        { name: 'Calendar', href: '/calendar', icon: CalendarDays },
+        { name: 'Posts', href: '/posts', icon: FileText },
+        { name: 'Services', href: '/services', icon: Settings },
+        { name: 'Reviews', href: '/reviews', icon: MessageSquare },
+        { name: 'Blogs', href: '/blogs', icon: Newspaper },
+        { name: 'Insights', href: '/insights', icon: BarChart3 },
+      ],
+    },
+    {
+      label: 'Marketing',
+      items: [
+        { name: 'Analytics', href: '/analytics', icon: LineChart },
+        { name: 'Ads', href: '/ads', icon: Megaphone },
+        { name: 'OpenAI Ads', href: '/openai-ads', icon: Bot },
+        { name: 'Integrations', href: '/connections', icon: Link2 },
+      ],
+    },
   ];
 
   const handleLogout = () => {
@@ -49,6 +66,37 @@ const Layout = ({ children }) => {
   };
 
   const isActive = (path) => location.pathname === path;
+
+  const renderNav = ({ onLinkClick } = {}) =>
+    navigationSections.map((section, si) => (
+      <div key={section.label || `top-${si}`} className={si === 0 ? '' : 'mt-4'}>
+        {section.label && (
+          <div className="px-3 pb-1 pt-1 text-[11px] font-semibold uppercase tracking-wider text-gray-400">
+            {section.label}
+          </div>
+        )}
+        <div className="space-y-1">
+          {section.items.map((item) => {
+            const Icon = item.icon;
+            return (
+              <Link
+                key={item.name}
+                to={item.href}
+                onClick={onLinkClick}
+                className={`group flex items-center px-2 py-2 text-sm font-medium rounded-md ${
+                  isActive(item.href)
+                    ? 'bg-primary-100 text-primary-900'
+                    : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+                }`}
+              >
+                <Icon className="mr-3 h-5 w-5" />
+                {item.name}
+              </Link>
+            );
+          })}
+        </div>
+      </div>
+    ));
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -65,25 +113,8 @@ const Layout = ({ children }) => {
               <X className="h-6 w-6" />
             </button>
           </div>
-          <nav className="flex-1 space-y-1 px-2 py-4">
-            {navigation.map((item) => {
-              const Icon = item.icon;
-              return (
-                <Link
-                  key={item.name}
-                  to={item.href}
-                  onClick={() => setSidebarOpen(false)}
-                  className={`group flex items-center px-2 py-2 text-sm font-medium rounded-md ${
-                    isActive(item.href)
-                      ? 'bg-primary-100 text-primary-900'
-                      : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
-                  }`}
-                >
-                  <Icon className="mr-3 h-5 w-5" />
-                  {item.name}
-                </Link>
-              );
-            })}
+          <nav className="flex-1 px-2 py-4 overflow-y-auto">
+            {renderNav({ onLinkClick: () => setSidebarOpen(false) })}
           </nav>
           <div className="border-t border-gray-200 p-4">
             {/* User Info */}
@@ -128,24 +159,8 @@ const Layout = ({ children }) => {
           <div className="flex items-center h-16 px-4 border-b border-gray-200">
             <h1 className="text-lg font-semibold text-gray-900">GMB Manager</h1>
           </div>
-          <nav className="flex-1 space-y-1 px-2 py-4">
-            {navigation.map((item) => {
-              const Icon = item.icon;
-              return (
-                <Link
-                  key={item.name}
-                  to={item.href}
-                  className={`group flex items-center px-2 py-2 text-sm font-medium rounded-md ${
-                    isActive(item.href)
-                      ? 'bg-primary-100 text-primary-900'
-                      : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
-                  }`}
-                >
-                  <Icon className="mr-3 h-5 w-5" />
-                  {item.name}
-                </Link>
-              );
-            })}
+          <nav className="flex-1 px-2 py-4 overflow-y-auto">
+            {renderNav()}
           </nav>
           <div className="border-t border-gray-200 p-4">
             {/* User Info */}
