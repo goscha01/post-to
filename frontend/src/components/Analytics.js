@@ -77,6 +77,7 @@ const Analytics = () => {
   const [error, setError] = useState('');
   const [needsPropertySelection, setNeedsPropertySelection] = useState(false);
   const [needsReauth, setNeedsReauth] = useState(false);
+  const [propertyPermission, setPropertyPermission] = useState(null); // { propertyId, triedAccounts }
   const [pickerOpen, setPickerOpen] = useState(false);
 
   const selectedProperty = useMemo(
@@ -152,6 +153,7 @@ const Analytics = () => {
     if (!propertyId) return;
     setLoadingReports(true);
     setError('');
+    setPropertyPermission(null);
     try {
       const [o, t, l, e, c, d, g] = await Promise.all([
         analyticsService.getOverview(propertyId, rangeDays),
@@ -171,13 +173,19 @@ const Analytics = () => {
       setGeography(g.geography || []);
     } catch (err) {
       const status = err.response?.status;
-      if (status === 403 && err.response?.data?.needsReauth) {
+      const data = err.response?.data || {};
+      if (status === 403 && data.needsPropertyPermission) {
+        setPropertyPermission({
+          propertyId: data.propertyId || propertyId,
+          triedAccounts: data.triedAccounts || [],
+        });
+      } else if (status === 403 && data.needsReauth) {
         setNeedsReauth(true);
       }
-      if (status === 400 && err.response?.data?.needsPropertySelection) {
+      if (status === 400 && data.needsPropertySelection) {
         setNeedsPropertySelection(true);
       }
-      setError(err.response?.data?.error || err.message || 'Failed to load analytics data');
+      setError(data.error || err.message || 'Failed to load analytics data');
     } finally {
       setLoadingReports(false);
     }
@@ -275,7 +283,15 @@ const Analytics = () => {
         </div>
       )}
 
-      {error && !needsReauth && (
+      {propertyPermission && (
+        <PropertyPermissionBanner
+          propertyId={propertyPermission.propertyId}
+          triedAccounts={propertyPermission.triedAccounts}
+          onConnectAnother={() => setPickerOpen(true)}
+        />
+      )}
+
+      {error && !needsReauth && !propertyPermission && (
         <div className="mb-4 flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-md text-sm text-red-800">
           <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
           <span>{error}</span>
@@ -389,6 +405,69 @@ const DayRangeSelector = ({ value, onChange }) => (
     ))}
   </div>
 );
+
+// Shown when Google's Data API returns 403 "insufficient permissions for this
+// property" on EVERY connected Google account. Two paths forward:
+//   1. Add the connected Google account as a Viewer in GA4 Admin.
+//   2. Connect a different Google account that IS a Viewer on the property.
+const PropertyPermissionBanner = ({ propertyId, triedAccounts, onConnectAnother }) => {
+  const accessMgmtUrl = propertyId
+    ? `https://analytics.google.com/analytics/web/#/a/p${propertyId}/admin/suiteuserlist`
+    : 'https://analytics.google.com/analytics/web/#/admin';
+  return (
+    <div className="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-md">
+      <div className="flex items-start gap-3">
+        <AlertCircle className="h-5 w-5 text-amber-600 mt-0.5 flex-shrink-0" />
+        <div className="flex-1">
+          <p className="text-sm font-medium text-amber-900">
+            No access to GA4 property {propertyId}
+          </p>
+          <p className="text-sm text-amber-800 mt-1">
+            Google Analytics rejected the report request with{' '}
+            <em>"User does not have sufficient permissions for this property."</em>{' '}
+            {triedAccounts && triedAccounts.length > 0 ? (
+              <>
+                Tried:{' '}
+                <span className="font-mono text-xs bg-amber-100 px-1 py-0.5 rounded">
+                  {triedAccounts.join(', ')}
+                </span>
+                . None of them are a GA4 Viewer on this property.
+              </>
+            ) : (
+              <>The connected Google account is not a GA4 Viewer on this property.</>
+            )}
+          </p>
+          <p className="text-sm text-amber-800 mt-2 font-medium">Two ways to fix:</p>
+          <ol className="text-sm text-amber-800 mt-1 ml-4 list-decimal space-y-1">
+            <li>
+              In{' '}
+              <a
+                href={accessMgmtUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="underline font-medium hover:text-amber-900"
+              >
+                GA4 Admin → Property Access Management
+              </a>
+              , add the connected Google account as at least a <strong>Viewer</strong>.
+              Then reload this page.
+            </li>
+            <li>
+              Or connect a different Google account that already has Viewer access:
+              <button
+                onClick={onConnectAnother}
+                className="ml-2 inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-white bg-primary-600 rounded hover:bg-primary-700"
+              >
+                <Plus className="h-3 w-3" />
+                Connect another
+              </button>
+            </li>
+          </ol>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 const EmptyState = ({ onConnect }) => (
   <div className="text-center py-16 px-4 border-2 border-dashed border-gray-200 rounded-lg bg-white">

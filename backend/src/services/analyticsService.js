@@ -315,6 +315,13 @@ async function getCampaigns(accessToken, propertyId, days) {
 // Normalized error surface so route handlers can distinguish "no permission"
 // (403) from "bad property id" (404) from generic failures. Caller logs the
 // stack; we only log the message here for the Loki structured log line.
+//
+// Two flavors of 403 matter to callers:
+//   - PROPERTY_PERMISSION_DENIED — the OAuth account is not a GA4 Viewer on
+//     the property. Fix: add that Google account in GA4 Admin, or route the
+//     call through a different connected Google account.
+//   - SCOPE_MISSING             — analytics.readonly was not granted at
+//     OAuth-consent time. Fix: reconnect Google (frontend "needsReauth" path).
 function normalizeApiError(err, context) {
   const status =
     err?.response?.status ||
@@ -322,13 +329,26 @@ function normalizeApiError(err, context) {
     err?.status ||
     null;
   const message = err?.response?.data?.error?.message || err?.message || 'analytics_api_error';
+  const numericStatus = typeof status === 'number' ? status : parseInt(status, 10) || 500;
+  const isPropertyPermission = numericStatus === 403 &&
+    /sufficient permissions? for this property/i.test(message);
+  const isScopeMissing = numericStatus === 403 &&
+    /insufficient (authentication )?scopes?/i.test(message);
+
   logger.error('analytics.api_error', {
     ...(context || {}),
     status,
     message,
+    code: isPropertyPermission
+      ? 'PROPERTY_PERMISSION_DENIED'
+      : isScopeMissing
+        ? 'SCOPE_MISSING'
+        : undefined,
   });
   const out = new Error(message);
-  out.status = typeof status === 'number' ? status : 500;
+  out.status = numericStatus;
+  if (isPropertyPermission) out.code = 'PROPERTY_PERMISSION_DENIED';
+  else if (isScopeMissing) out.code = 'SCOPE_MISSING';
   return out;
 }
 

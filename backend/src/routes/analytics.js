@@ -38,7 +38,7 @@ const authMiddleware = require('../middleware/authMiddleware');
 const requireBusinessAuth = require('../middleware/businessAuth');
 const analytics = require('../services/analyticsService');
 const connections = require('../services/connectionsService');
-const { getAllBusinessTokens, refreshOneToken } = require('../utils/businessTokens');
+const { getAllBusinessTokens } = require('../utils/businessTokens');
 const logger = require('../utils/logger');
 const { createClient } = require('@supabase/supabase-js');
 
@@ -55,7 +55,9 @@ router.use(requireBusinessAuth);
 // Given a saved GA4 property (connected_accounts row), find the OAuth token
 // for the Google account that actually owns it. Falls back to req.businessToken
 // (the middleware default) if the property has no owner recorded — happens for
-// rows saved before multi-account support landed.
+// rows saved before multi-account support landed. Returns { access_token, email,
+// google_id } so the route handler can log which account was used and, on 403,
+// fan out to the other connected accounts.
 async function tokenForProperty(req, propertyId) {
   const { data: rows } = await supabase
     .from('connected_accounts')
@@ -65,11 +67,46 @@ async function tokenForProperty(req, propertyId) {
     .eq('external_id', `ga4:${propertyId}`)
     .limit(1);
   const ownerGoogleId = rows && rows[0]?.metadata?.owner_google_id;
-  if (!ownerGoogleId) return req.businessToken;
+  const ownerEmail = rows && rows[0]?.metadata?.owner_email;
 
-  const tokens = await getAllBusinessTokens(req.user.userId);
-  const match = tokens.find(t => t.google_id === ownerGoogleId);
-  return match?.access_token || req.businessToken;
+  if (ownerGoogleId) {
+    const tokens = await getAllBusinessTokens(req.user.userId);
+    const match = tokens.find(t => t.google_id === ownerGoogleId);
+    if (match?.access_token) {
+      return { access_token: match.access_token, email: match.email, google_id: match.google_id };
+    }
+  }
+
+  return { access_token: req.businessToken, email: ownerEmail || null, google_id: ownerGoogleId || null };
+}
+
+// Backfill owner_google_id / owner_email on the connected_accounts row when a
+// fallback token turns out to be the one that works. Saves a redundant fan-out
+// on the next request. Best-effort — never throws.
+async function backfillOwnerOnProperty(userId, propertyId, token) {
+  try {
+    const { data: rows } = await supabase
+      .from('connected_accounts')
+      .select('id, metadata')
+      .eq('user_id', userId)
+      .eq('provider', 'google_analytics')
+      .eq('external_id', `ga4:${propertyId}`)
+      .limit(1);
+    const row = rows && rows[0];
+    if (!row) return;
+    await supabase
+      .from('connected_accounts')
+      .update({
+        metadata: {
+          ...(row.metadata || {}),
+          owner_google_id: token.google_id || row.metadata?.owner_google_id || null,
+          owner_email: token.email || row.metadata?.owner_email || null,
+        },
+      })
+      .eq('id', row.id);
+  } catch (e) {
+    logger.warn('analytics.backfill_owner_failed', { userId, propertyId, error: e.message });
+  }
 }
 
 // ---------- Diagnostics ----------
@@ -160,22 +197,28 @@ function parseDays(req) {
 // Every report endpoint follows this same pattern: resolve property, run the
 // service method, translate errors. Keep it here so the individual endpoints
 // stay one-liners.
+//
+// On PROPERTY_PERMISSION_DENIED we fan out across every other connected
+// business token — a common cause is a stale/missing owner_google_id in
+// connected_accounts.metadata routing the call to the wrong Google identity.
+// If a different token succeeds, we backfill owner_google_id so the next
+// request hits the right token directly.
 function reportHandler(serviceFn, name) {
   return async (req, res) => {
-    try {
-      const propertyId = await resolvePropertyId(req);
-      if (!propertyId) {
-        return res.status(400).json({
-          error: 'No GA4 property specified or connected',
-          needsPropertySelection: true,
-        });
-      }
-      const days = parseDays(req);
-      // Route the report call to whichever Google account owns this property.
-      // Multi-account: user may have connected two Google accounts, each owning
-      // different GA4 properties. req.businessToken alone would only work for
-      // properties owned by the most-recently-connected account.
-      const token = await tokenForProperty(req, propertyId);
+    const propertyId = await resolvePropertyId(req);
+    if (!propertyId) {
+      return res.status(400).json({
+        error: 'No GA4 property specified or connected',
+        needsPropertySelection: true,
+      });
+    }
+    const days = parseDays(req);
+    const primary = await tokenForProperty(req, propertyId);
+
+    const tried = [];
+    let lastPermErr = null;
+
+    const attempt = async (token, tokenInfo, isFallback) => {
       const t0 = Date.now();
       const result = await serviceFn(token, propertyId, days);
       logger.info(`analytics.${name}.ok`, {
@@ -183,15 +226,76 @@ function reportHandler(serviceFn, name) {
         propertyId,
         days,
         duration_ms: Date.now() - t0,
+        ownerEmail: tokenInfo?.email || null,
+        viaFallback: !!isFallback,
       });
-      res.json({ propertyId, days, [name]: result });
+      if (isFallback && tokenInfo) {
+        await backfillOwnerOnProperty(req.user.userId, propertyId, tokenInfo);
+      }
+      return result;
+    };
+
+    try {
+      const result = await attempt(primary.access_token, primary, false);
+      return res.json({ propertyId, days, [name]: result });
     } catch (err) {
       const norm = analytics.normalizeApiError(err, {
         endpoint: name,
         userId: req.user.userId,
+        propertyId,
+        ownerEmail: primary.email,
       });
-      res.status(norm.status || 500).json({ error: norm.message });
+      tried.push(primary.email || primary.google_id || 'primary');
+      if (norm.code !== 'PROPERTY_PERMISSION_DENIED') {
+        return res.status(norm.status || 500).json({
+          error: norm.message,
+          ...(norm.code === 'SCOPE_MISSING' ? { needsReauth: true } : {}),
+        });
+      }
+      lastPermErr = norm;
     }
+
+    // Fan out across the other connected business tokens.
+    const allTokens = await getAllBusinessTokens(req.user.userId);
+    for (const t of allTokens) {
+      if (t.access_token === primary.access_token) continue;
+      try {
+        const result = await attempt(t.access_token, t, true);
+        return res.json({ propertyId, days, [name]: result });
+      } catch (err) {
+        const norm = analytics.normalizeApiError(err, {
+          endpoint: name,
+          userId: req.user.userId,
+          propertyId,
+          ownerEmail: t.email,
+          fallbackAttempt: true,
+        });
+        tried.push(t.email || t.google_id || 'fallback');
+        if (norm.code !== 'PROPERTY_PERMISSION_DENIED') {
+          return res.status(norm.status || 500).json({
+            error: norm.message,
+            ...(norm.code === 'SCOPE_MISSING' ? { needsReauth: true } : {}),
+          });
+        }
+        lastPermErr = norm;
+      }
+    }
+
+    // Every connected Google account was rejected. Surface a structured error
+    // so the frontend can show a specific action panel (add Viewer in GA4
+    // Admin OR connect a different Google account).
+    logger.warn('analytics.property_permission_denied_all_accounts', {
+      userId: req.user.userId,
+      propertyId,
+      endpoint: name,
+      triedAccounts: tried,
+    });
+    return res.status(403).json({
+      error: lastPermErr?.message || 'User does not have sufficient permissions for this property.',
+      needsPropertyPermission: true,
+      propertyId,
+      triedAccounts: tried,
+    });
   };
 }
 
