@@ -146,25 +146,30 @@ const Calendar = () => {
   const [scheduleModal, setScheduleModal] = useState(null); // { defaultDate }
 
   // Load accounts + locations
-  useEffect(() => {
-    if (!isAuthenticated || isDisconnected) return;
-    let cancelled = false;
-    (async () => {
+  const loadAccounts = useCallback(
+    async (forceRefresh = false) => {
       try {
-        const p = await businessProfileService.getAccounts();
-        if (cancelled) return;
+        const p = await businessProfileService.getAccounts(forceRefresh);
         setProfiles(Array.isArray(p) ? p : []);
         const flat = flattenLocations(p);
         setLocations(flat);
-        setSelectedLocationKeys(new Set(flat.map((l) => l.key))); // all on by default
+        setSelectedLocationKeys((prev) => {
+          if (prev.size > 0) return prev; // keep user selection across reloads
+          return new Set(flat.map((l) => l.key));
+        });
       } catch (e) {
         // Non-fatal — calendar still works without location filter
       }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [isAuthenticated, isDisconnected]);
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (!isAuthenticated || isDisconnected) return;
+    // Force-refresh on mount so a stale frontend cache from an earlier page
+    // (Posts, Reviews, etc.) doesn't hide accounts the user just connected.
+    loadAccounts(true);
+  }, [isAuthenticated, isDisconnected, loadAccounts]);
 
   // Fetch calendar range whenever the anchor/view changes. We over-fetch
   // by ~1 month on each side so paging between adjacent months doesn't
@@ -490,6 +495,7 @@ const Calendar = () => {
           profiles={profiles}
           locations={locations}
           selectedLocationKeys={selectedLocationKeys}
+          onReloadAccounts={loadAccounts}
           onClose={() => setScheduleModal(null)}
           onDone={handleScheduled}
         />
@@ -822,7 +828,7 @@ const POST_TYPES = [
   { v: 'EVENT', label: 'Event' },
 ];
 
-const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationKeys, onClose, onDone }) => {
+const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationKeys, onReloadAccounts, onClose, onDone }) => {
   // Preselect the first sidebar-checked location, then first available.
   const initialLocation = useMemo(() => {
     const checkedKey = [...(selectedLocationKeys || [])][0];
@@ -851,6 +857,20 @@ const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationK
   const [callToAction, setCallToAction] = useState({ type: '', url: '' });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
+  const [reloading, setReloading] = useState(false);
+
+  const accountsCount = (profiles || []).filter((p) => (p.locations || []).length > 0).length;
+  const locationsCount = (profiles || []).reduce((acc, p) => acc + (p.locations?.length || 0), 0);
+
+  const handleReload = async () => {
+    if (!onReloadAccounts) return;
+    setReloading(true);
+    try {
+      await onReloadAccounts(true);
+    } finally {
+      setReloading(false);
+    }
+  };
 
   const setUrlAt = (idx, value) => {
     setMediaUrls((prev) => prev.map((u, i) => (i === idx ? value : u)));
@@ -1011,7 +1031,24 @@ const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationK
           {/* Row: profile picker + timing */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Business profile</label>
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-sm font-medium text-gray-700">Business profile</label>
+                <div className="flex items-center gap-2 text-xs text-gray-500">
+                  <span>
+                    {accountsCount} {accountsCount === 1 ? 'account' : 'accounts'} · {locationsCount}{' '}
+                    {locationsCount === 1 ? 'location' : 'locations'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleReload}
+                    disabled={reloading}
+                    className="inline-flex items-center gap-1 text-primary-600 hover:underline disabled:opacity-50"
+                  >
+                    <RefreshCw className={`h-3 w-3 ${reloading ? 'animate-spin' : ''}`} />
+                    Reload
+                  </button>
+                </div>
+              </div>
               <select
                 value={locationPath}
                 onChange={(e) => setLocationPath(e.target.value)}
@@ -1029,6 +1066,12 @@ const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationK
                   ))
                 )}
               </select>
+              {locationsCount === 0 && (
+                <p className="text-xs text-amber-700 mt-1">
+                  No locations returned by the GMB API. Try Reload; if still empty, reconnect the
+                  profile from Connections.
+                </p>
+              )}
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">When</label>
