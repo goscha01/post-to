@@ -46,51 +46,82 @@ function isMissingScope(err) {
   );
 }
 
-// Pull every filename we've ever referenced from social_media_posts so we
-// can flag Drive files that are already in use. Filename comparison is
-// intentionally loose — Drive names don't always match URL segments — so
-// we normalize both sides.
-async function loadUsedFilenames(userId) {
-  const { data, error } = await supabase
-    .from('social_media_posts')
-    .select('id, published_at, media_urls, media_data')
-    .eq('user_id', userId)
-    .order('published_at', { ascending: false })
-    .limit(1000);
-  if (error) {
-    logger.warn('drive.used_filenames_query_error', { user_id: userId, error: error.message });
-    return new Map();
+// Pull every identifier we've ever referenced from social_media_posts
+// (published) AND scheduled_posts (upcoming) so we can flag Drive files
+// already in use. Historical bug: filename matching from URL segments
+// doesn't work for Drive URLs (last segment is 'uc' — the same for every
+// Drive file), so every Drive-picked image was silently marked un-used.
+// Now we extract BOTH the filename AND the Drive fileId, and index each
+// entry under whichever it has.
+async function loadUsedIdentifiers(userId) {
+  const [pubQ, schQ] = await Promise.all([
+    supabase
+      .from('social_media_posts')
+      .select('id, published_at, media_urls, media_data')
+      .eq('user_id', userId)
+      .order('published_at', { ascending: false })
+      .limit(1000),
+    supabase
+      .from('scheduled_posts')
+      .select('id, scheduled_time, media, status')
+      .eq('user_id', userId)
+      .in('status', ['scheduled', 'processing'])
+      .order('scheduled_time', { ascending: false })
+      .limit(1000),
+  ]);
+  if (pubQ.error) {
+    logger.warn('drive.used_query_error', { user_id: userId, table: 'social_media_posts', error: pubQ.error.message });
   }
-  const map = new Map(); // normalizedName -> { postId, publishedAt }
+  if (schQ.error) {
+    logger.warn('drive.used_query_error', { user_id: userId, table: 'scheduled_posts', error: schQ.error.message });
+  }
+
+  const byName = new Map();     // normalized filename -> { source, id, when }
+  const byDriveId = new Map();  // Drive fileId       -> { source, id, when }
   const normalize = (s) => (s || '').toString().trim().toLowerCase();
-  for (const row of data || []) {
-    const record = { postId: row.id, publishedAt: row.published_at };
-    // media_data[].filename (from uploaded files)
+
+  const addUrl = (url, record) => {
+    if (!url || typeof url !== 'string') return;
+    const driveId = driveFileIdFromUrl(url);
+    if (driveId && !byDriveId.has(driveId)) byDriveId.set(driveId, record);
+    try {
+      const path = new URL(url).pathname;
+      const last = path.split('/').filter(Boolean).pop();
+      const decoded = last ? decodeURIComponent(last) : '';
+      const fn = normalize(decoded);
+      // Reject useless segments like 'uc' from Drive URLs — they'd cause
+      // false positives across every Drive file.
+      if (fn && fn.length > 3 && !byName.has(fn)) byName.set(fn, record);
+    } catch {
+      const fn = normalize(url.split('/').pop());
+      if (fn && fn.length > 3 && !byName.has(fn)) byName.set(fn, record);
+    }
+  };
+
+  for (const row of pubQ.data || []) {
+    const record = { source: 'published', id: row.id, when: row.published_at };
     if (Array.isArray(row.media_data)) {
       for (const m of row.media_data) {
         const fn = normalize(m?.filename);
-        if (fn && !map.has(fn)) map.set(fn, record);
+        if (fn && !byName.has(fn)) byName.set(fn, record);
+        const url = m?.source_url || m?.sourceUrl;
+        if (url) addUrl(url, record);
       }
     }
-    // media_urls[]: URLs — take the last path segment.
     if (Array.isArray(row.media_urls)) {
-      for (const u of row.media_urls) {
-        if (!u || typeof u !== 'string') continue;
-        try {
-          const path = new URL(u).pathname;
-          const last = path.split('/').filter(Boolean).pop();
-          const decoded = last ? decodeURIComponent(last) : '';
-          const fn = normalize(decoded);
-          if (fn && !map.has(fn)) map.set(fn, record);
-        } catch {
-          // Not a valid URL — treat the whole string as a filename
-          const fn = normalize(u.split('/').pop());
-          if (fn && !map.has(fn)) map.set(fn, record);
-        }
+      for (const u of row.media_urls) addUrl(u, record);
+    }
+  }
+  for (const row of schQ.data || []) {
+    const record = { source: 'scheduled', id: row.id, when: row.scheduled_time };
+    if (Array.isArray(row.media)) {
+      for (const m of row.media) {
+        if (typeof m === 'string') addUrl(m, record);
+        else if (m?.sourceUrl) addUrl(m.sourceUrl, record);
       }
     }
   }
-  return map;
+  return { byName, byDriveId };
 }
 
 router.get('/images', async (req, res) => {
@@ -215,12 +246,16 @@ router.get('/images', async (req, res) => {
       });
     }
 
-    const usedMap = await loadUsedFilenames(userId);
+    const { byName, byDriveId } = await loadUsedIdentifiers(userId);
     const normalize = (s) => (s || '').toString().trim().toLowerCase();
 
     const items = Array.from(seen.values()).map((f) => {
       const isFolder = f.mimeType === FOLDER_MIME;
-      const usedRec = isFolder ? null : usedMap.get(normalize(f.name));
+      // Prefer the Drive-fileId match — it's exact. Fall back to filename
+      // match for direct uploads that don't carry a Drive id.
+      const usedRec = isFolder
+        ? null
+        : (byDriveId.get(f.id) || byName.get(normalize(f.name)) || null);
       return {
         id: f.id,
         name: f.name,
@@ -235,8 +270,9 @@ router.get('/images', async (req, res) => {
         width: f.imageMediaMetadata?.width || null,
         height: f.imageMediaMetadata?.height || null,
         used: !!usedRec,
-        usedInPostId: usedRec?.postId || null,
-        usedAt: usedRec?.publishedAt || null,
+        usedSource: usedRec?.source || null, // 'published' | 'scheduled'
+        usedInPostId: usedRec?.id || null,
+        usedAt: usedRec?.when || null,
       };
     });
 

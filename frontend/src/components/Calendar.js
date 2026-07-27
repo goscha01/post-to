@@ -1922,12 +1922,32 @@ const DrivePickerModal = ({ existingUrls, initialGoogleId, initialEmail, onClose
     setQuery('');
   };
 
-  const confirm = () => {
-    // Use the preserved selectedFiles map so choices made in one folder
-    // survive when the user navigates to a different folder before hitting
-    // Add.
-    const urls = Array.from(selectedFiles.values()).map(fileToPublicUrl);
+  // Detect duplicates in the current selection: files already published in
+  // a past post, already in a scheduled post, or already in the current
+  // draft. Any of these means the user probably didn't mean to re-add it.
+  const duplicatesInSelection = Array.from(selectedFiles.values()).filter((f) => {
+    if (f.used) return true;
+    const url = fileToPublicUrl(f);
+    return existingUrls?.includes(url);
+  });
+
+  const [showDupConfirm, setShowDupConfirm] = useState(false);
+
+  const finalizeAdd = (skipDups) => {
+    const dupIds = new Set(duplicatesInSelection.map((f) => f.id));
+    const chosen = Array.from(selectedFiles.values()).filter((f) =>
+      skipDups ? !dupIds.has(f.id) : true
+    );
+    const urls = chosen.map(fileToPublicUrl);
     onPick(urls);
+  };
+
+  const confirm = () => {
+    if (duplicatesInSelection.length > 0) {
+      setShowDupConfirm(true);
+      return;
+    }
+    finalizeAdd(false);
   };
 
   const folders = items.filter((f) => f.isFolder);
@@ -2126,12 +2146,14 @@ const DrivePickerModal = ({ existingUrls, initialGoogleId, initialEmail, onClose
                               <span
                                 className="absolute top-1.5 left-1.5 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/95 text-white shadow"
                                 title={
-                                  f.usedAt
-                                    ? `Used on ${new Date(f.usedAt).toLocaleDateString()}`
+                                  f.usedSource === 'scheduled'
+                                    ? `In a scheduled post${f.usedAt ? ` (${new Date(f.usedAt).toLocaleDateString()})` : ''}`
+                                    : f.usedAt
+                                    ? `Posted on ${new Date(f.usedAt).toLocaleDateString()}`
                                     : 'Used in a previous post'
                                 }
                               >
-                                Already used
+                                {f.usedSource === 'scheduled' ? 'Scheduled' : 'Already used'}
                               </span>
                             )}
                             {isSelected && (
@@ -2193,6 +2215,77 @@ const DrivePickerModal = ({ existingUrls, initialGoogleId, initialEmail, onClose
             </button>
           </div>
         </div>
+
+        {showDupConfirm && (
+          <div
+            className="absolute inset-0 z-10 flex items-center justify-center bg-black/40 p-4"
+            onClick={() => setShowDupConfirm(false)}
+          >
+            <div
+              className="bg-white rounded-lg shadow-xl w-full max-w-md overflow-hidden"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="px-5 py-4 border-b border-gray-200 flex items-start gap-2">
+                <AlertCircle className="h-5 w-5 text-amber-500 mt-0.5 flex-none" />
+                <div>
+                  <h4 className="text-sm font-semibold text-gray-900">
+                    {duplicatesInSelection.length} of {selectedFiles.size} already{' '}
+                    {duplicatesInSelection.every((f) => f.usedSource === 'scheduled')
+                      ? 'scheduled'
+                      : duplicatesInSelection.every((f) => f.usedSource === 'published')
+                      ? 'published'
+                      : 'used'}
+                  </h4>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    Adding these again will send the same image twice.
+                  </p>
+                </div>
+              </div>
+              <ul className="px-5 py-3 space-y-1 max-h-56 overflow-y-auto">
+                {duplicatesInSelection.map((f) => {
+                  const inDraft = existingUrls?.includes(fileToPublicUrl(f));
+                  const label = inDraft
+                    ? 'in the current draft'
+                    : f.usedSource === 'scheduled'
+                    ? `in a scheduled post${f.usedAt ? ` (${new Date(f.usedAt).toLocaleDateString()})` : ''}`
+                    : `posted${f.usedAt ? ` on ${new Date(f.usedAt).toLocaleDateString()}` : ''}`;
+                  return (
+                    <li key={f.id} className="text-xs text-gray-700 flex items-start gap-2">
+                      <span className="text-amber-500">•</span>
+                      <span className="flex-1 min-w-0">
+                        <span className="font-medium truncate block" title={f.name}>{f.name}</span>
+                        <span className="text-gray-500">{label}</span>
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+              <div className="px-5 py-3 border-t border-gray-200 flex justify-end gap-2 bg-gray-50">
+                <button
+                  type="button"
+                  onClick={() => setShowDupConfirm(false)}
+                  className="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
+                >
+                  Back
+                </button>
+                <button
+                  type="button"
+                  onClick={() => finalizeAdd(true)}
+                  className="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
+                >
+                  Skip duplicates
+                </button>
+                <button
+                  type="button"
+                  onClick={() => finalizeAdd(false)}
+                  className="px-3 py-2 text-sm font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700"
+                >
+                  Keep all
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
