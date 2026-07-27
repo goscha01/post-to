@@ -280,17 +280,18 @@ const Reviews = () => {
       await axios.put(`/api/gmb/accounts/${accountId}/locations/${locationId}/reviews/${reviewId}/reply`, {
         comment: replyText.trim()
       });
-      
+
       // Refresh reviews
       await fetchReviews(selectedProfile);
-      
+
       // Reset form
       setReplyText('');
       setReplyingTo(null);
-      
+
       alert('Reply posted successfully!');
     } catch (error) {
-      alert('Failed to post reply. Please try again.');
+      const msg = error.response?.data?.message || error.response?.data?.error || error.message || 'unknown error';
+      alert(`Failed to post reply: ${msg}`);
     }
   };
 
@@ -324,14 +325,15 @@ const Reviews = () => {
       await axios.put(`/api/gmb/accounts/${accountId}/locations/${locationId}/reviews/${reviewId}/reply`, {
         comment: replyText.trim()
       });
-      
+
       await fetchReviews(selectedProfile);
       setReplyText('');
       setReplyingTo(null);
-      
+
       alert('Reply updated successfully!');
     } catch (error) {
-      alert('Failed to update reply. Please try again.');
+      const msg = error.response?.data?.message || error.response?.data?.error || error.message || 'unknown error';
+      alert(`Failed to update reply: ${msg}`);
     }
   };
 
@@ -366,7 +368,8 @@ const Reviews = () => {
       await fetchReviews(selectedProfile);
       alert('Reply deleted successfully!');
     } catch (editError) {
-      alert('Failed to delete reply. Please try again.');
+      const msg = editError.response?.data?.message || editError.response?.data?.error || editError.message || 'unknown error';
+      alert(`Failed to delete reply: ${msg}`);
     }
   };
 

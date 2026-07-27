@@ -18,6 +18,7 @@ const supabase = createClient(
 router.use(authMiddleware);
 
 const { tryWithEachBusinessToken } = require('../utils/businessTokens');
+const logger = require('../utils/logger');
 
 // Helper function to save review to database
 const saveReviewToDatabase = async (userId, reviewData) => {
@@ -382,50 +383,76 @@ router.put('/accounts/:accountId/locations/:locationId/reviews/:reviewId/reply',
   try {
     let { accountId, locationId, reviewId } = req.params;
     const { comment } = req.body;
-    
-    // Remove prefixes if present
+    const userId = req.user?.userId;
+
     accountId = accountId.replace('accounts/', '');
     locationId = locationId.replace('locations/', '');
     reviewId = reviewId.replace('reviews/', '');
-    
-    try {
-      const axios = require('axios');
-      const replyResponse = await axios.put(
-        `https://mybusiness.googleapis.com/v4/accounts/${accountId}/locations/${locationId}/reviews/${reviewId}/reply`,
-        { comment },
-        {
-          headers: {
-            'Authorization': `Bearer ${req.businessToken}`,
-            'Content-Type': 'application/json'
-          }
-        }
-      );
-      
-      // Format the reply data
-      const reply = {
-        name: replyResponse.data.name,
-        comment: replyResponse.data.comment,
-        updateTime: replyResponse.data.updateTime
-      };
-      
-      res.json({
-        success: true,
-        message: 'Review reply created/updated successfully',
-        reply: reply
+
+    logger.info('gmb.reply.request', { user_id: userId, account_id: accountId, location_id: locationId, review_id: reviewId, comment_length: comment.length });
+
+    const axios = require('axios');
+    const url = `https://mybusiness.googleapis.com/v4/accounts/${accountId}/locations/${locationId}/reviews/${reviewId}/reply`;
+    let tokenIdx = 0;
+
+    const attempt = await tryWithEachBusinessToken(userId, req.businessToken, async (accessToken) => {
+      const idx = tokenIdx++;
+      try {
+        const r = await axios.put(url, { comment }, {
+          headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' }
+        });
+        logger.info('gmb.reply.ok', { user_id: userId, account_id: accountId, location_id: locationId, review_id: reviewId, token_index: idx });
+        return r.data;
+      } catch (err) {
+        const status = err.response?.status;
+        const body = err.response?.data;
+        logger.warn('gmb.reply.token_attempt_error', {
+          user_id: userId, account_id: accountId, location_id: locationId, review_id: reviewId,
+          token_index: idx, status,
+          gmb_error_message: body?.error?.message || err.message,
+          gmb_error_status: body?.error?.status || null,
+          gmb_error_body: JSON.stringify(body || {}).slice(0, 1500)
+        });
+        throw err;
+      }
+    });
+
+    if (!attempt.ok) {
+      const status = attempt.error?.response?.status;
+      const body = attempt.error?.response?.data;
+      logger.error('gmb.reply.all_tokens_failed', {
+        user_id: userId, account_id: accountId, location_id: locationId, review_id: reviewId,
+        tokens_tried: (attempt.tried || []).length,
+        last_status: status,
+        gmb_error_message: body?.error?.message || attempt.error?.message,
+        gmb_error_status: body?.error?.status || null
       });
-      
-    } catch (gmbV4Error) {
-      res.status(400).json({
+      const outStatus = status && status >= 400 && status < 500 ? status : 502;
+      return res.status(outStatus).json({
         success: false,
-        error: 'Review reply not available - GMB V4 API access required',
-        message: 'This feature requires Google My Business API v4 access',
-        details: gmbV4Error.message
+        error: 'Failed to post review reply',
+        message: body?.error?.message || attempt.error?.message || 'Google rejected the reply',
+        gmb_status: body?.error?.status || null,
+        details: body?.error || null
       });
     }
-    
+
+    const reply = {
+      name: attempt.result.name,
+      comment: attempt.result.comment,
+      updateTime: attempt.result.updateTime
+    };
+
+    res.json({
+      success: true,
+      message: 'Review reply created/updated successfully',
+      reply
+    });
+
   } catch (error) {
-    res.status(500).json({ 
-      success: false, 
+    logger.error('gmb.reply.unhandled', { user_id: req.user?.userId, error: error.message, stack: (error.stack || '').slice(0, 1500) });
+    res.status(500).json({
+      success: false,
       error: 'Failed to reply to review',
       details: error.message
     });
@@ -436,41 +463,64 @@ router.put('/accounts/:accountId/locations/:locationId/reviews/:reviewId/reply',
 router.delete('/accounts/:accountId/locations/:locationId/reviews/:reviewId/reply', requireBusinessAuth, async (req, res) => {
   try {
     let { accountId, locationId, reviewId } = req.params;
-    
-    // Remove prefixes if present
+    const userId = req.user?.userId;
+
     accountId = accountId.replace('accounts/', '');
     locationId = locationId.replace('locations/', '');
     reviewId = reviewId.replace('reviews/', '');
-    
-    try {
-      const axios = require('axios');
-      await axios.delete(
-        `https://mybusiness.googleapis.com/v4/accounts/${accountId}/locations/${locationId}/reviews/${reviewId}/reply`,
-        {
-          headers: {
-            'Authorization': `Bearer ${req.businessToken}`,
-            'Content-Type': 'application/json'
-          }
-        }
-      );
-      
-      res.json({
-        success: true,
-        message: 'Review reply deleted successfully'
+
+    logger.info('gmb.reply.delete_request', { user_id: userId, account_id: accountId, location_id: locationId, review_id: reviewId });
+
+    const axios = require('axios');
+    const url = `https://mybusiness.googleapis.com/v4/accounts/${accountId}/locations/${locationId}/reviews/${reviewId}/reply`;
+    let tokenIdx = 0;
+
+    const attempt = await tryWithEachBusinessToken(userId, req.businessToken, async (accessToken) => {
+      const idx = tokenIdx++;
+      try {
+        const r = await axios.delete(url, {
+          headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' }
+        });
+        logger.info('gmb.reply.delete_ok', { user_id: userId, account_id: accountId, location_id: locationId, review_id: reviewId, token_index: idx });
+        return r.data || { ok: true };
+      } catch (err) {
+        const status = err.response?.status;
+        const body = err.response?.data;
+        logger.warn('gmb.reply.delete_token_attempt_error', {
+          user_id: userId, account_id: accountId, location_id: locationId, review_id: reviewId,
+          token_index: idx, status,
+          gmb_error_message: body?.error?.message || err.message,
+          gmb_error_status: body?.error?.status || null
+        });
+        throw err;
+      }
+    });
+
+    if (!attempt.ok) {
+      const status = attempt.error?.response?.status;
+      const body = attempt.error?.response?.data;
+      logger.error('gmb.reply.delete_all_tokens_failed', {
+        user_id: userId, account_id: accountId, location_id: locationId, review_id: reviewId,
+        tokens_tried: (attempt.tried || []).length,
+        last_status: status,
+        gmb_error_message: body?.error?.message || attempt.error?.message
       });
-      
-    } catch (gmbV4Error) {
-      res.status(400).json({
+      const outStatus = status && status >= 400 && status < 500 ? status : 502;
+      return res.status(outStatus).json({
         success: false,
-        error: 'Review reply deletion not available - GMB V4 API access required',
-        message: 'This feature requires Google My Business API v4 access',
-        details: gmbV4Error.message
+        error: 'Failed to delete review reply',
+        message: body?.error?.message || attempt.error?.message || 'Google rejected the delete',
+        gmb_status: body?.error?.status || null,
+        details: body?.error || null
       });
     }
-    
+
+    res.json({ success: true, message: 'Review reply deleted successfully' });
+
   } catch (error) {
-    res.status(500).json({ 
-      success: false, 
+    logger.error('gmb.reply.delete_unhandled', { user_id: req.user?.userId, error: error.message, stack: (error.stack || '').slice(0, 1500) });
+    res.status(500).json({
+      success: false,
       error: 'Failed to delete review reply',
       details: error.message
     });
