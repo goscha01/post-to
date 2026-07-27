@@ -2060,7 +2060,7 @@ const DrivePickerModal = ({ existingUrls, initialGoogleId, initialEmail, onClose
                         key={f.id}
                         type="button"
                         onClick={() => enterFolder(f)}
-                        className="flex items-center gap-2 px-3 py-2 rounded-md border border-gray-200 hover:border-gray-300 hover:bg-gray-50 text-left"
+                        className="flex items-center gap-2 px-3 py-2 rounded-md border border-gray-200 hover:border-gray-300 hover:bg-gray-50 text-left select-none"
                       >
                         <Folder className="h-5 w-5 text-primary-600 flex-none" />
                         <span className="text-sm text-gray-900 truncate" title={f.name}>
@@ -2087,7 +2087,11 @@ const DrivePickerModal = ({ existingUrls, initialGoogleId, initialEmail, onClose
                           key={f.id}
                           type="button"
                           onClick={() => toggle(f)}
-                          className={`relative text-left rounded-lg border-2 overflow-hidden transition-colors ${
+                          // select-none: without it, rapid clicking the
+                          // tiles caused the browser to select tile text
+                          // (filenames, before/after labels) and paint
+                          // every clicked tile blue.
+                          className={`relative text-left select-none rounded-lg border-2 overflow-hidden transition-colors ${
                             isSelected
                               ? 'border-primary-500 ring-2 ring-primary-200'
                               : 'border-gray-200 hover:border-gray-300'
