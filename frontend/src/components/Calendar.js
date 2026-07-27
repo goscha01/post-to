@@ -12,6 +12,7 @@ import {
   Trash2,
   Plus,
 } from 'lucide-react';
+import axios from '../utils/axiosConfig';
 import { useAuth } from '../contexts/AuthContext';
 import businessProfileService from '../services/businessProfileService';
 import calendarService from '../services/calendarService';
@@ -133,6 +134,7 @@ const Calendar = () => {
 
   const [anchor, setAnchor] = useState(() => startOfDay(new Date()));
   const [view, setView] = useState('month'); // 'month' | 'week'
+  const [profiles, setProfiles] = useState([]); // raw response from businessProfileService — matches Posts.js iteration
   const [locations, setLocations] = useState([]);
   const [selectedLocationKeys, setSelectedLocationKeys] = useState(() => new Set());
   const [items, setItems] = useState({ published: [], scheduled: [] });
@@ -149,9 +151,10 @@ const Calendar = () => {
     let cancelled = false;
     (async () => {
       try {
-        const profiles = await businessProfileService.getAccounts();
+        const p = await businessProfileService.getAccounts();
         if (cancelled) return;
-        const flat = flattenLocations(profiles);
+        setProfiles(Array.isArray(p) ? p : []);
+        const flat = flattenLocations(p);
         setLocations(flat);
         setSelectedLocationKeys(new Set(flat.map((l) => l.key))); // all on by default
       } catch (e) {
@@ -482,12 +485,13 @@ const Calendar = () => {
       )}
 
       {scheduleModal && (
-        <ScheduleModal
+        <PostComposerModal
           defaultDate={scheduleModal.defaultDate}
+          profiles={profiles}
           locations={locations}
           selectedLocationKeys={selectedLocationKeys}
           onClose={() => setScheduleModal(null)}
-          onScheduled={handleScheduled}
+          onDone={handleScheduled}
         />
       )}
     </div>
@@ -775,75 +779,195 @@ const DetailModal = ({ item, location, allLocations, onClose, onCancelled }) => 
   );
 };
 
-// ── Schedule modal ─────────────────────────────────────────
+// ── Post composer modal ────────────────────────────────────
+//
+// Full-parity composer for the calendar. Mirrors the fields of the Posts.js
+// create form (post type toggle, description with 1500-char counter, media
+// URLs list, direct file upload, CTA type + URL, live preview column) and
+// adds a "Publish now / Schedule for later" toggle so one modal covers
+// both creation flows.
+//
+// Business-profile picker iterates the raw `profiles.map → locations.map`
+// tree — same shape Posts.js uses — so every connected account + location
+// appears, not just the ones my earlier flatten kept.
 
-// Converts a Date to a value compatible with <input type="datetime-local">
-// (YYYY-MM-DDTHH:mm, local time, no timezone suffix).
 const toLocalInputValue = (d) => {
   const pad = (n) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 };
 
-const ScheduleModal = ({ defaultDate, locations, selectedLocationKeys, onClose, onScheduled }) => {
-  // Pre-pick the first sidebar-selected location; fall back to first available.
-  const preselected =
-    locations.find((l) => selectedLocationKeys.has(l.key)) || locations[0] || null;
+// (accountId, locationId) from an "accounts/X/locations/Y" full path.
+const splitFullPath = (fullPath) => {
+  if (!fullPath) return { accountId: null, locationId: null };
+  const parts = fullPath.split('/');
+  return {
+    accountId: parts[1] || null,
+    locationId: parts[parts.length - 1] || null,
+  };
+};
 
-  const [locationKey, setLocationKey] = useState(preselected?.key || '');
-  const [content, setContent] = useState('');
-  const [when, setWhen] = useState(() => toLocalInputValue(new Date(defaultDate)));
+const CTA_OPTIONS = [
+  { v: '', label: 'None' },
+  { v: 'BOOK', label: 'Book' },
+  { v: 'ORDER', label: 'Order' },
+  { v: 'SHOP', label: 'Shop' },
+  { v: 'LEARN_MORE', label: 'Learn more' },
+  { v: 'SIGN_UP', label: 'Sign up' },
+  { v: 'CALL', label: 'Call' },
+];
+
+const POST_TYPES = [
+  { v: 'UPDATE', label: 'Update' },
+  { v: 'OFFER', label: 'Offer' },
+  { v: 'EVENT', label: 'Event' },
+];
+
+const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationKeys, onClose, onDone }) => {
+  // Preselect the first sidebar-checked location, then first available.
+  const initialLocation = useMemo(() => {
+    const checkedKey = [...(selectedLocationKeys || [])][0];
+    if (checkedKey) {
+      const hit = locations.find((l) => l.key === checkedKey);
+      if (hit) return `accounts/${hit.accountId}/locations/${hit.locationId}`;
+    }
+    // Fall back to the first location on the first profile.
+    for (const p of profiles || []) {
+      for (const l of p.locations || []) {
+        if (l.fullPath) return l.fullPath;
+      }
+    }
+    return '';
+  }, [profiles, locations, selectedLocationKeys]);
+
+  const isFutureDefault = defaultDate && new Date(defaultDate).getTime() > Date.now() + 60_000;
+
+  const [locationPath, setLocationPath] = useState(initialLocation);
+  const [when, setWhen] = useState(() => toLocalInputValue(new Date(defaultDate || Date.now() + 60 * 60 * 1000)));
+  const [mode, setMode] = useState(isFutureDefault ? 'later' : 'now'); // 'now' | 'later'
   const [postType, setPostType] = useState('UPDATE');
-  const [mediaUrl, setMediaUrl] = useState('');
-  const [ctaType, setCtaType] = useState('');
-  const [ctaUrl, setCtaUrl] = useState('');
+  const [summary, setSummary] = useState('');
+  const [mediaUrls, setMediaUrls] = useState(['']);
+  const [uploadedFiles, setUploadedFiles] = useState([]);
+  const [callToAction, setCallToAction] = useState({ type: '', url: '' });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
+
+  const setUrlAt = (idx, value) => {
+    setMediaUrls((prev) => prev.map((u, i) => (i === idx ? value : u)));
+  };
+  const addUrlRow = () => setMediaUrls((prev) => [...prev, '']);
+  const removeUrlRow = (idx) => {
+    setMediaUrls((prev) => {
+      const next = prev.filter((_, i) => i !== idx);
+      return next.length === 0 ? [''] : next;
+    });
+  };
+
+  const handleFileInput = (e) => {
+    const files = Array.from(e.target.files || []);
+    setUploadedFiles((prev) => [...prev, ...files]);
+    e.target.value = '';
+  };
+  const removeFile = (idx) => setUploadedFiles((prev) => prev.filter((_, i) => i !== idx));
+
+  const validUrls = mediaUrls.map((u) => u.trim()).filter(Boolean);
+  const previewImage = validUrls[0] || null;
+  const charCount = summary.length;
 
   const submit = async (e) => {
     e.preventDefault();
     setError(null);
-    if (!content.trim()) {
-      setError('Content is required.');
+
+    if (!summary.trim()) {
+      setError('Description is required.');
       return;
     }
-    if (!locationKey) {
+    const { accountId, locationId } = splitFullPath(locationPath);
+    if (!accountId || !locationId) {
       setError('Pick a business profile.');
       return;
     }
-    const target = locations.find((l) => l.key === locationKey);
-    if (!target) {
-      setError('Business profile not found.');
-      return;
+    // Guard bad URLs early — matches Posts.js validation.
+    for (const u of validUrls) {
+      try {
+        // eslint-disable-next-line no-new
+        new URL(u);
+      } catch {
+        setError(`Invalid image URL: ${u}`);
+        return;
+      }
     }
-    const scheduledDate = new Date(when);
-    if (Number.isNaN(scheduledDate.getTime())) {
-      setError('Invalid date/time.');
-      return;
-    }
-    if (scheduledDate.getTime() < Date.now() - 60_000) {
-      setError('Scheduled time must be in the future.');
+    if (callToAction.type && !callToAction.url.trim()) {
+      setError('Add a URL for the call to action, or clear the CTA type.');
       return;
     }
 
     setSubmitting(true);
     try {
-      await calendarService.schedule({
-        content: content.trim(),
-        media: mediaUrl.trim() ? [{ sourceUrl: mediaUrl.trim(), mediaFormat: 'PHOTO' }] : [],
-        gmbAccountId: target.accountId,
-        gmbLocationId: target.locationId,
-        scheduledTime: scheduledDate,
-        postType,
-        callToAction:
-          ctaType && ctaUrl.trim() ? { actionType: ctaType, url: ctaUrl.trim() } : null,
-      });
-      onScheduled?.();
+      if (mode === 'now') {
+        // Multipart POST to /api/posts — same shape Posts.js uses.
+        const fd = new FormData();
+        fd.append('platforms', JSON.stringify(['google']));
+        fd.append('content', summary.trim());
+        fd.append('gmbAccountId', accountId);
+        fd.append('gmbLocationId', locationId);
+        fd.append('postType', postType);
+        if (callToAction.type && callToAction.url.trim()) {
+          fd.append(
+            'callToAction',
+            JSON.stringify({ actionType: callToAction.type, url: callToAction.url.trim() })
+          );
+        }
+        if (validUrls.length > 0) {
+          fd.append(
+            'media',
+            JSON.stringify(validUrls.map((sourceUrl) => ({ mediaFormat: 'PHOTO', sourceUrl })))
+          );
+        }
+        uploadedFiles.forEach((f) => fd.append('images', f));
+        await axios.post('/api/posts', fd, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+        });
+      } else {
+        // Scheduled path — file uploads not supported yet on this endpoint.
+        if (uploadedFiles.length > 0) {
+          setError('Direct file uploads are not yet supported for scheduled posts — paste image URLs instead.');
+          setSubmitting(false);
+          return;
+        }
+        const scheduledDate = new Date(when);
+        if (Number.isNaN(scheduledDate.getTime())) {
+          setError('Invalid scheduled time.');
+          setSubmitting(false);
+          return;
+        }
+        if (scheduledDate.getTime() < Date.now() - 60_000) {
+          setError('Scheduled time must be in the future.');
+          setSubmitting(false);
+          return;
+        }
+        await calendarService.schedule({
+          content: summary.trim(),
+          media: validUrls.map((sourceUrl) => ({ sourceUrl, mediaFormat: 'PHOTO' })),
+          gmbAccountId: accountId,
+          gmbLocationId: locationId,
+          scheduledTime: scheduledDate,
+          postType,
+          callToAction:
+            callToAction.type && callToAction.url.trim()
+              ? { actionType: callToAction.type, url: callToAction.url.trim() }
+              : null,
+        });
+      }
+      onDone?.();
     } catch (err) {
-      setError(err?.response?.data?.error || err?.message || 'Failed to schedule');
+      setError(err?.response?.data?.error || err?.message || 'Failed to submit');
     } finally {
       setSubmitting(false);
     }
   };
+
+  const hasProfiles = (profiles || []).some((p) => (p.locations || []).length > 0);
 
   return (
     <div
@@ -851,18 +975,20 @@ const ScheduleModal = ({ defaultDate, locations, selectedLocationKeys, onClose, 
       onClick={onClose}
     >
       <form
-        className="bg-white rounded-lg shadow-xl max-w-lg w-full max-h-[90vh] overflow-y-auto"
+        className="bg-white rounded-lg shadow-xl w-full max-w-4xl max-h-[92vh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
         onSubmit={submit}
       >
-        <div className="flex items-start justify-between p-5 border-b border-gray-200">
+        {/* Header */}
+        <div className="flex items-start justify-between px-6 py-4 border-b border-gray-200 sticky top-0 bg-white z-10">
           <div>
-            <h2 className="text-base font-semibold text-gray-900 flex items-center gap-2">
-              <Clock className="h-5 w-5 text-primary-600" />
-              Schedule a post
+            <h2 className="text-lg font-semibold text-gray-900">
+              {mode === 'later' ? 'Schedule a post' : 'New post'}
             </h2>
-            <p className="text-xs text-gray-500 mt-1">
-              The publisher will POST this to Google Business Profile at the scheduled time.
+            <p className="text-xs text-gray-500 mt-0.5">
+              {mode === 'later'
+                ? 'Publisher will POST to Google Business Profile at the scheduled time.'
+                : 'Publish immediately to Google Business Profile.'}
             </p>
           </div>
           <button
@@ -875,134 +1001,308 @@ const ScheduleModal = ({ defaultDate, locations, selectedLocationKeys, onClose, 
           </button>
         </div>
 
-        <div className="p-5 space-y-4">
-          {locations.length === 0 && (
+        <div className="p-6 space-y-4">
+          {!hasProfiles && (
             <div className="p-3 rounded-md bg-amber-50 border border-amber-200 text-xs text-amber-900">
-              No connected business profiles. Connect one first.
+              No connected business profiles. Connect one first from the Connections page.
             </div>
           )}
 
-          <div>
-            <label className="block text-xs font-medium text-gray-700 mb-1">Business profile</label>
-            <select
-              value={locationKey}
-              onChange={(e) => setLocationKey(e.target.value)}
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:ring-primary-500"
-              disabled={locations.length === 0}
-            >
-              {locations.map((loc) => (
-                <option key={loc.key} value={loc.key}>
-                  {loc.title}
-                  {loc.addressLine ? ` — ${loc.addressLine}` : ''}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
+          {/* Row: profile picker + timing */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <label className="block text-xs font-medium text-gray-700 mb-1">Scheduled time</label>
-              <input
-                type="datetime-local"
-                value={when}
-                onChange={(e) => setWhen(e.target.value)}
-                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:ring-primary-500"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-700 mb-1">Post type</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Business profile</label>
               <select
-                value={postType}
-                onChange={(e) => setPostType(e.target.value)}
-                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:ring-primary-500"
+                value={locationPath}
+                onChange={(e) => setLocationPath(e.target.value)}
+                className="block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
+                disabled={!hasProfiles}
               >
-                <option value="UPDATE">Update</option>
-                <option value="EVENT">Event</option>
-                <option value="OFFER">Offer</option>
+                <option value="">Select a profile…</option>
+                {(profiles || []).map((profile, pi) =>
+                  (profile.locations || []).map((location) => (
+                    <option key={location.fullPath} value={location.fullPath}>
+                      {(profile.accountName || profile.displayName || `Account ${pi + 1}`)}
+                      {' — '}
+                      {location.title || location.locationName || 'Untitled Location'}
+                    </option>
+                  ))
+                )}
               </select>
             </div>
-          </div>
-
-          <div>
-            <label className="block text-xs font-medium text-gray-700 mb-1">Content</label>
-            <textarea
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              rows={5}
-              placeholder="What do you want to post?"
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:ring-primary-500"
-            />
-          </div>
-
-          <div>
-            <label className="block text-xs font-medium text-gray-700 mb-1">
-              Image URL <span className="text-gray-400 font-normal">(optional)</span>
-            </label>
-            <input
-              type="url"
-              value={mediaUrl}
-              onChange={(e) => setMediaUrl(e.target.value)}
-              placeholder="https://…"
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:ring-primary-500"
-            />
-          </div>
-
-          <details className="rounded-md border border-gray-200">
-            <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-gray-700 select-none">
-              Call to action (optional)
-            </summary>
-            <div className="p-3 grid grid-cols-2 gap-3 border-t border-gray-200">
-              <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1">Type</label>
-                <select
-                  value={ctaType}
-                  onChange={(e) => setCtaType(e.target.value)}
-                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">When</label>
+              <div className="flex items-center gap-1 mb-2">
+                <button
+                  type="button"
+                  onClick={() => setMode('now')}
+                  className={`px-3 py-1.5 text-sm font-medium rounded-md border ${
+                    mode === 'now'
+                      ? 'bg-primary-600 text-white border-primary-600'
+                      : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                  }`}
                 >
-                  <option value="">None</option>
-                  <option value="BOOK">Book</option>
-                  <option value="ORDER">Order</option>
-                  <option value="SHOP">Shop</option>
-                  <option value="LEARN_MORE">Learn more</option>
-                  <option value="SIGN_UP">Sign up</option>
-                  <option value="CALL">Call</option>
-                </select>
+                  Publish now
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMode('later')}
+                  className={`px-3 py-1.5 text-sm font-medium rounded-md border ${
+                    mode === 'later'
+                      ? 'bg-primary-600 text-white border-primary-600'
+                      : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                  }`}
+                >
+                  Schedule for later
+                </button>
               </div>
-              <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1">URL</label>
+              {mode === 'later' && (
                 <input
-                  type="url"
-                  value={ctaUrl}
-                  onChange={(e) => setCtaUrl(e.target.value)}
-                  placeholder="https://…"
-                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
+                  type="datetime-local"
+                  value={when}
+                  onChange={(e) => setWhen(e.target.value)}
+                  className="block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
+                />
+              )}
+            </div>
+          </div>
+
+          {/* Post type toggle — matches Posts.js */}
+          <div className="flex items-center gap-3">
+            <span className="text-sm font-medium text-gray-700">Post Type:</span>
+            <div className="flex bg-gray-100 rounded-lg p-1">
+              {POST_TYPES.map((pt) => (
+                <button
+                  key={pt.v}
+                  type="button"
+                  onClick={() => setPostType(pt.v)}
+                  className={`px-3 py-1 text-sm font-medium rounded-md transition-colors ${
+                    postType === pt.v
+                      ? 'bg-white text-gray-900 shadow-sm'
+                      : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  {pt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Two-column body — matches Posts.js layout */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* Left column: form fields */}
+            <div className="lg:col-span-2 space-y-4">
+              {/* Media */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Add Pictures</label>
+
+                {mode === 'now' ? (
+                  <div className="mb-3">
+                    <label className="block text-xs font-medium text-gray-600 mb-1">
+                      Upload Image Files (direct)
+                    </label>
+                    <input
+                      type="file"
+                      multiple
+                      accept="image/*"
+                      onChange={handleFileInput}
+                      className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-primary-50 file:text-primary-700 hover:file:bg-primary-100"
+                    />
+                    {uploadedFiles.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {uploadedFiles.map((f, idx) => (
+                          <span
+                            key={idx}
+                            className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800"
+                          >
+                            {f.name}
+                            <button
+                              type="button"
+                              onClick={() => removeFile(idx)}
+                              className="ml-1 text-green-600 hover:text-green-800"
+                              aria-label="Remove file"
+                            >
+                              ×
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="mb-3 p-2 rounded-md bg-gray-50 border border-gray-200 text-xs text-gray-600">
+                    Scheduled posts currently support image URLs only — direct uploads coming soon.
+                  </div>
+                )}
+
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Image URL(s)</label>
+                  {mediaUrls.map((u, idx) => (
+                    <div key={idx} className="flex items-center gap-2 mb-2">
+                      <input
+                        type="url"
+                        value={u}
+                        onChange={(e) => setUrlAt(idx, e.target.value)}
+                        placeholder="https://…"
+                        className="block flex-1 border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => removeUrlRow(idx)}
+                        className="p-1.5 text-gray-400 hover:text-red-600"
+                        aria-label="Remove URL"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={addUrlRow}
+                    className="inline-flex items-center gap-1 text-xs font-medium text-primary-600 hover:text-primary-700"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    Add another URL
+                  </button>
+                </div>
+              </div>
+
+              {/* Description */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700">
+                  Description
+                  <span className="text-gray-500 font-normal ml-2">({charCount}/1500)</span>
+                </label>
+                <textarea
+                  value={summary}
+                  onChange={(e) => {
+                    if (e.target.value.length <= 1500) setSummary(e.target.value);
+                  }}
+                  rows={5}
+                  maxLength={1500}
+                  className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
+                  placeholder="Write your post content here…"
+                  required
                 />
               </div>
-            </div>
-          </details>
 
-          {error && (
-            <div className="p-2 rounded-md bg-red-50 border border-red-200 text-xs text-red-800">
-              {error}
+              {/* CTA */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Call to Action Type</label>
+                <select
+                  value={callToAction.type}
+                  onChange={(e) => setCallToAction((prev) => ({ ...prev, type: e.target.value }))}
+                  className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
+                >
+                  {CTA_OPTIONS.map((o) => (
+                    <option key={o.v || 'none'} value={o.v}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {callToAction.type && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">Call to Action URL</label>
+                  <input
+                    type="url"
+                    value={callToAction.url}
+                    onChange={(e) => setCallToAction((prev) => ({ ...prev, url: e.target.value }))}
+                    placeholder="https://example.com"
+                    className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
+                  />
+                </div>
+              )}
+
+              {error && (
+                <div className="p-2 rounded-md bg-red-50 border border-red-200 text-xs text-red-800">
+                  {error}
+                </div>
+              )}
             </div>
-          )}
+
+            {/* Right column: preview */}
+            <div className="lg:col-span-1">
+              <div className="sticky top-6">
+                <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
+                  <h3 className="text-base font-medium text-gray-900 mb-3">Post Preview</h3>
+                  <div className="space-y-3">
+                    {previewImage ? (
+                      <img
+                        src={previewImage}
+                        alt="Preview"
+                        className="w-full h-48 object-cover rounded-lg border shadow-sm"
+                        onError={(e) => {
+                          e.currentTarget.style.display = 'none';
+                        }}
+                      />
+                    ) : (
+                      <div className="w-full h-40 bg-gray-200 rounded-lg border-2 border-dashed border-gray-300 flex items-center justify-center">
+                        <div className="text-center">
+                          <ImageIcon className="h-8 w-8 text-gray-400 mx-auto mb-1" />
+                          <p className="text-xs text-gray-500">No images</p>
+                        </div>
+                      </div>
+                    )}
+                    <p className="text-sm text-gray-900 leading-relaxed">
+                      {summary
+                        ? summary.length > 150
+                          ? `${summary.substring(0, 150)}…`
+                          : summary
+                        : <span className="text-gray-400 italic">No content yet</span>}
+                    </p>
+                    <div>
+                      <div className="text-xs font-medium text-gray-500 mb-1">
+                        {mode === 'later'
+                          ? new Date(when || Date.now()).toLocaleDateString(undefined, {
+                              month: 'short',
+                              day: 'numeric',
+                              year: 'numeric',
+                            })
+                          : new Date().toLocaleDateString(undefined, {
+                              month: 'short',
+                              day: 'numeric',
+                              year: 'numeric',
+                            })}
+                      </div>
+                      {callToAction.type ? (
+                        <a
+                          href={callToAction.url || '#'}
+                          className={`text-primary-600 hover:text-primary-700 text-sm font-medium ${
+                            !callToAction.url ? 'pointer-events-none' : ''
+                          }`}
+                        >
+                          {callToAction.type.charAt(0) + callToAction.type.slice(1).toLowerCase().replace('_', ' ')}
+                        </a>
+                      ) : (
+                        <span className="text-sm text-gray-400 italic">No CTA</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
 
-        <div className="p-4 border-t border-gray-200 flex justify-end gap-2">
+        {/* Footer */}
+        <div className="px-6 py-4 border-t border-gray-200 flex justify-end gap-2 sticky bottom-0 bg-white">
           <button
             type="button"
             onClick={onClose}
-            className="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
+            className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
           >
             Cancel
           </button>
           <button
             type="submit"
-            disabled={submitting || locations.length === 0}
-            className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 disabled:opacity-60"
+            disabled={submitting || !hasProfiles}
+            className="inline-flex items-center gap-1.5 px-5 py-2 text-sm font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 disabled:opacity-60"
           >
-            <Clock className="h-4 w-4" />
-            {submitting ? 'Scheduling…' : 'Schedule'}
+            {mode === 'later' ? <Clock className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+            {submitting
+              ? mode === 'later' ? 'Scheduling…' : 'Publishing…'
+              : mode === 'later' ? 'Schedule' : 'Publish'}
           </button>
         </div>
       </form>
