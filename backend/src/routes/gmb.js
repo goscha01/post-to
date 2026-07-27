@@ -174,7 +174,11 @@ router.get('/accounts', async (req, res) => {
               role: acc.role,
               state: acc.state,
               permissionLevel: acc.permissionLevel,
-              connected_via_email: p.business_email || null
+              // Which OAuth grant surfaced this GMB account. Needed by the UI
+              // so a card's "Disconnect" button can remove the correct
+              // business_profiles entry (DELETE /api/auth/business-profile/:id).
+              connected_via_email: p.business_email || null,
+              connected_via_google_id: p.business_google_id || null,
             });
             added += 1;
           }

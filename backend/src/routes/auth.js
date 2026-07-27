@@ -3,6 +3,7 @@ const { google } = require('googleapis');
 const jwt = require('jsonwebtoken');
 const { createClient } = require('@supabase/supabase-js');
 const connectionsService = require('../services/connectionsService');
+const authMiddleware = require('../middleware/authMiddleware');
 const logger = require('../utils/logger');
 const router = express.Router();
 
@@ -634,6 +635,108 @@ router.post('/logout', async (req, res) => {
     res.json({ message: 'Logged out successfully' });
   } catch (error) {
     res.status(500).json({ error: 'Logout failed' });
+  }
+});
+
+// Remove a single connected Google Business OAuth grant from the user's
+// business_profiles JSONB array. The `businessGoogleId` is the Google user id
+// captured at OAuth time (users.business_profiles[i].business_google_id) —
+// NOT the GMB account_id and NOT the connected_accounts row id.
+//
+// Removes:
+//   - the matching entry from users.business_profiles
+//   - the mirrored google_business row from connected_accounts (best-effort)
+//   - if the removed grant was the "primary" (business_google_id on the
+//     users row), promote the most-recently-connected remaining grant so
+//     requireBusinessAuth keeps working
+router.delete('/business-profile/:businessGoogleId', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { businessGoogleId } = req.params;
+
+    if (!businessGoogleId) {
+      return res.status(400).json({ error: 'businessGoogleId is required' });
+    }
+
+    const { data: user, error: fetchErr } = await supabase
+      .from('users')
+      .select('business_profiles, business_google_id')
+      .eq('id', userId)
+      .single();
+
+    if (fetchErr || !user) {
+      logger.warn('auth.business_profile.delete_user_not_found', { user_id: userId, error: fetchErr?.message });
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const existing = Array.isArray(user.business_profiles) ? user.business_profiles : [];
+    const target = existing.find(p => p.business_google_id === businessGoogleId);
+    if (!target) {
+      return res.status(404).json({ error: 'Business profile not connected' });
+    }
+    const kept = existing.filter(p => p.business_google_id !== businessGoogleId);
+
+    // If we removed the "primary" grant, promote the most-recently-connected
+    // remaining one so requireBusinessAuth keeps working without a re-login.
+    const wasPrimary = user.business_google_id === businessGoogleId;
+    const newPrimary = wasPrimary
+      ? [...kept].sort((a, b) => new Date(b.connected_at || 0) - new Date(a.connected_at || 0))[0]
+      : null;
+
+    const update = { business_profiles: kept };
+    if (wasPrimary) {
+      if (newPrimary) {
+        update.business_google_id = newPrimary.business_google_id;
+        update.business_email = newPrimary.business_email;
+        update.business_access_token = newPrimary.access_token;
+        update.business_refresh_token = newPrimary.refresh_token;
+        update.business_token_expiry = newPrimary.token_expiry ? new Date(newPrimary.token_expiry) : null;
+        update.has_business_access = true;
+      } else {
+        update.business_google_id = null;
+        update.business_email = null;
+        update.business_access_token = null;
+        update.business_refresh_token = null;
+        update.business_token_expiry = null;
+        update.has_business_access = false;
+      }
+    }
+
+    const { error: updateErr } = await supabase.from('users').update(update).eq('id', userId);
+    if (updateErr) {
+      logger.error('auth.business_profile.delete_update_failed', { user_id: userId, business_google_id: businessGoogleId, error: updateErr.message });
+      return res.status(500).json({ error: 'Failed to remove business profile' });
+    }
+
+    // Mirror: drop the corresponding connected_accounts row (best-effort).
+    try {
+      await supabase
+        .from('connected_accounts')
+        .delete()
+        .eq('user_id', userId)
+        .eq('provider', 'google_business')
+        .eq('external_id', `google:${businessGoogleId}`);
+    } catch (e) {
+      logger.warn('auth.business_profile.delete_ca_failed', { user_id: userId, error: e.message });
+    }
+
+    logger.info('auth.business_profile.deleted', {
+      user_id: userId,
+      business_google_id: businessGoogleId,
+      business_email: target.business_email || null,
+      was_primary: wasPrimary,
+      remaining_count: kept.length,
+      promoted_email: newPrimary?.business_email || null,
+    });
+
+    return res.json({
+      ok: true,
+      removed: { business_google_id: businessGoogleId, business_email: target.business_email || null },
+      remaining: kept.map(p => ({ business_google_id: p.business_google_id, business_email: p.business_email })),
+    });
+  } catch (err) {
+    logger.error('auth.business_profile.delete_unhandled', { error: err?.message, stack: err?.stack?.slice(0, 1500) });
+    return res.status(500).json({ error: 'Failed to remove business profile' });
   }
 });
 

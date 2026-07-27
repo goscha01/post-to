@@ -1024,16 +1024,30 @@ const BusinessProfiles = () => {
     setRefreshing(false);
   };
 
-  const handleDisconnect = () => {
-    // Use soft disconnect to clear tokens without affecting authentication state
-    softDisconnect();
-    
-    // Clear business connection status
-    localStorage.removeItem('gmb_business_connected');
-    
-    // Set local disconnected state
-    setIsDisconnected(true);
-    setProfiles([]);
+  // Remove a single OAuth grant (all cards it surfaced disappear). Previously
+  // every card's Disconnect button called softDisconnect() which nuked ALL
+  // connected Google accounts — impossible to remove one stray connection.
+  const handleDisconnect = async (profile) => {
+    const googleId = profile?.connected_via_google_id;
+    const email = profile?.connected_via_email || 'this Google account';
+    if (!googleId) {
+      setConnectError('Cannot disconnect: this profile has no linked OAuth grant. Try Refresh All Data first.');
+      return;
+    }
+    if (!window.confirm(
+      `Disconnect ${email}? Any Business Profiles surfaced by this Google account will be removed. You can reconnect anytime.`
+    )) return;
+
+    try {
+      await axios.delete(`/auth/business-profile/${encodeURIComponent(googleId)}`);
+      // Clear caches so the refetch pulls fresh accounts without the deleted grant.
+      businessProfileService.clearAccountsCache();
+      businessProfileService.clearLocationsCache();
+      businessProfileService.clearReviewsCache();
+      await refreshProfiles(true);
+    } catch (err) {
+      setConnectError(err?.response?.data?.error || err.message || 'Failed to disconnect');
+    }
   };
 
   const handleConnect = async () => {
@@ -1258,13 +1272,17 @@ const BusinessProfiles = () => {
           </div>
         )}
         {profiles.length > 0 && !authDisconnected ? (
-          profiles.map((profile) => (
+          // Hide accounts with zero locations — they surface Google account
+          // container rows that don't hold any real GMB business (e.g. an
+          // "owners" placeholder). If the user needs to see or remove the
+          // OAuth grant, they can do it from the /connections page.
+          profiles.filter(p => (p.locationCount || 0) > 0).map((profile) => (
             <div key={profile.name} className="bg-white shadow rounded-lg">
               <div className="px-6 py-6">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center">
                     <div className="flex-shrink-0">
-                      <AccountProfileImage 
+                      <AccountProfileImage
                         profilePicture={profile.accountProfilePicture}
                         accountName={profile.businessName}
                       />
@@ -1273,6 +1291,11 @@ const BusinessProfiles = () => {
                       <h3 className="text-xl font-semibold text-gray-900">
                         {profile.businessName}
                       </h3>
+                      {profile.connected_via_email && (
+                        <p className="text-xs text-gray-400 mt-0.5">
+                          via {profile.connected_via_email}
+                        </p>
+                      )}
                       <div className="flex items-center space-x-4 mt-2">
                         <div className="flex items-center space-x-1">
                           {(() => {
@@ -1308,8 +1331,9 @@ const BusinessProfiles = () => {
                       View Details
                     </button>
                     <button
-                      onClick={handleDisconnect}
+                      onClick={() => handleDisconnect(profile)}
                       className="inline-flex items-center px-3 py-1.5 border border-red-300 shadow-sm text-sm font-medium rounded-md text-red-700 bg-white hover:bg-red-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
+                      title={profile.connected_via_email ? `Disconnect ${profile.connected_via_email}` : 'Disconnect'}
                     >
                       <LogOut className="h-4 w-4 mr-1" />
                       Disconnect
