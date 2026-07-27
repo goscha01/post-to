@@ -263,6 +263,55 @@ Return valid JSON only with exactly these keys:
 }
 
 // ---------------------------------------------------------------------------
+// Vision helper — used by generatePostFromImages
+// ---------------------------------------------------------------------------
+async function callOpenAIVision({ system, userText, images, model, temperature = 0.7, maxTokens = 500 }) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) throw new Error('OPENAI_API_KEY is not configured');
+
+  // Vision expects the user content to be an array of parts, mixing text and
+  // image_url items. image_url.url may be a public URL or a data: URL —
+  // the caller decides which per image.
+  const contentParts = [{ type: 'text', text: userText }];
+  for (const img of images) {
+    if (img.base64) {
+      contentParts.push({
+        type: 'image_url',
+        image_url: {
+          url: `data:${img.mimeType || 'image/jpeg'};base64,${img.base64}`,
+          detail: 'auto',
+        },
+      });
+    } else if (img.url) {
+      contentParts.push({
+        type: 'image_url',
+        image_url: { url: img.url, detail: 'auto' },
+      });
+    }
+  }
+
+  const body = {
+    model,
+    messages: [
+      { role: 'system', content: system },
+      { role: 'user', content: contentParts },
+    ],
+    temperature,
+    max_tokens: maxTokens,
+    response_format: { type: 'json_object' },
+  };
+
+  const resp = await axios.post(OPENAI_URL, body, {
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    timeout: 90_000,
+  });
+
+  const content = resp.data?.choices?.[0]?.message?.content;
+  if (!content) throw new Error('LLM returned no content');
+  return { raw: content, usage: resp.data?.usage || null, model: resp.data?.model || model };
+}
+
+// ---------------------------------------------------------------------------
 // Public generators
 // ---------------------------------------------------------------------------
 
@@ -332,10 +381,75 @@ async function generateReviewPost(input) {
   };
 }
 
+// Vision-based post generator. Takes an array of images (either base64 or
+// public URLs) and returns a GBP-appropriate caption grounded in what the
+// model actually sees. Uses the same audit / cost accounting as the other
+// generators via aiJobs.
+async function generatePostFromImages(input) {
+  const {
+    businessName = 'the business',
+    businessType = 'local service business',
+    city = '',
+    tone = 'warm, professional, engaging',
+    images = [],
+    includeCallToAction = false,
+    ctaType = null,
+    postType = 'UPDATE',
+    additionalContext = '',
+  } = input || {};
+
+  if (!Array.isArray(images) || images.length === 0) {
+    throw new Error('generatePostFromImages requires at least one image');
+  }
+
+  const system =
+    'You are the business owner writing a Google Business Profile post. Look at the images and write a caption that reflects what is actually visible. Always reply with valid JSON only — no prose, no code fences.';
+
+  const userText = `Business: ${businessName}
+Business type: ${businessType}${city ? `\nLocation: ${city}` : ''}
+Post type: ${postType}
+Tone: ${tone}${additionalContext ? `\nExtra context: ${additionalContext}` : ''}
+
+Look at the ${images.length === 1 ? 'image' : `${images.length} images`} provided and:
+1. Identify what is shown (before/after, team, equipment, completed job, product, etc.).
+2. Write a natural Google Business Profile caption (100-350 chars) that reflects what is actually visible.
+3. Sound like the owner — conversational, not agency-speak.
+4. No hashtags. Use emoji sparingly and only when natural.
+5. Do not invent facts (prices, awards, guarantees) that aren't grounded in the image or the business context above.
+${includeCallToAction ? `6. End with a soft CTA appropriate for a ${ctaType || 'BOOK'} action.` : '6. No hard sell.'}
+
+Return valid JSON with exactly these keys:
+{ "text": string, "imageDescription": string }`;
+
+  const model = input.model || DEFAULT_MODEL;
+  const result = await callOpenAIVision({
+    system,
+    userText,
+    images,
+    model,
+    temperature: 0.7,
+    maxTokens: 500,
+  });
+  const data = extractJson(result.raw);
+  if (typeof data.text !== 'string' || !data.text.trim()) {
+    throw new Error('LLM response missing non-empty "text" string');
+  }
+
+  return {
+    data: { text: data.text.trim(), imageDescription: (data.imageDescription || '').trim() },
+    raw: result.raw,
+    prompt: userText,
+    model: result.model,
+    usage: result.usage,
+    costUsd: estimateCostUsd(result.model, result.usage),
+  };
+}
+
 module.exports = {
   generateArticle,
   generateReviewPost,
   generateReviewReply,
+  generatePostFromImages,
   // exported for tests
   _internal: { extractJson, buildArticlePrompt, buildReviewPostPrompt, buildReviewReplyPrompt, estimateCostUsd }
 };

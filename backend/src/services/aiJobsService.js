@@ -12,7 +12,8 @@ const supabase = createClient(
 const DAILY_CAPS = {
   article_generation: parseInt(process.env.AI_DAILY_ARTICLE_CAP, 10) || 10,
   review_post_generation: parseInt(process.env.AI_DAILY_REVIEW_POST_CAP, 10) || 50,
-  review_reply_generation: parseInt(process.env.AI_DAILY_REVIEW_REPLY_CAP, 10) || 100
+  review_reply_generation: parseInt(process.env.AI_DAILY_REVIEW_REPLY_CAP, 10) || 100,
+  post_from_image_generation: parseInt(process.env.AI_DAILY_POST_FROM_IMAGE_CAP, 10) || 50,
 };
 
 async function createJob({ userId, kind, model, inputJson }) {

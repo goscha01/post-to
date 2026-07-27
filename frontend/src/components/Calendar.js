@@ -15,6 +15,7 @@ import {
   Search,
   CheckCircle2,
   AlertCircle,
+  Sparkles,
 } from 'lucide-react';
 import axios from '../utils/axiosConfig';
 import { useAuth } from '../contexts/AuthContext';
@@ -870,6 +871,9 @@ const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationK
   const [error, setError] = useState(null);
   const [reloading, setReloading] = useState(false);
   const [drivePickerOpen, setDrivePickerOpen] = useState(false);
+  const [aiGenerating, setAiGenerating] = useState(false);
+  const [aiError, setAiError] = useState(null);
+  const [aiJustFilled, setAiJustFilled] = useState(false);
 
   const accountsCount = (profiles || []).filter((p) => (p.locations || []).length > 0).length;
   const locationsCount = (profiles || []).reduce((acc, p) => acc + (p.locations?.length || 0), 0);
@@ -905,6 +909,59 @@ const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationK
   const validUrls = mediaUrls.map((u) => u.trim()).filter(Boolean);
   const previewImage = validUrls[0] || null;
   const charCount = summary.length;
+
+  const handleGenerateAi = async () => {
+    setAiError(null);
+    setAiJustFilled(false);
+    if (validUrls.length === 0) {
+      setAiError('Add at least one image URL first — the AI writes the caption from what it sees.');
+      return;
+    }
+    // Pull business context from the picked location so the caption sounds
+    // grounded in the actual business.
+    const target =
+      (profiles || [])
+        .flatMap((p) => (p.locations || []).map((l) => ({ ...l, accountName: p.accountName || p.displayName })))
+        .find((l) => l.fullPath === locationPath) || null;
+    const businessName = target?.title || target?.locationName || target?.accountName || 'the business';
+    const businessType =
+      target?.primaryCategory?.displayName ||
+      target?.categories?.primaryCategory?.displayName ||
+      'local service business';
+    const city =
+      target?.storefrontAddress?.locality ||
+      target?.address?.locality ||
+      '';
+
+    setAiGenerating(true);
+    try {
+      const resp = await axios.post('/api/ai/post-from-image', {
+        imageUrls: validUrls.slice(0, 4),
+        businessName,
+        businessType,
+        city,
+        postType,
+        includeCallToAction: !!callToAction.type,
+        ctaType: callToAction.type || null,
+      });
+      if (resp.data?.text) {
+        setSummary(resp.data.text);
+        setAiJustFilled(true);
+      } else {
+        setAiError('AI returned an empty response — try again or edit manually.');
+      }
+    } catch (err) {
+      const status = err?.response?.status;
+      const detail = err?.response?.data?.error || err?.message;
+      if (status === 429) {
+        setAiError(`Daily AI cap reached (${err?.response?.data?.used}/${err?.response?.data?.cap}).`);
+      } else {
+        setAiError(detail || 'AI generation failed');
+      }
+    } finally {
+      setAiGenerating(false);
+    }
+  };
 
   const submit = async (e) => {
     e.preventDefault();
@@ -1235,14 +1292,39 @@ const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationK
 
               {/* Description */}
               <div>
-                <label className="block text-sm font-medium text-gray-700">
-                  Description
-                  <span className="text-gray-500 font-normal ml-2">({charCount}/1500)</span>
-                </label>
+                <div className="flex items-center justify-between">
+                  <label className="block text-sm font-medium text-gray-700">
+                    Description
+                    <span className="text-gray-500 font-normal ml-2">({charCount}/1500)</span>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={handleGenerateAi}
+                    disabled={aiGenerating || validUrls.length === 0}
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border transition-colors ${
+                      aiGenerating || validUrls.length === 0
+                        ? 'text-gray-400 border-gray-200 bg-white cursor-not-allowed'
+                        : 'text-primary-700 border-primary-300 bg-primary-50 hover:bg-primary-100'
+                    }`}
+                    title={
+                      validUrls.length === 0
+                        ? 'Add at least one image URL to generate a caption from it'
+                        : 'Write a caption from the selected image(s)'
+                    }
+                  >
+                    <Sparkles className={`h-3.5 w-3.5 ${aiGenerating ? 'animate-pulse' : ''}`} />
+                    {aiGenerating
+                      ? 'Generating…'
+                      : summary
+                      ? 'Regenerate with AI'
+                      : 'Generate with AI'}
+                  </button>
+                </div>
                 <textarea
                   value={summary}
                   onChange={(e) => {
                     if (e.target.value.length <= 1500) setSummary(e.target.value);
+                    if (aiJustFilled) setAiJustFilled(false);
                   }}
                   rows={5}
                   maxLength={1500}
@@ -1250,6 +1332,14 @@ const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationK
                   placeholder="Write your post content here…"
                   required
                 />
+                {aiError && (
+                  <p className="mt-1 text-xs text-red-700">{aiError}</p>
+                )}
+                {aiJustFilled && (
+                  <p className="mt-1 text-xs text-primary-700">
+                    ✨ AI-generated from your image{validUrls.length > 1 ? 's' : ''} — edit before scheduling if anything is off.
+                  </p>
+                )}
               </div>
 
               {/* CTA */}
@@ -1294,13 +1384,9 @@ const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationK
                   <h3 className="text-base font-medium text-gray-900 mb-3">Post Preview</h3>
                   <div className="space-y-3">
                     {previewImage ? (
-                      <img
-                        src={previewImage}
-                        alt="Preview"
+                      <SmartPreviewImage
+                        url={previewImage}
                         className="w-full h-48 object-cover rounded-lg border shadow-sm"
-                        onError={(e) => {
-                          e.currentTarget.style.display = 'none';
-                        }}
                       />
                     ) : (
                       <div className="w-full h-40 bg-gray-200 rounded-lg border-2 border-dashed border-gray-300 flex items-center justify-center">
@@ -1405,6 +1491,80 @@ const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationK
 // "Already used" pill for files whose filename matches a previous post.
 // Selecting a tile inserts its public view URL into the composer's media
 // URL list.
+
+// SmartPreviewImage: renders any image URL, but for Google Drive URLs
+// (drive.google.com/uc?...id=X) it swaps to the auth'd backend proxy so
+// files that haven't been shared publicly still preview correctly. The
+// public `uc?export=view&id=X` URL is kept for the final GMB payload
+// (which still requires the file to be public for GMB to fetch it).
+const extractDriveFileId = (url) => {
+  if (!url || typeof url !== 'string') return null;
+  let m = url.match(/[?&]id=([a-zA-Z0-9_-]{10,})/);
+  if (m) return m[1];
+  m = url.match(/\/file\/d\/([a-zA-Z0-9_-]{10,})/);
+  if (m) return m[1];
+  return null;
+};
+
+const SmartPreviewImage = ({ url, className, alt = 'Preview' }) => {
+  const [src, setSrc] = useState(null);
+  const [errored, setErrored] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    let blobUrl = null;
+    setErrored(false);
+    setSrc(null);
+    if (!url) return () => {};
+
+    const fileId = extractDriveFileId(url);
+    if (!fileId) {
+      setSrc(url);
+      return () => {};
+    }
+
+    // Auth'd fetch via /api/drive/proxy — <img src> can't send Bearer
+    // headers, so we fetch through axios and hand the browser a blob URL.
+    (async () => {
+      try {
+        const resp = await axios.get(`/api/drive/proxy/${fileId}`, { responseType: 'blob' });
+        if (cancelled) return;
+        blobUrl = URL.createObjectURL(resp.data);
+        setSrc(blobUrl);
+      } catch (e) {
+        if (!cancelled) setErrored(true);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (blobUrl) URL.revokeObjectURL(blobUrl);
+    };
+  }, [url]);
+
+  if (errored) {
+    return (
+      <div className={`${className} bg-gray-100 flex items-center justify-center text-xs text-gray-500 text-center p-3`}>
+        Couldn't load preview.
+        <br />
+        Make sure Drive access is granted.
+      </div>
+    );
+  }
+  if (!src) {
+    return (
+      <div className={`${className} bg-gray-100 animate-pulse`} />
+    );
+  }
+  return (
+    <img
+      src={src}
+      alt={alt}
+      className={className}
+      onError={() => setErrored(true)}
+    />
+  );
+};
 
 const fileToPublicUrl = (file) => {
   // drive.google.com/uc?export=view&id=<id> is the canonical "download URL"

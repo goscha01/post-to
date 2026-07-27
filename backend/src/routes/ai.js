@@ -7,12 +7,15 @@
 // review-post route can accept review fields directly.
 
 const express = require('express');
+const axios = require('axios');
 const { body, validationResult } = require('express-validator');
 const { createClient } = require('@supabase/supabase-js');
 const authMiddleware = require('../middleware/authMiddleware');
 const aiContent = require('../services/aiContentService');
 const aiJobs = require('../services/aiJobsService');
 const connectionsService = require('../services/connectionsService');
+const driveRouter = require('./drive'); // for driveFileIdFromUrl + fetchDriveFileBytes helpers
+const logger = require('../utils/logger');
 
 const router = express.Router();
 
@@ -371,6 +374,169 @@ router.post(
       return res.status(400).json({ error: 'Invalid input', details: errors.array() });
     }
     return generateReviewPostHandler(req, res);
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Post-from-image generation (vision)
+// ---------------------------------------------------------------------------
+// POST /api/ai/post-from-image
+//   Body: {
+//     imageUrls: string[]        // Drive URLs (drive.google.com/uc?...) or public
+//     businessName?, businessType?, city?, tone?, additionalContext?,
+//     postType?: 'UPDATE'|'OFFER'|'EVENT',
+//     includeCallToAction?: bool, ctaType?: string,
+//   }
+//   Returns: { text: string, jobId: string, imageDescription: string }
+//
+// For Drive URLs we fetch via OAuth and inline as base64 so the user
+// doesn't need to share files publicly. Non-Drive URLs are passed through
+// to the model as-is (image_url form).
+async function fetchImagePart({ userId, url }) {
+  const fileId = driveRouter.driveFileIdFromUrl?.(url);
+  if (fileId) {
+    const attempt = await driveRouter.fetchDriveFileBytes({
+      userId,
+      fileId,
+      fallbackToken: null,
+    });
+    if (!attempt.ok) return null;
+    const buf = Buffer.from(attempt.result.data);
+    const mimeType = attempt.result.headers?.['content-type']?.split(';')[0] || 'image/jpeg';
+    return { base64: buf.toString('base64'), mimeType };
+  }
+  // Public URL — hand to the model directly. Reject anything that
+  // clearly isn't http(s) to avoid data: URL abuse.
+  try {
+    const u = new URL(url);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+    return { url };
+  } catch {
+    return null;
+  }
+}
+
+router.post(
+  '/post-from-image',
+  [
+    body('imageUrls').isArray({ min: 1, max: 4 }),
+    body('imageUrls.*').isString().isLength({ min: 5, max: 2000 }),
+    body('businessName').optional().isString().isLength({ max: 255 }),
+    body('businessType').optional().isString().isLength({ max: 255 }),
+    body('city').optional().isString().isLength({ max: 255 }),
+    body('tone').optional().isString().isLength({ max: 255 }),
+    body('additionalContext').optional().isString().isLength({ max: 1000 }),
+    body('postType').optional().isIn(['UPDATE', 'OFFER', 'EVENT']),
+    body('includeCallToAction').optional().isBoolean(),
+    body('ctaType').optional().isString().isLength({ max: 64 }),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Invalid input', details: errors.array() });
+    }
+
+    const userId = req.user.userId;
+    const kind = 'post_from_image_generation';
+
+    const used = await aiJobs.countTodayByKind(userId, kind);
+    const cap = aiJobs.dailyCapFor(kind);
+    if (used >= cap) {
+      return res.status(429).json({
+        error: 'Daily AI post-from-image limit reached',
+        used,
+        cap,
+      });
+    }
+
+    // Fetch every image up front so a single failure doesn't waste the LLM
+    // call. Skip images we can't fetch — but bail if none succeed.
+    const images = [];
+    for (const url of req.body.imageUrls) {
+      try {
+        const part = await fetchImagePart({ userId, url });
+        if (part) images.push(part);
+      } catch (e) {
+        logger.warn('ai.post_from_image.fetch_error', {
+          user_id: userId,
+          url_prefix: url.slice(0, 60),
+          error: e?.message,
+        });
+      }
+    }
+    if (images.length === 0) {
+      return res.status(400).json({
+        error: 'None of the provided images could be fetched — check Drive access or URL validity',
+      });
+    }
+
+    const input = {
+      businessName: req.body.businessName || 'the business',
+      businessType: req.body.businessType || 'local service business',
+      city: req.body.city || '',
+      tone: req.body.tone || 'warm, professional, engaging',
+      images,
+      includeCallToAction: !!req.body.includeCallToAction,
+      ctaType: req.body.ctaType || null,
+      postType: req.body.postType || 'UPDATE',
+      additionalContext: req.body.additionalContext || '',
+    };
+
+    // Persist a job row before the LLM call so failed / partial runs still
+    // count against the daily cap (retry-abuse safety net — same pattern
+    // used by /articles and /review-post).
+    let job;
+    try {
+      job = await aiJobs.createJob({
+        userId,
+        kind,
+        model: process.env.AI_MODEL || null,
+        inputJson: {
+          imageUrls: req.body.imageUrls,
+          imageCount: images.length,
+          businessName: input.businessName,
+          businessType: input.businessType,
+          city: input.city,
+          tone: input.tone,
+          postType: input.postType,
+          includeCallToAction: input.includeCallToAction,
+          ctaType: input.ctaType,
+        },
+      });
+    } catch (e) {
+      logger.error('ai.post_from_image.job_create_failed', { user_id: userId, error: e?.message });
+      return res.status(500).json({ error: 'Failed to create AI job', details: e.message });
+    }
+
+    try {
+      const result = await aiContent.generatePostFromImages(input);
+      await aiJobs.completeJob(job.id, {
+        prompt: result.prompt,
+        outputJson: result.data,
+        model: result.model,
+        usage: result.usage,
+        costUsd: result.costUsd,
+      });
+      logger.info('ai.post_from_image.ok', {
+        user_id: userId,
+        job_id: job.id,
+        image_count: images.length,
+        cost_usd: result.costUsd,
+      });
+      return res.json({
+        text: result.data.text,
+        imageDescription: result.data.imageDescription,
+        jobId: job.id,
+      });
+    } catch (e) {
+      await aiJobs.failJob(job.id, e?.message || 'unknown error');
+      logger.error('ai.post_from_image.failed', {
+        user_id: userId,
+        job_id: job?.id,
+        error: e?.message,
+      });
+      return res.status(500).json({ error: 'AI generation failed', details: e.message });
+    }
   }
 );
 

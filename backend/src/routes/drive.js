@@ -11,11 +11,12 @@
 // needsReauth=true so the frontend can prompt a reconnect.
 
 const express = require('express');
+const axios = require('axios');
 const { google } = require('googleapis');
 const { createClient } = require('@supabase/supabase-js');
 const authMiddleware = require('../middleware/authMiddleware');
 const requireBusinessAuth = require('../middleware/businessAuth');
-const { getAllBusinessTokens } = require('../utils/businessTokens');
+const { getAllBusinessTokens, tryWithEachBusinessToken } = require('../utils/businessTokens');
 const logger = require('../utils/logger');
 
 const router = express.Router();
@@ -223,5 +224,81 @@ router.get('/images', async (req, res) => {
     res.status(500).json({ success: false, error: 'Failed to list Drive images', details: err.message });
   }
 });
+
+// Extracts a Drive fileId from any of the URL shapes we generate or Google
+// itself hands back. Returns null when the URL isn't a Drive URL.
+function driveFileIdFromUrl(url) {
+  if (!url || typeof url !== 'string') return null;
+  // uc?export=view&id=X  |  uc?id=X
+  let m = url.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+  if (m) return m[1];
+  // /file/d/X/view
+  m = url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+  if (m) return m[1];
+  // /open?id=X (also caught by first branch)
+  // drive.google.com/uc/... path form
+  m = url.match(/drive\.google\.com\/[a-z]+\/([a-zA-Z0-9_-]{20,})/);
+  if (m) return m[1];
+  return null;
+}
+
+// Fetch a Drive file's raw bytes using any of the user's connected OAuth
+// tokens. Used by /proxy (for browser preview) and by aiContentService's
+// vision path (converts to base64 without requiring public sharing).
+async function fetchDriveFileBytes({ userId, fileId, fallbackToken }) {
+  return tryWithEachBusinessToken(userId, fallbackToken, async (accessToken) => {
+    const resp = await axios.get(
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media`,
+      {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        responseType: 'arraybuffer',
+        maxContentLength: 25 * 1024 * 1024,
+        maxBodyLength: 25 * 1024 * 1024,
+        timeout: 30_000,
+      }
+    );
+    return resp;
+  });
+}
+
+// Browser preview proxy. Streams the Drive file bytes so the composer can
+// render a Drive image in an <img> tag without the user first setting the
+// file to "Anyone with link" on Drive.
+router.get('/proxy/:fileId', async (req, res) => {
+  const userId = req.user?.userId;
+  const { fileId } = req.params;
+  if (!/^[a-zA-Z0-9_-]{10,}$/.test(fileId)) {
+    return res.status(400).json({ success: false, error: 'Invalid file id' });
+  }
+  try {
+    const attempt = await fetchDriveFileBytes({ userId, fileId, fallbackToken: req.businessToken });
+    if (!attempt.ok) {
+      logger.warn('drive.proxy.all_tokens_failed', {
+        user_id: userId,
+        file_id: fileId,
+        tried: attempt.tried,
+        error: attempt.error?.message,
+      });
+      return res.status(404).json({ success: false, error: 'File not found or access denied' });
+    }
+    const ctype = attempt.result.headers['content-type'] || 'application/octet-stream';
+    res.setHeader('Content-Type', ctype);
+    res.setHeader('Cache-Control', 'private, max-age=300');
+    res.send(Buffer.from(attempt.result.data));
+  } catch (err) {
+    logger.error('drive.proxy.unhandled', {
+      user_id: userId,
+      file_id: fileId,
+      error: err?.message,
+    });
+    res.status(500).json({ success: false, error: 'Failed to proxy file' });
+  }
+});
+
+// Attach helpers as router properties so /api/ai can import and reuse them
+// without a circular-import shuffle. Router is a function; adding props to
+// a function is well-defined JS and Express doesn't touch these names.
+router.driveFileIdFromUrl = driveFileIdFromUrl;
+router.fetchDriveFileBytes = fetchDriveFileBytes;
 
 module.exports = router;
