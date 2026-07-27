@@ -91,21 +91,30 @@ const truncate = (s, n = 60) => {
 
 // businessProfileService.getAccounts() returns [{ ...account, locations: [{...loc, accountId, fullPath}] }]
 // We flatten to a per-location list — one row per business "profile" the
-// user thinks about (each GMB location).
+// user thinks about (each GMB location). Tolerant of missing fields — the
+// backend normalizer sometimes hands us locations with only `locationName`
+// or only `fullPath`, and we should not silently drop them.
 const flattenLocations = (profiles) => {
   if (!Array.isArray(profiles)) return [];
   const out = [];
-  profiles.forEach((account) => {
-    const accountId = account?.name?.split('/').pop();
-    const accountLabel = account?.accountName || account?.displayName || 'Business';
-    (account.locations || []).forEach((loc) => {
-      const locationId = loc?.name?.split('/').pop();
+  profiles.forEach((account, ai) => {
+    const accountId =
+      account?.accountId ||
+      account?.name?.replace(/^accounts\//, '').split('/')[0] ||
+      null;
+    const accountLabel = account?.accountName || account?.displayName || `Account ${ai + 1}`;
+    (account?.locations || []).forEach((loc, li) => {
+      const locationId =
+        loc?.locationId ||
+        loc?.name?.split('/').pop() ||
+        loc?.fullPath?.split('/').pop() ||
+        null;
       if (!accountId || !locationId) return;
       out.push({
         key: `${accountId}:${locationId}`,
         accountId,
         locationId,
-        title: loc.locationName || loc.title || locationId,
+        title: loc?.title || loc?.locationName || `Location ${li + 1}`,
         accountLabel,
         addressLine: loc?.storefrontAddress?.locality || loc?.address || '',
       });
@@ -260,15 +269,12 @@ const Calendar = () => {
   const selectAllLocations = () => setSelectedLocationKeys(new Set(locations.map((l) => l.key)));
   const clearAllLocations = () => setSelectedLocationKeys(new Set());
 
-  // Empty cell click → open the schedule modal with the clicked date as
-  // the default. If there are no connected profiles, bounce to Connections.
+  // Empty cell click → open the composer with the clicked date as default.
+  // No pre-flight bounce to /connections: the modal has its own empty state
+  // (amber hint + Reload button) so a slow loadAccounts or a missing-name
+  // location can't hijack the click. If there really are zero connected
+  // profiles the user can hit the hint's link in-modal.
   const openCreateForDate = (day) => {
-    if (locations.length === 0) {
-      navigate('/connections');
-      return;
-    }
-    // Default the time to 9:00 AM local on the clicked day if that day is
-    // in the future; otherwise 1 hour from now.
     const now = new Date();
     const isFutureDay = new Date(day).setHours(23, 59, 59, 999) >= now.getTime();
     const seed = new Date(day);
