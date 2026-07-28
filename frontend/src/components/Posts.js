@@ -1115,37 +1115,54 @@ const Posts = () => {
       });
     };
 
-    // Copy an existing post's content into the new-post composer so the
-    // user can send the same content to a different account. Unlike Edit,
-    // this creates a fresh post — no editingPost state, no update path.
-    // Target chip picker stays as-is so the user picks fresh where to send.
-    const handleRepost = (post) => {
+    // Copy an existing post's content into a NEW draft (persisted to
+    // scheduled_posts with status='draft'), then load that draft into
+    // the composer. Publishing auto-deletes the draft (existing logic);
+    // closing the composer keeps it in the drafts strip so nothing is
+    // lost. Target chip picker stays as-is — user picks fresh where the
+    // copy goes.
+    const handleRepost = async (post) => {
       setEditingPost(null);
-      setActiveDraftId(null);
-      setDraftSavedAt(null);
       const cta = post.callToAction || null;
       const media = Array.isArray(post.media) ? post.media : [];
-      setFormData({
-        summary: post.content || '',
-        postType: post.postType || 'UPDATE',
-        callToAction: {
-          type: cta?.actionType || '',
-          // Strip tel: prefix so CALL urls read as a raw phone number.
-          url: cta?.actionType === 'CALL'
-            ? (cta.url || '').replace(/^tel:/i, '')
-            : (cta?.url || ''),
-        },
-        mediaUrls: media.length > 0
-          ? media.map((m) => m.sourceUrl || m.url || m.thumbnailUrl).filter(Boolean)
-          : [''],
-      });
-      setUploadedFiles([]);
-      setShowComposer(true);
-      // Scroll the composer into view once the modal has rendered.
-      setTimeout(() => {
-        const el = document.getElementById('post-composer');
-        if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      }, 50);
+      const mediaObjs = media
+        .map((m) => m.sourceUrl || m.url || m.thumbnailUrl)
+        .filter(Boolean)
+        .map((sourceUrl) => ({ sourceUrl, mediaFormat: 'PHOTO' }));
+      const ctaPayload =
+        cta?.actionType && (cta.url || '').trim()
+          ? { actionType: cta.actionType, url: cta.url.trim() }
+          : null;
+
+      try {
+        setSavingDraft(true);
+        const saved = await calendarService.saveDraft({
+          content: post.content || '',
+          media: mediaObjs,
+          // Don't preselect a location — user picks fresh via the chip
+          // picker.
+          gmbAccountId: null,
+          gmbLocationId: null,
+          postType: post.postType || 'UPDATE',
+          callToAction: ctaPayload,
+        });
+        const draft = saved?.draft || null;
+        if (draft) {
+          await loadSavedDrafts();
+          loadDraftIntoComposer(draft);
+          setShowComposer(true);
+          showNotification('Draft created — pick where to post and publish.', 'success');
+        } else {
+          showNotification('Draft saved but could not open in composer.', 'error');
+        }
+      } catch (err) {
+        showNotification(
+          `Failed to create repost draft: ${err?.response?.data?.error || err?.message || 'unknown'}`,
+          'error'
+        );
+      } finally {
+        setSavingDraft(false);
+      }
     };
 
    // Handle update post
