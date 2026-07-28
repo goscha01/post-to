@@ -851,7 +851,35 @@ const Posts = () => {
           const body = isIg
             ? { connectionId, caption: formData.summary, imageUrl: socialImage }
             : { connectionId, message: formData.summary, imageUrl: socialImage || undefined };
-          await axios.post(endpoint, body);
+          // eslint-disable-next-line no-console
+          console.log('[publishOne] social publish start', {
+            key,
+            endpoint,
+            imageUrl: socialImage,
+            isDriveUrl: /drive\.google\.com/i.test(socialImage || ''),
+            allMediaUrls: validMediaUrls,
+            captionLen: (formData.summary || '').length,
+          });
+          const oneStart = Date.now();
+          try {
+            const resp = await axios.post(endpoint, body);
+            // eslint-disable-next-line no-console
+            console.log('[publishOne] social publish OK', {
+              key,
+              elapsed_ms: Date.now() - oneStart,
+              result_id: resp?.data?.result?.id,
+            });
+          } catch (postErr) {
+            // eslint-disable-next-line no-console
+            console.error('[publishOne] social publish FAILED', {
+              key,
+              elapsed_ms: Date.now() - oneStart,
+              status: postErr?.response?.status,
+              response_data: postErr?.response?.data,
+              message: postErr?.message,
+            });
+            throw postErr;
+          }
           return { key, target, label, ok: true };
         }
 

@@ -24,19 +24,39 @@ router.use(authMiddleware);
 // either gets them a login-page redirect (private file) or a preview
 // thumbnail — that's what was making FB photos come out tiny.
 function rewriteDriveImageUrl(rawUrl, req) {
-  if (!rawUrl) return rawUrl;
+  if (!rawUrl) {
+    logger.info('social.rewrite.skipped', { user_id: req.user?.userId, reason: 'no_url' });
+    return rawUrl;
+  }
   const fileId = driveRouter.driveFileIdFromUrl(rawUrl);
-  if (!fileId) return rawUrl;
+  if (!fileId) {
+    // Log the failed match so we can see what URL shape the frontend
+    // is actually sending. Truncated so a data-url or malformed input
+    // doesn't blow up the log line.
+    logger.info('social.rewrite.no_match', {
+      user_id: req.user?.userId,
+      url_prefix: rawUrl.slice(0, 120),
+      url_host: (() => { try { return new URL(rawUrl).hostname; } catch { return null; } })(),
+      url_length: rawUrl.length,
+    });
+    return rawUrl;
+  }
   const publicBaseUrl =
     process.env.PUBLIC_BACKEND_URL ||
     process.env.BACKEND_URL ||
     `https://${req.get('host')}`;
-  return driveRouter.buildSignedDriveProxyUrl({
+  const proxied = driveRouter.buildSignedDriveProxyUrl({
     userId: req.user?.userId,
     fileId,
     baseUrl: publicBaseUrl,
     ttlSeconds: 3600,
   });
+  logger.info('social.rewrite.ok', {
+    user_id: req.user?.userId,
+    file_id: fileId,
+    proxied_host: (() => { try { return new URL(proxied).hostname; } catch { return null; } })(),
+  });
+  return proxied;
 }
 
 router.get('/_diagnose', async (req, res) => {
