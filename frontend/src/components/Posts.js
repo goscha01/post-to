@@ -189,7 +189,11 @@ const ChipAvatar = ({ url, label, selected, provider }) => {
 // bottom-right corner. Selected chips get a colored ring + a checkmark
 // overlay. Header has a "Select All" checkbox + count. Purely presentational
 // — parent owns the `selected: Set<string>` state.
-const TargetChipsPicker = ({ targets, selected, onChange }) => {
+const TargetChipsPicker = ({ targets, selected, onChange, duplicates }) => {
+  // Set of target keys already known to have a post with matching content.
+  // Chips whose key is here get an amber ring + a tiny warning dot in the
+  // corner. Purely visual — the parent handles the confirm modal on submit.
+  const dupSet = duplicates instanceof Set ? duplicates : new Set(duplicates || []);
   const total = targets.length;
   const selCount = selected.size;
   const allSelected = total > 0 && selCount === total;
@@ -236,17 +240,26 @@ const TargetChipsPicker = ({ targets, selected, onChange }) => {
         <div className="flex flex-wrap gap-3">
           {targets.map((t) => {
             const isSelected = selected.has(t.key);
+            const isDup = dupSet.has(t.key);
             const { Icon, wrap, color } = providerIcon(t.provider);
             return (
               <button
                 key={t.key}
                 type="button"
                 onClick={() => toggle(t.key)}
-                title={`${t.label} — ${t.accountLabel}`}
+                title={
+                  isDup
+                    ? `${t.label} — Already has this post`
+                    : `${t.label} — ${t.accountLabel}`
+                }
                 className={`relative group flex-shrink-0 rounded-full transition
                   ${isSelected
-                    ? 'ring-2 ring-primary-500 ring-offset-2'
-                    : 'ring-1 ring-gray-200 hover:ring-primary-300'}
+                    ? isDup
+                      ? 'ring-2 ring-amber-500 ring-offset-2'
+                      : 'ring-2 ring-primary-500 ring-offset-2'
+                    : isDup
+                      ? 'ring-1 ring-amber-400 hover:ring-amber-500'
+                      : 'ring-1 ring-gray-200 hover:ring-primary-300'}
                 `}
               >
                 {/* Avatar (ChipAvatar handles the imageService proxy for GMB URLs) */}
@@ -258,9 +271,17 @@ const TargetChipsPicker = ({ targets, selected, onChange }) => {
                   <Icon className={`h-3 w-3 ${color}`} />
                 </span>
                 {/* Selected checkmark (top-right corner) */}
-                {isSelected && (
+                {isSelected && !isDup && (
                   <span className="absolute -top-0.5 -right-0.5 h-4 w-4 rounded-full bg-primary-600 flex items-center justify-center ring-2 ring-white">
                     <Check className="h-3 w-3 text-white" />
+                  </span>
+                )}
+                {isDup && (
+                  <span
+                    className="absolute -top-0.5 -right-0.5 h-4 w-4 rounded-full bg-amber-500 flex items-center justify-center ring-2 ring-white"
+                    title="Already has this post"
+                  >
+                    <AlertCircle className="h-3 w-3 text-white" />
                   </span>
                 )}
               </button>
@@ -367,6 +388,9 @@ const Posts = () => {
    const [activeDraftId, setActiveDraftId] = useState(null);
    const [savingDraft, setSavingDraft] = useState(false);
    const [draftSavedAt, setDraftSavedAt] = useState(null);
+   // Duplicate-target confirm modal: shown when the user tries to publish
+   // to accounts that already have a post with identical content.
+   const [dupConfirm, setDupConfirm] = useState(null);
 
   // Flatten GMB locations + social connections into a single ordered array
   // of chip descriptors — one per posting target. Consumed by the chip
@@ -425,6 +449,23 @@ const Posts = () => {
     const firstSelected = targets.find(t => selectedTargets.has(t.key));
     setSelectedProfile(firstSelected ? firstSelected.key : '');
   }, [selectedTargets, targets]);
+
+  // Compute the set of target keys that already have a post whose content
+  // matches the composer's summary. Used to grey out chips in the picker
+  // and to gate the publish action with a confirm dialog. Content is
+  // normalized (trim + lower) and compared as an exact string.
+  const targetKeysWithMatchingPost = useMemo(() => {
+    const summary = ((editingPost ? editFormData.summary : formData.summary) || '').trim().toLowerCase();
+    if (!summary) return new Set();
+    const hits = new Set();
+    for (const p of posts || []) {
+      if (p._isDraft) continue;
+      const pContent = (p.content || '').trim().toLowerCase();
+      if (pContent !== summary) continue;
+      if (p._targetKey) hits.add(p._targetKey);
+    }
+    return hits;
+  }, [posts, editingPost, editFormData.summary, formData.summary]);
 
   // Background enrichment: businessProfileService.getAccounts() does NOT
   // include the account logo/profile picture — BusinessProfiles.js fetches
@@ -766,6 +807,35 @@ const Posts = () => {
 
     // Build shared media list (used for both GMB and social branches)
     const allMedia = validMediaUrls.map((url) => ({ mediaFormat: 'PHOTO', sourceUrl: url }));
+
+    // Duplicate guard: if any selected target already has a post with the
+    // same content, pause and ask. Mirrors the Drive picker's duplicate
+    // confirm flow. On first pass we show the modal and bail; the modal's
+    // "Skip duplicates" or "Publish anyway" buttons re-enter the submit
+    // path via a pending resolve, bypassing this branch.
+    if (!e?._skipDupCheck && !editingPost) {
+      const dupKeys = targetKeys.filter((k) => targetKeysWithMatchingPost.has(k));
+      if (dupKeys.length > 0) {
+        setDupConfirm({
+          dupKeys,
+          allKeys: targetKeys,
+          onSkip: () => {
+            setDupConfirm(null);
+            setSelectedTargets(new Set(targetKeys.filter((k) => !targetKeysWithMatchingPost.has(k))));
+            // Re-fire submit with a marker so we don't loop through the check.
+            const fakeEvent = { preventDefault: () => {}, _skipDupCheck: true };
+            setTimeout(() => handleCreatePost(fakeEvent), 30);
+          },
+          onKeepAll: () => {
+            setDupConfirm(null);
+            const fakeEvent = { preventDefault: () => {}, _skipDupCheck: true };
+            setTimeout(() => handleCreatePost(fakeEvent), 30);
+          },
+        });
+        setCreatingPost(false);
+        return;
+      }
+    }
 
     // ---- Per-target publish. Isolated in Promise.allSettled so one failing
     //      target doesn't block the others. ----
@@ -1675,6 +1745,7 @@ const Posts = () => {
       <TargetChipsPicker
         targets={targets}
         selected={selectedTargets}
+        duplicates={targetKeysWithMatchingPost}
         onChange={(nextSet) => {
           setSelectedTargets(nextSet);
           setExpandedPosts(new Set()); // Reset expanded posts on selection change
@@ -2203,6 +2274,7 @@ const Posts = () => {
                    <TargetChipsPicker
                      targets={targets}
                      selected={selectedTargets}
+                     duplicates={targetKeysWithMatchingPost}
                      onChange={(nextSet) => {
                        setSelectedTargets(nextSet);
                        setExpandedPosts(new Set());
@@ -2718,6 +2790,77 @@ const Posts = () => {
           onClose={() => setDrivePickerOpen(false)}
           onPick={handleDrivePicked}
         />
+      )}
+
+      {/* Duplicate-target confirm modal. Fires when the user tries to
+          publish content that already exists on one or more of the
+          selected accounts. Mirrors the Drive picker's dup-confirm UX:
+          Skip duplicates removes the offending targets from the selection
+          and re-fires submit; Keep all publishes to everyone. */}
+      {dupConfirm && (
+        <div
+          className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 p-4"
+          onClick={() => setDupConfirm(null)}
+        >
+          <div
+            className="bg-white rounded-lg shadow-xl w-full max-w-md overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-5 py-4 border-b border-gray-200 flex items-start gap-2">
+              <AlertCircle className="h-5 w-5 text-amber-500 mt-0.5 flex-none" />
+              <div>
+                <h4 className="text-sm font-semibold text-gray-900">
+                  Already posted to {dupConfirm.dupKeys.length} of {dupConfirm.allKeys.length} account
+                  {dupConfirm.allKeys.length === 1 ? '' : 's'}
+                </h4>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Publishing again will create a duplicate post on these accounts.
+                </p>
+              </div>
+            </div>
+            <ul className="px-5 py-3 space-y-1 max-h-56 overflow-y-auto">
+              {dupConfirm.dupKeys.map((k) => {
+                const t = targets.find((tt) => tt.key === k);
+                const name = t?.label || k;
+                return (
+                  <li key={k} className="text-xs text-gray-700 flex items-start gap-2">
+                    <span className="text-amber-500">•</span>
+                    <span className="flex-1 min-w-0">
+                      <span className="font-medium truncate block">{name}</span>
+                      {t?.accountLabel && (
+                        <span className="text-gray-500">{t.accountLabel}</span>
+                      )}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+            <div className="px-5 py-3 border-t border-gray-200 flex justify-end gap-2 bg-gray-50">
+              <button
+                type="button"
+                onClick={() => setDupConfirm(null)}
+                className="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
+              >
+                Back
+              </button>
+              <button
+                type="button"
+                onClick={dupConfirm.onSkip}
+                disabled={dupConfirm.dupKeys.length === dupConfirm.allKeys.length}
+                className="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50"
+              >
+                Skip duplicates
+              </button>
+              <button
+                type="button"
+                onClick={dupConfirm.onKeepAll}
+                className="px-3 py-2 text-sm font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700"
+              >
+                Publish anyway
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
     </div>
