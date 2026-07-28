@@ -37,6 +37,7 @@ import {
   Check,
   X,
   ExternalLink,
+  Copy,
 } from 'lucide-react';
 import {
   CTA_OPTIONS,
@@ -1108,10 +1109,43 @@ const Posts = () => {
           type: post.callToAction?.actionType || '',
           url: post.callToAction?.url || ''
         },
-        mediaUrls: post.media && post.media.length > 0 
+        mediaUrls: post.media && post.media.length > 0
           ? post.media.map(media => media.sourceUrl || media.url || media.thumbnailUrl).filter(Boolean)
           : ['']
       });
+    };
+
+    // Copy an existing post's content into the new-post composer so the
+    // user can send the same content to a different account. Unlike Edit,
+    // this creates a fresh post — no editingPost state, no update path.
+    // Target chip picker stays as-is so the user picks fresh where to send.
+    const handleRepost = (post) => {
+      setEditingPost(null);
+      setActiveDraftId(null);
+      setDraftSavedAt(null);
+      const cta = post.callToAction || null;
+      const media = Array.isArray(post.media) ? post.media : [];
+      setFormData({
+        summary: post.content || '',
+        postType: post.postType || 'UPDATE',
+        callToAction: {
+          type: cta?.actionType || '',
+          // Strip tel: prefix so CALL urls read as a raw phone number.
+          url: cta?.actionType === 'CALL'
+            ? (cta.url || '').replace(/^tel:/i, '')
+            : (cta?.url || ''),
+        },
+        mediaUrls: media.length > 0
+          ? media.map((m) => m.sourceUrl || m.url || m.thumbnailUrl).filter(Boolean)
+          : [''],
+      });
+      setUploadedFiles([]);
+      setShowComposer(true);
+      // Scroll the composer into view once the modal has rendered.
+      setTimeout(() => {
+        const el = document.getElementById('post-composer');
+        if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 50);
     };
 
    // Handle update post
@@ -2431,18 +2465,30 @@ const Posts = () => {
                             Users can jump to the post on Meta via permalink. */}
                         <div className="flex items-center space-x-2">
                           {post._provider ? (
-                            post.permalink && (
-                              <a
-                                href={post.permalink}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="inline-flex items-center gap-1 text-xs text-primary-600 hover:text-primary-700"
-                                title="Open on Meta"
+                            <>
+                              {/* FB/IG posts: repost lets the user send the
+                                  same content to a different Google/FB/IG
+                                  target via the composer. */}
+                              <button
+                                onClick={() => handleRepost(post)}
+                                className="text-gray-400 hover:text-primary-600 p-1 rounded hover:bg-gray-100"
+                                title="Repost to another account"
                               >
-                                <Eye className="h-4 w-4" />
-                                Open
-                              </a>
-                            )
+                                <Copy className="h-4 w-4" />
+                              </button>
+                              {post.permalink && (
+                                <a
+                                  href={post.permalink}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="inline-flex items-center gap-1 text-xs text-primary-600 hover:text-primary-700"
+                                  title="Open on Meta"
+                                >
+                                  <Eye className="h-4 w-4" />
+                                  Open
+                                </a>
+                              )}
+                            </>
                           ) : (
                             <>
                               {/* Open the Updates panel on Google Search
@@ -2477,6 +2523,13 @@ const Posts = () => {
                                   </a>
                                 );
                               })()}
+                              <button
+                                onClick={() => handleRepost(post)}
+                                className="text-gray-400 hover:text-primary-600 p-1 rounded hover:bg-gray-100"
+                                title="Repost to another account"
+                              >
+                                <Copy className="h-4 w-4" />
+                              </button>
                               <button
                                 onClick={() => handleEditPost(post)}
                                 className="text-gray-400 hover:text-gray-600 p-1 rounded hover:bg-gray-100"
