@@ -382,6 +382,10 @@ const Posts = () => {
           label: loc.title || loc.locationName || 'Untitled Location',
           accountLabel: acctName,
           avatarUrl: acctAvatar,
+          // Carry the Google Place ID through so the post card's
+          // "open on Google" link can build a Maps URL that lands on the
+          // business panel directly instead of a generic search page.
+          placeId: loc?.metadata?.placeId || null,
         });
       }
     }
@@ -2437,24 +2441,35 @@ const Posts = () => {
                             )
                           ) : (
                             <>
-                              {/* Open the post on Google Search. GMB no
-                                  longer exposes stable /n/<acct>/l/<loc>
-                                  URLs (returns 400) and there's no public
-                                  per-post permalink, so we google the
-                                  business name — the Business Profile
-                                  panel that pops up on the results page
-                                  includes the "Updates" (posts) section. */}
-                              {(post._targetLabel || post._businessName) && (
-                                <a
-                                  href={`https://www.google.com/search?q=${encodeURIComponent(post._targetLabel || post._businessName)}`}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="text-gray-400 hover:text-primary-600 p-1 rounded hover:bg-gray-100"
-                                  title="Open on Google Search"
-                                >
-                                  <ExternalLink className="h-4 w-4" />
-                                </a>
-                              )}
+                              {/* Open on Google. When we have the Google
+                                  Place ID (fetched with the location
+                                  metadata), we deep-link straight to the
+                                  business panel on Maps. Falls back to a
+                                  Google Search on the business name for
+                                  locations where placeId wasn't returned
+                                  by GMB. */}
+                              {(() => {
+                                const t = targets.find((tt) => tt.key === post._targetKey);
+                                const placeId = t?.placeId || post._placeId || null;
+                                const businessName = post._targetLabel || post._businessName || t?.label;
+                                const href = placeId
+                                  ? `https://www.google.com/maps/place/?q=place_id:${encodeURIComponent(placeId)}`
+                                  : businessName
+                                  ? `https://www.google.com/search?q=${encodeURIComponent(businessName)}`
+                                  : null;
+                                if (!href) return null;
+                                return (
+                                  <a
+                                    href={href}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="text-gray-400 hover:text-primary-600 p-1 rounded hover:bg-gray-100"
+                                    title={placeId ? 'Open on Google Maps' : 'Open on Google Search'}
+                                  >
+                                    <ExternalLink className="h-4 w-4" />
+                                  </a>
+                                );
+                              })()}
                               <button
                                 onClick={() => handleEditPost(post)}
                                 className="text-gray-400 hover:text-gray-600 p-1 rounded hover:bg-gray-100"
