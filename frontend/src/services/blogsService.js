@@ -37,5 +37,39 @@ const generate = async ({ connectionId, keyword, businessName, businessType, ser
   return res.data;
 };
 
-const blogsService = { list, get, update, remove, generate };
+const publish = async (id) => {
+  const res = await axios.post(`/api/blogs/${id}/publish`);
+  return res.data; // { blog, urls, hasVerifiedDomain }
+};
+
+const unpublish = async (id) => {
+  const res = await axios.post(`/api/blogs/${id}/unpublish`);
+  return res.data?.blog;
+};
+
+const listDomains = async () => {
+  const res = await axios.get('/api/blogs/domains');
+  return res.data; // { domains, cnameTarget }
+};
+
+const createDomain = async ({ hostname, siteName }) => {
+  const res = await axios.post('/api/blogs/domains', { hostname, siteName });
+  return res.data; // { domain, cnameTarget }
+};
+
+const verifyDomain = async (id) => {
+  const res = await axios.post(`/api/blogs/domains/${id}/verify`);
+  return res.data?.domain;
+};
+
+const deleteDomain = async (id) => {
+  const res = await axios.delete(`/api/blogs/domains/${id}`);
+  return res.data;
+};
+
+const blogsService = {
+  list, get, update, remove, generate,
+  publish, unpublish,
+  listDomains, createDomain, verifyDomain, deleteDomain,
+};
 export default blogsService;

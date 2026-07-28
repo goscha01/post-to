@@ -12,6 +12,7 @@ const { body, param, query, validationResult } = require('express-validator');
 const { createClient } = require('@supabase/supabase-js');
 const authMiddleware = require('../middleware/authMiddleware');
 const logger = require('../utils/logger');
+const blogDomainsService = require('../services/blogDomainsService');
 
 const router = express.Router();
 
@@ -39,9 +40,72 @@ const PUBLIC_FIELDS = [
   'suggested_excerpt',
   'suggested_social_post',
   'status',
+  'published_at',
   'created_at',
   'updated_at',
 ].join(', ');
+
+// ============================================================================
+// Blog domains (custom subdomains that serve published articles)
+// Mounted BEFORE the /:id routes so /domains isn't shadowed by UUID matching.
+// ============================================================================
+
+router.get('/domains', async (req, res) => {
+  try {
+    const rows = await blogDomainsService.listForUser(req.user.userId);
+    res.json({ domains: rows, cnameTarget: blogDomainsService.BLOG_CNAME_TARGET });
+  } catch (err) {
+    logger.error('blogs.domains.list_failed', { error: err.message });
+    res.status(500).json({ error: 'Failed to list blog domains' });
+  }
+});
+
+router.post(
+  '/domains',
+  [
+    body('hostname').isString().isLength({ min: 4, max: 253 }),
+    body('siteName').optional().isString().isLength({ max: 255 }),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ error: 'Invalid input', details: errors.array() });
+    try {
+      const row = await blogDomainsService.createDomain({
+        userId: req.user.userId,
+        hostname: req.body.hostname,
+        siteName: req.body.siteName,
+      });
+      res.status(201).json({ domain: row, cnameTarget: blogDomainsService.BLOG_CNAME_TARGET });
+    } catch (err) {
+      logger.error('blogs.domains.create_failed', { error: err.message });
+      res.status(err.status || 500).json({ error: err.message || 'Failed to create blog domain' });
+    }
+  }
+);
+
+router.post('/domains/:id/verify', [param('id').isUUID()], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ error: 'Invalid id' });
+  try {
+    const row = await blogDomainsService.verifyDomain({ userId: req.user.userId, id: req.params.id });
+    res.json({ domain: row });
+  } catch (err) {
+    logger.warn('blogs.domains.verify_failed', { error: err.message, id: req.params.id });
+    res.status(err.status || 500).json({ error: err.message || 'Verification failed', details: err.details });
+  }
+});
+
+router.delete('/domains/:id', [param('id').isUUID()], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ error: 'Invalid id' });
+  try {
+    await blogDomainsService.deleteDomain({ userId: req.user.userId, id: req.params.id });
+    res.json({ ok: true });
+  } catch (err) {
+    logger.error('blogs.domains.delete_failed', { error: err.message, id: req.params.id });
+    res.status(500).json({ error: 'Failed to delete blog domain' });
+  }
+});
 
 router.get(
   '/',
@@ -151,6 +215,75 @@ router.patch(
     }
   }
 );
+
+// Publish: flip status → 'published', stamp published_at, and (if the user
+// has any verified blog_domain rows) return the public URLs the article is
+// reachable at. Idempotent: re-publishing an already-published article just
+// refreshes published_at.
+router.post('/:id/publish', [param('id').isUUID()], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ error: 'Invalid id' });
+  try {
+    const { data: blog, error: loadErr } = await supabase
+      .from('blog_articles')
+      .select(PUBLIC_FIELDS)
+      .eq('user_id', req.user.userId)
+      .eq('id', req.params.id)
+      .single();
+    if (loadErr) {
+      if (loadErr.code === 'PGRST116') return res.status(404).json({ error: 'Blog not found' });
+      throw loadErr;
+    }
+    if (!blog.slug || !blog.title) {
+      return res.status(400).json({ error: 'Blog needs a slug and title before publishing' });
+    }
+
+    const now = new Date().toISOString();
+    const { data: updated, error: updateErr } = await supabase
+      .from('blog_articles')
+      .update({ status: 'published', published_at: now })
+      .eq('user_id', req.user.userId)
+      .eq('id', req.params.id)
+      .select(PUBLIC_FIELDS)
+      .single();
+    if (updateErr) throw updateErr;
+
+    const domains = await blogDomainsService.listForUser(req.user.userId);
+    const verifiedHosts = domains
+      .filter(d => d.status === 'active' && d.metadata?.verified && d.metadata?.hostname)
+      .map(d => d.metadata.hostname);
+    const urls = verifiedHosts.map(h => `https://${h}/${updated.slug}`);
+
+    logger.info('blogs.published', { userId: req.user.userId, blogId: req.params.id, slug: updated.slug, hostCount: verifiedHosts.length });
+    res.json({ blog: updated, urls, hasVerifiedDomain: verifiedHosts.length > 0 });
+  } catch (err) {
+    logger.error('blogs.publish_failed', { error: err.message, id: req.params.id });
+    res.status(500).json({ error: 'Failed to publish blog' });
+  }
+});
+
+router.post('/:id/unpublish', [param('id').isUUID()], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ error: 'Invalid id' });
+  try {
+    const { data, error } = await supabase
+      .from('blog_articles')
+      .update({ status: 'draft' })
+      .eq('user_id', req.user.userId)
+      .eq('id', req.params.id)
+      .select(PUBLIC_FIELDS)
+      .single();
+    if (error) {
+      if (error.code === 'PGRST116') return res.status(404).json({ error: 'Blog not found' });
+      throw error;
+    }
+    logger.info('blogs.unpublished', { userId: req.user.userId, blogId: req.params.id });
+    res.json({ blog: data });
+  } catch (err) {
+    logger.error('blogs.unpublish_failed', { error: err.message, id: req.params.id });
+    res.status(500).json({ error: 'Failed to unpublish blog' });
+  }
+});
 
 router.delete('/:id', [param('id').isUUID()], async (req, res) => {
   const errors = validationResult(req);

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Plus, Sparkles, Trash2, Edit3, Globe, Search, X, AlertCircle, Check, FileText, RefreshCw } from 'lucide-react';
+import { Plus, Sparkles, Trash2, Edit3, Globe, Search, X, AlertCircle, Check, FileText, RefreshCw, Send, ExternalLink, Copy } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import blogsService from '../services/blogsService';
 import connectionsService from '../services/connectionsService';
@@ -135,6 +135,8 @@ const Blogs = () => {
           <span>{error}</span>
         </div>
       )}
+
+      <BlogDomainsPanel />
 
       <GscKeywordsPanel
         gscConnections={gscConnections}
@@ -412,6 +414,9 @@ const EditorModal = ({ blogId, onClose, onSaved, onDeleted }) => {
   const [blog, setBlog] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [publishing, setPublishing] = useState(false);
+  const [publishedUrls, setPublishedUrls] = useState([]);
+  const [publishedNoDomain, setPublishedNoDomain] = useState(false);
   const [err, setErr] = useState('');
   const [savedFlash, setSavedFlash] = useState(false);
 
@@ -468,6 +473,42 @@ const EditorModal = ({ blogId, onClose, onSaved, onDeleted }) => {
     }
   };
 
+  const publish = async () => {
+    if (!blog) return;
+    setPublishing(true);
+    setErr('');
+    setPublishedUrls([]);
+    setPublishedNoDomain(false);
+    try {
+      const result = await blogsService.publish(blog.id);
+      setBlog(result.blog);
+      onSaved(result.blog);
+      setPublishedUrls(result.urls || []);
+      setPublishedNoDomain(!result.hasVerifiedDomain);
+    } catch (e) {
+      setErr(e.response?.data?.error || 'Failed to publish');
+    } finally {
+      setPublishing(false);
+    }
+  };
+
+  const unpublish = async () => {
+    if (!blog) return;
+    setPublishing(true);
+    setErr('');
+    try {
+      const updated = await blogsService.unpublish(blog.id);
+      setBlog(updated);
+      onSaved(updated);
+      setPublishedUrls([]);
+      setPublishedNoDomain(false);
+    } catch (e) {
+      setErr(e.response?.data?.error || 'Failed to unpublish');
+    } finally {
+      setPublishing(false);
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-stretch justify-end" onClick={onClose}>
       <div
@@ -475,7 +516,14 @@ const EditorModal = ({ blogId, onClose, onSaved, onDeleted }) => {
         onClick={e => e.stopPropagation()}
       >
         <div className="sticky top-0 z-10 flex items-center justify-between px-6 py-4 border-b border-gray-200 bg-white">
-          <h2 className="text-lg font-semibold text-gray-900">Edit blog</h2>
+          <div className="flex items-center gap-3">
+            <h2 className="text-lg font-semibold text-gray-900">Edit blog</h2>
+            {blog?.status && (
+              <span className={`inline-flex items-center text-xs px-2 py-0.5 rounded ${STATUS_STYLES[blog.status] || 'bg-gray-100 text-gray-700'}`}>
+                {blog.status}
+              </span>
+            )}
+          </div>
           <div className="flex items-center gap-2">
             {savedFlash && (
               <span className="inline-flex items-center gap-1 text-xs text-green-700">
@@ -493,10 +541,28 @@ const EditorModal = ({ blogId, onClose, onSaved, onDeleted }) => {
             <button
               onClick={save}
               disabled={saving || loading || !blog}
-              className="px-3 py-1.5 text-sm font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 disabled:opacity-50"
+              className="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50"
             >
               {saving ? 'Saving…' : 'Save'}
             </button>
+            {blog?.status === 'published' ? (
+              <button
+                onClick={unpublish}
+                disabled={publishing || loading}
+                className="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50"
+              >
+                {publishing ? 'Unpublishing…' : 'Unpublish'}
+              </button>
+            ) : (
+              <button
+                onClick={publish}
+                disabled={publishing || loading || !blog}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 disabled:opacity-50"
+              >
+                <Send className="h-3.5 w-3.5" />
+                {publishing ? 'Publishing…' : 'Publish'}
+              </button>
+            )}
             <button onClick={onClose} className="text-gray-400 hover:text-gray-600 p-1">
               <X className="h-5 w-5" />
             </button>
@@ -511,6 +577,33 @@ const EditorModal = ({ blogId, onClose, onSaved, onDeleted }) => {
             <>
               {err && (
                 <div className="p-2 bg-red-50 border border-red-200 rounded text-xs text-red-800">{err}</div>
+              )}
+              {publishedUrls.length > 0 && (
+                <div className="p-3 bg-green-50 border border-green-200 rounded space-y-2">
+                  <div className="text-sm font-medium text-green-800 flex items-center gap-1">
+                    <Check className="h-4 w-4" />
+                    Published
+                  </div>
+                  {publishedUrls.map(u => (
+                    <div key={u} className="flex items-center gap-2 text-xs">
+                      <a href={u} target="_blank" rel="noreferrer" className="text-primary-600 hover:underline flex-1 truncate inline-flex items-center gap-1">
+                        <ExternalLink className="h-3 w-3" />{u}
+                      </a>
+                      <button
+                        onClick={() => navigator.clipboard?.writeText(u)}
+                        className="p-1 text-gray-500 hover:text-gray-900"
+                        title="Copy URL"
+                      >
+                        <Copy className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {publishedNoDomain && (
+                <div className="p-3 bg-amber-50 border border-amber-200 rounded text-xs text-amber-900">
+                  Article is marked published, but no verified blog domain is connected yet — add one at the top of the Blogs page to get a public URL.
+                </div>
               )}
               <div>
                 <label className="block text-xs font-medium text-gray-600 mb-1">Title</label>
@@ -899,6 +992,249 @@ const GscSitePicker = ({ onSaved, onReconnectGoogle }) => {
         </div>
       )}
     </div>
+  );
+};
+
+// BlogDomainsPanel — subdomain onboarding for the multi-tenant blog renderer.
+//
+// One row = one custom subdomain (blog.theirsite.com) attached to the
+// post-to-blogs Railway service. Flow:
+//   1. Add — user types hostname, backend inserts a connected_accounts row
+//      with metadata.verified=false and returns the CNAME target.
+//   2. User sets `blog.theirsite.com CNAME → cnameTarget` at their DNS host.
+//   3. Verify — backend does dns.resolveCname + Railway customDomainCreate.
+//      On success, metadata.verified=true and the blogs-serve host resolver
+//      starts answering requests for that domain within ~60s (cache TTL).
+const BlogDomainsPanel = () => {
+  const [state, setState] = useState({ loading: true, domains: [], cnameTarget: '' });
+  const [adding, setAdding] = useState(false);
+  const [hostname, setHostname] = useState('');
+  const [siteName, setSiteName] = useState('');
+  const [err, setErr] = useState('');
+  const [busyId, setBusyId] = useState(null);
+
+  const load = useCallback(async () => {
+    setState(s => ({ ...s, loading: true }));
+    try {
+      const data = await blogsService.listDomains();
+      setState({ loading: false, domains: data.domains || [], cnameTarget: data.cnameTarget || '' });
+    } catch (e) {
+      setErr(e.response?.data?.error || 'Failed to load domains');
+      setState(s => ({ ...s, loading: false }));
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const add = async (e) => {
+    e.preventDefault();
+    if (!hostname.trim()) return;
+    setErr('');
+    setAdding(true);
+    try {
+      const data = await blogsService.createDomain({ hostname: hostname.trim(), siteName: siteName.trim() || undefined });
+      setState(s => ({ ...s, domains: [data.domain, ...s.domains.filter(d => d.id !== data.domain.id)], cnameTarget: data.cnameTarget || s.cnameTarget }));
+      setHostname('');
+      setSiteName('');
+    } catch (e2) {
+      setErr(e2.response?.data?.error || 'Failed to add domain');
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const verify = async (id) => {
+    setBusyId(id);
+    setErr('');
+    try {
+      const updated = await blogsService.verifyDomain(id);
+      setState(s => ({ ...s, domains: s.domains.map(d => d.id === id ? updated : d) }));
+    } catch (e) {
+      setErr(e.response?.data?.error || 'Verification failed');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const remove = async (id) => {
+    if (!window.confirm('Remove this blog domain? Published articles will stop being reachable at this URL.')) return;
+    setBusyId(id);
+    setErr('');
+    try {
+      await blogsService.deleteDomain(id);
+      setState(s => ({ ...s, domains: s.domains.filter(d => d.id !== id) }));
+    } catch (e) {
+      setErr(e.response?.data?.error || 'Failed to delete');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  return (
+    <div className="mb-6 bg-white border border-gray-200 rounded-lg overflow-hidden">
+      <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-gray-100 bg-emerald-50">
+        <div className="flex items-center gap-2">
+          <Globe className="h-4 w-4 text-emerald-700" />
+          <div>
+            <p className="text-sm font-medium text-gray-900">Publish to your domain</p>
+            <p className="text-xs text-gray-500">
+              Add a subdomain (e.g. <code className="text-[11px] bg-white/60 px-1 rounded">blog.yoursite.com</code>) and your published articles show up there.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {err && (
+        <div className="px-4 py-2 bg-red-50 border-b border-red-100 text-xs text-red-800 flex items-start gap-2">
+          <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+          <span>{err}</span>
+        </div>
+      )}
+
+      <div className="px-4 py-3">
+        {state.loading ? (
+          <div className="text-sm text-gray-500">Loading…</div>
+        ) : (
+          <>
+            {state.domains.length > 0 && (
+              <ul className="mb-4 space-y-2">
+                {state.domains.map(d => (
+                  <BlogDomainRow
+                    key={d.id}
+                    domain={d}
+                    cnameTarget={state.cnameTarget}
+                    busy={busyId === d.id}
+                    onVerify={() => verify(d.id)}
+                    onDelete={() => remove(d.id)}
+                  />
+                ))}
+              </ul>
+            )}
+
+            <form onSubmit={add} className="flex flex-wrap items-end gap-2">
+              <div className="flex-1 min-w-[220px]">
+                <label className="block text-xs font-medium text-gray-600 mb-1">Subdomain</label>
+                <input
+                  type="text"
+                  value={hostname}
+                  onChange={e => setHostname(e.target.value)}
+                  placeholder="blog.yoursite.com"
+                  className="w-full px-3 py-1.5 border border-gray-300 rounded-md text-sm"
+                />
+              </div>
+              <div className="flex-1 min-w-[180px]">
+                <label className="block text-xs font-medium text-gray-600 mb-1">Site name <span className="text-gray-400 font-normal">(optional)</span></label>
+                <input
+                  type="text"
+                  value={siteName}
+                  onChange={e => setSiteName(e.target.value)}
+                  placeholder="Your Business"
+                  className="w-full px-3 py-1.5 border border-gray-300 rounded-md text-sm"
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={adding || !hostname.trim()}
+                className="inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 disabled:opacity-50"
+              >
+                <Plus className="h-4 w-4" />
+                {adding ? 'Adding…' : 'Add'}
+              </button>
+            </form>
+          </>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const BlogDomainRow = ({ domain, cnameTarget, busy, onVerify, onDelete }) => {
+  const hostname = domain.metadata?.hostname;
+  const verified = !!domain.metadata?.verified;
+  const target = domain.metadata?.cname_target || cnameTarget;
+  const lastError = domain.metadata?.last_check_error;
+  const foundCnames = domain.metadata?.last_check_cnames || [];
+
+  return (
+    <li className="border border-gray-200 rounded-md p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-medium text-gray-900 text-sm truncate">{hostname}</span>
+            {verified ? (
+              <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded bg-green-100 text-green-800">
+                <Check className="h-3 w-3" /> Verified
+              </span>
+            ) : (
+              <span className="inline-flex items-center text-xs px-2 py-0.5 rounded bg-amber-100 text-amber-800">
+                Pending DNS
+              </span>
+            )}
+            {verified && (
+              <a
+                href={`https://${hostname}`}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 text-xs text-primary-600 hover:underline"
+              >
+                <ExternalLink className="h-3 w-3" /> Open
+              </a>
+            )}
+          </div>
+
+          {!verified && (
+            <div className="mt-2 text-xs text-gray-700 space-y-1">
+              <div>
+                Add this DNS record at your registrar (GoDaddy / Cloudflare / Namecheap / etc.):
+              </div>
+              <div className="p-2 bg-gray-50 border border-gray-200 rounded font-mono text-[11px] leading-5">
+                <div><span className="text-gray-500">Type:</span> CNAME</div>
+                <div><span className="text-gray-500">Host:</span> {hostname?.split('.')[0]}</div>
+                <div className="flex items-center gap-1">
+                  <span className="text-gray-500">Value:</span>
+                  <span>{target}</span>
+                  <button
+                    type="button"
+                    onClick={() => navigator.clipboard?.writeText(target)}
+                    className="ml-1 p-0.5 text-gray-500 hover:text-gray-900"
+                    title="Copy value"
+                  >
+                    <Copy className="h-3 w-3" />
+                  </button>
+                </div>
+              </div>
+              {lastError && (
+                <div className="text-red-700">
+                  Last check: {lastError}
+                  {foundCnames.length > 0 && <> — found {foundCnames.join(', ')}</>}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center gap-1 flex-shrink-0">
+          {!verified && (
+            <button
+              onClick={onVerify}
+              disabled={busy}
+              className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-white bg-primary-600 rounded hover:bg-primary-700 disabled:opacity-50"
+            >
+              <RefreshCw className={`h-3 w-3 ${busy ? 'animate-spin' : ''}`} />
+              {busy ? 'Checking…' : 'Verify'}
+            </button>
+          )}
+          <button
+            onClick={onDelete}
+            disabled={busy}
+            className="p-1 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded disabled:opacity-50"
+            title="Remove"
+          >
+            <Trash2 className="h-4 w-4" />
+          </button>
+        </div>
+      </div>
+    </li>
   );
 };
 
