@@ -2441,30 +2441,29 @@ const Posts = () => {
                             )
                           ) : (
                             <>
-                              {/* Open on Google. When we have the Google
-                                  Place ID (fetched with the location
-                                  metadata), we deep-link straight to the
-                                  business panel on Maps. Falls back to a
-                                  Google Search on the business name for
-                                  locations where placeId wasn't returned
-                                  by GMB. */}
+                              {/* Open on Google Search. The Business
+                                  Profile panel on the results page carries
+                                  an "Updates" section — one click and the
+                                  user sees the posts modal like their
+                                  reference screenshot. The Maps URL
+                                  (?q=place_id:X) is more direct but lands
+                                  on Maps rather than Search, which the
+                                  user prefers to avoid.
+                                  Google's stick= token that jumps straight
+                                  into the Updates modal is server-
+                                  generated per session and can't be
+                                  constructed on our end. */}
                               {(() => {
                                 const t = targets.find((tt) => tt.key === post._targetKey);
-                                const placeId = t?.placeId || post._placeId || null;
                                 const businessName = post._targetLabel || post._businessName || t?.label;
-                                const href = placeId
-                                  ? `https://www.google.com/maps/place/?q=place_id:${encodeURIComponent(placeId)}`
-                                  : businessName
-                                  ? `https://www.google.com/search?q=${encodeURIComponent(businessName)}`
-                                  : null;
-                                if (!href) return null;
+                                if (!businessName) return null;
                                 return (
                                   <a
-                                    href={href}
+                                    href={`https://www.google.com/search?q=${encodeURIComponent(businessName)}`}
                                     target="_blank"
                                     rel="noreferrer"
                                     className="text-gray-400 hover:text-primary-600 p-1 rounded hover:bg-gray-100"
-                                    title={placeId ? 'Open on Google Maps' : 'Open on Google Search'}
+                                    title="Open on Google Search"
                                   >
                                     <ExternalLink className="h-4 w-4" />
                                   </a>
