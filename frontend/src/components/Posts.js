@@ -2437,18 +2437,20 @@ const Posts = () => {
                             )
                           ) : (
                             <>
-                              {/* Open the GMB post on Google. There's no
-                                  customer-facing per-post permalink, so we
-                                  deep-link to the location's posts tab in
-                                  Google Business Profile — users see their
-                                  post there in one click. */}
-                              {post.accountId && post.locationId && (
+                              {/* Open the post on Google Search. GMB no
+                                  longer exposes stable /n/<acct>/l/<loc>
+                                  URLs (returns 400) and there's no public
+                                  per-post permalink, so we google the
+                                  business name — the Business Profile
+                                  panel that pops up on the results page
+                                  includes the "Updates" (posts) section. */}
+                              {(post._targetLabel || post._businessName) && (
                                 <a
-                                  href={`https://business.google.com/n/${post.accountId}/l/${post.locationId}/posts`}
+                                  href={`https://www.google.com/search?q=${encodeURIComponent(post._targetLabel || post._businessName)}`}
                                   target="_blank"
                                   rel="noreferrer"
                                   className="text-gray-400 hover:text-primary-600 p-1 rounded hover:bg-gray-100"
-                                  title="Open on Google Business Profile"
+                                  title="Open on Google Search"
                                 >
                                   <ExternalLink className="h-4 w-4" />
                                 </a>
