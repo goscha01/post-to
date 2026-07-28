@@ -122,23 +122,57 @@ async function createDomain({ userId, hostname, siteName }) {
     err.status = 400;
     throw err;
   }
-  const row = {
-    user_id: userId,
-    provider: 'blog_domain',
-    display_name: siteName || host,
-    external_id: `blog_domain:${host}`,
-    status: 'active',
-    metadata: {
+  const externalId = `blog_domain:${host}`;
+  const displayName = siteName || host;
+
+  // Manual upsert: the connected_accounts unique index is partial
+  // (WHERE external_id IS NOT NULL) so ON CONFLICT can't infer it. Same
+  // pattern as connectionsService.upsertWebsite / upsertGoogleSearchConsole.
+  const { data: existing } = await supabase
+    .from('connected_accounts')
+    .select('id, metadata')
+    .eq('user_id', userId)
+    .eq('provider', 'blog_domain')
+    .eq('external_id', externalId)
+    .maybeSingle();
+
+  if (existing) {
+    // Preserve existing verification state on re-add — user might be
+    // editing site_name or retrying after a delete. Only bump cname_target
+    // if it drifted.
+    const mergedMetadata = {
+      ...(existing.metadata || {}),
       hostname: host,
-      site_name: siteName || null,
-      verified: false,
+      site_name: siteName || existing.metadata?.site_name || null,
       cname_target: BLOG_CNAME_TARGET,
-      created_via: 'dashboard',
-    },
-  };
+    };
+    const { data, error } = await supabase
+      .from('connected_accounts')
+      .update({ display_name: displayName, metadata: mergedMetadata, status: 'active' })
+      .eq('id', existing.id)
+      .select()
+      .single();
+    if (error) throw error;
+    logger.info('blog_domain.updated', { userId, hostname: host, connectionId: data.id });
+    return data;
+  }
+
   const { data, error } = await supabase
     .from('connected_accounts')
-    .upsert(row, { onConflict: 'user_id,provider,external_id' })
+    .insert({
+      user_id: userId,
+      provider: 'blog_domain',
+      display_name: displayName,
+      external_id: externalId,
+      status: 'active',
+      metadata: {
+        hostname: host,
+        site_name: siteName || null,
+        verified: false,
+        cname_target: BLOG_CNAME_TARGET,
+        created_via: 'dashboard',
+      },
+    })
     .select()
     .single();
   if (error) throw error;
