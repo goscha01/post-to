@@ -922,26 +922,33 @@ router.post('/', upload.array('images', 10), parseMultipartJsonFields, [
 
         
         
-        // Auto-share any Drive-hosted media files to "anyone with link"
-        // BEFORE calling GMB — otherwise Google's own media fetch returns
-        // an HTML login page and the localPosts.create call either fails
-        // slowly or times out entirely. Idempotent + non-fatal per file.
-        const driveFileIds = (gmbPostData.media || [])
-          .map((m) => extractDriveFileIdFromUrl(m?.sourceUrl))
-          .filter(Boolean);
-        step('drive_share_pre', { file_count: driveFileIds.length });
-        if (driveFileIds.length > 0) {
-          const shareResult = await shareDriveFilesPublic(
-            driveFileIds,
-            req.user?.userId,
-            req.businessToken
-          );
-          step('drive_share_done', {
-            attempted: shareResult.attempted,
-            succeeded: shareResult.succeeded,
-            walltimeout: !!shareResult.walltimeout,
+        // Drive URLs: instead of auto-sharing (which needs drive.file
+        // scope we don't have — the readonly scope 403s on permissions.
+        // create), rewrite each Drive URL in the media list to a signed
+        // public proxy URL. GMB fetches OUR backend, our backend downloads
+        // via OAuth (drive.readonly works fine for reads), and streams
+        // bytes back. No sharing change on the file itself required.
+        const driveRouter = require('./drive');
+        const publicBaseUrl =
+          process.env.PUBLIC_BACKEND_URL ||
+          process.env.BACKEND_URL ||
+          `https://${req.get('host')}`;
+        let rewriteCount = 0;
+        if (Array.isArray(gmbPostData.media)) {
+          gmbPostData.media = gmbPostData.media.map((m) => {
+            const fileId = extractDriveFileIdFromUrl(m?.sourceUrl);
+            if (!fileId) return m;
+            rewriteCount += 1;
+            const signed = driveRouter.buildSignedDriveProxyUrl({
+              userId: req.user?.userId,
+              fileId,
+              baseUrl: publicBaseUrl,
+              ttlSeconds: 3600,
+            });
+            return { ...m, sourceUrl: signed };
           });
         }
+        step('drive_rewrite', { rewrote_count: rewriteCount });
         step('gmb_call_pre');
 
         // Try real API first, fallback if needed. Multi-token fanout so
@@ -955,18 +962,29 @@ router.post('/', upload.array('images', 10), parseMultipartJsonFields, [
             req.user?.userId,
             accessToken,
             async (tok) => {
-              const resp = await axios.post(
-                `https://mybusiness.googleapis.com/v4/accounts/${gmbAccountId}/locations/${gmbLocationId}/localPosts`,
-                gmbPostData,
-                {
-                  headers: {
-                    Authorization: `Bearer ${tok}`,
-                    'Content-Type': 'application/json',
-                  },
-                  timeout: 30_000,
-                }
-              );
-              return resp;
+              // AbortController tied to the axios timeout — vanilla axios
+              // timeout doesn't always cancel the underlying TCP socket
+              // cleanly. AbortController does, ensuring failures return
+              // within the timeout even under weird network conditions.
+              const controller = new AbortController();
+              const timer = setTimeout(() => controller.abort(), 12_000);
+              try {
+                const resp = await axios.post(
+                  `https://mybusiness.googleapis.com/v4/accounts/${gmbAccountId}/locations/${gmbLocationId}/localPosts`,
+                  gmbPostData,
+                  {
+                    headers: {
+                      Authorization: `Bearer ${tok}`,
+                      'Content-Type': 'application/json',
+                    },
+                    timeout: 12_000,
+                    signal: controller.signal,
+                  }
+                );
+                return resp;
+              } finally {
+                clearTimeout(timer);
+              }
             }
           );
           if (!gmbCallFanout.ok) throw gmbCallFanout.error || new Error('All OAuth tokens failed');

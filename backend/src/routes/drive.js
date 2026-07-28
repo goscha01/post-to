@@ -12,6 +12,7 @@
 
 const express = require('express');
 const axios = require('axios');
+const crypto = require('crypto');
 const { google } = require('googleapis');
 const { createClient } = require('@supabase/supabase-js');
 const authMiddleware = require('../middleware/authMiddleware');
@@ -25,6 +26,71 @@ const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY
 );
+
+// Public signed-URL helpers for Drive proxying at publish time. GMB fetches
+// media URLs itself, so it can't send Bearer auth — instead we hand GMB
+// a URL with an HMAC signature it can present unauthenticated. The signature
+// binds the file id + user id + expiry so a captured URL can't be used
+// beyond its window or to fetch a different file.
+const DRIVE_PROXY_SECRET =
+  process.env.DRIVE_PROXY_SECRET || process.env.JWT_SECRET || 'dev-secret-DO-NOT-USE-IN-PROD';
+
+function signDriveProxy(userId, fileId, expSeconds) {
+  const payload = `${userId}:${fileId}:${expSeconds}`;
+  return crypto.createHmac('sha256', DRIVE_PROXY_SECRET).update(payload).digest('hex');
+}
+
+function buildSignedDriveProxyUrl({ userId, fileId, baseUrl, ttlSeconds = 3600 }) {
+  const exp = Math.floor(Date.now() / 1000) + ttlSeconds;
+  const sig = signDriveProxy(userId, fileId, exp);
+  return `${baseUrl.replace(/\/$/, '')}/api/drive/public/${fileId}?u=${encodeURIComponent(userId)}&exp=${exp}&sig=${sig}`;
+}
+
+// Mount the PUBLIC signed proxy BEFORE the auth middleware so unauthenticated
+// GMB fetches can reach it. Signature verification takes the place of the
+// JWT check.
+router.get('/public/:fileId', async (req, res) => {
+  const { fileId } = req.params;
+  const { u: userId, exp, sig } = req.query;
+  if (!fileId || !userId || !exp || !sig) {
+    return res.status(400).json({ success: false, error: 'Missing signed-URL params' });
+  }
+  if (!/^[a-zA-Z0-9_-]{10,}$/.test(fileId)) {
+    return res.status(400).json({ success: false, error: 'Invalid file id' });
+  }
+  const expNum = Number(exp);
+  if (!Number.isFinite(expNum) || expNum < Math.floor(Date.now() / 1000)) {
+    return res.status(410).json({ success: false, error: 'Signed URL expired' });
+  }
+  const expected = signDriveProxy(userId, fileId, expNum);
+  if (
+    !crypto.timingSafeEqual(
+      Buffer.from(String(sig), 'utf8'),
+      Buffer.from(expected, 'utf8')
+    )
+  ) {
+    return res.status(403).json({ success: false, error: 'Bad signature' });
+  }
+  try {
+    const attempt = await fetchDriveFileBytes({ userId, fileId, fallbackToken: null });
+    if (!attempt.ok) {
+      logger.warn('drive.public.all_tokens_failed', { user_id: userId, file_id: fileId });
+      return res.status(404).json({ success: false, error: 'File not found or access denied' });
+    }
+    const ctype = attempt.result.headers['content-type'] || 'application/octet-stream';
+    res.setHeader('Content-Type', ctype);
+    // Very short cache — GMB usually fetches once at publish time.
+    res.setHeader('Cache-Control', 'public, max-age=300');
+    res.send(Buffer.from(attempt.result.data));
+  } catch (err) {
+    logger.error('drive.public.unhandled', {
+      user_id: userId,
+      file_id: fileId,
+      error: err?.message,
+    });
+    res.status(500).json({ success: false, error: 'Failed to serve file' });
+  }
+});
 
 router.use(authMiddleware);
 router.use(requireBusinessAuth);
@@ -389,5 +455,6 @@ router.get('/proxy/:fileId', async (req, res) => {
 // a function is well-defined JS and Express doesn't touch these names.
 router.driveFileIdFromUrl = driveFileIdFromUrl;
 router.fetchDriveFileBytes = fetchDriveFileBytes;
+router.buildSignedDriveProxyUrl = buildSignedDriveProxyUrl;
 
 module.exports = router;
