@@ -29,6 +29,7 @@ import {
   Facebook,
   Instagram,
   Check,
+  X,
 } from 'lucide-react';
 import {
   CTA_OPTIONS,
@@ -114,6 +115,44 @@ const PostImage = ({ imageUrl, altText, mediaFormat, mediaData }) => {
   );
 };
 
+// Chip avatar. GMB URLs (lh3.googleusercontent.com) require the imageService
+// proxy — direct <img> tags get 400 from Google's CDN. FB/IG CDN URLs load
+// fine cross-origin. Falls back to initials on error / missing URL.
+const ChipAvatar = ({ url, label, selected }) => {
+  const needsProxy = typeof url === 'string' && url.includes('lh3.googleusercontent.com');
+  const [resolvedUrl, setResolvedUrl] = useState(needsProxy ? null : url);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!url) { setResolvedUrl(null); return; }
+    if (!needsProxy) { setResolvedUrl(url); setError(false); return; }
+    setResolvedUrl(null);
+    setError(false);
+    imageService.getImage(url).then((result) => {
+      if (cancelled) return;
+      if (result?.success && result.dataUrl) setResolvedUrl(result.dataUrl);
+      else setError(true);
+    }).catch(() => { if (!cancelled) setError(true); });
+    return () => { cancelled = true; };
+  }, [url, needsProxy]);
+
+  const initials = (label || '?').slice(0, 2).toUpperCase();
+  const grayscaleClass = selected ? '' : 'opacity-70 grayscale group-hover:grayscale-0';
+
+  if (resolvedUrl && !error) {
+    return (
+      <img
+        src={resolvedUrl}
+        alt={label}
+        className={`h-full w-full object-cover ${grayscaleClass}`}
+        onError={() => setError(true)}
+      />
+    );
+  }
+  return <span className="text-xs font-semibold text-gray-500">{initials}</span>;
+};
+
 // Multi-select target picker: chips laid out horizontally, each showing a
 // business avatar (or fallback icon) with a small platform badge in the
 // bottom-right corner. Selected chips get a colored ring + a checkmark
@@ -179,20 +218,9 @@ const TargetChipsPicker = ({ targets, selected, onChange }) => {
                     : 'ring-1 ring-gray-200 hover:ring-primary-300'}
                 `}
               >
-                {/* Avatar */}
+                {/* Avatar (ChipAvatar handles the imageService proxy for GMB URLs) */}
                 <div className="h-12 w-12 rounded-full overflow-hidden bg-gray-100 flex items-center justify-center">
-                  {t.avatarUrl ? (
-                    <img
-                      src={t.avatarUrl}
-                      alt={t.label}
-                      className={`h-full w-full object-cover ${isSelected ? '' : 'opacity-70 grayscale group-hover:grayscale-0'}`}
-                      onError={(e) => { e.currentTarget.style.display = 'none'; }}
-                    />
-                  ) : (
-                    <span className="text-xs font-semibold text-gray-500">
-                      {(t.label || '?').slice(0, 2).toUpperCase()}
-                    </span>
-                  )}
+                  <ChipAvatar url={t.avatarUrl} label={t.label} selected={isSelected} />
                 </div>
                 {/* Platform badge (bottom-right corner) */}
                 <span className={`absolute -bottom-0.5 -right-0.5 h-5 w-5 rounded-full ${wrap} flex items-center justify-center ring-2 ring-white`}>
@@ -238,6 +266,9 @@ const Posts = () => {
   const [socialProfiles, setSocialProfiles] = useState([]);
   // Per-publish target results — { successCount, failCount, failures: [{targetLabel, error}] }
   const [publishSummary, setPublishSummary] = useState(null);
+  // Composer modal open/close. Also flips true automatically whenever
+  // editingPost is set (so clicking Edit on an existing post opens the modal).
+  const [showComposer, setShowComposer] = useState(false);
   
   
   // Expanded posts state
@@ -402,7 +433,15 @@ const Posts = () => {
         const rows = locationId.startsWith('fb:')
           ? await connectionsService.getFacebookPagePosts(connectionId, 20)
           : await connectionsService.getInstagramMedia(connectionId, 20);
-        setPosts(rows);
+        // Preserve optimistic drafts (from just-published) that haven't yet
+        // appeared in the source platform's feed.
+        setPosts((prev) => {
+          const drafts = prev.filter((p) => p._isDraft);
+          const surviving = drafts.filter(
+            (d) => !rows.some((fp) => (fp.content || '').trim() === (d.content || '').trim())
+          );
+          return [...surviving, ...rows];
+        });
       } catch (e) {
         setPosts([]);
       } finally {
@@ -430,7 +469,14 @@ const Posts = () => {
         // Process media for posts
         const postsWithMedia = await postsService.getMediaForPosts(posts);
 
-        setPosts(postsWithMedia);
+        // Preserve optimistic drafts that don't yet appear in the GMB feed.
+        setPosts((prev) => {
+          const drafts = prev.filter((p) => p._isDraft);
+          const surviving = drafts.filter(
+            (d) => !postsWithMedia.some((fp) => (fp.content || '').trim() === (d.content || '').trim())
+          );
+          return [...surviving, ...postsWithMedia];
+        });
         
         // Background refresh: check for updates and refresh UI if needed
         if (!forceRefresh) {
@@ -690,11 +736,13 @@ const Posts = () => {
       );
       setFormData({ summary: '', postType: 'UPDATE', callToAction: { type: '', url: '' }, mediaUrls: [''] });
       setUploadedFiles([]);
+      setShowComposer(false); // Close the composer modal on full success
     } else if (successes.length === 0) {
       showNotification(
         `Failed on all ${failures.length} account${failures.length === 1 ? '' : 's'}. First error: ${failures[0].error}`,
         'error'
       );
+      // Keep modal open so the user can fix + retry
     } else {
       showNotification(
         `Posted to ${successes.length}, failed on ${failures.length}. First failure: ${failures[0].label} — ${failures[0].error}`,
@@ -702,10 +750,37 @@ const Posts = () => {
       );
       setFormData({ summary: '', postType: 'UPDATE', callToAction: { type: '', url: '' }, mediaUrls: [''] });
       setUploadedFiles([]);
+      setShowComposer(false);
+    }
+
+    // Optimistic draft: prepend a "publishing" card to the recent posts feed
+    // for the currently-focused target IF it was in the success list. Marked
+    // with _isDraft so the next fetchPosts can dedupe by content.
+    const focusedSuccess = successes.find((o) => o.key === selectedProfile);
+    if (focusedSuccess && !editingPost) {
+      const focusedTarget = focusedSuccess.target;
+      const draftPost = {
+        id: `draft-${Date.now()}`,
+        content: formData.summary,
+        postType: formData.postType,
+        createdAt: new Date().toISOString(),
+        media: allMedia.map((m) => ({
+          mediaFormat: m.mediaFormat || 'PHOTO',
+          sourceUrl: m.sourceUrl,
+        })),
+        callToAction: (formData.callToAction.type && formData.callToAction.url)
+          ? { actionType: formData.callToAction.type, url: formData.callToAction.url }
+          : null,
+        status: 'publishing',
+        _isDraft: true,
+        _provider: focusedTarget && focusedTarget.provider !== 'gmb' ? focusedTarget.provider : null,
+      };
+      setPosts((prev) => [draftPost, ...prev]);
     }
 
     // Refresh the currently focused target's recent posts so the just-published
-    // post appears (with a small delay for the source platform to index it).
+    // post appears from the source platform (drops the draft placeholder once
+    // fetch returns fresh data).
     if (selectedProfile) {
       setTimeout(() => { fetchPosts(selectedProfile, 1, false, true); }, 2000);
     }
@@ -1195,6 +1270,16 @@ const Posts = () => {
         <div className="flex space-x-3">
           <button
             onClick={() => {
+              setEditingPost(null);
+              setShowComposer(true);
+            }}
+            className="inline-flex items-center px-4 py-2 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-primary-600 hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500"
+          >
+            <Plus className="h-4 w-4 mr-2" />
+            New Post
+          </button>
+          <button
+            onClick={() => {
               fetchPosts(selectedProfile, 1, false, false);
             }}
             disabled={refreshing}
@@ -1248,7 +1333,23 @@ const Posts = () => {
         }}
       />
 
-             {/* Create/Edit Post Form Section */}
+      {/* Composer modal — opens on "New Post" click or when editingPost is set.
+          Backdrop click closes it (unless a submit is in flight). Wraps the
+          existing composer JSX unchanged; only adds the overlay + close X. */}
+      {(showComposer || editingPost) && (
+      <div
+        className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 p-4 overflow-y-auto"
+        onClick={() => { if (!creatingPost && !updatingPost) { setShowComposer(false); setEditingPost(null); } }}
+      >
+       <div className="max-w-4xl w-full my-8 relative" onClick={(e) => e.stopPropagation()}>
+         <button
+           type="button"
+           onClick={() => { if (!creatingPost && !updatingPost) { setShowComposer(false); setEditingPost(null); } }}
+           className="absolute -top-3 -right-3 h-8 w-8 rounded-full bg-white shadow-md text-gray-500 hover:text-gray-700 flex items-center justify-center z-10"
+           title="Close"
+         >
+           <X className="h-4 w-4" />
+         </button>
        <div className="bg-white shadow rounded-lg p-6">
          <div className="flex items-center justify-between mb-4">
                        <div>
@@ -1773,6 +1874,9 @@ const Posts = () => {
            </div>
          </form>
       </div>
+      </div>
+      </div>
+      )}
 
       {/* Posts List */}
       {selectedProfile && (
@@ -1835,7 +1939,13 @@ const Posts = () => {
                       {/* Post Header — provider badge (for FB/IG) + edit/delete
                           (GMB only; Meta post edit/delete isn't wired yet). */}
                       <div className="flex items-center justify-between p-3 bg-gray-50">
-                        <div>
+                        <div className="flex items-center gap-2">
+                          {post._isDraft && (
+                            <span className="inline-flex items-center text-xs px-2 py-0.5 rounded bg-amber-100 text-amber-800">
+                              <RefreshCw className="h-3 w-3 mr-1 animate-spin" />
+                              Publishing…
+                            </span>
+                          )}
                           {post._provider === 'facebook' && (
                             <span className="inline-flex items-center text-xs px-2 py-0.5 rounded bg-indigo-100 text-indigo-800">
                               Facebook
