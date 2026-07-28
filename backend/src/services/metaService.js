@@ -181,7 +181,8 @@ async function publishInstagramPost({ igBusinessId, pageAccessToken, imageUrl, c
   if (!pageAccessToken) throw new Error('pageAccessToken required');
   if (!imageUrl) throw new Error('imageUrl required (public HTTPS URL)');
 
-  // Step 1: create container
+  // Step 1: create the media container. Instagram fetches + validates the
+  // image in the background.
   const containerRes = await axios.post(
     `${GRAPH_BASE}/${igBusinessId}/media`,
     null,
@@ -197,7 +198,40 @@ async function publishInstagramPost({ igBusinessId, pageAccessToken, imageUrl, c
   const creationId = containerRes.data?.id;
   if (!creationId) throw new Error('Failed to create IG media container');
 
-  // Step 2: publish
+  // Step 2: poll container status until FINISHED. Publishing before
+  // Instagram finishes processing the image returns 400 "Media ID is
+  // not available" — that's what was silently killing IG publishes.
+  // Statuses (per Graph API docs):
+  //   IN_PROGRESS — still processing, wait
+  //   FINISHED    — ready to publish
+  //   ERROR       — Instagram couldn't fetch / validate the image
+  //   EXPIRED     — container older than 24h; caller must recreate
+  //   PUBLISHED   — already published
+  const POLL_INTERVAL_MS = 1500;
+  const POLL_TIMEOUT_MS = 30_000;
+  const startedAt = Date.now();
+  let lastStatus = null;
+  while (Date.now() - startedAt < POLL_TIMEOUT_MS) {
+    const statusRes = await axios.get(`${GRAPH_BASE}/${creationId}`, {
+      params: {
+        fields: 'status_code,status',
+        access_token: pageAccessToken,
+      },
+      timeout: 10_000,
+    });
+    lastStatus = statusRes.data?.status_code || null;
+    if (lastStatus === 'FINISHED') break;
+    if (lastStatus === 'ERROR' || lastStatus === 'EXPIRED') {
+      const detail = statusRes.data?.status || 'no message';
+      throw new Error(`IG media container ${lastStatus}: ${detail}`);
+    }
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+  }
+  if (lastStatus !== 'FINISHED') {
+    throw new Error(`IG media container still ${lastStatus || 'IN_PROGRESS'} after 30s — try again`);
+  }
+
+  // Step 3: publish the ready container.
   const publishRes = await axios.post(
     `${GRAPH_BASE}/${igBusinessId}/media_publish`,
     null,
