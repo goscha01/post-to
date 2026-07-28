@@ -633,7 +633,23 @@ const Posts = () => {
         }
       }, 3000); // Wait 3 seconds for GMB API to index the new post
     } catch (error) {
-      alert('Failed to create post. Please try again.');
+      // Surface the real failure so debugging isn't a game of 20 questions.
+      // Also emit to the console + client-log so the next silent failure
+      // lands in Loki as ai_post_error / equivalent.
+      // eslint-disable-next-line no-console
+      console.error('[handleCreatePost] failed:', error, {
+        status: error?.response?.status,
+        data: error?.response?.data,
+      });
+      const backendMsg = error?.response?.data?.error || error?.response?.data?.details;
+      const httpStatus = error?.response?.status;
+      const localMsg = error?.message;
+      const composed = backendMsg
+        ? `Failed to post (${httpStatus || 'no-status'}): ${backendMsg}`
+        : httpStatus
+        ? `Failed to post (${httpStatus}): ${localMsg || 'unknown'}`
+        : `Failed to post: ${localMsg || 'unknown error — check console'}`;
+      alert(composed);
      } finally {
        setCreatingPost(false);
     }
