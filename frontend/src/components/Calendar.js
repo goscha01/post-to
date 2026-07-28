@@ -25,6 +25,12 @@ import { useAuth } from '../contexts/AuthContext';
 import businessProfileService from '../services/businessProfileService';
 import calendarService from '../services/calendarService';
 import {
+  getRecentUrls,
+  rememberUrl,
+  getRecentPhones,
+  rememberPhone,
+} from '../utils/composerMemory';
+import {
   CTA_OPTIONS,
   POST_TYPES,
   isCallCta,
@@ -1245,6 +1251,12 @@ const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationK
       } catch { /* non-fatal */ }
     }
 
+    // Remember CTA URL / phone across future composer opens.
+    if (results.every((r) => r.ok) && callToAction.type && callToAction.url?.trim()) {
+      if (isCallCta(callToAction.type)) rememberPhone(callToAction.url.trim());
+      else rememberUrl(callToAction.url.trim());
+    }
+
     // If every location succeeded, close and refresh. Otherwise leave the
     // modal open so the user can see per-location failures.
     if (results.every((r) => r.ok)) {
@@ -1666,11 +1678,22 @@ const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationK
                   </label>
                   <input
                     type={isCallCta(callToAction.type) ? 'tel' : 'url'}
+                    list={isCallCta(callToAction.type) ? 'cta-phone-history' : 'cta-url-history'}
                     value={callToAction.url}
                     onChange={(e) => setCallToAction((prev) => ({ ...prev, url: e.target.value }))}
                     placeholder={isCallCta(callToAction.type) ? '(904) 902-0402' : 'https://example.com'}
                     className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
                   />
+                  <datalist id="cta-url-history">
+                    {getRecentUrls().map((u) => (
+                      <option key={u} value={u} />
+                    ))}
+                  </datalist>
+                  <datalist id="cta-phone-history">
+                    {getRecentPhones().map((p) => (
+                      <option key={p} value={p} />
+                    ))}
+                  </datalist>
                   <p className="mt-1 text-xs text-gray-500">
                     {isCallCta(callToAction.type)
                       ? 'Customers will call this number when they tap the button.'

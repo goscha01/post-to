@@ -6,6 +6,7 @@
 import React, { useEffect, useState } from 'react';
 import axios from '../utils/axiosConfig';
 import driveService from '../services/driveService';
+import { getLastDriveFolder, rememberDriveFolder } from '../utils/composerMemory';
 import {
   X,
   Plus,
@@ -17,6 +18,7 @@ import {
   Image as ImageIcon,
   CheckCircle2,
   AlertCircle,
+  Users,
 } from 'lucide-react';
 
 // ── CTA + post-type constants ──────────────────────────────
@@ -149,14 +151,29 @@ export const DrivePickerModal = ({ existingUrls, initialGoogleId, initialEmail, 
   const [selected, setSelected] = useState(() => new Set());
   const [selectedFiles, setSelectedFiles] = useState(new Map());
   const [folderPath, setFolderPath] = useState([]);
-  const [accountScope, setAccountScope] = useState(
-    initialGoogleId ? `google:${initialGoogleId}` : initialEmail ? `email:${initialEmail}` : ''
-  );
+  const initialScope = initialGoogleId ? `google:${initialGoogleId}` : initialEmail ? `email:${initialEmail}` : '';
+  const [accountScope, setAccountScope] = useState(initialScope);
   const [availableAccounts, setAvailableAccounts] = useState([]);
   const [showDupConfirm, setShowDupConfirm] = useState(false);
 
   const currentFolderId = folderPath.length > 0 ? folderPath[folderPath.length - 1].id : '';
   const isSearching = !!debouncedQ;
+
+  // Restore last-viewed folder for the current account scope on mount
+  // (and when the user changes scope). Only restores if we haven't been
+  // navigating during this session — folderPath.length === 0 guard.
+  useEffect(() => {
+    const last = getLastDriveFolder(accountScope);
+    if (Array.isArray(last) && last.length > 0 && folderPath.length === 0) {
+      setFolderPath(last);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountScope]);
+
+  // Persist folder path on every change so next open restores it.
+  useEffect(() => {
+    rememberDriveFolder(accountScope, folderPath);
+  }, [accountScope, folderPath]);
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedQ(query.trim()), 300);
@@ -293,24 +310,48 @@ export const DrivePickerModal = ({ existingUrls, initialGoogleId, initialEmail, 
 
         <div className="px-5 py-3 border-b border-gray-200 space-y-2">
           {availableAccounts.length > 1 && (
-            <div className="flex items-center gap-2">
-              <label className="text-xs font-medium text-gray-500 whitespace-nowrap">Drive:</label>
-              <select
-                value={accountScope}
-                onChange={(e) => changeAccountScope(e.target.value)}
-                className="flex-1 text-sm border-gray-300 rounded-md py-1.5 focus:ring-primary-500 focus:border-primary-500"
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs font-medium text-gray-500 whitespace-nowrap">Drive:</span>
+              {/* All-accounts icon: union view. Highlighted when accountScope is empty. */}
+              <button
+                type="button"
+                onClick={() => changeAccountScope('')}
+                title="All connected accounts (union)"
+                className={`inline-flex items-center justify-center h-8 w-8 rounded-full border-2 transition-colors ${
+                  accountScope === ''
+                    ? 'border-primary-500 bg-primary-50 text-primary-700'
+                    : 'border-gray-200 bg-white text-gray-500 hover:border-gray-300'
+                }`}
               >
-                <option value="">All connected accounts (union)</option>
-                {availableAccounts.map((a) => {
-                  const label = a.email || a.googleId || 'Unnamed account';
-                  const val = a.googleId ? `google:${a.googleId}` : `email:${a.email}`;
-                  return (
-                    <option key={val} value={val}>
-                      {label}
-                    </option>
-                  );
-                })}
-              </select>
+                <Users className="h-4 w-4" />
+              </button>
+              {availableAccounts.map((a) => {
+                const label = a.email || a.googleId || 'Unnamed account';
+                const val = a.googleId ? `google:${a.googleId}` : `email:${a.email}`;
+                const isActive = accountScope === val;
+                // Derive a stable 1-char initial per email/googleId.
+                const initial = (label[0] || '?').toUpperCase();
+                return (
+                  <button
+                    key={val}
+                    type="button"
+                    onClick={() => changeAccountScope(val)}
+                    title={label}
+                    className={`inline-flex items-center justify-center h-8 w-8 rounded-full border-2 text-xs font-semibold transition-colors ${
+                      isActive
+                        ? 'border-primary-500 bg-primary-50 text-primary-700'
+                        : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300'
+                    }`}
+                  >
+                    {initial}
+                  </button>
+                );
+              })}
+              <span className="text-xs text-gray-500 truncate max-w-[10rem]" title={accountScope}>
+                {accountScope === ''
+                  ? 'All accounts'
+                  : (availableAccounts.find((a) => (a.googleId ? `google:${a.googleId}` : `email:${a.email}`) === accountScope)?.email || accountScope.replace(/^(google|email):/, ''))}
+              </span>
             </div>
           )}
           <div className="relative">

@@ -7,6 +7,12 @@ import imageService from '../services/imageService';
 import businessProfileService from '../services/businessProfileService';
 import postsService from '../services/postsService';
 import calendarService from '../services/calendarService';
+import {
+  getRecentUrls,
+  rememberUrl,
+  getRecentPhones,
+  rememberPhone,
+} from '../utils/composerMemory';
 import connectionsService from '../services/connectionsService';
 import {
   FileText,
@@ -897,6 +903,14 @@ const Posts = () => {
         setActiveDraftId(null);
         setDraftSavedAt(null);
         loadSavedDrafts();
+      }
+      // Remember the CTA URL / phone so the datalist offers it next time.
+      if (formData.callToAction.type && formData.callToAction.url?.trim()) {
+        if (isCallCta(formData.callToAction.type)) {
+          rememberPhone(formData.callToAction.url.trim());
+        } else {
+          rememberUrl(formData.callToAction.url.trim());
+        }
       }
       setFormData({ summary: '', postType: 'UPDATE', callToAction: { type: '', url: '' }, mediaUrls: [''] });
       setUploadedFiles([]);
@@ -1822,22 +1836,9 @@ const Posts = () => {
                )}
              </div>
            )}
-           {/* Duplicated target chip picker inside the modal so users can
-               see + change which accounts they're posting to without
-               closing the composer. Same state as the outer picker via
-               targets + selectedTargets, so both stay in sync. */}
-           {!editingPost && targets.length > 0 && (
-             <div className="mb-4 border border-gray-200 rounded-lg p-3 bg-gray-50/50">
-               <TargetChipsPicker
-                 targets={targets}
-                 selected={selectedTargets}
-                 onChange={(nextSet) => {
-                   setSelectedTargets(nextSet);
-                   setExpandedPosts(new Set());
-                 }}
-               />
-             </div>
-           )}
+           {/* Target chip picker was moved to just above the footer
+               (right before Publish/Schedule) so users see where they're
+               posting in the same viewport as the action button. */}
            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
              {/* Left Column - Form */}
              <div className="lg:col-span-2 space-y-4">
@@ -2091,6 +2092,11 @@ const Posts = () => {
                          ? 'tel'
                          : 'url'
                      }
+                     list={
+                       isCallCta(editingPost ? editFormData.callToAction.type : formData.callToAction.type)
+                         ? 'cta-phone-history'
+                         : 'cta-url-history'
+                     }
                      value={editingPost ? editFormData.callToAction.url : formData.callToAction.url}
                      onChange={(e) => editingPost
                        ? setEditFormData({
@@ -2109,11 +2115,40 @@ const Posts = () => {
                          : 'https://example.com'
                      }
                    />
+                   {/* Datalists give the browser native autocomplete from
+                       previously-used URLs/phones. Populated from
+                       composerMemory on every successful submit. */}
+                   <datalist id="cta-url-history">
+                     {getRecentUrls().map((u) => (
+                       <option key={u} value={u} />
+                     ))}
+                   </datalist>
+                   <datalist id="cta-phone-history">
+                     {getRecentPhones().map((p) => (
+                       <option key={p} value={p} />
+                     ))}
+                   </datalist>
                    <p className="mt-1 text-xs text-gray-500">
                      {isCallCta(editingPost ? editFormData.callToAction.type : formData.callToAction.type)
                        ? 'Customers will call this number when they tap the button.'
                        : 'Where the button sends people when tapped.'}
                    </p>
+                 </div>
+               )}
+
+               {/* Target chip picker — placed here so it's right above the
+                   Publish/Schedule buttons in the same viewport. Users see
+                   which accounts they're posting to at the moment of action. */}
+               {!editingPost && targets.length > 0 && (
+                 <div className="mt-4 border border-gray-200 rounded-lg p-3 bg-gray-50/50">
+                   <TargetChipsPicker
+                     targets={targets}
+                     selected={selectedTargets}
+                     onChange={(nextSet) => {
+                       setSelectedTargets(nextSet);
+                       setExpandedPosts(new Set());
+                     }}
+                   />
                  </div>
                )}
 
