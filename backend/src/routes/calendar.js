@@ -186,6 +186,195 @@ function firstMediaUrl(row) {
   return null;
 }
 
+// ── Drafts ──────────────────────────────────────────────
+//
+// Drafts live in the same scheduled_posts table with status='draft' and
+// a nullable scheduled_time. Publish/schedule from a draft is a status
+// transition + optional field patch.
+//
+// POST   /api/calendar/drafts        Create a draft
+// GET    /api/calendar/drafts        List current user's drafts
+// PATCH  /api/calendar/drafts/:id    Edit draft fields
+// DELETE /api/calendar/drafts/:id    Delete a draft
+// POST   /api/calendar/drafts/:id/promote  status='draft' → 'scheduled'
+//                                          Body: { scheduledTime }
+
+router.post('/drafts', async (req, res) => {
+  const userId = req.user?.userId;
+  try {
+    const {
+      content = '',
+      media = [],
+      platforms = ['google'],
+      gmbAccountId = null,
+      gmbLocationId = null,
+      postType = 'UPDATE',
+      callToAction = null,
+    } = req.body || {};
+    // Drafts don't require content or a location — the user might save
+    // just an idea and fill the rest later.
+    const mediaClean = Array.isArray(media)
+      ? media
+          .map((m) => {
+            if (!m) return null;
+            if (typeof m === 'string') return { sourceUrl: m, mediaFormat: 'PHOTO' };
+            const url = m.sourceUrl || m.url || null;
+            if (!url) return null;
+            return { sourceUrl: url, mediaFormat: m.mediaFormat || 'PHOTO' };
+          })
+          .filter(Boolean)
+      : [];
+
+    const { data, error } = await supabase
+      .from('scheduled_posts')
+      .insert({
+        user_id: userId,
+        content,
+        media: mediaClean,
+        platforms,
+        // scheduled_time nullable for drafts (see scheduled-posts-drafts.sql)
+        scheduled_time: null,
+        status: 'draft',
+        gmb_account_id: gmbAccountId,
+        location_id: gmbLocationId,
+        post_type: postType,
+        call_to_action: callToAction || null,
+      })
+      .select()
+      .single();
+
+    if (error) {
+      logger.error('calendar.draft.insert_error', { user_id: userId, error: error.message });
+      return res.status(500).json({ success: false, error: 'Failed to save draft', details: error.message });
+    }
+    logger.info('calendar.draft.created', { user_id: userId, id: data.id });
+    return res.json({ success: true, draft: data });
+  } catch (err) {
+    logger.error('calendar.draft.unhandled', { user_id: userId, error: err?.message });
+    return res.status(500).json({ success: false, error: 'Failed to save draft', details: err.message });
+  }
+});
+
+router.get('/drafts', async (req, res) => {
+  const userId = req.user?.userId;
+  try {
+    const { data, error } = await supabase
+      .from('scheduled_posts')
+      .select(
+        'id, content, media, platforms, gmb_account_id, location_id, post_type, call_to_action, updated_at, created_at'
+      )
+      .eq('user_id', userId)
+      .eq('status', 'draft')
+      .order('updated_at', { ascending: false })
+      .limit(200);
+    if (error) {
+      return res.status(500).json({ success: false, error: 'Failed to list drafts', details: error.message });
+    }
+    return res.json({ success: true, drafts: data || [] });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: 'Failed to list drafts', details: err.message });
+  }
+});
+
+router.patch('/drafts/:id', async (req, res) => {
+  const userId = req.user?.userId;
+  const { id } = req.params;
+  try {
+    const patch = {};
+    if (typeof req.body?.content === 'string') patch.content = req.body.content;
+    if (Array.isArray(req.body?.media)) {
+      patch.media = req.body.media
+        .map((m) => {
+          if (!m) return null;
+          if (typeof m === 'string') return { sourceUrl: m, mediaFormat: 'PHOTO' };
+          const url = m.sourceUrl || m.url || null;
+          if (!url) return null;
+          return { sourceUrl: url, mediaFormat: m.mediaFormat || 'PHOTO' };
+        })
+        .filter(Boolean);
+    }
+    if (req.body?.gmbAccountId !== undefined) patch.gmb_account_id = req.body.gmbAccountId || null;
+    if (req.body?.gmbLocationId !== undefined) patch.location_id = req.body.gmbLocationId || null;
+    if (req.body?.postType) patch.post_type = req.body.postType;
+    if (req.body?.callToAction !== undefined) patch.call_to_action = req.body.callToAction || null;
+    if (Object.keys(patch).length === 0) {
+      return res.status(400).json({ success: false, error: 'No editable fields provided' });
+    }
+    const { data, error } = await supabase
+      .from('scheduled_posts')
+      .update(patch)
+      .eq('id', id)
+      .eq('user_id', userId)
+      .eq('status', 'draft')
+      .select()
+      .single();
+    if (error || !data) {
+      return res.status(404).json({ success: false, error: 'Draft not found or no longer editable' });
+    }
+    return res.json({ success: true, draft: data });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: 'Failed to update draft', details: err.message });
+  }
+});
+
+router.delete('/drafts/:id', async (req, res) => {
+  const userId = req.user?.userId;
+  const { id } = req.params;
+  try {
+    const { data, error } = await supabase
+      .from('scheduled_posts')
+      .delete()
+      .eq('id', id)
+      .eq('user_id', userId)
+      .eq('status', 'draft')
+      .select()
+      .single();
+    if (error || !data) {
+      return res.status(404).json({ success: false, error: 'Draft not found' });
+    }
+    return res.json({ success: true });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: 'Failed to delete draft', details: err.message });
+  }
+});
+
+// Promote a draft to a scheduled post. Publish-now doesn't route through
+// this — that path fires POST /api/posts and then the client deletes the
+// draft on success, avoiding a partial state where the draft is gone but
+// the post never lands.
+router.post('/drafts/:id/promote', async (req, res) => {
+  const userId = req.user?.userId;
+  const { id } = req.params;
+  try {
+    const { scheduledTime } = req.body || {};
+    if (!scheduledTime) {
+      return res.status(400).json({ success: false, error: 'scheduledTime is required' });
+    }
+    const when = new Date(scheduledTime);
+    if (Number.isNaN(when.getTime())) {
+      return res.status(400).json({ success: false, error: 'scheduledTime must be a valid ISO timestamp' });
+    }
+    if (when.getTime() < Date.now() - 60_000) {
+      return res.status(400).json({ success: false, error: 'scheduledTime must be in the future' });
+    }
+    const { data, error } = await supabase
+      .from('scheduled_posts')
+      .update({ status: 'scheduled', scheduled_time: when.toISOString() })
+      .eq('id', id)
+      .eq('user_id', userId)
+      .eq('status', 'draft')
+      .select()
+      .single();
+    if (error || !data) {
+      return res.status(404).json({ success: false, error: 'Draft not found' });
+    }
+    logger.info('calendar.draft.promoted', { user_id: userId, id, scheduled_time: data.scheduled_time });
+    return res.json({ success: true, scheduled: data });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: 'Failed to promote draft', details: err.message });
+  }
+});
+
 // GET /api/calendar?from=<iso>&to=<iso>
 // Returns published (social_media_posts) + scheduled (scheduled_posts) items
 // within the requested window. Auth-only — reads Supabase, no Google APIs.

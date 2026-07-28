@@ -38,6 +38,50 @@ class CalendarService {
     const response = await axios.patch(`/api/calendar/schedule/${id}`, body);
     return response.data;
   }
+
+  // ── Drafts ─────────────────────────────────
+  async listDrafts() {
+    const response = await axios.get('/api/calendar/drafts');
+    return response.data;
+  }
+
+  async saveDraft({ content, media, gmbAccountId, gmbLocationId, postType, callToAction }) {
+    const body = {
+      content: content || '',
+      media: media || [],
+      platforms: ['google'],
+      gmbAccountId: gmbAccountId || null,
+      gmbLocationId: gmbLocationId || null,
+      postType: postType || 'UPDATE',
+      callToAction: callToAction || null,
+    };
+    const response = await axios.post('/api/calendar/drafts', body);
+    return response.data;
+  }
+
+  async updateDraft(id, { content, media, gmbAccountId, gmbLocationId, postType, callToAction }) {
+    const body = {};
+    if (typeof content === 'string') body.content = content;
+    if (Array.isArray(media)) body.media = media;
+    if (gmbAccountId !== undefined) body.gmbAccountId = gmbAccountId;
+    if (gmbLocationId !== undefined) body.gmbLocationId = gmbLocationId;
+    if (postType) body.postType = postType;
+    if (callToAction !== undefined) body.callToAction = callToAction;
+    const response = await axios.patch(`/api/calendar/drafts/${id}`, body);
+    return response.data;
+  }
+
+  async deleteDraft(id) {
+    const response = await axios.delete(`/api/calendar/drafts/${id}`);
+    return response.data;
+  }
+
+  async promoteDraft(id, scheduledTime) {
+    const response = await axios.post(`/api/calendar/drafts/${id}/promote`, {
+      scheduledTime: scheduledTime instanceof Date ? scheduledTime.toISOString() : scheduledTime,
+    });
+    return response.data;
+  }
 }
 
 const calendarService = new CalendarService();

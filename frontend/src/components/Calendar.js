@@ -170,7 +170,9 @@ const Calendar = () => {
   const [error, setError] = useState(null);
   const [showKind, setShowKind] = useState('both'); // 'both' | 'scheduled' | 'published'
   const [detailItem, setDetailItem] = useState(null);
-  const [scheduleModal, setScheduleModal] = useState(null); // { defaultDate }
+  const [scheduleModal, setScheduleModal] = useState(null); // { defaultDate, draft? }
+  const [drafts, setDrafts] = useState([]);
+  const [draftsLoading, setDraftsLoading] = useState(false);
 
   // Load accounts + locations
   const loadAccounts = useCallback(
@@ -302,14 +304,50 @@ const Calendar = () => {
     setScheduleModal({ defaultDate: seed });
   };
 
-  const handleScheduled = () => {
-    setScheduleModal(null);
+  const handleScheduled = (opts = {}) => {
+    if (!opts.keepOpen) setScheduleModal(null);
     fetchRange({ silent: true });
+    loadDrafts();
   };
 
   const handleCancelled = () => {
     setDetailItem(null);
     fetchRange({ silent: true });
+  };
+
+  const loadDrafts = useCallback(async () => {
+    if (!isAuthenticated || isDisconnected) return;
+    setDraftsLoading(true);
+    try {
+      const data = await calendarService.listDrafts();
+      setDrafts(Array.isArray(data.drafts) ? data.drafts : []);
+    } catch {
+      // Non-fatal — the calendar still works without drafts
+    } finally {
+      setDraftsLoading(false);
+    }
+  }, [isAuthenticated, isDisconnected]);
+
+  useEffect(() => {
+    loadDrafts();
+  }, [loadDrafts]);
+
+  const openDraft = (draft) => {
+    setScheduleModal({
+      defaultDate: new Date(Date.now() + 60 * 60 * 1000),
+      draft,
+    });
+  };
+
+  const deleteDraft = async (id) => {
+    // eslint-disable-next-line no-restricted-globals, no-alert
+    if (!window.confirm('Delete this draft?')) return;
+    try {
+      await calendarService.deleteDraft(id);
+      setDrafts((prev) => prev.filter((d) => d.id !== id));
+    } catch {
+      // Non-fatal
+    }
   };
 
   const today = startOfDay(new Date());
@@ -429,6 +467,60 @@ const Calendar = () => {
               </ul>
             )}
           </FilterCard>
+
+          <FilterCard
+            title={`Drafts${drafts.length > 0 ? ` (${drafts.length})` : ''}`}
+            headerRight={
+              <button
+                type="button"
+                onClick={loadDrafts}
+                disabled={draftsLoading}
+                className="text-xs text-primary-600 hover:underline disabled:opacity-50"
+              >
+                <RefreshCw className={`h-3 w-3 inline ${draftsLoading ? 'animate-spin' : ''}`} />
+              </button>
+            }
+          >
+            {drafts.length === 0 ? (
+              <div className="text-xs text-gray-500">
+                No drafts yet. Use "Save as draft" in the composer to keep an idea for later.
+              </div>
+            ) : (
+              <ul className="space-y-1 max-h-56 overflow-y-auto pr-1">
+                {drafts.map((d) => {
+                  const preview = (d.content || '').trim() || <span className="italic text-gray-400">(empty)</span>;
+                  return (
+                    <li key={d.id} className="group">
+                      <div className="flex items-start gap-1 py-1.5 px-2 rounded hover:bg-gray-50">
+                        <button
+                          type="button"
+                          onClick={() => openDraft(d)}
+                          className="flex-1 min-w-0 text-left"
+                          title="Open in composer"
+                        >
+                          <span className="block text-sm text-gray-900 truncate">
+                            {typeof preview === 'string' ? preview.slice(0, 60) : preview}
+                          </span>
+                          <span className="block text-[11px] text-gray-500">
+                            {new Date(d.updated_at || d.created_at).toLocaleDateString()}
+                            {Array.isArray(d.media) && d.media.length > 0 ? ` · ${d.media.length} image${d.media.length === 1 ? '' : 's'}` : ''}
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => deleteDraft(d.id)}
+                          className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-600 p-1"
+                          title="Delete draft"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </FilterCard>
         </aside>
 
         {/* Grid */}
@@ -516,6 +608,7 @@ const Calendar = () => {
       {scheduleModal && (
         <PostComposerModal
           defaultDate={scheduleModal.defaultDate}
+          initialDraft={scheduleModal.draft || null}
           profiles={profiles}
           locations={locations}
           selectedLocationKeys={selectedLocationKeys}
@@ -839,7 +932,7 @@ const splitFullPath = (fullPath) => {
 // CTA_OPTIONS, POST_TYPES, isCallCta, digitsOnly, looksLikePhone, toTelUrl
 // live in composerShared.js — imported at the top of this file.
 
-const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationKeys, onReloadAccounts, onClose, onDone }) => {
+const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationKeys, onReloadAccounts, onClose, onDone, initialDraft }) => {
   // Flat list of every profile × location combo the user can pick.
   const allLocationOptions = useMemo(() => {
     const out = [];
@@ -859,25 +952,50 @@ const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationK
     return out;
   }, [profiles]);
 
-  // Preselect: everything the sidebar had checked. Fallback: first location.
+  // Preselect: from a draft, or everything the sidebar had checked, or
+  // the first available location.
   const initialPaths = useMemo(() => {
+    if (initialDraft?.gmb_account_id && initialDraft?.location_id) {
+      return [`accounts/${initialDraft.gmb_account_id}/locations/${initialDraft.location_id}`];
+    }
     const checked = selectedLocationKeys || new Set();
     const hits = allLocationOptions.filter((o) => checked.has(o.key));
     if (hits.length > 0) return hits.map((o) => o.fullPath);
     if (allLocationOptions.length > 0) return [allLocationOptions[0].fullPath];
     return [];
-  }, [allLocationOptions, selectedLocationKeys]);
+  }, [allLocationOptions, selectedLocationKeys, initialDraft]);
 
   const isFutureDefault = defaultDate && new Date(defaultDate).getTime() > Date.now() + 60_000;
+
+  // When editing a draft, prefill everything from the draft row.
+  const initialMediaUrls = useMemo(() => {
+    const arr = Array.isArray(initialDraft?.media)
+      ? initialDraft.media.map((m) => (typeof m === 'string' ? m : m?.sourceUrl || m?.url || ''))
+      : [];
+    return arr.length > 0 ? arr : [''];
+  }, [initialDraft]);
 
   const [locationPaths, setLocationPaths] = useState(initialPaths);
   const [when, setWhen] = useState(() => toLocalInputValue(new Date(defaultDate || Date.now() + 60 * 60 * 1000)));
   const [mode, setMode] = useState(isFutureDefault ? 'later' : 'now'); // 'now' | 'later'
-  const [postType, setPostType] = useState('UPDATE');
-  const [summary, setSummary] = useState('');
-  const [mediaUrls, setMediaUrls] = useState(['']);
+  const [postType, setPostType] = useState(initialDraft?.post_type || 'UPDATE');
+  const [summary, setSummary] = useState(initialDraft?.content || '');
+  const [mediaUrls, setMediaUrls] = useState(initialMediaUrls);
   const [uploadedFiles, setUploadedFiles] = useState([]);
-  const [callToAction, setCallToAction] = useState({ type: '', url: '' });
+  const [callToAction, setCallToAction] = useState(
+    initialDraft?.call_to_action
+      ? {
+          type: initialDraft.call_to_action.actionType || '',
+          // For CALL, strip the tel: prefix so the user can edit the raw number.
+          url: initialDraft.call_to_action.actionType === 'CALL'
+            ? (initialDraft.call_to_action.url || '').replace(/^tel:/i, '')
+            : initialDraft.call_to_action.url || '',
+        }
+      : { type: '', url: '' }
+  );
+  const draftId = initialDraft?.id || null;
+  const [savingDraft, setSavingDraft] = useState(false);
+  const [draftSavedAt, setDraftSavedAt] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
   const [reloading, setReloading] = useState(false);
@@ -1119,10 +1237,60 @@ const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationK
     setPostResults(results);
     setSubmitting(false);
 
+    // If every location succeeded and we were editing a draft, delete
+    // the draft row so it doesn't linger in the drafts list. Non-fatal.
+    if (results.every((r) => r.ok) && draftId) {
+      try {
+        await calendarService.deleteDraft(draftId);
+      } catch { /* non-fatal */ }
+    }
+
     // If every location succeeded, close and refresh. Otherwise leave the
     // modal open so the user can see per-location failures.
     if (results.every((r) => r.ok)) {
       onDone?.();
+    }
+  };
+
+  // Save-as-draft: idempotent — if we're editing an existing draft this
+  // updates it, otherwise inserts a new one. Distinct from the multi-step
+  // publish/schedule submit; no per-location fanout, no validation beyond
+  // "you're logged in and picked something".
+  const handleSaveDraft = async () => {
+    setError(null);
+    setSavingDraft(true);
+    try {
+      const primaryPath = locationPaths[0] || '';
+      const { accountId, locationId } = splitFullPath(primaryPath);
+      const ctaPayload =
+        callToAction.type && callToAction.url.trim()
+          ? {
+              actionType: callToAction.type,
+              url: isCallCta(callToAction.type)
+                ? toTelUrl(callToAction.url)
+                : callToAction.url.trim(),
+            }
+          : null;
+      const payload = {
+        content: summary,
+        media: validUrls.map((sourceUrl) => ({ sourceUrl, mediaFormat: 'PHOTO' })),
+        gmbAccountId: accountId || null,
+        gmbLocationId: locationId || null,
+        postType,
+        callToAction: ctaPayload,
+      };
+      if (draftId) {
+        await calendarService.updateDraft(draftId, payload);
+      } else {
+        await calendarService.saveDraft(payload);
+      }
+      setDraftSavedAt(new Date());
+      // Refresh parent list on save so the drafts count updates.
+      onDone?.({ keepOpen: true });
+    } catch (err) {
+      setError(err?.response?.data?.error || err?.message || 'Failed to save draft');
+    } finally {
+      setSavingDraft(false);
     }
   };
 
@@ -1624,20 +1792,35 @@ const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationK
           >
             Cancel
           </button>
-          <button
-            type="submit"
-            disabled={submitting || !hasProfiles || locationPaths.length === 0}
-            className="inline-flex items-center gap-1.5 px-5 py-2 text-sm font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 disabled:opacity-60"
-          >
-            {mode === 'later' ? <Clock className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
-            {submitting
-              ? mode === 'later'
-                ? `Scheduling to ${locationPaths.length}…`
-                : `Publishing to ${locationPaths.length}…`
-              : mode === 'later'
-                ? `Schedule${locationPaths.length > 1 ? ` to ${locationPaths.length} profiles` : ''}`
-                : `Publish${locationPaths.length > 1 ? ` to ${locationPaths.length} profiles` : ''}`}
-          </button>
+          <div className="flex items-center gap-2">
+            {draftSavedAt && (
+              <span className="text-xs text-gray-500">
+                Saved {draftSavedAt.toLocaleTimeString()}
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={handleSaveDraft}
+              disabled={savingDraft || submitting}
+              className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-60"
+            >
+              {savingDraft ? 'Saving…' : draftId ? 'Update draft' : 'Save as draft'}
+            </button>
+            <button
+              type="submit"
+              disabled={submitting || !hasProfiles || locationPaths.length === 0}
+              className="inline-flex items-center gap-1.5 px-5 py-2 text-sm font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 disabled:opacity-60"
+            >
+              {mode === 'later' ? <Clock className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+              {submitting
+                ? mode === 'later'
+                  ? `Scheduling to ${locationPaths.length}…`
+                  : `Publishing to ${locationPaths.length}…`
+                : mode === 'later'
+                  ? `Schedule${locationPaths.length > 1 ? ` to ${locationPaths.length} profiles` : ''}`
+                  : `Publish${locationPaths.length > 1 ? ` to ${locationPaths.length} profiles` : ''}`}
+            </button>
+          </div>
         </div>
       </form>
 
