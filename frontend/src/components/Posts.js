@@ -115,11 +115,13 @@ const PostImage = ({ imageUrl, altText, mediaFormat, mediaData }) => {
   );
 };
 
-// Chip avatar. GMB URLs (lh3.googleusercontent.com) require the imageService
-// proxy — direct <img> tags get 400 from Google's CDN. FB/IG CDN URLs load
-// fine cross-origin. Falls back to initials on error / missing URL.
-const ChipAvatar = ({ url, label, selected }) => {
-  const needsProxy = typeof url === 'string' && url.includes('lh3.googleusercontent.com');
+// Chip avatar. Any googleusercontent.com URL (GMB profile picture) routes
+// through the backend proxy — direct <img> gets 400 from Google's CDN.
+// FB/IG CDN URLs load cross-origin, direct <img>. On failure or missing
+// URL: shows a provider-appropriate icon (Building2 / Facebook / Instagram)
+// tinted to match the platform, so the chip still communicates *what* it is.
+const ChipAvatar = ({ url, label, selected, provider }) => {
+  const needsProxy = typeof url === 'string' && url.includes('googleusercontent.com');
   const [resolvedUrl, setResolvedUrl] = useState(needsProxy ? null : url);
   const [error, setError] = useState(false);
 
@@ -137,7 +139,6 @@ const ChipAvatar = ({ url, label, selected }) => {
     return () => { cancelled = true; };
   }, [url, needsProxy]);
 
-  const initials = (label || '?').slice(0, 2).toUpperCase();
   const grayscaleClass = selected ? '' : 'opacity-70 grayscale group-hover:grayscale-0';
 
   if (resolvedUrl && !error) {
@@ -150,7 +151,29 @@ const ChipAvatar = ({ url, label, selected }) => {
       />
     );
   }
-  return <span className="text-xs font-semibold text-gray-500">{initials}</span>;
+  // Fallback: provider-appropriate icon inside a tinted background so the
+  // chip still visually communicates the platform when the CDN URL fails
+  // (common for GMB when the OAuth token is expired).
+  if (provider === 'facebook') {
+    return (
+      <div className="h-full w-full bg-indigo-50 flex items-center justify-center">
+        <Facebook className="h-6 w-6 text-indigo-600" />
+      </div>
+    );
+  }
+  if (provider === 'instagram') {
+    return (
+      <div className="h-full w-full bg-pink-50 flex items-center justify-center">
+        <Instagram className="h-6 w-6 text-pink-600" />
+      </div>
+    );
+  }
+  // GMB / unknown
+  return (
+    <div className="h-full w-full bg-blue-50 flex items-center justify-center">
+      <Building2 className="h-6 w-6 text-blue-600" />
+    </div>
+  );
 };
 
 // Multi-select target picker: chips laid out horizontally, each showing a
@@ -220,7 +243,7 @@ const TargetChipsPicker = ({ targets, selected, onChange }) => {
               >
                 {/* Avatar (ChipAvatar handles the imageService proxy for GMB URLs) */}
                 <div className="h-12 w-12 rounded-full overflow-hidden bg-gray-100 flex items-center justify-center">
-                  <ChipAvatar url={t.avatarUrl} label={t.label} selected={isSelected} />
+                  <ChipAvatar url={t.avatarUrl} label={t.label} selected={isSelected} provider={t.provider} />
                 </div>
                 {/* Platform badge (bottom-right corner) */}
                 <span className={`absolute -bottom-0.5 -right-0.5 h-5 w-5 rounded-full ${wrap} flex items-center justify-center ring-2 ring-white`}>
@@ -548,12 +571,71 @@ const Posts = () => {
     }
   }, [isAuthenticated, isDisconnected, fetchData]);
 
-  // Auto-fetch posts when profile is selected
-  useEffect(() => {
-    if (selectedProfile && !isDisconnected) {
-      fetchPosts(selectedProfile);
+  // Multi-target fetch orchestrator. Fans out over every selected chip,
+  // tags each returned post with _targetKey/_targetLabel/_targetAccountLabel
+  // + _provider so the render layer can badge "Posted to <account>", and
+  // merges into one sorted-by-date feed. Preserves optimistic drafts.
+  const fetchPostsForTargets = useCallback(async (keys) => {
+    if (!keys || keys.length === 0) { setPosts([]); return; }
+    setRefreshing(true);
+    try {
+      const perTarget = await Promise.all(keys.map(async (key) => {
+        const target = targets.find((t) => t.key === key);
+        const tag = (rows) => rows.map((p) => ({
+          ...p,
+          _targetKey: key,
+          _targetLabel: target?.label,
+          _targetAccountLabel: target?.accountLabel,
+          // FB/IG posts already carry _provider from the backend normalizer;
+          // set it here for GMB too so the render layer can uniformly branch.
+          _provider: p._provider || (target?.provider === 'gmb' ? null : target?.provider),
+        }));
+        try {
+          if (key.startsWith('fb:')) {
+            const rows = await connectionsService.getFacebookPagePosts(key.slice(3), 10);
+            return tag(rows);
+          }
+          if (key.startsWith('ig:')) {
+            const rows = await connectionsService.getInstagramMedia(key.slice(3), 10);
+            return tag(rows);
+          }
+          // GMB
+          const parts = key.split('/');
+          const locId = parts[parts.length - 1];
+          const accId = parts[1];
+          const rows = await postsService.getPostsForLocation(locId, accId, false);
+          const withMedia = await postsService.getMediaForPosts(rows || []);
+          return tag(withMedia || []);
+        } catch (e) {
+          return [];
+        }
+      }));
+      const flat = perTarget.flat();
+      // Sort: newest first. Use createdAt / created_time / timestamp fallbacks.
+      flat.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+      // Preserve optimistic drafts (drop any whose content matches a fresh post).
+      setPosts((prev) => {
+        const drafts = prev.filter((p) => p._isDraft);
+        const surviving = drafts.filter(
+          (d) => !flat.some((fp) => (fp.content || '').trim() === (d.content || '').trim())
+        );
+        return [...surviving, ...flat];
+      });
+    } finally {
+      setRefreshing(false);
+      setLoading(false);
     }
-  }, [selectedProfile, isDisconnected, fetchPosts]);
+  }, [targets]);
+
+  // Auto-fetch posts whenever the selection changes.
+  useEffect(() => {
+    if (!isDisconnected && selectedTargets.size > 0) {
+      fetchPostsForTargets([...selectedTargets]);
+    } else if (selectedTargets.size === 0) {
+      setPosts([]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedTargets, isDisconnected]);
 
   const handleCreatePost = async (e) => {
     e.preventDefault();
@@ -782,7 +864,7 @@ const Posts = () => {
     // post appears from the source platform (drops the draft placeholder once
     // fetch returns fresh data).
     if (selectedProfile) {
-      setTimeout(() => { fetchPosts(selectedProfile, 1, false, true); }, 2000);
+      setTimeout(() => { fetchPostsForTargets([...selectedTargets]); }, 2000);
     }
 
     setCreatingPost(false);
@@ -800,25 +882,29 @@ const Posts = () => {
       // Set loading state for this specific post
       setDeletingPosts(prev => new Set(prev).add(postId));
       
-      // Extract account and location IDs from selectedProfile
-      const profileParts = selectedProfile.split('/');
+      // Prefer the post's own _targetKey (tagged during fetchPostsForTargets)
+      // so deletion hits the right GMB location when the feed shows posts
+      // from multiple targets. Fall back to selectedProfile for backwards
+      // compat when _targetKey is missing.
+      const originKey = post?._targetKey || selectedProfile;
+      const profileParts = (originKey || '').split('/');
       const locationId = profileParts[profileParts.length - 1];
       const accountId = profileParts[1]; // accounts/{accountId}/locations/{locationId}
-      
+
       if (!accountId || !locationId) {
         alert('Error: Could not determine account or location ID. Please select a different profile.');
         return;
       }
-      
+
       await axios.delete(`/api/posts/${postId}`, {
         params: {
           gmbAccountId: accountId,
           gmbLocationId: locationId
         }
       });
-      
-      // Refresh posts
-      await fetchPosts(selectedProfile);
+
+      // Refresh across all selected targets
+      await fetchPostsForTargets([...selectedTargets]);
       showNotification('Post deleted successfully!', 'success');
     } catch (error) {
       if (error.response?.data?.error) {
@@ -935,8 +1021,11 @@ const Posts = () => {
 
 
        
-       // Extract account and location IDs from selectedProfile
-       const profileParts = selectedProfile.split('/');
+       // Use the post's own _targetKey (set during fetchPostsForTargets) so
+       // updates route to the right location when the feed shows posts from
+       // multiple GMB locations. Fall back to selectedProfile.
+       const originKey = editingPost?._targetKey || selectedProfile;
+       const profileParts = (originKey || '').split('/');
        const locationId = profileParts[profileParts.length - 1];
        const accountId = profileParts[1];
 
@@ -1001,7 +1090,7 @@ const Posts = () => {
        // Refresh posts and reset edit state
 
        try {
-         await fetchPosts(selectedProfile);
+         await fetchPostsForTargets([...selectedTargets]);
 
        } catch (fetchError) {
 
@@ -1280,7 +1369,7 @@ const Posts = () => {
           </button>
           <button
             onClick={() => {
-              fetchPosts(selectedProfile, 1, false, false);
+              fetchPostsForTargets([...selectedTargets]);
             }}
             disabled={refreshing}
             className="inline-flex items-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 disabled:opacity-50"
@@ -1292,21 +1381,11 @@ const Posts = () => {
             onClick={async () => {
               try {
                 setRefreshing(true);
-                if (selectedProfile) {
-                  // FB/IG use a live fetch every call — no cache layer to clear.
-                  if (selectedProfile.startsWith('fb:') || selectedProfile.startsWith('ig:')) {
-                    await fetchPosts(selectedProfile, 1, false, true);
-                  } else {
-                    // GMB path — clear cache then force-refresh.
-                    postsService.clearPostsCache();
-                    postsService.clearMediaCache();
-                    const profileParts = selectedProfile.split('/');
-                    const locationIdOnly = profileParts[profileParts.length - 1];
-                    const accountId = profileParts[1];
-                    await postsService.getPostsForLocation(locationIdOnly, accountId, true);
-                    await fetchPosts(selectedProfile, 1, false, true);
-                  }
-                }
+                // Clear GMB cache once (FB/IG don't cache client-side) then
+                // re-fan-out across every selected target.
+                postsService.clearPostsCache();
+                postsService.clearMediaCache();
+                await fetchPostsForTargets([...selectedTargets]);
               } catch (error) {
               } finally {
                 setRefreshing(false);
@@ -1879,7 +1958,7 @@ const Posts = () => {
       )}
 
       {/* Posts List */}
-      {selectedProfile && (
+      {selectedTargets.size > 0 && (
         <div className="bg-white shadow rounded-lg">
           <div className="px-6 py-4 border-b border-gray-200">
             <div className="flex items-center justify-between">
@@ -1897,7 +1976,7 @@ const Posts = () => {
             <button
               onClick={() => {
                 setExpandedPosts(new Set()); // Reset expanded posts when refreshing
-                fetchPosts(selectedProfile, 1, false, false); // Use cache (don't force refresh)
+                fetchPostsForTargets([...selectedTargets]); // Re-fan-out across all selected
               }}
               className="inline-flex items-center px-3 py-1 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50"
             >
@@ -1939,21 +2018,38 @@ const Posts = () => {
                       {/* Post Header — provider badge (for FB/IG) + edit/delete
                           (GMB only; Meta post edit/delete isn't wired yet). */}
                       <div className="flex items-center justify-between p-3 bg-gray-50">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap min-w-0">
                           {post._isDraft && (
                             <span className="inline-flex items-center text-xs px-2 py-0.5 rounded bg-amber-100 text-amber-800">
                               <RefreshCw className="h-3 w-3 mr-1 animate-spin" />
                               Publishing…
                             </span>
                           )}
+                          {/* Provider badge (platform) */}
                           {post._provider === 'facebook' && (
                             <span className="inline-flex items-center text-xs px-2 py-0.5 rounded bg-indigo-100 text-indigo-800">
+                              <Facebook className="h-3 w-3 mr-1" />
                               Facebook
                             </span>
                           )}
                           {post._provider === 'instagram' && (
                             <span className="inline-flex items-center text-xs px-2 py-0.5 rounded bg-pink-100 text-pink-800">
+                              <Instagram className="h-3 w-3 mr-1" />
                               Instagram
+                            </span>
+                          )}
+                          {!post._provider && (
+                            <span className="inline-flex items-center text-xs px-2 py-0.5 rounded bg-blue-100 text-blue-800">
+                              <Building2 className="h-3 w-3 mr-1" />
+                              Google
+                            </span>
+                          )}
+                          {/* Which account this post was published to. Shown
+                              only when 2+ targets are selected so the single-
+                              account view stays uncluttered. */}
+                          {post._targetLabel && selectedTargets.size > 1 && (
+                            <span className="inline-flex items-center text-xs px-2 py-0.5 rounded bg-gray-100 text-gray-700 truncate max-w-[180px]" title={post._targetLabel}>
+                              {post._targetLabel}
                             </span>
                           )}
                         </div>

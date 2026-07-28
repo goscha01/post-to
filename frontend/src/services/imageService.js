@@ -78,8 +78,16 @@ class ImageService {
   // Process single image
   async processImage(imageUrl, priority = 'normal') {
     try {
-      // Check if it's a Google Photos URL that needs proxying
-      if (imageUrl && imageUrl.includes('lh3.googleusercontent.com')) {
+      // Check if it's a Google Photos / Business Profile URL that needs
+      // proxying — direct <img> gets 400 from Google's CDN. Broadened from
+      // `lh3.googleusercontent.com` to cover lh4/5/6 subdomains + the
+      // generic `googleusercontent.com` variant used by newer profile
+      // pictures.
+      const needsProxy = imageUrl && (
+        /https?:\/\/lh\d+\.googleusercontent\.com\//i.test(imageUrl) ||
+        imageUrl.includes('googleusercontent.com')
+      );
+      if (needsProxy) {
         
         const response = await axios.get(`/api/gmb/proxy-image?url=${encodeURIComponent(imageUrl)}`);
         
