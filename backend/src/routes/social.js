@@ -221,4 +221,44 @@ router.post(
   }
 );
 
+// Delete a Facebook Page post. connectionId comes in the querystring so
+// the same DELETE URL can carry the auth context without a request body.
+// Instagram intentionally has NO delete endpoint: Meta Graph API does not
+// support programmatic deletion of IG Business media — the docs are
+// explicit, users must delete via the Instagram app. Any attempt to
+// implement it would 400 on IG's side.
+router.delete('/facebook/posts/:postId', async (req, res) => {
+  try {
+    const { postId } = req.params;
+    const connectionId = req.query.connectionId;
+    if (!postId || !connectionId) {
+      return res.status(400).json({ error: 'postId and connectionId required' });
+    }
+    const row = await connections.getRawForUser(req.user.userId, connectionId);
+    if (!row) return res.status(404).json({ error: 'Connection not found' });
+    if (row.provider !== 'facebook') return res.status(400).json({ error: 'Not a Facebook connection' });
+    const pageAccessToken = row.metadata?.page_access_token;
+    if (!pageAccessToken) {
+      return res.status(400).json({ error: 'Connection missing Page token — reconnect Facebook' });
+    }
+    const result = await meta.deleteFacebookPost({ postId, pageAccessToken });
+    logger.info('social.facebook.deleted', {
+      user_id: req.user.userId,
+      connection_id: connectionId,
+      post_id: postId,
+      result_success: !!result?.success,
+    });
+    res.json({ ok: true, result });
+  } catch (err) {
+    const n = meta.normalizeApiError(err);
+    logger.error('social.facebook.delete_failed', {
+      user_id: req.user.userId,
+      post_id: req.params.postId,
+      error: n.message,
+      code: n.code,
+    });
+    res.status(n.status).json({ error: n.message, code: n.code, needsReauth: n.needsReauth });
+  }
+});
+
 module.exports = router;

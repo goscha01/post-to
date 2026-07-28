@@ -1046,6 +1046,46 @@ const Posts = () => {
     setExpandedPosts(new Set());
   };
 
+  // Delete a Facebook / Instagram post. FB routes to our backend DELETE
+  // endpoint via Graph API; IG is unsupported by Meta's API — we surface
+  // that with a hint instead of a silent no-op.
+  const handleDeleteSocialPost = async (post) => {
+    if (post._provider === 'instagram') {
+      showNotification(
+        "Instagram doesn't allow deleting posts via API. Open the Instagram app to remove it.",
+        'error'
+      );
+      return;
+    }
+    const preview = (post.content || 'this post').substring(0, 60);
+    // eslint-disable-next-line no-restricted-globals, no-alert
+    if (!window.confirm(`Delete this Facebook post?\n\n"${preview}${preview.length >= 60 ? '…' : ''}"\n\nThis cannot be undone.`)) return;
+    // Extract the connectionId from the FB post's target key: "fb:<uuid>".
+    const targetKey = post._targetKey || '';
+    const connectionId = targetKey.startsWith('fb:') ? targetKey.slice(3) : null;
+    if (!connectionId) {
+      showNotification('Could not determine which Facebook Page owns this post.', 'error');
+      return;
+    }
+    setDeletingPosts((prev) => new Set(prev).add(post.id));
+    try {
+      await axios.delete(`/api/social/facebook/posts/${encodeURIComponent(post.id)}`, {
+        params: { connectionId },
+      });
+      setPosts((prev) => prev.filter((p) => p.id !== post.id));
+      showNotification('Facebook post deleted', 'success');
+    } catch (err) {
+      const msg = err?.response?.data?.error || err?.message || 'unknown error';
+      showNotification(`Failed to delete: ${msg}`, 'error');
+    } finally {
+      setDeletingPosts((prev) => {
+        const next = new Set(prev);
+        next.delete(post.id);
+        return next;
+      });
+    }
+  };
+
   const handleDeletePost = async (postId) => {
     // Get post content for confirmation
     const post = posts.find(p => p.id === postId);
@@ -2555,9 +2595,6 @@ const Posts = () => {
                         <div className="flex items-center space-x-2">
                           {post._provider ? (
                             <>
-                              {/* FB/IG posts: repost lets the user send the
-                                  same content to a different Google/FB/IG
-                                  target via the composer. */}
                               <button
                                 onClick={() => handleRepost(post)}
                                 className="text-gray-400 hover:text-primary-600 p-1 rounded hover:bg-gray-100"
@@ -2576,6 +2613,36 @@ const Posts = () => {
                                   <Eye className="h-4 w-4" />
                                   Open
                                 </a>
+                              )}
+                              {/* Facebook posts support programmatic delete via
+                                  Graph API. Instagram doesn't — Meta explicitly
+                                  disallows it, users must delete in the IG app.
+                                  So the delete button only renders for FB. */}
+                              {post._provider === 'facebook' && (
+                                <button
+                                  onClick={() => handleDeleteSocialPost(post)}
+                                  disabled={deletingPosts.has(post.id)}
+                                  className={`p-1 rounded transition-colors ${
+                                    deletingPosts.has(post.id)
+                                      ? 'text-gray-400 cursor-not-allowed'
+                                      : 'text-red-400 hover:text-red-600 hover:bg-red-50'
+                                  }`}
+                                  title={deletingPosts.has(post.id) ? 'Deleting…' : 'Delete Facebook post'}
+                                >
+                                  {deletingPosts.has(post.id) ? (
+                                    <div className="h-4 w-4 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" />
+                                  ) : (
+                                    <Trash2 className="h-4 w-4" />
+                                  )}
+                                </button>
+                              )}
+                              {post._provider === 'instagram' && (
+                                <span
+                                  className="text-gray-300 p-1"
+                                  title="Instagram doesn't allow programmatic deletion — remove the post from the Instagram app instead."
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </span>
                               )}
                             </>
                           ) : (

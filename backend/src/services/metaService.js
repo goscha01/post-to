@@ -382,6 +382,19 @@ async function debugToken(inputToken) {
   return res.data?.data;
 }
 
+// Delete a Facebook Page post via Graph API. The Page must own the post
+// (Page Access Token from that Page) — user tokens or a different Page's
+// token 400. Returns { success: bool } from Meta.
+async function deleteFacebookPost({ postId, pageAccessToken }) {
+  if (!postId) throw new Error('postId required');
+  if (!pageAccessToken) throw new Error('pageAccessToken required');
+  const res = await axios.delete(`${GRAPH_BASE}/${encodeURIComponent(postId)}`, {
+    params: { access_token: pageAccessToken },
+    timeout: 15_000,
+  });
+  return res.data;
+}
+
 module.exports = {
   SCOPES,
   buildAuthUrl,
@@ -390,6 +403,7 @@ module.exports = {
   getMe,
   listPages,
   publishFacebookPost,
+  deleteFacebookPost,
   publishInstagramPost,
   getRecentFacebookPosts,
   getRecentInstagramMedia,
