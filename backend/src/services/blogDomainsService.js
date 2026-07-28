@@ -37,8 +37,11 @@ function normalizeHost(raw) {
 }
 
 async function railwayGraphql(query, variables) {
-  const token = process.env.RAILWAY_TOKEN;
-  if (!token) throw new Error('RAILWAY_TOKEN not set — cannot manage custom domains');
+  // NB: Railway silently drops any user-set env var beginning with `RAILWAY_`
+  // (reserved for their own auto-injected vars). Store the API token under a
+  // non-namespaced name.
+  const token = process.env.BLOG_RAILWAY_TOKEN;
+  if (!token) throw new Error('BLOG_RAILWAY_TOKEN not set — cannot manage custom domains');
   const res = await axios.post(RAILWAY_API, { query, variables }, {
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     timeout: 15000,
