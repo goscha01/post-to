@@ -664,6 +664,44 @@ async function upsertInstagramBusiness({
   return stripSensitiveMetadata(data);
 }
 
+// Backfill missing picture_url for FB Page rows saved before the picture
+// field syntax fix (2026-07-28). Cheap on steady state: single SELECT + zero
+// writes when every FB row already has picture_url. Safe to re-run.
+async function reconcileFacebookPictures(userId) {
+  if (!userId) return { updated: 0, skipped: 0 };
+  const { data: rows, error } = await supabase
+    .from(TABLE)
+    .select('id, metadata')
+    .eq('user_id', userId)
+    .eq('provider', 'facebook');
+  if (error || !rows || rows.length === 0) return { updated: 0, skipped: 0 };
+
+  // Lazy require to avoid circular dep on module load.
+  const meta = require('./metaService');
+
+  let updated = 0;
+  let skipped = 0;
+  for (const row of rows) {
+    const md = row.metadata || {};
+    if (md.picture_url) { skipped += 1; continue; }
+    const pic = await meta.fetchPagePicture({
+      pageId: md.page_id,
+      pageAccessToken: md.page_access_token,
+    });
+    if (!pic) { skipped += 1; continue; }
+    const nextMeta = { ...md, picture_url: pic };
+    const { error: upErr } = await supabase
+      .from(TABLE)
+      .update({ metadata: nextMeta })
+      .eq('id', row.id);
+    if (!upErr) updated += 1;
+  }
+  if (updated > 0) {
+    logger.info('connections.reconcile_facebook_pictures', { user_id: userId, updated, skipped });
+  }
+  return { updated, skipped };
+}
+
 // Backfill missing google_business rows for a user by walking their
 // users.business_profiles JSONB. Older OAuth grants (pre-2026-06-26, before
 // upsertGoogleBusiness was wired into the callback) exist in
@@ -739,6 +777,7 @@ module.exports = {
   upsertOpenAiAds,
   upsertFacebookPage,
   upsertInstagramBusiness,
+  reconcileFacebookPictures,
   // exposed for tests / future callers
   _internal: { normalizeUrl, hostOf, extractMeta, fetchSiteMeta, maskApiKey, normalizeAdAccountId, stripSensitiveMetadata },
 };

@@ -26,6 +26,14 @@ router.get('/', async (req, res) => {
     } catch (e) {
       // Non-fatal — the list still returns whatever's already there.
     }
+    // Self-heal: backfill picture_url on FB Page rows saved before the
+    // picture field syntax was fixed (2026-07-28). Idempotent + cheap
+    // (zero writes when every row already has a picture).
+    try {
+      await connections.reconcileFacebookPictures(req.user.userId);
+    } catch (e) {
+      // Non-fatal.
+    }
     const rows = await connections.listForUser(req.user.userId);
     res.json({ connections: rows });
   } catch (err) {

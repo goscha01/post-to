@@ -2005,31 +2005,42 @@ const Posts = () => {
                          </div>
                        )}
 
-                      {/* Post Content - Text Below Image */}
+                      {/* Post Content - Text Below Image. `whitespace-pre-wrap`
+                          preserves Meta's newlines + emoji breaks so FB/IG
+                          captions render the way they look on the source
+                          platform. If a social post has no caption we show
+                          a muted placeholder so it's obvious the fetch
+                          worked but the caption was empty (vs. broken). */}
                       <div className="p-3">
-                        <div className="text-sm text-gray-900 mb-3">
-                          {expandedPosts.has(post.id) ? (
-                            <div>
-                              <p>{post.content}</p>
-                              <button
-                                onClick={() => toggleExpanded(post.id)}
-                                className="text-primary-600 hover:text-primary-700 font-medium mt-2 text-sm"
-                              >
-                                Show less
-                              </button>
-                            </div>
-                          ) : (
-                            <div>
-                              <p>{truncateToFirstSentence(post.content)}</p>
-                              {post.content && post.content.length > 150 && (
+                        <div className="text-sm text-gray-900 mb-3 whitespace-pre-wrap break-words">
+                          {post.content ? (
+                            expandedPosts.has(post.id) ? (
+                              <div>
+                                <p>{post.content}</p>
                                 <button
                                   onClick={() => toggleExpanded(post.id)}
                                   className="text-primary-600 hover:text-primary-700 font-medium mt-2 text-sm"
                                 >
-                                  ...more
+                                  Show less
                                 </button>
-                              )}
-                            </div>
+                              </div>
+                            ) : (
+                              <div>
+                                <p>{truncateToFirstSentence(post.content)}</p>
+                                {post.content.length > 150 && (
+                                  <button
+                                    onClick={() => toggleExpanded(post.id)}
+                                    className="text-primary-600 hover:text-primary-700 font-medium mt-2 text-sm"
+                                  >
+                                    ...more
+                                  </button>
+                                )}
+                              </div>
+                            )
+                          ) : (
+                            <p className="italic text-gray-400">
+                              {post._provider ? '(no caption)' : ''}
+                            </p>
                           )}
                         </div>
 

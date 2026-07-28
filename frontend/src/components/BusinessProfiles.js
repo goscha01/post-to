@@ -1292,6 +1292,36 @@ const BusinessProfiles = () => {
         </div>
       </div>
 
+      {/* GMB tokens expired banner: fires when the user has a GMB OAuth
+          grant on file (localStorage flag) but fetchProfiles returned zero
+          profiles — meaning every stored Google refresh token got a 401
+          from Google. Without this banner the page silently drops all
+          GMB cards and only shows FB/IG, which looks like "GMB is gone". */}
+      {isAuthenticated && !authDisconnected && !loading
+        && profiles.length === 0
+        && (localStorage.getItem('gmb_business_connected') === 'true' || socialProfiles.length > 0)
+        && (
+        <div className="rounded-md bg-yellow-50 border border-yellow-200 p-4 flex items-start gap-3">
+          <AlertCircle className="h-5 w-5 text-yellow-600 flex-shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <p className="text-sm font-medium text-yellow-900">
+              Google Business Profile access needs to be reconnected
+            </p>
+            <p className="text-sm text-yellow-800 mt-1">
+              Your stored Google access token expired or was revoked. Reconnect to see your locations, reviews, and posts again.
+            </p>
+          </div>
+          <button
+            onClick={handleConnect}
+            disabled={isConnecting}
+            className="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-yellow-600 hover:bg-yellow-700 disabled:opacity-50"
+          >
+            <RefreshCw className={`h-4 w-4 mr-2 ${isConnecting ? 'animate-spin' : ''}`} />
+            Reconnect Google
+          </button>
+        </div>
+      )}
+
       {/* Business Profiles List */}
       <div className="space-y-6">
         {(profiles.length > 0 || socialProfiles.length > 0) && !authDisconnected && (

@@ -110,7 +110,12 @@ async function listPages(userAccessToken) {
     const res = await axios.get(url, {
       params: {
         access_token: userAccessToken,
-        fields: 'id,name,category,tasks,access_token,instagram_business_account{id,username,profile_picture_url},picture{data{url}}',
+        // `picture.type(large)` returns the 200×200 profile picture wrapped in
+      // the standard {data:{url,...}} envelope. Earlier we used
+      // `picture{data{url}}` which is WRONG syntax — `data` isn't a queryable
+      // field on the picture edge, it's just the response envelope. Result
+      // was empty picture object → null picture_url in the DB.
+      fields: 'id,name,category,tasks,access_token,instagram_business_account{id,username,profile_picture_url},picture.type(large)',
         limit: 100,
         after,
       },
@@ -205,6 +210,22 @@ async function publishInstagramPost({ igBusinessId, pageAccessToken, imageUrl, c
     }
   );
   return { id: publishRes.data?.id, creation_id: creationId };
+}
+
+// Fetch just the profile picture URL for a single FB Page. Used to backfill
+// picture_url for connected_accounts rows saved before the picture field
+// syntax was fixed. Returns null on any error — never throws.
+async function fetchPagePicture({ pageId, pageAccessToken }) {
+  if (!pageId || !pageAccessToken) return null;
+  try {
+    const res = await axios.get(`${GRAPH_BASE}/${pageId}`, {
+      params: { access_token: pageAccessToken, fields: 'picture.type(large)' },
+      timeout: 8000,
+    });
+    return res.data?.picture?.data?.url || null;
+  } catch (e) {
+    return null;
+  }
 }
 
 // Fetch recent posts from a FB Page. Returns rows normalized to the shape the
@@ -338,6 +359,7 @@ module.exports = {
   publishInstagramPost,
   getRecentFacebookPosts,
   getRecentInstagramMedia,
+  fetchPagePicture,
   debugToken,
   normalizeApiError,
   _internal: { GRAPH_VERSION, GRAPH_BASE },
