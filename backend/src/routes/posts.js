@@ -731,16 +731,19 @@ router.post('/', upload.array('images', 10), [
     ms_since_start: Date.now() - t0,
     ...(attrs || {}),
   });
-  step('handler_entered');
+  step('handler_entered', {
+    body_keys: Object.keys(req.body || {}),
+    files_count: (req.files || []).length,
+    content_length: req.headers['content-length'] || null,
+    ua: req.headers['user-agent']?.slice(0, 60) || null,
+  });
 
-  // Global 45s hard cap on the handler — if we blow past that, respond
-  // with a 504 that carries CORS headers rather than letting Railway's
-  // proxy kill the connection headers-less. Silently kills the "CORS
-  // policy: no allow-origin" red herring for hung requests.
+  // Hard 45s cap on the handler. We do NOT wrap res.json — that was
+  // interacting badly with the invalidateCacheMiddleware wrapper above
+  // (both wanted to intercept res.json, causing writes to stall). Track
+  // response state via res.on('finish' | 'close') instead.
   let responded = false;
-  const wrap = (fn) => (...args) => { responded = true; return fn.apply(res, args); };
-  const originalJson = res.json;
-  res.json = wrap(originalJson);
+  res.on('finish', () => { responded = true; });
   const capTimer = setTimeout(() => {
     if (responded) return;
     logger.error('posts.create.hard_cap_reached', {
@@ -755,7 +758,16 @@ router.post('/', upload.array('images', 10), [
 
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
-    return res.status(400).json({ success: false, errors: errors.array() });
+    // Log the specific fields that failed so future 400s aren't opaque.
+    logger.warn('posts.create.validation_failed', {
+      user_id: req.user?.userId,
+      elapsed_ms: Date.now() - t0,
+      errors: errors.array().slice(0, 10),
+    });
+    step('validation_failed_pre_json');
+    res.status(400).json({ success: false, errors: errors.array() });
+    step('validation_failed_post_json');
+    return;
   }
 
   try {

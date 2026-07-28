@@ -832,7 +832,34 @@ const Posts = () => {
           if (uploadedFiles && uploadedFiles.length > 0) {
             uploadedFiles.forEach((file) => fd.append('images', file));
           }
-          await axios.post('/api/posts', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+          // Instrument client-side timing so we can compare what the browser
+          // observed vs. what Loki shows for the same request. On timeout,
+          // we log the full elapsed ms alongside the file/URL counts.
+          const oneStart = Date.now();
+          // eslint-disable-next-line no-console
+          console.log('[publishOne] POST /api/posts start', {
+            key,
+            content_length: postData.content.length,
+            media_url_count: (postData.media || []).length,
+            file_count: uploadedFiles.length,
+            postType: postData.postType,
+          });
+          try {
+            await axios.post('/api/posts', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+            // eslint-disable-next-line no-console
+            console.log('[publishOne] POST /api/posts ok', { key, elapsed_ms: Date.now() - oneStart });
+          } catch (postErr) {
+            // eslint-disable-next-line no-console
+            console.error('[publishOne] POST /api/posts failed', {
+              key,
+              elapsed_ms: Date.now() - oneStart,
+              code: postErr?.code,
+              status: postErr?.response?.status,
+              response_data: postErr?.response?.data,
+              message: postErr?.message,
+            });
+            throw postErr;
+          }
         }
         return { key, target, label, ok: true };
       } catch (err) {
@@ -1654,6 +1681,31 @@ const Posts = () => {
               <h2 className="text-lg font-medium text-gray-900">
                 {editingPost ? 'Edit Post' : 'New Post'}
               </h2>
+              {/* Explicit "where will this post go" indicator right under
+                  the modal title so users don't have to guess which chips
+                  were selected before opening the composer. */}
+              {!editingPost && (() => {
+                const chosen = targets.filter((t) => selectedTargets.has(t.key));
+                if (chosen.length === 0) {
+                  return (
+                    <div className="mt-1 text-xs text-amber-700">
+                      No profiles selected — pick at least one behind the composer before posting.
+                    </div>
+                  );
+                }
+                return (
+                  <div className="mt-1 text-xs text-gray-600">
+                    <span className="font-medium">Posting to:</span>{' '}
+                    <span>
+                      {chosen
+                        .slice(0, 3)
+                        .map((t) => t.label || t.title || t.locationName || 'Unnamed')
+                        .join(', ')}
+                      {chosen.length > 3 ? ` +${chosen.length - 3} more` : ''}
+                    </span>
+                  </div>
+                );
+              })()}
             </div>
            <div className="flex items-center space-x-4">
              {/* Post Type Selection Buttons */}
