@@ -1202,14 +1202,14 @@ const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationK
         fd.append('postType', postType);
         if (ctaPayload) fd.append('callToAction', JSON.stringify(ctaPayload));
         if (validUrls.length > 0) {
-          fd.append('media', JSON.stringify(validUrls.map((sourceUrl) => ({ mediaFormat: 'PHOTO', sourceUrl }))));
+          fd.append('media', JSON.stringify(validUrls.slice(0, 1).map((sourceUrl) => ({ mediaFormat: 'PHOTO', sourceUrl }))));
         }
         uploadedFiles.forEach((f) => fd.append('images', f));
         await axios.post('/api/posts', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
       } else {
         await calendarService.schedule({
           content: summary.trim(),
-          media: validUrls.map((sourceUrl) => ({ sourceUrl, mediaFormat: 'PHOTO' })),
+          media: validUrls.slice(0, 1).map((sourceUrl) => ({ sourceUrl, mediaFormat: 'PHOTO' })),
           gmbAccountId: accountId,
           gmbLocationId: locationId,
           scheduledTime: scheduledDate,
@@ -1273,7 +1273,7 @@ const PostComposerModal = ({ defaultDate, profiles, locations, selectedLocationK
           : null;
       const payload = {
         content: summary,
-        media: validUrls.map((sourceUrl) => ({ sourceUrl, mediaFormat: 'PHOTO' })),
+        media: validUrls.slice(0, 1).map((sourceUrl) => ({ sourceUrl, mediaFormat: 'PHOTO' })),
         gmbAccountId: accountId || null,
         gmbLocationId: locationId || null,
         postType,

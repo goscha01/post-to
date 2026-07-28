@@ -803,7 +803,10 @@ const Posts = () => {
           };
         }
         if (allMedia.length > 0) {
-          postData.media = allMedia.map((m) => ({
+          // GMB localPosts.create allows exactly 1 photo — anything more
+          // gets rejected as INVALID_ARGUMENT ("Too many photos"). Cap
+          // client-side too so the backend never has to truncate.
+          postData.media = allMedia.slice(0, 1).map((m) => ({
             mediaFormat: m.mediaFormat || 'PHOTO',
             sourceUrl: m.sourceUrl,
           }));
@@ -1823,7 +1826,12 @@ const Posts = () => {
              <div className="lg:col-span-2 space-y-4">
                {/* Picture Upload Section - Moved to Top */}
                <div>
-                 <label className="block text-sm font-medium text-gray-700 mb-2">Add Pictures</label>
+                 <label className="block text-sm font-medium text-gray-700 mb-2">
+                   Add Pictures
+                   <span className="ml-2 text-xs font-normal text-gray-500">
+                     (Google Business Profile posts only allow 1 photo — extras are ignored)
+                   </span>
+                 </label>
                  
                  {/* File Upload Section */}
                  <div className="mb-4 space-y-4">

@@ -790,11 +790,10 @@ router.post('/', upload.array('images', 10), parseMultipartJsonFields, [
     try {
       res.status(504).json({ success: false, error: 'Post creation timed out — try again or reduce the number of images.' });
     } catch { /* already sent */ }
-    // Force-flush + hang up so the socket doesn't sit in some
-    // half-closed state that lets the client hang until axios's own
-    // 60s timeout fires.
-    try { res.end(); } catch { /* noop */ }
-    try { req.socket?.destroy(); } catch { /* noop */ }
+    // Do NOT destroy the socket here — that surfaced as a 502 from the
+    // Railway edge instead of a clean 504. The res.setTimeout call above
+    // already guarantees Node closes the connection at 45s if the
+    // response didn't flush cleanly on its own.
   }, 45_000);
   res.on('close', () => clearTimeout(capTimer));
 
@@ -966,6 +965,18 @@ router.post('/', upload.array('images', 10), parseMultipartJsonFields, [
           });
         }
         step('drive_rewrite', { rewrote_count: rewriteCount });
+
+        // GMB localPosts.create allows exactly 1 photo. Any more and it
+        // returns 400 INVALID_ARGUMENT "Too many photos". Truncate
+        // defensively so users don't have to know GMB's quirk.
+        if (Array.isArray(gmbPostData.media) && gmbPostData.media.length > 1) {
+          const dropped = gmbPostData.media.length - 1;
+          gmbPostData.media = gmbPostData.media.slice(0, 1);
+          logger.info('posts.create.media_truncated', {
+            user_id: req.user?.userId,
+            dropped_count: dropped,
+          });
+        }
         step('gmb_call_pre');
 
         // Try real API first, fallback if needed. Multi-token fanout so
@@ -1053,49 +1064,28 @@ router.post('/', upload.array('images', 10), parseMultipartJsonFields, [
           });
           
         } catch (gmbError) {
-          
-          
-          // Fallback to mock response
-          const mockGmbResponse = {
-            data: {
-              name: `locations/${gmbLocationId}/localPosts/fallback-${Date.now()}`,
-              summary: content,
-              topicType: postType,
-              createTime: new Date().toISOString(),
-              callToAction: callToAction && callToAction.actionType && callToAction.url ? {
-                actionType: callToAction.actionType,
-                url: callToAction.url
-              } : null
-            }
-          };
-          
-          
-          
-          // Save post to database even for fallback
-          const postData = {
-            content: content,
-            media: media || [],
-            mediaData: uploadedImages, // Include uploaded image data
-            platforms: platforms,
-            results: [{
-              platform: 'google',
-              postId: mockGmbResponse.data.name.split('/').pop(),
-              success: true,
-              response: mockGmbResponse.data,
-              fallback: true
-            }],
-            posted_at: new Date().toISOString()
-          };
-          
-          const savedPost = await savePostToDatabase(req.user.userId, postData);
-          
-          return res.json({
-            success: true,
-            message: 'Post created successfully on Google My Business (fallback)',
-            platform: 'google',
-            postId: mockGmbResponse.data.name.split('/').pop(),
-            gmbPost: mockGmbResponse.data,
-            databaseId: savedPost?.id
+          // Return the ACTUAL GMB error to the caller. The old "fallback
+          // mock success" pattern pretended the post landed when it hadn't,
+          // AND called savePostToDatabase inside the catch — that Supabase
+          // write was the source of the mystery 45s hang. Killed.
+          const gmbErrObj = gmbError?.response?.data?.error;
+          // GMB error body has details[].errorDetails[].message — pull the
+          // first one for a human-friendly error surface.
+          const detailedMsg =
+            gmbErrObj?.details?.[0]?.errorDetails?.[0]?.message ||
+            gmbErrObj?.message ||
+            gmbError?.message ||
+            'GMB rejected the post';
+          logger.warn('posts.create.gmb_rejected', {
+            user_id: req.user?.userId,
+            gmb_status: gmbError?.response?.status || null,
+            gmb_error: detailedMsg.slice(0, 300),
+            elapsed_ms: Date.now() - t0,
+          });
+          return res.status(gmbError?.response?.status || 500).json({
+            success: false,
+            error: detailedMsg,
+            gmbError: gmbErrObj || null,
           });
         }
 
