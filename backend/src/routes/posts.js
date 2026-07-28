@@ -725,17 +725,40 @@ router.post('/', upload.array('images', 10), [
   body('callToAction').optional(),
   body('offer').optional()
 ], invalidateCacheMiddleware({ pattern: 'user:*:posts*' }), async (req, res) => {
+  const t0 = Date.now();
+  const step = (name, attrs) => logger.info(`posts.create.${name}`, {
+    user_id: req.user?.userId,
+    ms_since_start: Date.now() - t0,
+    ...(attrs || {}),
+  });
+  step('handler_entered');
+
+  // Global 45s hard cap on the handler — if we blow past that, respond
+  // with a 504 that carries CORS headers rather than letting Railway's
+  // proxy kill the connection headers-less. Silently kills the "CORS
+  // policy: no allow-origin" red herring for hung requests.
+  let responded = false;
+  const wrap = (fn) => (...args) => { responded = true; return fn.apply(res, args); };
+  const originalJson = res.json;
+  res.json = wrap(originalJson);
+  const capTimer = setTimeout(() => {
+    if (responded) return;
+    logger.error('posts.create.hard_cap_reached', {
+      user_id: req.user?.userId,
+      elapsed_ms: Date.now() - t0,
+    });
+    try {
+      res.status(504).json({ success: false, error: 'Post creation timed out — try again or reduce the number of images.' });
+    } catch { /* already sent */ }
+  }, 45_000);
+  res.on('close', () => clearTimeout(capTimer));
+
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
-    
     return res.status(400).json({ success: false, errors: errors.array() });
   }
 
   try {
-    
-    
-    
-    
     const {
       platforms,
       content,
@@ -749,9 +772,11 @@ router.post('/', upload.array('images', 10), [
       offer
     } = req.body;
 
+    step('body_parsed', { platform_count: (platforms || []).length, media_count: (media || []).length });
+
     // Process uploaded images if any
     const uploadedImages = req.files ? processUploadedImages(req.files) : [];
-    
+
     const accessToken = req.businessToken; // Get access token from middleware
 
     // Check if this is a Google My Business post
@@ -867,18 +892,20 @@ router.post('/', upload.array('images', 10), [
         const driveFileIds = (gmbPostData.media || [])
           .map((m) => extractDriveFileIdFromUrl(m?.sourceUrl))
           .filter(Boolean);
+        step('drive_share_pre', { file_count: driveFileIds.length });
         if (driveFileIds.length > 0) {
           const shareResult = await shareDriveFilesPublic(
             driveFileIds,
             req.user?.userId,
             req.businessToken
           );
-          logger.info('posts.drive_shared', {
-            user_id: req.user?.userId,
+          step('drive_share_done', {
             attempted: shareResult.attempted,
             succeeded: shareResult.succeeded,
+            walltimeout: !!shareResult.walltimeout,
           });
         }
+        step('gmb_call_pre');
 
         // Try real API first, fallback if needed. Multi-token fanout so
         // users whose picked location belongs to a different Google
@@ -907,6 +934,7 @@ router.post('/', upload.array('images', 10), [
           );
           if (!gmbCallFanout.ok) throw gmbCallFanout.error || new Error('All OAuth tokens failed');
           const gmbResponse = gmbCallFanout.result;
+          step('gmb_call_ok', { gmb_status: gmbResponse?.status || null });
           
           
           

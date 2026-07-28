@@ -14,7 +14,17 @@ const logger = require('../utils/logger');
 
 function apiLogger(req, res, next) {
   const start = Date.now();
-  res.on('finish', () => {
+  // Emit an arrival log for POST/PUT/PATCH/DELETE so we can trace hung
+  // requests. GET floods Loki so skip those unless we want to.
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    logger.info('http_request_start', {
+      method: req.method,
+      path: req.originalUrl || req.url,
+      ua: req.headers['user-agent']?.slice(0, 200) ?? null,
+      ip: req.ip,
+    });
+  }
+  const emit = (event) => {
     const duration_ms = Date.now() - start;
     const status = res.statusCode;
     const level = status >= 500 ? 'error' : status >= 400 ? 'warn' : 'info';
@@ -23,11 +33,17 @@ function apiLogger(req, res, next) {
       path: req.originalUrl || req.url,
       status,
       duration_ms,
+      event, // 'finish' or 'close_before_finish'
       user_id: req.user?.userId ?? null,
       ua: req.headers['user-agent']?.slice(0, 200) ?? null,
       ip: req.ip,
     });
-  });
+  };
+  let finished = false;
+  res.on('finish', () => { finished = true; emit('finish'); });
+  // Client-abort or connection drop: still log so we know the request
+  // arrived even if the response never completed.
+  res.on('close', () => { if (!finished) emit('close_before_finish'); });
   next();
 }
 
