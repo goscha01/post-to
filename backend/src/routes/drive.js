@@ -407,8 +407,14 @@ async function fetchDriveFileBytes({ userId, fileId, fallbackToken }) {
       {
         headers: { Authorization: `Bearer ${accessToken}` },
         responseType: 'arraybuffer',
-        maxContentLength: 25 * 1024 * 1024,
-        maxBodyLength: 25 * 1024 * 1024,
+        // Bumped from 25MB → 60MB so RAW / high-res photos (24 MP+ from
+        // pro phones or DSLR exports) go through untouched instead of
+        // triggering axios's "maxContentLength exceeded" error. GMB itself
+        // caps around ~10MB for post uploads, but by sending the full file
+        // we let Google downsize with their own algorithm rather than us
+        // hitting the axios limit and failing the request outright.
+        maxContentLength: 60 * 1024 * 1024,
+        maxBodyLength: 60 * 1024 * 1024,
         timeout: 30_000,
       }
     );
