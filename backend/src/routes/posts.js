@@ -76,35 +76,44 @@ function extractDriveFileIdFromUrl(url) {
 
 // Add a public-reader permission to each Drive file id passed in, using
 // the caller's OAuth token. Idempotent — re-sharing a file that's already
-// public returns 200 with the existing permission. Failures are logged
-// but non-fatal: worst case GMB then fails to fetch that specific file
-// and returns a media-fetch error, which is a better UX than a silent
-// 60s frontend timeout.
+// public returns 200. Failures are logged but non-fatal: worst case GMB
+// then fails to fetch that specific file and returns a media-fetch error,
+// still better than a silent 60s frontend timeout.
+//
+// Parallelized across files with a 5s per-attempt cap and 12s overall
+// wall-clock: the original serial version fanned out per file × per token
+// and racked up 4 files × 3 tokens × 10s = 120s worst case, tripping the
+// frontend's 60s axios ceiling before GMB was even called.
 async function shareDriveFilesPublic(fileIds, userId, fallbackToken) {
   if (!Array.isArray(fileIds) || fileIds.length === 0) return { attempted: 0, succeeded: 0 };
-  let succeeded = 0;
-  for (const fileId of fileIds) {
-    const attempt = await tryWithEachBusinessToken(userId, fallbackToken, async (accessToken) => {
-      const resp = await axios.post(
-        `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/permissions`,
-        { role: 'reader', type: 'anyone' },
-        {
-          headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-          timeout: 10_000,
-        }
-      );
-      return resp.data;
-    });
-    if (attempt.ok) {
-      succeeded += 1;
-    } else {
-      logger.warn('posts.drive_share_failed', {
-        user_id: userId,
-        file_id: fileId,
-        error: attempt.error?.message,
+  const shareOne = async (fileId) => {
+    try {
+      const attempt = await tryWithEachBusinessToken(userId, fallbackToken, async (accessToken) => {
+        const resp = await axios.post(
+          `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/permissions`,
+          { role: 'reader', type: 'anyone' },
+          {
+            headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+            timeout: 5_000,
+          }
+        );
+        return resp.data;
       });
+      if (attempt.ok) return true;
+      logger.warn('posts.drive_share_failed', { user_id: userId, file_id: fileId, error: attempt.error?.message });
+      return false;
+    } catch (e) {
+      logger.warn('posts.drive_share_exception', { user_id: userId, file_id: fileId, error: e?.message });
+      return false;
     }
+  };
+  const overallTimeout = new Promise((resolve) => setTimeout(() => resolve('__wall_clock__'), 12_000));
+  const race = await Promise.race([Promise.allSettled(fileIds.map(shareOne)), overallTimeout]);
+  if (race === '__wall_clock__') {
+    logger.warn('posts.drive_share_walltimeout', { user_id: userId, attempted: fileIds.length });
+    return { attempted: fileIds.length, succeeded: 0, walltimeout: true };
   }
+  const succeeded = race.filter((r) => r.status === 'fulfilled' && r.value === true).length;
   return { attempted: fileIds.length, succeeded };
 }
 
