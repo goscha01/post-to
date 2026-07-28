@@ -2373,10 +2373,10 @@ const Posts = () => {
                               Google
                             </span>
                           )}
-                          {/* Which account this post was published to. Shown
-                              only when 2+ targets are selected so the single-
-                              account view stays uncluttered. */}
-                          {post._targetLabel && selectedTargets.size > 1 && (
+                          {/* Which account this post was published to.
+                              Always show — even for single-account view,
+                              users want to see WHERE it was posted. */}
+                          {post._targetLabel && (
                             <span className="inline-flex items-center text-xs px-2 py-0.5 rounded bg-gray-100 text-gray-700 truncate max-w-[180px]" title={post._targetLabel}>
                               {post._targetLabel}
                             </span>
