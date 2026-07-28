@@ -402,12 +402,47 @@ const Posts = () => {
     setSelectedProfile(firstSelected ? firstSelected.key : '');
   }, [selectedTargets, targets]);
 
+  // Background enrichment: businessProfileService.getAccounts() does NOT
+  // include the account logo/profile picture — BusinessProfiles.js fetches
+  // it per-account via getMediaForLocation. Mirror that behavior so chip
+  // avatars show the real business logo instead of a fallback icon.
+  // Non-blocking: chips render immediately with placeholder, upgrade in
+  // place as each media fetch resolves.
+  const enrichProfilesWithMedia = useCallback(async (baseProfiles) => {
+    for (const p of baseProfiles) {
+      if (p.accountProfilePicture) continue;
+      const firstLoc = p.locations?.[0];
+      if (!firstLoc) continue;
+      const accountId = (p.name || '').split('/').pop();
+      const locationId = (firstLoc.name || '').split('/').pop();
+      if (!accountId || !locationId) continue;
+      try {
+        const media = await businessProfileService.getMediaForLocation(accountId, locationId);
+        if (!media?.success) continue;
+        const pic =
+          media.profilePicture ||
+          (media.logos && media.logos[0]) ||
+          (media.media && media.media.find((m) => m.category === 'PROFILE' || m.category === 'LOGO')) ||
+          (media.media && media.media[0]) ||
+          null;
+        if (pic) {
+          setProfiles((prev) => prev.map((pr) => (pr.name === p.name ? { ...pr, accountProfilePicture: pic } : pr)));
+        }
+      } catch (e) {
+        // Non-fatal — chip keeps its fallback icon
+      }
+    }
+  }, []);
+
   const fetchData = useCallback(async () => {
     try {
       setLoading(true);
       // Use centralized business profile service with caching
       const profilesWithLocations = await businessProfileService.getAccounts();
       setProfiles(profilesWithLocations);
+      // Fire-and-forget: enrich with account logos in the background so chip
+      // avatars gain real pictures without blocking the initial render.
+      enrichProfilesWithMedia(profilesWithLocations);
 
       // Also fetch FB/IG connections in parallel — they're independent of the
       // GMB OAuth grant, so we should render them even when GMB is empty.
