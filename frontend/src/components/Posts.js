@@ -1263,10 +1263,35 @@ const Posts = () => {
       setEditingPost(null);
       const cta = post.callToAction || null;
       const media = Array.isArray(post.media) ? post.media : [];
-      const mediaObjs = media
+      // Detect platform-CDN URLs (Facebook, Instagram, GMB proxy). These
+      // aren't the original bytes — they're the platform's already-
+      // resized thumbnail served from their CDN. Reposting them back to
+      // Facebook / Instagram means we send Facebook its own thumbnail
+      // which it then re-compresses, yielding a tiny/blurry post
+      // (Loki: url_host=scontent-*.xx.fbcdn.net → image_rewritten:false).
+      // Strip those URLs so the user re-picks from Drive for full
+      // quality. Drive URLs and generic public URLs pass through.
+      const isPlatformCdn = (url) => {
+        if (!url) return false;
+        try {
+          const h = new URL(url).hostname.toLowerCase();
+          return (
+            h.endsWith('fbcdn.net') ||
+            h.endsWith('cdninstagram.com') ||
+            h.includes('lh3.googleusercontent.com') ||
+            h.includes('lh4.googleusercontent.com') ||
+            h.includes('lh5.googleusercontent.com')
+          );
+        } catch {
+          return false;
+        }
+      };
+      const rawUrls = media
         .map((m) => m.sourceUrl || m.url || m.thumbnailUrl)
-        .filter(Boolean)
-        .map((sourceUrl) => ({ sourceUrl, mediaFormat: 'PHOTO' }));
+        .filter(Boolean);
+      const usableUrls = rawUrls.filter((u) => !isPlatformCdn(u));
+      const droppedCount = rawUrls.length - usableUrls.length;
+      const mediaObjs = usableUrls.map((sourceUrl) => ({ sourceUrl, mediaFormat: 'PHOTO' }));
       const ctaPayload =
         cta?.actionType && (cta.url || '').trim()
           ? { actionType: cta.actionType, url: cta.url.trim() }
@@ -1289,7 +1314,14 @@ const Posts = () => {
           await loadSavedDrafts();
           loadDraftIntoComposer(draft);
           setShowComposer(true);
-          showNotification('Draft created — pick where to post and publish.', 'success');
+          if (droppedCount > 0) {
+            showNotification(
+              `Draft created — but ${droppedCount} image was a platform thumbnail (would post low-res). Pick the original from Google Drive.`,
+              'error'
+            );
+          } else {
+            showNotification('Draft created — pick where to post and publish.', 'success');
+          }
         } else {
           showNotification('Draft saved but could not open in composer.', 'error');
         }
