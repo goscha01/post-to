@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import axios from '../utils/axiosConfig';
 import { useAuth } from '../contexts/AuthContext';
@@ -25,6 +25,10 @@ import {
   RefreshCw,
   HardDrive,
   Sparkles,
+  Building2,
+  Facebook,
+  Instagram,
+  Check,
 } from 'lucide-react';
 import {
   CTA_OPTIONS,
@@ -110,6 +114,109 @@ const PostImage = ({ imageUrl, altText, mediaFormat, mediaData }) => {
   );
 };
 
+// Multi-select target picker: chips laid out horizontally, each showing a
+// business avatar (or fallback icon) with a small platform badge in the
+// bottom-right corner. Selected chips get a colored ring + a checkmark
+// overlay. Header has a "Select All" checkbox + count. Purely presentational
+// — parent owns the `selected: Set<string>` state.
+const TargetChipsPicker = ({ targets, selected, onChange }) => {
+  const total = targets.length;
+  const selCount = selected.size;
+  const allSelected = total > 0 && selCount === total;
+
+  const toggle = (key) => {
+    const next = new Set(selected);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    onChange(next);
+  };
+  const toggleAll = () => {
+    if (allSelected) onChange(new Set());
+    else onChange(new Set(targets.map((t) => t.key)));
+  };
+
+  const providerIcon = (provider) => {
+    if (provider === 'facebook') return { Icon: Facebook, wrap: 'bg-indigo-600', color: 'text-white' };
+    if (provider === 'instagram') return { Icon: Instagram, wrap: 'bg-pink-600', color: 'text-white' };
+    return { Icon: Building2, wrap: 'bg-blue-600', color: 'text-white' };
+  };
+
+  return (
+    <div className="bg-white shadow rounded-lg p-6">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-sm font-medium text-gray-900">
+          Click to select which accounts you want to post to
+        </h3>
+        <label className="inline-flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={allSelected}
+            onChange={toggleAll}
+            className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+          />
+          Select All
+        </label>
+      </div>
+
+      {total === 0 ? (
+        <div className="text-sm text-gray-500 py-6 text-center border-2 border-dashed border-gray-200 rounded-md">
+          No business profiles connected yet. Connect one from the Connections page.
+        </div>
+      ) : (
+        <div className="flex flex-wrap gap-3">
+          {targets.map((t) => {
+            const isSelected = selected.has(t.key);
+            const { Icon, wrap, color } = providerIcon(t.provider);
+            return (
+              <button
+                key={t.key}
+                type="button"
+                onClick={() => toggle(t.key)}
+                title={`${t.label} — ${t.accountLabel}`}
+                className={`relative group flex-shrink-0 rounded-full transition
+                  ${isSelected
+                    ? 'ring-2 ring-primary-500 ring-offset-2'
+                    : 'ring-1 ring-gray-200 hover:ring-primary-300'}
+                `}
+              >
+                {/* Avatar */}
+                <div className="h-12 w-12 rounded-full overflow-hidden bg-gray-100 flex items-center justify-center">
+                  {t.avatarUrl ? (
+                    <img
+                      src={t.avatarUrl}
+                      alt={t.label}
+                      className={`h-full w-full object-cover ${isSelected ? '' : 'opacity-70 grayscale group-hover:grayscale-0'}`}
+                      onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                    />
+                  ) : (
+                    <span className="text-xs font-semibold text-gray-500">
+                      {(t.label || '?').slice(0, 2).toUpperCase()}
+                    </span>
+                  )}
+                </div>
+                {/* Platform badge (bottom-right corner) */}
+                <span className={`absolute -bottom-0.5 -right-0.5 h-5 w-5 rounded-full ${wrap} flex items-center justify-center ring-2 ring-white`}>
+                  <Icon className={`h-3 w-3 ${color}`} />
+                </span>
+                {/* Selected checkmark (top-right corner) */}
+                {isSelected && (
+                  <span className="absolute -top-0.5 -right-0.5 h-4 w-4 rounded-full bg-primary-600 flex items-center justify-center ring-2 ring-white">
+                    <Check className="h-3 w-3 text-white" />
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      <div className="mt-4 text-sm text-gray-500">
+        {selCount} of {total} account{total === 1 ? '' : 's'} selected
+      </div>
+    </div>
+  );
+};
+
 const Posts = () => {
   const { isAuthenticated, isDisconnected } = useAuth();
   const [searchParams] = useSearchParams();
@@ -118,14 +225,19 @@ const Posts = () => {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
-  // selectedProfile is either a GMB path ('accounts/X/locations/Y') or a
-  // social prefix ('fb:<connectionId>' | 'ig:<connectionId>'). The prefix lets
-  // fetchPosts + handleCreatePost branch to the correct backend without a
-  // parallel piece of state.
+  // Multi-select target set. Each key is a GMB path ('accounts/X/locations/Y')
+  // or a social prefix ('fb:<id>' | 'ig:<id>'). Publish fans out to every
+  // selected target with Promise.allSettled.
+  const [selectedTargets, setSelectedTargets] = useState(() => new Set());
+  // The single "focused" target used for viewing recent posts + editing +
+  // deleting. Derived from selectedTargets — set to the first selected key
+  // whenever the selection changes. Kept as separate state so downstream
+  // handlers (edit/delete/refresh) can keep their existing shape.
   const [selectedProfile, setSelectedProfile] = useState('');
-  // Facebook Pages + Instagram Business connections from /api/connections,
-  // rendered as extra <optgroup>s in the same selector as GMB locations.
+  // Facebook Pages + Instagram Business connections from /api/connections.
   const [socialProfiles, setSocialProfiles] = useState([]);
+  // Per-publish target results — { successCount, failCount, failures: [{targetLabel, error}] }
+  const [publishSummary, setPublishSummary] = useState(null);
   
   
   // Expanded posts state
@@ -186,6 +298,56 @@ const Posts = () => {
      mediaUrls: ['']
    });
 
+  // Flatten GMB locations + social connections into a single ordered array
+  // of chip descriptors — one per posting target. Consumed by the chip
+  // picker and the fan-out publish loop. Ordered: GMB first, then FB, then IG.
+  const targets = useMemo(() => {
+    const out = [];
+    for (const p of profiles || []) {
+      const acctAvatar = p.accountProfilePicture?.googleUrl || null;
+      const acctName = p.businessName || p.accountName || 'Google Business';
+      for (const loc of p.locations || []) {
+        out.push({
+          key: loc.fullPath,
+          provider: 'gmb',
+          label: loc.title || loc.locationName || 'Untitled Location',
+          accountLabel: acctName,
+          avatarUrl: acctAvatar,
+        });
+      }
+    }
+    for (const r of socialProfiles || []) {
+      if (r.provider === 'facebook') {
+        out.push({
+          key: `fb:${r.id}`,
+          provider: 'facebook',
+          label: r.display_name,
+          accountLabel: r.metadata?.category || 'Facebook Page',
+          avatarUrl: r.metadata?.picture_url || null,
+        });
+      }
+    }
+    for (const r of socialProfiles || []) {
+      if (r.provider === 'instagram') {
+        out.push({
+          key: `ig:${r.id}`,
+          provider: 'instagram',
+          label: r.display_name,
+          accountLabel: r.metadata?.ig_username ? `@${r.metadata.ig_username}` : 'Instagram Business',
+          avatarUrl: r.metadata?.picture_url || null,
+        });
+      }
+    }
+    return out;
+  }, [profiles, socialProfiles]);
+
+  // Keep selectedProfile (single view/edit target) in sync with the multi-
+  // select. First selected key wins. Empty when nothing is selected.
+  useEffect(() => {
+    const firstSelected = targets.find(t => selectedTargets.has(t.key));
+    setSelectedProfile(firstSelected ? firstSelected.key : '');
+  }, [selectedTargets, targets]);
+
   const fetchData = useCallback(async () => {
     try {
       setLoading(true);
@@ -205,21 +367,22 @@ const Posts = () => {
       }
 
       // Deep-link precedence:
-      //   ?social=<connectionId> — a FB/IG connection (from BusinessProfiles page)
-      //   ?location=<gmbPath>    — a GMB location (from Calendar composer)
-      //   otherwise fall back to the first available target of any kind.
+      //   ?social=<connectionId> — pre-select a FB/IG chip
+      //   ?location=<gmbPath>    — pre-select a GMB chip
+      //   otherwise pre-select the first available target of any kind so the
+      //   page isn't in the empty state on load.
       const desiredSocial = searchParams.get('social');
       const desiredLocation = searchParams.get('location');
       const allPaths = profilesWithLocations.flatMap((p) => (p.locations || []).map((l) => l.fullPath));
       const matchedSocial = social.find(r => r.id === desiredSocial);
       if (matchedSocial) {
-        setSelectedProfile(`${matchedSocial.provider === 'facebook' ? 'fb' : 'ig'}:${matchedSocial.id}`);
+        setSelectedTargets(new Set([`${matchedSocial.provider === 'facebook' ? 'fb' : 'ig'}:${matchedSocial.id}`]));
       } else if (desiredLocation && allPaths.includes(desiredLocation)) {
-        setSelectedProfile(desiredLocation);
+        setSelectedTargets(new Set([desiredLocation]));
       } else if (profilesWithLocations.length > 0 && profilesWithLocations[0].locations.length > 0) {
-        setSelectedProfile(profilesWithLocations[0].locations[0].fullPath);
+        setSelectedTargets(new Set([profilesWithLocations[0].locations[0].fullPath]));
       } else if (social.length > 0) {
-        setSelectedProfile(`${social[0].provider === 'facebook' ? 'fb' : 'ig'}:${social[0].id}`);
+        setSelectedTargets(new Set([`${social[0].provider === 'facebook' ? 'fb' : 'ig'}:${social[0].id}`]));
       }
     } catch (error) {
     } finally {
@@ -348,35 +511,19 @@ const Posts = () => {
 
   const handleCreatePost = async (e) => {
     e.preventDefault();
-     setCreatingPost(true);
+    setCreatingPost(true);
+    setPublishSummary(null);
 
-
-    
-    // Validate media URLs
-    const validMediaUrls = formData.mediaUrls.filter(url => url.trim() !== '');
-
-
-
-    
-    const invalidUrls = validMediaUrls.filter(url => {
-      try {
-        new URL(url);
-
-        return false;
-      } catch (error) {
-
-        return true;
-      }
+    // ---- Validate inputs shared across all targets ----
+    const validMediaUrls = formData.mediaUrls.filter((url) => url.trim() !== '');
+    const invalidUrls = validMediaUrls.filter((url) => {
+      try { new URL(url); return false; } catch { return true; }
     });
-    
     if (invalidUrls.length > 0) {
-
       alert('Please enter valid image URLs for all media files.');
       setCreatingPost(false);
       return;
     }
-
-    // CTA validation: CALL needs a valid phone; other types need a URL.
     if (formData.callToAction.type && formData.callToAction.url) {
       const raw = formData.callToAction.url.trim();
       if (isCallCta(formData.callToAction.type)) {
@@ -386,10 +533,7 @@ const Posts = () => {
           return;
         }
       } else if (raw) {
-        try {
-          // eslint-disable-next-line no-new
-          new URL(raw);
-        } catch {
+        try { new URL(raw); } catch {
           alert('Enter a valid URL for the call to action.');
           setCreatingPost(false);
           return;
@@ -397,351 +541,177 @@ const Posts = () => {
       }
     }
 
+    // ---- Fan-out over selectedTargets ----
+    const targetKeys = [...selectedTargets];
+    if (targetKeys.length === 0) {
+      alert('Select at least one account to post to.');
+      setCreatingPost(false);
+      return;
+    }
 
-    // Facebook / Instagram branch. IG requires imageUrl (Meta fetches from
-    // the URL) — the composer already collects URLs in mediaUrls, so we take
-    // the first valid one. Post types + CTAs + events don't map to FB/IG —
-    // silently dropped.
-    if (selectedProfile.startsWith('fb:') || selectedProfile.startsWith('ig:')) {
-      const isIg = selectedProfile.startsWith('ig:');
-      const connectionId = selectedProfile.slice(3);
-      const socialImage = validMediaUrls.find(u => /^https:\/\//i.test(u));
-      if (isIg && !socialImage) {
-        alert('Instagram posts require a public HTTPS image URL. Paste one in the media URL field.');
+    const hasIg = targetKeys.some((k) => k.startsWith('ig:'));
+    const hasSocial = targetKeys.some((k) => k.startsWith('fb:') || k.startsWith('ig:'));
+    const socialImage = validMediaUrls.find((u) => /^https:\/\//i.test(u));
+    if (hasIg && !socialImage) {
+      alert('Instagram posts require a public HTTPS image URL. Paste one in the media URL field.');
+      setCreatingPost(false);
+      return;
+    }
+    if (postingMode === 'later' && hasSocial) {
+      alert('Scheduling is not supported for Facebook / Instagram yet. Deselect those chips or switch to "publish now".');
+      setCreatingPost(false);
+      return;
+    }
+    if (postingMode === 'later' && uploadedFiles.length > 0) {
+      alert('Direct file uploads are not yet supported for scheduled posts — remove the files or paste image URLs instead.');
+      setCreatingPost(false);
+      return;
+    }
+    let scheduledWhen = null;
+    if (postingMode === 'later') {
+      scheduledWhen = new Date(scheduledAt);
+      if (Number.isNaN(scheduledWhen.getTime()) || scheduledWhen.getTime() < Date.now() - 60000) {
+        alert('Invalid or past scheduled time.');
         setCreatingPost(false);
         return;
-      }
-      if (postingMode === 'later') {
-        alert('Scheduling is not supported for Facebook / Instagram yet — publish now, or use Google Business for scheduled posts.');
-        setCreatingPost(false);
-        return;
-      }
-      try {
-        const endpoint = isIg ? '/api/social/instagram/publish' : '/api/social/facebook/publish';
-        const body = isIg
-          ? { connectionId, caption: formData.summary, imageUrl: socialImage }
-          : { connectionId, message: formData.summary, imageUrl: socialImage || undefined };
-        const res = await axios.post(endpoint, body);
-        showNotification(
-          isIg ? 'Posted to Instagram!' : 'Posted to Facebook!',
-          'success'
-        );
-        setFormData({ summary: '', postType: 'UPDATE', callToAction: { type: '', url: '' }, mediaUrls: [''] });
-        // Refresh the recent posts feed for this connection
-        fetchPosts(selectedProfile);
-        return;
-      } catch (err) {
-        const backendMsg = err?.response?.data?.error || err.message;
-        const needsReauth = err?.response?.data?.needsReauth;
-        alert(needsReauth
-          ? `Meta says the token expired. Click Reconnect Facebook on the Connections page. (${backendMsg})`
-          : `Failed to post to ${isIg ? 'Instagram' : 'Facebook'}: ${backendMsg}`);
-        return;
-      } finally {
-        setCreatingPost(false);
       }
     }
 
-    try {
-      // Extract account and location IDs from selectedProfile
-      const profileParts = selectedProfile.split('/');
-      const locationId = profileParts[profileParts.length - 1];
-      const accountId = profileParts[1]; // accounts/{accountId}/locations/{locationId}
+    // Build shared media list (used for both GMB and social branches)
+    const allMedia = validMediaUrls.map((url) => ({ mediaFormat: 'PHOTO', sourceUrl: url }));
 
-      // Debug the profile path structure
+    // ---- Per-target publish. Isolated in Promise.allSettled so one failing
+    //      target doesn't block the others. ----
+    const publishOne = async (key) => {
+      const target = targets.find((t) => t.key === key);
+      const label = target ? target.label : key;
+      try {
+        // Facebook / Instagram
+        if (key.startsWith('fb:') || key.startsWith('ig:')) {
+          const isIg = key.startsWith('ig:');
+          const connectionId = key.slice(3);
+          const endpoint = isIg ? '/api/social/instagram/publish' : '/api/social/facebook/publish';
+          const body = isIg
+            ? { connectionId, caption: formData.summary, imageUrl: socialImage }
+            : { connectionId, message: formData.summary, imageUrl: socialImage || undefined };
+          await axios.post(endpoint, body);
+          return { key, target, label, ok: true };
+        }
 
+        // Google Business
+        const profileParts = key.split('/');
+        const locationId = profileParts[profileParts.length - 1];
+        const accountId = profileParts[1];
+        if (!accountId || !locationId) throw new Error('Bad GMB target');
 
-
-
-
-      if (!accountId || !locationId) {
-        alert('Error: Could not determine account or location ID. Please select a different profile.');
-        return;
-      }
-      
-             // Prepare post data based on post type
-       const postData = {
-         platforms: ['google'],
-         content: formData.summary, // This maps to the backend 'content' field
-         gmbAccountId: accountId,
-         gmbLocationId: locationId,
-         postType: formData.postType
-       };
-
-              // Add call to action only if both type and URL are provided
-       if (formData.callToAction.type && formData.callToAction.type.trim() !== '' && 
-           formData.callToAction.url && formData.callToAction.url.trim() !== '') {
-         postData.callToAction = {
-           actionType: formData.callToAction.type,
-           url: isCallCta(formData.callToAction.type)
-             ? toTelUrl(formData.callToAction.url)
-             : formData.callToAction.url.trim()
-         };
-
-       } else if (formData.callToAction.type && formData.callToAction.type.trim() !== '') {
-         // Warning: CTA type selected but no URL provided
-         alert('Warning: You selected a Call to Action type but did not provide a URL. The CTA button will not be displayed.');
-
-       } else {
-
-       }
-
-      // Add event data for EVENT posts
-      if (formData.postType === 'EVENT') {
-        postData.event = {
-          title: 'Event',
-          schedule: {
-            startDate: {
-              year: new Date().getFullYear(),
-              month: new Date().getMonth() + 1,
-              day: new Date().getDate()
-            },
-            startTime: {
-              hours: 9,
-              minutes: 0,
-              seconds: 0,
-              nanos: 0
-            },
-            endDate: {
-              year: new Date().getFullYear(),
-              month: new Date().getMonth() + 1,
-              day: new Date().getDate()
-            },
-            endTime: {
-              hours: 17,
-              minutes: 0,
-              seconds: 0,
-              nanos: 0
-            }
-          }
+        const postData = {
+          platforms: ['google'],
+          content: formData.summary,
+          gmbAccountId: accountId,
+          gmbLocationId: locationId,
+          postType: formData.postType,
         };
-      }
-
-      // Build the media array directly from the mediaUrls textboxes. We used
-      // to POST each URL through /api/posts/media first, but that endpoint
-      // just echoed the URL back — any single 4xx (timeout, transient
-      // network) blew up Promise.all and dropped every image with the
-      // "Some URLs failed to upload" warning. There's nothing useful to
-      // proxy through for URL-based media, so skip the roundtrip.
-      const allMedia = [];
-      const validUrls = formData.mediaUrls.filter((url) => url.trim() !== '');
-      for (const url of validUrls) {
-        allMedia.push({ mediaFormat: 'PHOTO', sourceUrl: url });
-      }
-
-             // Add all uploaded media to post data
-
-
-
-       
-       if (allMedia.length > 0) {
-         // Use only real media
-         postData.media = allMedia.map(media => {
-           const mappedMedia = {
-              mediaFormat: media.mediaFormat || 'PHOTO',
-              sourceUrl: media.sourceUrl || media.url || media.thumbnailUrl
-           };
-
-           return mappedMedia;
-         });
-
-       } else {
-         // No media to add
-
-       }
-
-
-
-       // Post data prepared for submission
-       
-       // Additional CTA debugging
-
-
-
-
-
-
-      
-      // Create FormData for file uploads
-      const formDataToSend = new FormData();
-      
-      // Add text fields
-      formDataToSend.append('platforms', JSON.stringify(postData.platforms));
-      formDataToSend.append('content', postData.content);
-      formDataToSend.append('gmbAccountId', postData.gmbAccountId);
-      formDataToSend.append('gmbLocationId', postData.gmbLocationId);
-      formDataToSend.append('postType', postData.postType);
-      
-      // Add optional fields
-      if (postData.callToAction) {
-        formDataToSend.append('callToAction', JSON.stringify(postData.callToAction));
-      }
-      if (postData.event) {
-        formDataToSend.append('event', JSON.stringify(postData.event));
-      }
-      if (postData.offer) {
-        formDataToSend.append('offer', JSON.stringify(postData.offer));
-      }
-      
-      // Add media URLs (for backward compatibility)
-      if (postData.media && postData.media.length > 0) {
-        formDataToSend.append('media', JSON.stringify(postData.media));
-      }
-      
-      // Add uploaded files
-      if (uploadedFiles && uploadedFiles.length > 0) {
-        uploadedFiles.forEach(file => {
-          formDataToSend.append('images', file);
-        });
-      }
-
-      let response;
-      if (postingMode === 'later') {
-        // Scheduled route — hits scheduled_posts, worker publishes at
-        // scheduled_time. File uploads not supported yet on this path
-        // (schedule endpoint accepts JSON, not multipart).
-        if (uploadedFiles.length > 0) {
-          alert(
-            'Direct file uploads are not yet supported for scheduled posts — remove the files or paste image URLs instead.'
-          );
-          setCreatingPost(false);
-          return;
+        if (formData.callToAction.type && formData.callToAction.url) {
+          postData.callToAction = {
+            actionType: formData.callToAction.type,
+            url: isCallCta(formData.callToAction.type)
+              ? toTelUrl(formData.callToAction.url)
+              : formData.callToAction.url.trim(),
+          };
         }
-        const when = new Date(scheduledAt);
-        if (Number.isNaN(when.getTime())) {
-          alert('Invalid scheduled time.');
-          setCreatingPost(false);
-          return;
+        if (formData.postType === 'EVENT') {
+          const d = new Date();
+          postData.event = {
+            title: 'Event',
+            schedule: {
+              startDate: { year: d.getFullYear(), month: d.getMonth() + 1, day: d.getDate() },
+              startTime: { hours: 9, minutes: 0, seconds: 0, nanos: 0 },
+              endDate: { year: d.getFullYear(), month: d.getMonth() + 1, day: d.getDate() },
+              endTime: { hours: 17, minutes: 0, seconds: 0, nanos: 0 },
+            },
+          };
         }
-        if (when.getTime() < Date.now() - 60_000) {
-          alert('Scheduled time must be in the future.');
-          setCreatingPost(false);
-          return;
-        }
-        response = { data: await calendarService.schedule({
-          content: postData.content,
-          media: (postData.media || []).map((m) => ({
-            sourceUrl: m.sourceUrl,
+        if (allMedia.length > 0) {
+          postData.media = allMedia.map((m) => ({
             mediaFormat: m.mediaFormat || 'PHOTO',
-          })),
-          gmbAccountId: postData.gmbAccountId,
-          gmbLocationId: postData.gmbLocationId,
-          scheduledTime: when,
-          postType: postData.postType,
-          callToAction: postData.callToAction || null,
-        }) };
-      } else {
-        response = await axios.post('/api/posts', formDataToSend, {
-          headers: { 'Content-Type': 'multipart/form-data' },
-        });
+            sourceUrl: m.sourceUrl,
+          }));
+        }
+
+        if (postingMode === 'later') {
+          await calendarService.schedule({
+            content: postData.content,
+            media: (postData.media || []).map((m) => ({ sourceUrl: m.sourceUrl, mediaFormat: m.mediaFormat || 'PHOTO' })),
+            gmbAccountId: accountId,
+            gmbLocationId: locationId,
+            scheduledTime: scheduledWhen,
+            postType: postData.postType,
+            callToAction: postData.callToAction || null,
+          });
+        } else {
+          const fd = new FormData();
+          fd.append('platforms', JSON.stringify(postData.platforms));
+          fd.append('content', postData.content);
+          fd.append('gmbAccountId', accountId);
+          fd.append('gmbLocationId', locationId);
+          fd.append('postType', postData.postType);
+          if (postData.callToAction) fd.append('callToAction', JSON.stringify(postData.callToAction));
+          if (postData.event) fd.append('event', JSON.stringify(postData.event));
+          if (postData.media && postData.media.length > 0) fd.append('media', JSON.stringify(postData.media));
+          if (uploadedFiles && uploadedFiles.length > 0) {
+            uploadedFiles.forEach((file) => fd.append('images', file));
+          }
+          await axios.post('/api/posts', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+        }
+        return { key, target, label, ok: true };
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error('[publishOne] failed for', key, err);
+        const backendMsg = err?.response?.data?.error || err?.response?.data?.details || err.message;
+        const needsReauth = err?.response?.data?.needsReauth;
+        return { key, target, label, ok: false, error: backendMsg, needsReauth };
       }
+    };
 
+    const settled = await Promise.allSettled(targetKeys.map(publishOne));
+    const outcomes = settled.map((r) =>
+      r.status === 'fulfilled' ? r.value : { ok: false, error: r.reason?.message || 'unknown' }
+    );
+    const successes = outcomes.filter((o) => o.ok);
+    const failures = outcomes.filter((o) => !o.ok);
+    setPublishSummary({ successCount: successes.length, failCount: failures.length, failures });
 
-
-      
-             // Create a new post object to add to local state immediately
-       const newPostId = response.data.postId || `new-post-${Date.now()}`;
-       const newPost = {
-         id: newPostId, // Use real post ID from backend response
-         content: formData.summary,
-         postType: formData.postType,
-         platform: 'google',
-         createdAt: new Date().toISOString(),
-         status: 'published',
-         media: allMedia.map(media => ({
-           id: media.name?.split('/').pop() || `media-${Date.now()}`,
-           mediaFormat: media.mediaFormat || 'PHOTO',
-           sourceUrl: media.sourceUrl || media.url || media.thumbnailUrl,
-           thumbnailUrl: media.thumbnailUrl || media.thumbnail || null,
-           altText: 'Post image'
-         })),
-         callToAction: postData.callToAction || null,
-         gmbPost: null // Will be populated when fetched from GMB
-       };
-      
-
-
-
-      
-      // Add the new post to the beginning of the posts array
-      setPosts(prevPosts => [newPost, ...prevPosts]);
-      
-      // Reset form and state
-      setFormData({
-        summary: '',
-        postType: 'UPDATE',
-        callToAction: { type: '', url: '' },
-        mediaUrls: ['']
-      });
-      setCreatingPost(false);
-      setExpandedPosts(new Set()); // Reset expanded posts
-      
-      // Show success message
+    if (failures.length === 0) {
       showNotification(
         postingMode === 'later'
-          ? `Post scheduled for ${new Date(scheduledAt).toLocaleString()}!`
-          : 'Post created successfully!',
+          ? `Scheduled for ${new Date(scheduledAt).toLocaleString()} on ${successes.length} account${successes.length === 1 ? '' : 's'}`
+          : `Posted to ${successes.length} account${successes.length === 1 ? '' : 's'}`,
         'success'
       );
-      
-      // Refresh posts list in background to get the real GMB post data
-
-      setTimeout(async () => {
-        try {
-          // Fetch fresh posts from GMB using the posts service
-          const freshPosts = await postsService.getPostsForLocation(locationId, accountId, true);
-          
-          if (freshPosts && freshPosts.length > 0) {
-            // Check if our new post appears in the GMB response
-            const gmbPostExists = freshPosts.some(gmbPost => 
-              gmbPost.content === formData.summary && 
-              gmbPost.postType === formData.postType
-            );
-            
-            if (gmbPostExists) {
-              // New post found in GMB, replace local posts with GMB data
-              setPosts(freshPosts);
-
-            } else {
-              // New post not yet in GMB, keep local post and append GMB posts
-              setPosts(prevPosts => {
-                const localNewPost = prevPosts.find(p => p.id === newPostId);
-                if (localNewPost) {
-                  return [localNewPost, ...freshPosts];
-                }
-                return freshPosts;
-              });
-
-            }
-            
-          }
-          
-
-        } catch (error) {
-
-        }
-      }, 3000); // Wait 3 seconds for GMB API to index the new post
-    } catch (error) {
-      // Surface the real failure so debugging isn't a game of 20 questions.
-      // Also emit to the console + client-log so the next silent failure
-      // lands in Loki as ai_post_error / equivalent.
-      // eslint-disable-next-line no-console
-      console.error('[handleCreatePost] failed:', error, {
-        status: error?.response?.status,
-        data: error?.response?.data,
-      });
-      const backendMsg = error?.response?.data?.error || error?.response?.data?.details;
-      const httpStatus = error?.response?.status;
-      const localMsg = error?.message;
-      const composed = backendMsg
-        ? `Failed to post (${httpStatus || 'no-status'}): ${backendMsg}`
-        : httpStatus
-        ? `Failed to post (${httpStatus}): ${localMsg || 'unknown'}`
-        : `Failed to post: ${localMsg || 'unknown error — check console'}`;
-      alert(composed);
-     } finally {
-       setCreatingPost(false);
+      setFormData({ summary: '', postType: 'UPDATE', callToAction: { type: '', url: '' }, mediaUrls: [''] });
+      setUploadedFiles([]);
+    } else if (successes.length === 0) {
+      showNotification(
+        `Failed on all ${failures.length} account${failures.length === 1 ? '' : 's'}. First error: ${failures[0].error}`,
+        'error'
+      );
+    } else {
+      showNotification(
+        `Posted to ${successes.length}, failed on ${failures.length}. First failure: ${failures[0].label} — ${failures[0].error}`,
+        'success'
+      );
+      setFormData({ summary: '', postType: 'UPDATE', callToAction: { type: '', url: '' }, mediaUrls: [''] });
+      setUploadedFiles([]);
     }
+
+    // Refresh the currently focused target's recent posts so the just-published
+    // post appears (with a small delay for the source platform to index it).
+    if (selectedProfile) {
+      setTimeout(() => { fetchPosts(selectedProfile, 1, false, true); }, 2000);
+    }
+
+    setCreatingPost(false);
+    setExpandedPosts(new Set());
   };
 
   const handleDeletePost = async (postId) => {
@@ -1266,53 +1236,17 @@ const Posts = () => {
         </div>
       </div>
 
-      {/* Profile Selector */}
-      <div className="bg-white shadow rounded-lg p-6">
-        <label htmlFor="profile-select" className="block text-sm font-medium text-gray-700 mb-2">
-          Select Business Profile
-        </label>
-        <select
-          id="profile-select"
-          value={selectedProfile}
-          onChange={(e) => {
-            setSelectedProfile(e.target.value);
-            setExpandedPosts(new Set()); // Reset expanded posts when changing profiles
-            fetchPosts(e.target.value);
-          }}
-          className="block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
-        >
-          <option value="">Select a profile...</option>
-          {profiles.length > 0 && (
-            <optgroup label="Google Business">
-              {profiles.map((profile) =>
-                profile.locations.map((location) => (
-                  <option key={location.fullPath} value={location.fullPath}>
-                    {profile.accountName} - {location.title || 'Untitled Location'}
-                  </option>
-                ))
-              )}
-            </optgroup>
-          )}
-          {socialProfiles.filter(r => r.provider === 'facebook').length > 0 && (
-            <optgroup label="Facebook Pages">
-              {socialProfiles.filter(r => r.provider === 'facebook').map(r => (
-                <option key={r.id} value={`fb:${r.id}`}>
-                  {r.display_name}
-                </option>
-              ))}
-            </optgroup>
-          )}
-          {socialProfiles.filter(r => r.provider === 'instagram').length > 0 && (
-            <optgroup label="Instagram Accounts">
-              {socialProfiles.filter(r => r.provider === 'instagram').map(r => (
-                <option key={r.id} value={`ig:${r.id}`}>
-                  {r.display_name}
-                </option>
-              ))}
-            </optgroup>
-          )}
-        </select>
-      </div>
+      {/* Multi-select target chip picker. Each chip is an avatar + platform
+          badge; click toggles it in selectedTargets. Selected chips get a
+          colored ring + checkmark. "Select All" flips the whole set. */}
+      <TargetChipsPicker
+        targets={targets}
+        selected={selectedTargets}
+        onChange={(nextSet) => {
+          setSelectedTargets(nextSet);
+          setExpandedPosts(new Set()); // Reset expanded posts on selection change
+        }}
+      />
 
              {/* Create/Edit Post Form Section */}
        <div className="bg-white shadow rounded-lg p-6">
