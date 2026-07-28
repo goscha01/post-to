@@ -60,6 +60,54 @@ const processUploadedImages = (files) => {
 router.use(authMiddleware);      // User auth
 router.use(requireBusinessAuth); // Business auth
 
+// Extract a Drive fileId from a URL — mirrors the frontend helper. Any
+// media item whose sourceUrl encodes a Drive fileId gets its Drive
+// permissions upgraded to "anyone with link" before we call GMB, so
+// Google's fetch of the sourceUrl actually returns image bytes instead of
+// a login page.
+function extractDriveFileIdFromUrl(url) {
+  if (!url || typeof url !== 'string') return null;
+  let m = url.match(/[?&]id=([a-zA-Z0-9_-]{10,})/);
+  if (m) return m[1];
+  m = url.match(/\/file\/d\/([a-zA-Z0-9_-]{10,})/);
+  if (m) return m[1];
+  return null;
+}
+
+// Add a public-reader permission to each Drive file id passed in, using
+// the caller's OAuth token. Idempotent — re-sharing a file that's already
+// public returns 200 with the existing permission. Failures are logged
+// but non-fatal: worst case GMB then fails to fetch that specific file
+// and returns a media-fetch error, which is a better UX than a silent
+// 60s frontend timeout.
+async function shareDriveFilesPublic(fileIds, userId, fallbackToken) {
+  if (!Array.isArray(fileIds) || fileIds.length === 0) return { attempted: 0, succeeded: 0 };
+  let succeeded = 0;
+  for (const fileId of fileIds) {
+    const attempt = await tryWithEachBusinessToken(userId, fallbackToken, async (accessToken) => {
+      const resp = await axios.post(
+        `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/permissions`,
+        { role: 'reader', type: 'anyone' },
+        {
+          headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+          timeout: 10_000,
+        }
+      );
+      return resp.data;
+    });
+    if (attempt.ok) {
+      succeeded += 1;
+    } else {
+      logger.warn('posts.drive_share_failed', {
+        user_id: userId,
+        file_id: fileId,
+        error: attempt.error?.message,
+      });
+    }
+  }
+  return { attempted: fileIds.length, succeeded };
+}
+
 // Initialize Google Business Profile API clients
 function getBusinessProfileClient(accessToken) {
   const oauth2Client = new google.auth.OAuth2();
@@ -803,18 +851,53 @@ router.post('/', upload.array('images', 10), [
 
         
         
-        // Try real API first, fallback if needed
+        // Auto-share any Drive-hosted media files to "anyone with link"
+        // BEFORE calling GMB — otherwise Google's own media fetch returns
+        // an HTML login page and the localPosts.create call either fails
+        // slowly or times out entirely. Idempotent + non-fatal per file.
+        const driveFileIds = (gmbPostData.media || [])
+          .map((m) => extractDriveFileIdFromUrl(m?.sourceUrl))
+          .filter(Boolean);
+        if (driveFileIds.length > 0) {
+          const shareResult = await shareDriveFilesPublic(
+            driveFileIds,
+            req.user?.userId,
+            req.businessToken
+          );
+          logger.info('posts.drive_shared', {
+            user_id: req.user?.userId,
+            attempted: shareResult.attempted,
+            succeeded: shareResult.succeeded,
+          });
+        }
+
+        // Try real API first, fallback if needed. Multi-token fanout so
+        // users whose picked location belongs to a different Google
+        // account than the primary business_access_token still succeed.
+        // 30s timeout so a slow media-fetch failure returns to the caller
+        // long before the frontend's 60s ceiling — avoids the "timeout of
+        // 60000ms exceeded" silent kill.
         try {
-          const gmbResponse = await axios.post(
-            `https://mybusiness.googleapis.com/v4/accounts/${gmbAccountId}/locations/${gmbLocationId}/localPosts`,
-            gmbPostData,
-            {
-              headers: {
-                'Authorization': `Bearer ${accessToken}`,
-                'Content-Type': 'application/json'
-              }
+          const gmbCallFanout = await tryWithEachBusinessToken(
+            req.user?.userId,
+            accessToken,
+            async (tok) => {
+              const resp = await axios.post(
+                `https://mybusiness.googleapis.com/v4/accounts/${gmbAccountId}/locations/${gmbLocationId}/localPosts`,
+                gmbPostData,
+                {
+                  headers: {
+                    Authorization: `Bearer ${tok}`,
+                    'Content-Type': 'application/json',
+                  },
+                  timeout: 30_000,
+                }
+              );
+              return resp;
             }
           );
+          if (!gmbCallFanout.ok) throw gmbCallFanout.error || new Error('All OAuth tokens failed');
+          const gmbResponse = gmbCallFanout.result;
           
           
           
