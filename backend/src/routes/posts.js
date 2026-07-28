@@ -763,10 +763,21 @@ router.post('/', upload.array('images', 10), parseMultipartJsonFields, [
     ua: req.headers['user-agent']?.slice(0, 60) || null,
   });
 
-  // Hard 45s cap on the handler. We do NOT wrap res.json — that was
-  // interacting badly with the invalidateCacheMiddleware wrapper above
-  // (both wanted to intercept res.json, causing writes to stall). Track
-  // response state via res.on('finish' | 'close') instead.
+  // Hard 45s cap on the handler. Three defensive layers so the client
+  // always gets closure by 45s, even if internal awaits are stuck:
+  //   1. res.setTimeout — Node's HTTP-level: force-closes the underlying
+  //      socket at 45s. Guarantees the client's axios sees SOMETHING
+  //      (connection reset) instead of a silent socket that hits its
+  //      own 60s timeout.
+  //   2. handlerAbort — an AbortController any outbound axios call
+  //      (Drive share, Drive fetch, GMB call) can subscribe to via
+  //      req.handlerAbortSignal. When the cap fires we abort every
+  //      in-flight request so the handler unblocks.
+  //   3. res.json 504 attempt — best-effort clean JSON response before
+  //      the socket close.
+  const handlerAbort = new AbortController();
+  req.handlerAbortSignal = handlerAbort.signal;
+  res.setTimeout(45_000);
   let responded = false;
   res.on('finish', () => { responded = true; });
   const capTimer = setTimeout(() => {
@@ -775,9 +786,15 @@ router.post('/', upload.array('images', 10), parseMultipartJsonFields, [
       user_id: req.user?.userId,
       elapsed_ms: Date.now() - t0,
     });
+    try { handlerAbort.abort(); } catch { /* noop */ }
     try {
       res.status(504).json({ success: false, error: 'Post creation timed out — try again or reduce the number of images.' });
     } catch { /* already sent */ }
+    // Force-flush + hang up so the socket doesn't sit in some
+    // half-closed state that lets the client hang until axios's own
+    // 60s timeout fires.
+    try { res.end(); } catch { /* noop */ }
+    try { req.socket?.destroy(); } catch { /* noop */ }
   }, 45_000);
   res.on('close', () => clearTimeout(capTimer));
 
@@ -962,13 +979,15 @@ router.post('/', upload.array('images', 10), parseMultipartJsonFields, [
             req.user?.userId,
             accessToken,
             async (tok) => {
-              // AbortController tied to the axios timeout — vanilla axios
-              // timeout doesn't always cancel the underlying TCP socket
-              // cleanly. AbortController does, ensuring failures return
-              // within the timeout even under weird network conditions.
+              // Chain the per-attempt AbortController to the
+              // handler-level one so a cap-reached event cancels every
+              // in-flight fanout attempt.
               const controller = new AbortController();
-              const timer = setTimeout(() => controller.abort(), 12_000);
+              const timer = setTimeout(() => controller.abort('per-attempt-timeout'), 10_000);
+              const onHandlerAbort = () => controller.abort('handler-abort');
+              req.handlerAbortSignal?.addEventListener('abort', onHandlerAbort);
               try {
+                const attemptStart = Date.now();
                 const resp = await axios.post(
                   `https://mybusiness.googleapis.com/v4/accounts/${gmbAccountId}/locations/${gmbLocationId}/localPosts`,
                   gmbPostData,
@@ -977,13 +996,28 @@ router.post('/', upload.array('images', 10), parseMultipartJsonFields, [
                       Authorization: `Bearer ${tok}`,
                       'Content-Type': 'application/json',
                     },
-                    timeout: 12_000,
+                    timeout: 10_000,
                     signal: controller.signal,
                   }
                 );
+                logger.info('posts.gmb.attempt_ok', {
+                  user_id: req.user?.userId,
+                  elapsed_ms: Date.now() - attemptStart,
+                  status: resp?.status,
+                });
                 return resp;
+              } catch (err) {
+                logger.warn('posts.gmb.attempt_error', {
+                  user_id: req.user?.userId,
+                  status: err?.response?.status || null,
+                  code: err?.code || null,
+                  message: (err?.message || '').slice(0, 300),
+                  response_body: JSON.stringify(err?.response?.data || null).slice(0, 500),
+                });
+                throw err;
               } finally {
                 clearTimeout(timer);
+                req.handlerAbortSignal?.removeEventListener('abort', onHandlerAbort);
               }
             }
           );
