@@ -352,6 +352,14 @@ const Posts = () => {
      mediaUrls: ['']
    });
 
+   // Saved drafts (server-persisted via scheduled_posts.status='draft').
+   // Distinct from the existing `_isDraft` UI flag on posts already in flight.
+   const [savedDrafts, setSavedDrafts] = useState([]);
+   const [savedDraftsLoading, setSavedDraftsLoading] = useState(false);
+   const [activeDraftId, setActiveDraftId] = useState(null);
+   const [savingDraft, setSavingDraft] = useState(false);
+   const [draftSavedAt, setDraftSavedAt] = useState(null);
+
   // Flatten GMB locations + social connections into a single ordered array
   // of chip descriptors — one per posting target. Consumed by the chip
   // picker and the fan-out publish loop. Ordered: GMB first, then FB, then IG.
@@ -851,6 +859,14 @@ const Posts = () => {
           : `Posted to ${successes.length} account${successes.length === 1 ? '' : 's'}`,
         'success'
       );
+      // If we were editing a saved draft, delete it — the composer has
+      // fired successfully so it doesn't need to linger. Non-fatal.
+      if (activeDraftId) {
+        try { await calendarService.deleteDraft(activeDraftId); } catch { /* non-fatal */ }
+        setActiveDraftId(null);
+        setDraftSavedAt(null);
+        loadSavedDrafts();
+      }
       setFormData({ summary: '', postType: 'UPDATE', callToAction: { type: '', url: '' }, mediaUrls: [''] });
       setUploadedFiles([]);
       setShowComposer(false); // Close the composer modal on full success
@@ -1161,6 +1177,120 @@ const Posts = () => {
      });
    };
 
+   // ── Saved drafts ─────────────────────────────
+   const loadSavedDrafts = useCallback(async () => {
+     if (!isAuthenticated || isDisconnected) return;
+     setSavedDraftsLoading(true);
+     try {
+       const data = await calendarService.listDrafts();
+       setSavedDrafts(Array.isArray(data.drafts) ? data.drafts : []);
+     } catch {
+       // non-fatal
+     } finally {
+       setSavedDraftsLoading(false);
+     }
+   }, [isAuthenticated, isDisconnected]);
+
+   useEffect(() => {
+     loadSavedDrafts();
+   }, [loadSavedDrafts]);
+
+   // Save the current composer content as a server-persisted draft.
+   // Idempotent: if activeDraftId is set (user opened an existing draft),
+   // this updates; otherwise inserts a new row.
+   const handleSaveDraft = async () => {
+     setSavingDraft(true);
+     try {
+       const profileParts = (selectedProfile || '').split('/');
+       const accountId = profileParts[1] || null;
+       const locationId = profileParts[profileParts.length - 1] || null;
+       const summary = editingPost ? editFormData.summary : formData.summary;
+       const postType = editingPost ? editFormData.postType : formData.postType;
+       const cta = editingPost ? editFormData.callToAction : formData.callToAction;
+       const mediaUrls = editingPost ? editFormData.mediaUrls : formData.mediaUrls;
+       const ctaPayload =
+         cta.type && (cta.url || '').trim()
+           ? {
+               actionType: cta.type,
+               url: isCallCta(cta.type) ? toTelUrl(cta.url) : cta.url.trim(),
+             }
+           : null;
+       const payload = {
+         content: summary,
+         media: (mediaUrls || [])
+           .map((u) => (u || '').trim())
+           .filter(Boolean)
+           .map((sourceUrl) => ({ sourceUrl, mediaFormat: 'PHOTO' })),
+         gmbAccountId: accountId,
+         gmbLocationId: locationId,
+         postType,
+         callToAction: ctaPayload,
+       };
+       let saved;
+       if (activeDraftId) {
+         saved = await calendarService.updateDraft(activeDraftId, payload);
+       } else {
+         saved = await calendarService.saveDraft(payload);
+         if (saved?.draft?.id) setActiveDraftId(saved.draft.id);
+       }
+       setDraftSavedAt(new Date());
+       loadSavedDrafts();
+       showNotification('Draft saved', 'success');
+     } catch (err) {
+       // Surface the real error (e.g. migration not applied).
+       const msg = err?.response?.data?.error || err?.response?.data?.details || err?.message;
+       showNotification(`Failed to save draft: ${msg || 'unknown error'}`, 'error');
+       // eslint-disable-next-line no-console
+       console.error('[handleSaveDraft] failed:', err);
+     } finally {
+       setSavingDraft(false);
+     }
+   };
+
+   // Load a saved draft into the composer (formData). Clears any edit-mode.
+   const loadDraftIntoComposer = (draft) => {
+     setEditingPost(null);
+     setActiveDraftId(draft.id);
+     const media = Array.isArray(draft.media)
+       ? draft.media
+           .map((m) => (typeof m === 'string' ? m : m?.sourceUrl || m?.url || ''))
+           .filter(Boolean)
+       : [];
+     const cta = draft.call_to_action || null;
+     setFormData({
+       summary: draft.content || '',
+       postType: draft.post_type || 'UPDATE',
+       callToAction: {
+         type: cta?.actionType || '',
+         url: cta?.actionType === 'CALL' ? (cta.url || '').replace(/^tel:/i, '') : (cta?.url || ''),
+       },
+       mediaUrls: media.length > 0 ? media : [''],
+     });
+     if (draft.gmb_account_id && draft.location_id) {
+       setSelectedProfile(`accounts/${draft.gmb_account_id}/locations/${draft.location_id}`);
+     }
+     // Scroll composer into view for good UX.
+     setTimeout(() => {
+       const el = document.getElementById('post-composer');
+       if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+     }, 50);
+   };
+
+   const deleteSavedDraft = async (id) => {
+     // eslint-disable-next-line no-restricted-globals, no-alert
+     if (!window.confirm('Delete this draft?')) return;
+     try {
+       await calendarService.deleteDraft(id);
+       setSavedDrafts((prev) => prev.filter((d) => d.id !== id));
+       if (activeDraftId === id) setActiveDraftId(null);
+     } catch { /* non-fatal */ }
+   };
+
+   const clearDraftBinding = () => {
+     setActiveDraftId(null);
+     setDraftSavedAt(null);
+   };
+
    // Handle delete image from preview
    const handleDeleteImage = (index) => {
      if (editingPost) {
@@ -1447,6 +1577,60 @@ const Posts = () => {
         }}
       />
 
+      {/* Drafts strip: click a draft to open in composer, prefilled. Empty
+          state hidden entirely to keep the Posts page clean when there are
+          no drafts. */}
+      {savedDrafts.length > 0 && (
+        <div className="bg-white shadow rounded-lg p-4 border border-gray-200">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-sm font-semibold text-gray-900">
+              Drafts <span className="font-normal text-gray-500">({savedDrafts.length})</span>
+            </h3>
+            <button
+              type="button"
+              onClick={loadSavedDrafts}
+              disabled={savedDraftsLoading}
+              className="text-xs text-primary-600 hover:underline disabled:opacity-50"
+            >
+              <RefreshCw className={`h-3 w-3 inline ${savedDraftsLoading ? 'animate-spin' : ''}`} />
+            </button>
+          </div>
+          <ul className="divide-y divide-gray-100">
+            {savedDrafts.map((d) => {
+              const isActive = d.id === activeDraftId;
+              const preview = (d.content || '').trim();
+              return (
+                <li key={d.id} className={`group flex items-start gap-2 py-2 ${isActive ? 'bg-primary-50/40' : ''}`}>
+                  <button
+                    type="button"
+                    onClick={() => { setShowComposer(true); loadDraftIntoComposer(d); }}
+                    className="flex-1 min-w-0 text-left"
+                    title="Open in composer"
+                  >
+                    <span className="block text-sm text-gray-900 truncate">
+                      {preview ? preview.slice(0, 100) : <span className="italic text-gray-400">(empty)</span>}
+                    </span>
+                    <span className="block text-[11px] text-gray-500">
+                      {new Date(d.updated_at || d.created_at).toLocaleString()}
+                      {Array.isArray(d.media) && d.media.length > 0 ? ` · ${d.media.length} image${d.media.length === 1 ? '' : 's'}` : ''}
+                      {isActive ? ' · editing' : ''}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => deleteSavedDraft(d.id)}
+                    className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-600 p-1"
+                    title="Delete draft"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+
       {/* Composer modal — opens on "New Post" click or when editingPost is set.
           Backdrop click closes it (unless a submit is in flight). Wraps the
           existing composer JSX unchanged; only adds the overlay + close X. */}
@@ -1455,7 +1639,7 @@ const Posts = () => {
         className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 p-4 overflow-y-auto"
         onClick={() => { if (!creatingPost && !updatingPost) { setShowComposer(false); setEditingPost(null); } }}
       >
-       <div className="max-w-4xl w-full my-8 relative" onClick={(e) => e.stopPropagation()}>
+       <div id="post-composer" className="max-w-4xl w-full my-8 relative" onClick={(e) => e.stopPropagation()}>
          <button
            type="button"
            onClick={() => { if (!creatingPost && !updatingPost) { setShowComposer(false); setEditingPost(null); } }}
@@ -1857,34 +2041,68 @@ const Posts = () => {
                )}
 
                {/* Submit Button */}
-               <div className="flex justify-end pt-4">
-                 <button
-                   type="submit"
-                   disabled={creatingPost || updatingPost}
-                   className={`px-8 py-3 border border-transparent rounded-md shadow-sm text-sm font-medium text-white transition-colors duration-200 ${
-                     (creatingPost || updatingPost)
-                       ? 'bg-primary-400 cursor-not-allowed' 
-                       : 'bg-primary-600 hover:bg-primary-700'
-                   }`}
-                 >
-                   {creatingPost ? (
-                     <>
-                       <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mr-2 inline-block"></div>
-                       {postingMode === 'later' ? 'Scheduling…' : 'Creating Post...'}
-                     </>
-                   ) : updatingPost ? (
-                     <>
-                       <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mr-2 inline-block"></div>
-                       Updating Post...
-                     </>
-                   ) : (
-                     editingPost
-                       ? 'Update Post'
-                       : postingMode === 'later'
-                       ? 'Schedule Post'
-                       : 'Create Post'
+               <div className="flex justify-between items-center pt-4">
+                 <div className="text-xs text-gray-500 flex items-center gap-3">
+                   {activeDraftId && (
+                     <span className="inline-flex items-center gap-1 text-primary-700">
+                       Editing draft
+                       <button
+                         type="button"
+                         onClick={clearDraftBinding}
+                         className="text-gray-400 hover:text-gray-700 text-[10px] uppercase"
+                         title="Unlink from draft (creates a new draft on next save)"
+                       >
+                         (unlink)
+                       </button>
+                     </span>
                    )}
-                 </button>
+                   {draftSavedAt && (
+                     <span>Saved {draftSavedAt.toLocaleTimeString()}</span>
+                   )}
+                 </div>
+                 <div className="flex items-center gap-2">
+                   {!editingPost && (
+                     <button
+                       type="button"
+                       onClick={handleSaveDraft}
+                       disabled={savingDraft || creatingPost}
+                       className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-60"
+                     >
+                       {savingDraft
+                         ? 'Saving…'
+                         : activeDraftId
+                         ? 'Update draft'
+                         : 'Save as draft'}
+                     </button>
+                   )}
+                   <button
+                     type="submit"
+                     disabled={creatingPost || updatingPost}
+                     className={`px-8 py-3 border border-transparent rounded-md shadow-sm text-sm font-medium text-white transition-colors duration-200 ${
+                       (creatingPost || updatingPost)
+                         ? 'bg-primary-400 cursor-not-allowed'
+                         : 'bg-primary-600 hover:bg-primary-700'
+                     }`}
+                   >
+                     {creatingPost ? (
+                       <>
+                         <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mr-2 inline-block"></div>
+                         {postingMode === 'later' ? 'Scheduling…' : 'Creating Post...'}
+                       </>
+                     ) : updatingPost ? (
+                       <>
+                         <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mr-2 inline-block"></div>
+                         Updating Post...
+                       </>
+                     ) : (
+                       editingPost
+                         ? 'Update Post'
+                         : postingMode === 'later'
+                         ? 'Schedule Post'
+                         : 'Create Post'
+                     )}
+                   </button>
+                 </div>
                </div>
              </div>
 
