@@ -1697,14 +1697,14 @@ const Posts = () => {
                   );
                 }
                 return (
-                  <div className="mt-1 text-xs text-gray-600">
-                    <span className="font-medium">Posting to:</span>{' '}
-                    <span>
+                  <div className="mt-1 text-sm text-gray-700">
+                    <span className="font-medium">
+                      Posting to {chosen.length} account{chosen.length === 1 ? '' : 's'}:
+                    </span>{' '}
+                    <span className="text-gray-900">
                       {chosen
-                        .slice(0, 3)
                         .map((t) => t.label || t.title || t.locationName || 'Unnamed')
                         .join(', ')}
-                      {chosen.length > 3 ? ` +${chosen.length - 3} more` : ''}
                     </span>
                   </div>
                 );
@@ -1819,6 +1819,22 @@ const Posts = () => {
                    className="block sm:w-auto border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 text-sm"
                  />
                )}
+             </div>
+           )}
+           {/* Duplicated target chip picker inside the modal so users can
+               see + change which accounts they're posting to without
+               closing the composer. Same state as the outer picker via
+               targets + selectedTargets, so both stay in sync. */}
+           {!editingPost && targets.length > 0 && (
+             <div className="mb-4 border border-gray-200 rounded-lg p-3 bg-gray-50/50">
+               <TargetChipsPicker
+                 targets={targets}
+                 selected={selectedTargets}
+                 onChange={(nextSet) => {
+                   setSelectedTargets(nextSet);
+                   setExpandedPosts(new Set());
+                 }}
+               />
              </div>
            )}
            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
