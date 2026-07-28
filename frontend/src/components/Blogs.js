@@ -136,7 +136,7 @@ const Blogs = () => {
         </div>
       )}
 
-      <BlogDomainsPanel />
+      <BlogDomainsPanel connections={connections} />
 
       <GscKeywordsPanel
         gscConnections={gscConnections}
@@ -995,23 +995,68 @@ const GscSitePicker = ({ onSaved, onReconnectGoogle }) => {
   );
 };
 
+// Extract a root hostname from any of the site-shaped connections we already
+// have (website scrape, GSC property). Returns 'spotless.homes' for inputs like
+// 'https://www.spotless.homes/', 'sc-domain:spotless.homes', etc.
+function extractHostFromConnection(conn) {
+  if (!conn) return null;
+  const meta = conn.metadata || {};
+  const candidates = [
+    meta.host,
+    meta.hostname,
+    meta.site_url,
+    meta.url,
+    conn.external_id,
+    conn.display_name,
+  ].filter(Boolean);
+  for (const raw of candidates) {
+    let s = String(raw).trim().toLowerCase();
+    if (!s) continue;
+    if (s.startsWith('sc-domain:')) s = s.slice(10);
+    s = s.replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/^www\./, '');
+    if (/^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(s)) return s;
+  }
+  return null;
+}
+
 // BlogDomainsPanel — subdomain onboarding for the multi-tenant blog renderer.
 //
-// One row = one custom subdomain (blog.theirsite.com) attached to the
-// post-to-blogs Railway service. Flow:
-//   1. Add — user types hostname, backend inserts a connected_accounts row
-//      with metadata.verified=false and returns the CNAME target.
-//   2. User sets `blog.theirsite.com CNAME → cnameTarget` at their DNS host.
-//   3. Verify — backend does dns.resolveCname + Railway customDomainCreate.
-//      On success, metadata.verified=true and the blogs-serve host resolver
-//      starts answering requests for that domain within ~60s (cache TTL).
-const BlogDomainsPanel = () => {
+// UX flow (auto-filled):
+//   1. Pre-fill hostname as `blog.<user's connected site>` — user rarely has
+//      to type. DNS instructions render immediately (they don't depend on the
+//      row existing yet — cnameTarget is a service-level constant).
+//   2. One button "Save & verify" — creates the row and immediately runs the
+//      DNS check + Railway customDomainCreate. If DNS isn't set yet the row
+//      persists in "Pending DNS" state and the user retries via "Verify".
+//   3. Verified rows collapse to a one-line "hostname · Open · Remove" chip.
+const BlogDomainsPanel = ({ connections = [] }) => {
   const [state, setState] = useState({ loading: true, domains: [], cnameTarget: '' });
   const [adding, setAdding] = useState(false);
   const [hostname, setHostname] = useState('');
   const [siteName, setSiteName] = useState('');
+  const [manuallyEdited, setManuallyEdited] = useState(false);
   const [err, setErr] = useState('');
   const [busyId, setBusyId] = useState(null);
+  const [copied, setCopied] = useState(false);
+
+  // Best guess: first website connection, otherwise first GSC connection.
+  const sourceConnection = useMemo(() => {
+    return (
+      connections.find(c => c.provider === 'website') ||
+      connections.find(c => c.provider === 'google_search_console') ||
+      null
+    );
+  }, [connections]);
+
+  const suggestedHost = useMemo(() => {
+    const root = extractHostFromConnection(sourceConnection);
+    return root ? `blog.${root}` : '';
+  }, [sourceConnection]);
+
+  const suggestedSiteName = useMemo(() => {
+    if (!sourceConnection) return '';
+    return sourceConnection.display_name || sourceConnection.metadata?.title || sourceConnection.metadata?.siteName || '';
+  }, [sourceConnection]);
 
   const load = useCallback(async () => {
     setState(s => ({ ...s, loading: true }));
@@ -1026,16 +1071,54 @@ const BlogDomainsPanel = () => {
 
   useEffect(() => { load(); }, [load]);
 
-  const add = async (e) => {
+  // Auto-fill hostname + site name when suggestion becomes available, unless
+  // the user has already typed something.
+  useEffect(() => {
+    if (!manuallyEdited && suggestedHost && !hostname) setHostname(suggestedHost);
+    if (!manuallyEdited && suggestedSiteName && !siteName) setSiteName(suggestedSiteName);
+  }, [suggestedHost, suggestedSiteName, hostname, siteName, manuallyEdited]);
+
+  const copyTarget = () => {
+    if (!state.cnameTarget) return;
+    navigator.clipboard?.writeText(state.cnameTarget);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
+  // Save row, then immediately try to verify. If DNS isn't set yet, the row
+  // stays in pending state and the retry button reuses the same handler.
+  const saveAndVerify = async (e) => {
     e.preventDefault();
-    if (!hostname.trim()) return;
+    const trimmed = hostname.trim();
+    if (!trimmed) return;
     setErr('');
     setAdding(true);
     try {
-      const data = await blogsService.createDomain({ hostname: hostname.trim(), siteName: siteName.trim() || undefined });
-      setState(s => ({ ...s, domains: [data.domain, ...s.domains.filter(d => d.id !== data.domain.id)], cnameTarget: data.cnameTarget || s.cnameTarget }));
-      setHostname('');
-      setSiteName('');
+      const created = await blogsService.createDomain({
+        hostname: trimmed,
+        siteName: siteName.trim() || undefined,
+      });
+      let currentDomain = created.domain;
+      const cnameTarget = created.cnameTarget || state.cnameTarget;
+      // Optimistic insert so the row shows while we verify.
+      setState(s => ({
+        ...s,
+        cnameTarget,
+        domains: [currentDomain, ...s.domains.filter(d => d.id !== currentDomain.id)],
+      }));
+      try {
+        currentDomain = await blogsService.verifyDomain(currentDomain.id);
+        setState(s => ({
+          ...s,
+          domains: s.domains.map(d => (d.id === currentDomain.id ? currentDomain : d)),
+        }));
+        setHostname('');
+        setSiteName('');
+        setManuallyEdited(false);
+      } catch (verifyErr) {
+        // Row was created; verification will be retried from the row's button.
+        setErr(verifyErr.response?.data?.error || 'DNS not resolved yet — add the CNAME below and retry.');
+      }
     } catch (e2) {
       setErr(e2.response?.data?.error || 'Failed to add domain');
     } finally {
@@ -1070,6 +1153,13 @@ const BlogDomainsPanel = () => {
     }
   };
 
+  const hasVerified = state.domains.some(d => d.metadata?.verified);
+  const pending = state.domains.filter(d => !d.metadata?.verified);
+  const verifiedRows = state.domains.filter(d => d.metadata?.verified);
+  // Split the hostname into host + root so we can show 'blog' on its own line
+  // in the DNS instructions (matches what registrars expect in the "Host" field).
+  const hostLabel = (hostname || suggestedHost).split('.')[0] || 'blog';
+
   return (
     <div className="mb-6 bg-white border border-gray-200 rounded-lg overflow-hidden">
       <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-gray-100 bg-emerald-50">
@@ -1078,7 +1168,11 @@ const BlogDomainsPanel = () => {
           <div>
             <p className="text-sm font-medium text-gray-900">Publish to your domain</p>
             <p className="text-xs text-gray-500">
-              Add a subdomain (e.g. <code className="text-[11px] bg-white/60 px-1 rounded">blog.yoursite.com</code>) and your published articles show up there.
+              {hasVerified
+                ? 'Your published articles show up on the domain below.'
+                : sourceConnection
+                  ? 'We pre-filled the subdomain from your connected site. Copy the DNS record, add it at your registrar, then click Save & verify.'
+                  : 'Enter the subdomain you want your published articles to live on, then follow the DNS steps.'}
             </p>
           </div>
         </div>
@@ -1091,14 +1185,15 @@ const BlogDomainsPanel = () => {
         </div>
       )}
 
-      <div className="px-4 py-3">
+      <div className="px-4 py-3 space-y-4">
         {state.loading ? (
           <div className="text-sm text-gray-500">Loading…</div>
         ) : (
           <>
-            {state.domains.length > 0 && (
-              <ul className="mb-4 space-y-2">
-                {state.domains.map(d => (
+            {/* Verified rows collapse to a compact chip */}
+            {verifiedRows.length > 0 && (
+              <ul className="space-y-2">
+                {verifiedRows.map(d => (
                   <BlogDomainRow
                     key={d.id}
                     domain={d}
@@ -1111,36 +1206,106 @@ const BlogDomainsPanel = () => {
               </ul>
             )}
 
-            <form onSubmit={add} className="flex flex-wrap items-end gap-2">
-              <div className="flex-1 min-w-[220px]">
-                <label className="block text-xs font-medium text-gray-600 mb-1">Subdomain</label>
-                <input
-                  type="text"
-                  value={hostname}
-                  onChange={e => setHostname(e.target.value)}
-                  placeholder="blog.yoursite.com"
-                  className="w-full px-3 py-1.5 border border-gray-300 rounded-md text-sm"
-                />
-              </div>
-              <div className="flex-1 min-w-[180px]">
-                <label className="block text-xs font-medium text-gray-600 mb-1">Site name <span className="text-gray-400 font-normal">(optional)</span></label>
-                <input
-                  type="text"
-                  value={siteName}
-                  onChange={e => setSiteName(e.target.value)}
-                  placeholder="Your Business"
-                  className="w-full px-3 py-1.5 border border-gray-300 rounded-md text-sm"
-                />
-              </div>
-              <button
-                type="submit"
-                disabled={adding || !hostname.trim()}
-                className="inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 disabled:opacity-50"
-              >
-                <Plus className="h-4 w-4" />
-                {adding ? 'Adding…' : 'Add'}
-              </button>
-            </form>
+            {/* Pending rows: full DNS instructions inline with the row */}
+            {pending.length > 0 && (
+              <ul className="space-y-2">
+                {pending.map(d => (
+                  <BlogDomainRow
+                    key={d.id}
+                    domain={d}
+                    cnameTarget={state.cnameTarget}
+                    busy={busyId === d.id}
+                    onVerify={() => verify(d.id)}
+                    onDelete={() => remove(d.id)}
+                  />
+                ))}
+              </ul>
+            )}
+
+            {/* Add-new form only when there's no pending domain (avoid two
+                overlapping DNS instruction blocks). If a pending one exists,
+                the user should finish verifying it first. */}
+            {pending.length === 0 && (
+              <form onSubmit={saveAndVerify} className="space-y-3">
+                {!hasVerified && state.cnameTarget && (
+                  <div className="rounded-md border border-gray-200 bg-gray-50 p-3">
+                    <div className="text-xs font-medium text-gray-700 mb-2">
+                      Add this DNS record at your registrar (GoDaddy, Namecheap, Cloudflare, etc.):
+                    </div>
+                    <div className="grid grid-cols-3 gap-2 text-xs font-mono bg-white border border-gray-200 rounded p-2">
+                      <div>
+                        <div className="text-[10px] uppercase text-gray-500 font-sans">Type</div>
+                        <div>CNAME</div>
+                      </div>
+                      <div>
+                        <div className="text-[10px] uppercase text-gray-500 font-sans">Host</div>
+                        <div>{hostLabel}</div>
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-[10px] uppercase text-gray-500 font-sans flex items-center gap-1">
+                          Value
+                          <button
+                            type="button"
+                            onClick={copyTarget}
+                            className="inline-flex items-center gap-0.5 text-primary-600 hover:text-primary-700"
+                            title="Copy value"
+                          >
+                            <Copy className="h-3 w-3" />
+                            {copied ? 'copied' : 'copy'}
+                          </button>
+                        </div>
+                        <div className="truncate">{state.cnameTarget}</div>
+                      </div>
+                    </div>
+                    <p className="mt-2 text-[11px] text-gray-500">
+                      DNS changes usually propagate in 1–5 minutes. When you're done, click Save &amp; verify below.
+                    </p>
+                  </div>
+                )}
+
+                <div className="flex flex-wrap items-end gap-2">
+                  <div className="flex-1 min-w-[220px]">
+                    <label className="block text-xs font-medium text-gray-600 mb-1">Subdomain</label>
+                    <input
+                      type="text"
+                      value={hostname}
+                      onChange={e => { setHostname(e.target.value); setManuallyEdited(true); }}
+                      placeholder={suggestedHost || 'blog.yoursite.com'}
+                      className="w-full px-3 py-1.5 border border-gray-300 rounded-md text-sm"
+                    />
+                  </div>
+                  <div className="flex-1 min-w-[180px]">
+                    <label className="block text-xs font-medium text-gray-600 mb-1">
+                      Site name <span className="text-gray-400 font-normal">(optional)</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={siteName}
+                      onChange={e => { setSiteName(e.target.value); setManuallyEdited(true); }}
+                      placeholder={suggestedSiteName || 'Your Business'}
+                      className="w-full px-3 py-1.5 border border-gray-300 rounded-md text-sm"
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={adding || !hostname.trim()}
+                    className="inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 disabled:opacity-50"
+                  >
+                    {adding ? (
+                      <>
+                        <RefreshCw className="h-4 w-4 animate-spin" />
+                        Verifying…
+                      </>
+                    ) : (
+                      <>
+                        <Check className="h-4 w-4" />
+                        {hasVerified ? 'Add another' : 'Save & verify'}
+                      </>
+                    )}
+                  </button>
+                </div>
+              </form>
+            )}
           </>
         )}
       </div>
@@ -1155,75 +1320,55 @@ const BlogDomainRow = ({ domain, cnameTarget, busy, onVerify, onDelete }) => {
   const lastError = domain.metadata?.last_check_error;
   const foundCnames = domain.metadata?.last_check_cnames || [];
 
-  return (
-    <li className="border border-gray-200 rounded-md p-3">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="font-medium text-gray-900 text-sm truncate">{hostname}</span>
-            {verified ? (
-              <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded bg-green-100 text-green-800">
-                <Check className="h-3 w-3" /> Verified
-              </span>
-            ) : (
-              <span className="inline-flex items-center text-xs px-2 py-0.5 rounded bg-amber-100 text-amber-800">
-                Pending DNS
-              </span>
-            )}
-            {verified && (
-              <a
-                href={`https://${hostname}`}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-1 text-xs text-primary-600 hover:underline"
-              >
-                <ExternalLink className="h-3 w-3" /> Open
-              </a>
-            )}
-          </div>
-
-          {!verified && (
-            <div className="mt-2 text-xs text-gray-700 space-y-1">
-              <div>
-                Add this DNS record at your registrar (GoDaddy / Cloudflare / Namecheap / etc.):
-              </div>
-              <div className="p-2 bg-gray-50 border border-gray-200 rounded font-mono text-[11px] leading-5">
-                <div><span className="text-gray-500">Type:</span> CNAME</div>
-                <div><span className="text-gray-500">Host:</span> {hostname?.split('.')[0]}</div>
-                <div className="flex items-center gap-1">
-                  <span className="text-gray-500">Value:</span>
-                  <span>{target}</span>
-                  <button
-                    type="button"
-                    onClick={() => navigator.clipboard?.writeText(target)}
-                    className="ml-1 p-0.5 text-gray-500 hover:text-gray-900"
-                    title="Copy value"
-                  >
-                    <Copy className="h-3 w-3" />
-                  </button>
-                </div>
-              </div>
-              {lastError && (
-                <div className="text-red-700">
-                  Last check: {lastError}
-                  {foundCnames.length > 0 && <> — found {foundCnames.join(', ')}</>}
-                </div>
-              )}
-            </div>
-          )}
+  // Verified: single-line chip.
+  if (verified) {
+    return (
+      <li className="flex items-center justify-between gap-3 border border-green-200 bg-green-50 rounded-md px-3 py-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <Check className="h-4 w-4 text-green-700 flex-shrink-0" />
+          <a
+            href={`https://${hostname}`}
+            target="_blank"
+            rel="noreferrer"
+            className="font-medium text-gray-900 text-sm truncate hover:underline"
+          >
+            {hostname}
+          </a>
+          <span className="inline-flex items-center gap-1 text-xs text-green-800">
+            <ExternalLink className="h-3 w-3" /> live
+          </span>
         </div>
+        <button
+          onClick={onDelete}
+          disabled={busy}
+          className="p-1 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded disabled:opacity-50"
+          title="Remove"
+        >
+          <Trash2 className="h-4 w-4" />
+        </button>
+      </li>
+    );
+  }
 
+  // Pending: DNS instructions + Verify.
+  return (
+    <li className="border border-amber-200 bg-amber-50/40 rounded-md p-3">
+      <div className="flex items-center justify-between gap-3 mb-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="font-medium text-gray-900 text-sm truncate">{hostname}</span>
+          <span className="inline-flex items-center text-xs px-2 py-0.5 rounded bg-amber-100 text-amber-800">
+            Waiting for DNS
+          </span>
+        </div>
         <div className="flex items-center gap-1 flex-shrink-0">
-          {!verified && (
-            <button
-              onClick={onVerify}
-              disabled={busy}
-              className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-white bg-primary-600 rounded hover:bg-primary-700 disabled:opacity-50"
-            >
-              <RefreshCw className={`h-3 w-3 ${busy ? 'animate-spin' : ''}`} />
-              {busy ? 'Checking…' : 'Verify'}
-            </button>
-          )}
+          <button
+            onClick={onVerify}
+            disabled={busy}
+            className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-white bg-primary-600 rounded hover:bg-primary-700 disabled:opacity-50"
+          >
+            <RefreshCw className={`h-3 w-3 ${busy ? 'animate-spin' : ''}`} />
+            {busy ? 'Checking…' : 'Verify'}
+          </button>
           <button
             onClick={onDelete}
             disabled={busy}
@@ -1234,6 +1379,40 @@ const BlogDomainRow = ({ domain, cnameTarget, busy, onVerify, onDelete }) => {
           </button>
         </div>
       </div>
+      <div className="text-xs text-gray-700">
+        Add this DNS record, then click Verify:
+      </div>
+      <div className="mt-1 grid grid-cols-3 gap-2 text-xs font-mono bg-white border border-gray-200 rounded p-2">
+        <div>
+          <div className="text-[10px] uppercase text-gray-500 font-sans">Type</div>
+          <div>CNAME</div>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase text-gray-500 font-sans">Host</div>
+          <div>{hostname?.split('.')[0]}</div>
+        </div>
+        <div className="min-w-0">
+          <div className="text-[10px] uppercase text-gray-500 font-sans flex items-center gap-1">
+            Value
+            <button
+              type="button"
+              onClick={() => navigator.clipboard?.writeText(target)}
+              className="inline-flex items-center gap-0.5 text-primary-600 hover:text-primary-700"
+              title="Copy value"
+            >
+              <Copy className="h-3 w-3" />
+              copy
+            </button>
+          </div>
+          <div className="truncate">{target}</div>
+        </div>
+      </div>
+      {lastError && (
+        <div className="mt-2 text-xs text-red-700">
+          Last check: {lastError}
+          {foundCnames.length > 0 && <> — found {foundCnames.join(', ')}</>}
+        </div>
+      )}
     </li>
   );
 };
