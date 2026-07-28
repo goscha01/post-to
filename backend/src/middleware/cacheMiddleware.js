@@ -103,29 +103,47 @@ const cacheMiddleware = (options = {}) => {
  * Cache invalidation middleware
  * @param {string} pattern - Cache pattern to invalidate
  */
-const invalidateCacheMiddleware = (pattern = '*') => {
+const invalidateCacheMiddleware = (patternOrOpts = '*') => {
+  // Historical callers pass either a string ('user:*:posts*') or an
+  // options object ({ pattern: 'user:*:posts*' }). The downstream
+  // cacheService.deleteByPattern expects a string and does endpoint.replace
+  // on it — throws "endpoint.replace is not a function" on the object
+  // form, and the throw happened inside a wrapped res.json which broke
+  // every /api/posts success response with a 45s hang. Normalize here.
+  const pattern =
+    typeof patternOrOpts === 'string'
+      ? patternOrOpts
+      : (patternOrOpts && typeof patternOrOpts === 'object' && typeof patternOrOpts.pattern === 'string')
+        ? patternOrOpts.pattern
+        : '*';
+
   return async (req, res, next) => {
     const userId = req.user?.userId || '';
-    
-    // Store original methods
+
     const originalJson = res.json.bind(res);
     const originalSend = res.send.bind(res);
-    
-    // Override response methods to invalidate cache after successful operations
-    res.json = function(data) {
-      if (data && (data.success !== false)) {
+
+    const safeInvalidate = () => {
+      try {
         cacheService.deleteByPattern(pattern, userId);
+      } catch (err) {
+        // Never let cache invalidation throw inside res.json/send — it
+        // used to eat the response and hang the request until timeout.
+        // eslint-disable-next-line no-console
+        console.warn('invalidateCacheMiddleware: cache delete failed', err?.message);
       }
+    };
+
+    res.json = function(data) {
+      if (data && (data.success !== false)) safeInvalidate();
       return originalJson(data);
     };
-    
+
     res.send = function(data) {
-      if (data && (data.success !== false)) {
-        cacheService.deleteByPattern(pattern, userId);
-      }
+      if (data && (data.success !== false)) safeInvalidate();
       return originalSend(data);
     };
-    
+
     next();
   };
 };
