@@ -712,8 +712,33 @@ router.post('/upload-images', upload.array('images', 10), async (req, res) => {
   }
 });
 
+// FormData/multipart values are always strings — the frontend sends
+// platforms/media/callToAction/event/offer as JSON.stringified strings.
+// express-validator's isArray()/isObject() then fail because the field
+// is a string, not the underlying type. Parse known JSON fields BEFORE
+// the validators run so real types are visible to both validation and
+// the handler destructuring.
+function parseMultipartJsonFields(req, _res, next) {
+  const jsonFields = ['platforms', 'media', 'callToAction', 'event', 'offer'];
+  for (const k of jsonFields) {
+    const v = req.body?.[k];
+    if (typeof v === 'string') {
+      const trimmed = v.trim();
+      if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+        try {
+          req.body[k] = JSON.parse(trimmed);
+        } catch {
+          // Keep as string; validator will still reject it with a
+          // useful message.
+        }
+      }
+    }
+  }
+  next();
+}
+
 // Create a new post (POST / endpoint)
-router.post('/', upload.array('images', 10), [
+router.post('/', upload.array('images', 10), parseMultipartJsonFields, [
   body('platforms').isArray({ min: 1 }),
   body('content').notEmpty(),
   body('media').optional().isArray(),
