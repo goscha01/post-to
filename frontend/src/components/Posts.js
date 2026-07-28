@@ -376,16 +376,20 @@ const Posts = () => {
       const acctAvatar = p.accountProfilePicture?.googleUrl || null;
       const acctName = p.businessName || p.accountName || 'Google Business';
       for (const loc of p.locations || []) {
+        // Extract the Google CID (numeric Customer ID) from mapsUri.
+        // Format is typically https://maps.google.com/?cid=1046204843244547948.
+        // The CID is what Google's Search UI uses in
+        // #lpstate=pid:<CID> to open the Updates modal directly.
+        const mapsUri = loc?.metadata?.mapsUri || '';
+        const cidMatch = mapsUri.match(/[?&]cid=([0-9]+)/);
         out.push({
           key: loc.fullPath,
           provider: 'gmb',
           label: loc.title || loc.locationName || 'Untitled Location',
           accountLabel: acctName,
           avatarUrl: acctAvatar,
-          // Carry the Google Place ID through so the post card's
-          // "open on Google" link can build a Maps URL that lands on the
-          // business panel directly instead of a generic search page.
           placeId: loc?.metadata?.placeId || null,
+          cid: cidMatch ? cidMatch[1] : null,
         });
       }
     }
@@ -2441,29 +2445,33 @@ const Posts = () => {
                             )
                           ) : (
                             <>
-                              {/* Open on Google Search. The Business
-                                  Profile panel on the results page carries
-                                  an "Updates" section — one click and the
-                                  user sees the posts modal like their
-                                  reference screenshot. The Maps URL
-                                  (?q=place_id:X) is more direct but lands
-                                  on Maps rather than Search, which the
-                                  user prefers to avoid.
-                                  Google's stick= token that jumps straight
-                                  into the Updates modal is server-
-                                  generated per session and can't be
-                                  constructed on our end. */}
+                              {/* Open the Updates panel on Google Search
+                                  directly. When we have the Google CID
+                                  (extracted from GMB's metadata.mapsUri),
+                                  we can use the same URL Google itself
+                                  produces after clicking into the panel:
+                                    search?q=<name>#lpstate=pid:<CID>
+                                  That hash fragment tells Google's Search
+                                  JS to auto-open the Business Profile
+                                  modal with Updates focused.
+                                  Falls back to a plain search URL when
+                                  CID isn't available. */}
                               {(() => {
                                 const t = targets.find((tt) => tt.key === post._targetKey);
                                 const businessName = post._targetLabel || post._businessName || t?.label;
+                                const cid = t?.cid || post._cid || null;
                                 if (!businessName) return null;
+                                const q = encodeURIComponent(businessName);
+                                const href = cid
+                                  ? `https://www.google.com/search?q=${q}#lpstate=pid:${cid}`
+                                  : `https://www.google.com/search?q=${q}`;
                                 return (
                                   <a
-                                    href={`https://www.google.com/search?q=${encodeURIComponent(businessName)}`}
+                                    href={href}
                                     target="_blank"
                                     rel="noreferrer"
                                     className="text-gray-400 hover:text-primary-600 p-1 rounded hover:bg-gray-100"
-                                    title="Open on Google Search"
+                                    title={cid ? 'Open Updates on Google' : 'Open on Google Search'}
                                   >
                                     <ExternalLink className="h-4 w-4" />
                                   </a>
