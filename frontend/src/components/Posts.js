@@ -7,6 +7,7 @@ import imageService from '../services/imageService';
 import businessProfileService from '../services/businessProfileService';
 import postsService from '../services/postsService';
 import calendarService from '../services/calendarService';
+import connectionsService from '../services/connectionsService';
 import {
   FileText,
   Plus,
@@ -117,7 +118,14 @@ const Posts = () => {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
+  // selectedProfile is either a GMB path ('accounts/X/locations/Y') or a
+  // social prefix ('fb:<connectionId>' | 'ig:<connectionId>'). The prefix lets
+  // fetchPosts + handleCreatePost branch to the correct backend without a
+  // parallel piece of state.
   const [selectedProfile, setSelectedProfile] = useState('');
+  // Facebook Pages + Instagram Business connections from /api/connections,
+  // rendered as extra <optgroup>s in the same selector as GMB locations.
+  const [socialProfiles, setSocialProfiles] = useState([]);
   
   
   // Expanded posts state
@@ -184,15 +192,34 @@ const Posts = () => {
       // Use centralized business profile service with caching
       const profilesWithLocations = await businessProfileService.getAccounts();
       setProfiles(profilesWithLocations);
-      // If Calendar (or any deep link) passed ?location=accounts/X/locations/Y,
-      // prefer that location — but only if it actually exists in the user's
-      // profile tree. Otherwise fall back to the first available.
-      const desired = searchParams.get('location');
+
+      // Also fetch FB/IG connections in parallel — they're independent of the
+      // GMB OAuth grant, so we should render them even when GMB is empty.
+      let social = [];
+      try {
+        const rows = await connectionsService.list();
+        social = (rows || []).filter(r => r.provider === 'facebook' || r.provider === 'instagram');
+        setSocialProfiles(social);
+      } catch (e) {
+        setSocialProfiles([]);
+      }
+
+      // Deep-link precedence:
+      //   ?social=<connectionId> — a FB/IG connection (from BusinessProfiles page)
+      //   ?location=<gmbPath>    — a GMB location (from Calendar composer)
+      //   otherwise fall back to the first available target of any kind.
+      const desiredSocial = searchParams.get('social');
+      const desiredLocation = searchParams.get('location');
       const allPaths = profilesWithLocations.flatMap((p) => (p.locations || []).map((l) => l.fullPath));
-      if (desired && allPaths.includes(desired)) {
-        setSelectedProfile(desired);
+      const matchedSocial = social.find(r => r.id === desiredSocial);
+      if (matchedSocial) {
+        setSelectedProfile(`${matchedSocial.provider === 'facebook' ? 'fb' : 'ig'}:${matchedSocial.id}`);
+      } else if (desiredLocation && allPaths.includes(desiredLocation)) {
+        setSelectedProfile(desiredLocation);
       } else if (profilesWithLocations.length > 0 && profilesWithLocations[0].locations.length > 0) {
         setSelectedProfile(profilesWithLocations[0].locations[0].fullPath);
+      } else if (social.length > 0) {
+        setSelectedProfile(`${social[0].provider === 'facebook' ? 'fb' : 'ig'}:${social[0].id}`);
       }
     } catch (error) {
     } finally {
@@ -202,8 +229,26 @@ const Posts = () => {
 
   const fetchPosts = useCallback(async (locationId, page = 1, append = false, forceRefresh = false) => {
     if (!locationId) return;
-    
-    
+
+    // Facebook / Instagram branch — hits /api/social/*/posts and returns rows
+    // already normalized to { id, content, media[], createdAt } by metaService.
+    if (locationId.startsWith('fb:') || locationId.startsWith('ig:')) {
+      const connectionId = locationId.slice(3);
+      try {
+        setRefreshing(true);
+        const rows = locationId.startsWith('fb:')
+          ? await connectionsService.getFacebookPagePosts(connectionId, 20)
+          : await connectionsService.getInstagramMedia(connectionId, 20);
+        setPosts(rows);
+      } catch (e) {
+        setPosts([]);
+      } finally {
+        setRefreshing(false);
+        setLoading(false);
+      }
+      return;
+    }
+
     try {
       // Extract IDs from the full path: accounts/{accountId}/locations/{locationId}
       const profileParts = locationId.split('/');
@@ -353,18 +398,62 @@ const Posts = () => {
     }
 
 
+    // Facebook / Instagram branch. IG requires imageUrl (Meta fetches from
+    // the URL) — the composer already collects URLs in mediaUrls, so we take
+    // the first valid one. Post types + CTAs + events don't map to FB/IG —
+    // silently dropped.
+    if (selectedProfile.startsWith('fb:') || selectedProfile.startsWith('ig:')) {
+      const isIg = selectedProfile.startsWith('ig:');
+      const connectionId = selectedProfile.slice(3);
+      const socialImage = validMediaUrls.find(u => /^https:\/\//i.test(u));
+      if (isIg && !socialImage) {
+        alert('Instagram posts require a public HTTPS image URL. Paste one in the media URL field.');
+        setCreatingPost(false);
+        return;
+      }
+      if (postingMode === 'later') {
+        alert('Scheduling is not supported for Facebook / Instagram yet — publish now, or use Google Business for scheduled posts.');
+        setCreatingPost(false);
+        return;
+      }
+      try {
+        const endpoint = isIg ? '/api/social/instagram/publish' : '/api/social/facebook/publish';
+        const body = isIg
+          ? { connectionId, caption: formData.summary, imageUrl: socialImage }
+          : { connectionId, message: formData.summary, imageUrl: socialImage || undefined };
+        const res = await axios.post(endpoint, body);
+        showNotification(
+          isIg ? 'Posted to Instagram!' : 'Posted to Facebook!',
+          'success'
+        );
+        setFormData({ summary: '', postType: 'UPDATE', callToAction: { type: '', url: '' }, mediaUrls: [''] });
+        // Refresh the recent posts feed for this connection
+        fetchPosts(selectedProfile);
+        return;
+      } catch (err) {
+        const backendMsg = err?.response?.data?.error || err.message;
+        const needsReauth = err?.response?.data?.needsReauth;
+        alert(needsReauth
+          ? `Meta says the token expired. Click Reconnect Facebook on the Connections page. (${backendMsg})`
+          : `Failed to post to ${isIg ? 'Instagram' : 'Facebook'}: ${backendMsg}`);
+        return;
+      } finally {
+        setCreatingPost(false);
+      }
+    }
+
     try {
       // Extract account and location IDs from selectedProfile
       const profileParts = selectedProfile.split('/');
       const locationId = profileParts[profileParts.length - 1];
       const accountId = profileParts[1]; // accounts/{accountId}/locations/{locationId}
-      
+
       // Debug the profile path structure
 
 
 
 
-      
+
       if (!accountId || !locationId) {
         alert('Error: Could not determine account or location ID. Please select a different profile.');
         return;
@@ -1148,18 +1237,20 @@ const Posts = () => {
             onClick={async () => {
               try {
                 setRefreshing(true);
-                // Clear all caches to get fresh data
-                postsService.clearPostsCache();
-                postsService.clearMediaCache();
-                
-                // Force refresh posts for current location
                 if (selectedProfile) {
-                  const profileParts = selectedProfile.split('/');
-                  const locationIdOnly = profileParts[profileParts.length - 1];
-                  const accountId = profileParts[1];
-                  
-                  await postsService.getPostsForLocation(locationIdOnly, accountId, true);
-                  await fetchPosts(selectedProfile, 1, false, true);
+                  // FB/IG use a live fetch every call — no cache layer to clear.
+                  if (selectedProfile.startsWith('fb:') || selectedProfile.startsWith('ig:')) {
+                    await fetchPosts(selectedProfile, 1, false, true);
+                  } else {
+                    // GMB path — clear cache then force-refresh.
+                    postsService.clearPostsCache();
+                    postsService.clearMediaCache();
+                    const profileParts = selectedProfile.split('/');
+                    const locationIdOnly = profileParts[profileParts.length - 1];
+                    const accountId = profileParts[1];
+                    await postsService.getPostsForLocation(locationIdOnly, accountId, true);
+                    await fetchPosts(selectedProfile, 1, false, true);
+                  }
                 }
               } catch (error) {
               } finally {
@@ -1191,12 +1282,34 @@ const Posts = () => {
           className="block w-full border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
         >
           <option value="">Select a profile...</option>
-          {profiles.map((profile) =>
-            profile.locations.map((location) => (
-              <option key={location.fullPath} value={location.fullPath}>
-                {profile.accountName} - {location.title || 'Untitled Location'}
-              </option>
-            ))
+          {profiles.length > 0 && (
+            <optgroup label="Google Business">
+              {profiles.map((profile) =>
+                profile.locations.map((location) => (
+                  <option key={location.fullPath} value={location.fullPath}>
+                    {profile.accountName} - {location.title || 'Untitled Location'}
+                  </option>
+                ))
+              )}
+            </optgroup>
+          )}
+          {socialProfiles.filter(r => r.provider === 'facebook').length > 0 && (
+            <optgroup label="Facebook Pages">
+              {socialProfiles.filter(r => r.provider === 'facebook').map(r => (
+                <option key={r.id} value={`fb:${r.id}`}>
+                  {r.display_name}
+                </option>
+              ))}
+            </optgroup>
+          )}
+          {socialProfiles.filter(r => r.provider === 'instagram').length > 0 && (
+            <optgroup label="Instagram Accounts">
+              {socialProfiles.filter(r => r.provider === 'instagram').map(r => (
+                <option key={r.id} value={`ig:${r.id}`}>
+                  {r.display_name}
+                </option>
+              ))}
+            </optgroup>
           )}
         </select>
       </div>
@@ -1785,33 +1898,65 @@ const Posts = () => {
                      
                      return (
                        <div key={`${post.id}-${post.createdAt}`} className="bg-white rounded-lg shadow-sm hover:shadow-md transition-shadow duration-200 overflow-hidden">
-                      {/* Post Header with Action Buttons */}
-                      <div className="flex items-center justify-end p-3 bg-gray-50">
-                        {/* Action Buttons */}
+                      {/* Post Header — provider badge (for FB/IG) + edit/delete
+                          (GMB only; Meta post edit/delete isn't wired yet). */}
+                      <div className="flex items-center justify-between p-3 bg-gray-50">
+                        <div>
+                          {post._provider === 'facebook' && (
+                            <span className="inline-flex items-center text-xs px-2 py-0.5 rounded bg-indigo-100 text-indigo-800">
+                              Facebook
+                            </span>
+                          )}
+                          {post._provider === 'instagram' && (
+                            <span className="inline-flex items-center text-xs px-2 py-0.5 rounded bg-pink-100 text-pink-800">
+                              Instagram
+                            </span>
+                          )}
+                        </div>
+                        {/* Action Buttons — hidden for FB/IG posts because
+                            edit/delete via Graph API isn't implemented yet.
+                            Users can jump to the post on Meta via permalink. */}
                         <div className="flex items-center space-x-2">
-                                                     <button
-                             onClick={() => handleEditPost(post)}
-                             className="text-gray-400 hover:text-gray-600 p-1 rounded hover:bg-gray-100"
-                             title="Edit post"
-                           >
-                             <Edit className="h-4 w-4" />
-                           </button>
-                          <button
-                            onClick={() => handleDeletePost(post.id)}
-                            disabled={deletingPosts.has(post.id)}
-                            className={`p-1 rounded transition-colors ${
-                              deletingPosts.has(post.id)
-                                ? 'text-gray-400 cursor-not-allowed'
-                                : 'text-red-400 hover:text-red-600 hover:bg-red-50'
-                            }`}
-                            title={deletingPosts.has(post.id) ? 'Deleting...' : 'Delete post'}
-                          >
-                            {deletingPosts.has(post.id) ? (
-                              <div className="h-4 w-4 border-2 border-gray-400 border-t-transparent rounded-full animate-spin"></div>
-                            ) : (
-                              <Trash2 className="h-4 w-4" />
-                            )}
-                          </button>
+                          {post._provider ? (
+                            post.permalink && (
+                              <a
+                                href={post.permalink}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="inline-flex items-center gap-1 text-xs text-primary-600 hover:text-primary-700"
+                                title="Open on Meta"
+                              >
+                                <Eye className="h-4 w-4" />
+                                Open
+                              </a>
+                            )
+                          ) : (
+                            <>
+                              <button
+                                onClick={() => handleEditPost(post)}
+                                className="text-gray-400 hover:text-gray-600 p-1 rounded hover:bg-gray-100"
+                                title="Edit post"
+                              >
+                                <Edit className="h-4 w-4" />
+                              </button>
+                              <button
+                                onClick={() => handleDeletePost(post.id)}
+                                disabled={deletingPosts.has(post.id)}
+                                className={`p-1 rounded transition-colors ${
+                                  deletingPosts.has(post.id)
+                                    ? 'text-gray-400 cursor-not-allowed'
+                                    : 'text-red-400 hover:text-red-600 hover:bg-red-50'
+                                }`}
+                                title={deletingPosts.has(post.id) ? 'Deleting...' : 'Delete post'}
+                              >
+                                {deletingPosts.has(post.id) ? (
+                                  <div className="h-4 w-4 border-2 border-gray-400 border-t-transparent rounded-full animate-spin"></div>
+                                ) : (
+                                  <Trash2 className="h-4 w-4" />
+                                )}
+                              </button>
+                            </>
+                          )}
                         </div>
                       </div>
 

@@ -207,6 +207,93 @@ async function publishInstagramPost({ igBusinessId, pageAccessToken, imageUrl, c
   return { id: publishRes.data?.id, creation_id: creationId };
 }
 
+// Fetch recent posts from a FB Page. Returns rows normalized to the shape the
+// frontend Posts.js already renders (id, content, media[], createdAt) so the
+// existing post-card component works for FB without changes.
+async function getRecentFacebookPosts({ pageId, pageAccessToken, limit = 10 }) {
+  if (!pageId) throw new Error('pageId required');
+  if (!pageAccessToken) throw new Error('pageAccessToken required');
+  const url = `${GRAPH_BASE}/${pageId}/posts`;
+  const res = await axios.get(url, {
+    params: {
+      access_token: pageAccessToken,
+      fields: 'id,message,created_time,permalink_url,full_picture,attachments{media_type,media,url,subattachments}',
+      limit: Math.min(Math.max(1, limit), 50),
+    },
+    timeout: 20000,
+  });
+  const rows = res.data?.data || [];
+  return rows.map(p => {
+    // Meta returns either a single full_picture or an attachments graph with
+    // subattachments (carousel). Flatten to a list of image URLs.
+    const media = [];
+    if (p.full_picture) {
+      media.push({ sourceUrl: p.full_picture, mediaFormat: 'PHOTO' });
+    } else if (p.attachments?.data?.length) {
+      for (const att of p.attachments.data) {
+        const subs = att.subattachments?.data || [];
+        if (subs.length) {
+          for (const s of subs) {
+            if (s.media?.image?.src) media.push({ sourceUrl: s.media.image.src, mediaFormat: 'PHOTO' });
+          }
+        } else if (att.media?.image?.src) {
+          media.push({ sourceUrl: att.media.image.src, mediaFormat: att.media_type === 'video' ? 'VIDEO' : 'PHOTO' });
+        }
+      }
+    }
+    return {
+      id: p.id,
+      content: p.message || '',
+      media,
+      createdAt: p.created_time,
+      permalink: p.permalink_url,
+      // GMB-shape fields the card expects — none of these apply to FB posts,
+      // but we return the keys so the renderer doesn't need branching.
+      postType: 'UPDATE',
+      callToAction: null,
+      _provider: 'facebook',
+    };
+  });
+}
+
+// Fetch recent IG Business media. Same normalization as FB.
+async function getRecentInstagramMedia({ igBusinessId, pageAccessToken, limit = 10 }) {
+  if (!igBusinessId) throw new Error('igBusinessId required');
+  if (!pageAccessToken) throw new Error('pageAccessToken required');
+  const url = `${GRAPH_BASE}/${igBusinessId}/media`;
+  const res = await axios.get(url, {
+    params: {
+      access_token: pageAccessToken,
+      fields: 'id,caption,media_type,media_url,thumbnail_url,permalink,timestamp,children{media_type,media_url,thumbnail_url}',
+      limit: Math.min(Math.max(1, limit), 50),
+    },
+    timeout: 20000,
+  });
+  const rows = res.data?.data || [];
+  return rows.map(m => {
+    const media = [];
+    if (m.media_type === 'CAROUSEL_ALBUM' && m.children?.data?.length) {
+      for (const c of m.children.data) {
+        const src = c.media_type === 'VIDEO' ? (c.thumbnail_url || c.media_url) : c.media_url;
+        if (src) media.push({ sourceUrl: src, mediaFormat: c.media_type === 'VIDEO' ? 'VIDEO' : 'PHOTO' });
+      }
+    } else if (m.media_url) {
+      const src = m.media_type === 'VIDEO' ? (m.thumbnail_url || m.media_url) : m.media_url;
+      media.push({ sourceUrl: src, mediaFormat: m.media_type === 'VIDEO' ? 'VIDEO' : 'PHOTO' });
+    }
+    return {
+      id: m.id,
+      content: m.caption || '',
+      media,
+      createdAt: m.timestamp,
+      permalink: m.permalink,
+      postType: 'UPDATE',
+      callToAction: null,
+      _provider: 'instagram',
+    };
+  });
+}
+
 // Turn Meta's error envelope into something the router can hand back to the
 // UI. Meta's shape: { error: { message, type, code, fbtrace_id, error_subcode? } }
 function normalizeApiError(err) {
@@ -249,6 +336,8 @@ module.exports = {
   listPages,
   publishFacebookPost,
   publishInstagramPost,
+  getRecentFacebookPosts,
+  getRecentInstagramMedia,
   debugToken,
   normalizeApiError,
   _internal: { GRAPH_VERSION, GRAPH_BASE },

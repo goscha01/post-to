@@ -24,5 +24,24 @@ const remove = async (id) => {
   return res.data;
 };
 
-const connectionsService = { list, connectWebsite, connectOpenAiAds, remove };
+// Recent posts for social providers. Response shape matches the fields the
+// Posts.js post card already renders (id, content, media[], createdAt).
+const getFacebookPagePosts = async (connectionId, limit = 10) => {
+  const res = await axios.get(`/api/social/facebook/pages/${connectionId}/posts`, { params: { limit } });
+  return res.data?.posts || [];
+};
+
+const getInstagramMedia = async (connectionId, limit = 10) => {
+  const res = await axios.get(`/api/social/instagram/${connectionId}/media`, { params: { limit } });
+  return res.data?.posts || [];
+};
+
+const connectionsService = {
+  list,
+  connectWebsite,
+  connectOpenAiAds,
+  remove,
+  getFacebookPagePosts,
+  getInstagramMedia,
+};
 export default connectionsService;

@@ -4,6 +4,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import imageService from '../services/imageService';
 import businessProfileService from '../services/businessProfileService';
+import connectionsService from '../services/connectionsService';
 import {
   Building2,
   CheckCircle,
@@ -20,7 +21,9 @@ import {
   Eye,
   Tag,
   Navigation,
-  LogOut
+  LogOut,
+  Facebook,
+  Instagram
 } from 'lucide-react';
 
 // Account Profile Image Component
@@ -617,7 +620,7 @@ const BusinessProfilePopup = ({ isOpen, onClose, profile, accountId }) => {
 
 
 const BusinessProfiles = () => {
-  const { isAuthenticated, logout, loginForBusiness, softDisconnect, reconnect, isDisconnected: authDisconnected } = useAuth();
+  const { isAuthenticated, logout, loginForBusiness, loginForFacebook, softDisconnect, reconnect, isDisconnected: authDisconnected } = useAuth();
   const navigate = useNavigate();
   const [profiles, setProfiles] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -627,6 +630,10 @@ const BusinessProfiles = () => {
   const [isConnecting, setIsConnecting] = useState(false);
   const [connectError, setConnectError] = useState('');
   const [isDisconnected, setIsDisconnected] = useState(false);
+  // Facebook Pages + Instagram Business rows from /api/connections. Displayed
+  // in the same profile-card layout as GMB — treated by the user as "another
+  // kind of business profile" rather than a distinct section.
+  const [socialProfiles, setSocialProfiles] = useState([]);
 
   useEffect(() => {
 
@@ -649,10 +656,15 @@ const BusinessProfiles = () => {
       // If user is disconnected globally, set the local state and don't fetch profiles
       setIsDisconnected(true);
       setProfiles([]);
+      setSocialProfiles([]);
       setLoading(false);
     } else if (isAuthenticated && !authDisconnected) {
       // Check if business profiles are connected
       const businessConnected = localStorage.getItem('gmb_business_connected') === 'true';
+
+      // Always try to load social (FB/IG) profiles from connected_accounts;
+      // they're independent of the GMB OAuth grant.
+      fetchSocialProfiles();
 
       if (businessConnected) {
         // Business profiles are connected, fetch them
@@ -669,6 +681,17 @@ const BusinessProfiles = () => {
       setLoading(false);
     }
   }, [isAuthenticated, authDisconnected]);
+
+  const fetchSocialProfiles = async () => {
+    try {
+      const rows = await connectionsService.list();
+      const social = (rows || []).filter(r => r.provider === 'facebook' || r.provider === 'instagram');
+      setSocialProfiles(social);
+    } catch (e) {
+      // Non-fatal — GMB profiles still render.
+      setSocialProfiles([]);
+    }
+  };
 
   const [isFetching, setIsFetching] = useState(false);
   const fetchingRef = useRef(false);
@@ -1050,6 +1073,20 @@ const BusinessProfiles = () => {
     }
   };
 
+  // Disconnect a Facebook Page or Instagram Business row. FB/IG rows live in
+  // connected_accounts and each is deleted individually — no OAuth grant
+  // revocation flow (that requires the user to remove the app in Facebook's
+  // Business Integrations settings).
+  const handleDisconnectSocial = async (row) => {
+    if (!window.confirm(`Disconnect ${row.display_name || row.provider}?`)) return;
+    try {
+      await connectionsService.remove(row.id);
+      setSocialProfiles(prev => prev.filter(r => r.id !== row.id));
+    } catch (err) {
+      setConnectError(err?.response?.data?.error || err.message || 'Failed to disconnect');
+    }
+  };
+
   const handleConnect = async () => {
     try {
       // Check if user is authenticated first
@@ -1257,8 +1294,17 @@ const BusinessProfiles = () => {
 
       {/* Business Profiles List */}
       <div className="space-y-6">
-        {profiles.length > 0 && !authDisconnected && (
-          <div className="flex justify-end">
+        {(profiles.length > 0 || socialProfiles.length > 0) && !authDisconnected && (
+          <div className="flex justify-end gap-2">
+            <button
+              onClick={async () => { try { await loginForFacebook(); } catch {} }}
+              className="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500"
+              title="Connect Facebook Pages + Instagram Business (one OAuth grant covers both)"
+            >
+              <Facebook className="w-4 h-4 mr-1 text-indigo-600" />
+              <Instagram className="w-4 h-4 mr-2 text-pink-600" />
+              Connect Facebook / Instagram
+            </button>
             <button
               onClick={handleConnect}
               disabled={isConnecting}
@@ -1271,12 +1317,13 @@ const BusinessProfiles = () => {
             </button>
           </div>
         )}
-        {profiles.length > 0 && !authDisconnected ? (
-          // Hide accounts with zero locations — they surface Google account
-          // container rows that don't hold any real GMB business (e.g. an
-          // "owners" placeholder). If the user needs to see or remove the
-          // OAuth grant, they can do it from the /connections page.
-          profiles.filter(p => (p.locationCount || 0) > 0).map((profile) => (
+        {(profiles.length > 0 || socialProfiles.length > 0) && !authDisconnected ? (
+          <>
+          {/* GMB profile cards. Hide accounts with zero locations — they surface
+              Google account container rows that don't hold any real GMB business
+              (e.g. an "owners" placeholder). If the user needs to see or remove
+              the OAuth grant, they can do it from the /connections page. */}
+          {profiles.filter(p => (p.locationCount || 0) > 0).map((profile) => (
             <div key={profile.name} className="bg-white shadow rounded-lg">
               <div className="px-6 py-6">
                 <div className="flex items-center justify-between">
@@ -1342,7 +1389,85 @@ const BusinessProfiles = () => {
                 </div>
               </div>
             </div>
-          ))
+          ))}
+
+          {/* Facebook Pages + Instagram Business rows. Same card layout as GMB;
+              per-provider icon replaces the account logo, rating/reviews line
+              swaps to category / IG @username. */}
+          {socialProfiles.map((row) => {
+            const isIg = row.provider === 'instagram';
+            const Icon = isIg ? Instagram : Facebook;
+            const iconColor = isIg ? 'text-pink-600' : 'text-indigo-600';
+            const iconBg = isIg ? 'bg-pink-50' : 'bg-indigo-50';
+            const pic = row.metadata?.picture_url;
+            const subtitle = isIg
+              ? (row.metadata?.ig_username ? `@${row.metadata.ig_username}` : 'Instagram Business')
+              : (row.metadata?.category || 'Facebook Page');
+            const badge = isIg ? 'Instagram' : 'Facebook';
+            const badgeStyle = isIg
+              ? 'bg-pink-100 text-pink-800'
+              : 'bg-indigo-100 text-indigo-800';
+            return (
+              <div key={row.id} className="bg-white shadow rounded-lg">
+                <div className="px-6 py-6">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center">
+                      <div className="flex-shrink-0">
+                        {pic ? (
+                          <img
+                            src={pic}
+                            alt={row.display_name}
+                            className="h-10 w-10 rounded-full object-cover border-2 border-gray-200"
+                          />
+                        ) : (
+                          <div className={`h-10 w-10 rounded-full ${iconBg} flex items-center justify-center`}>
+                            <Icon className={`h-6 w-6 ${iconColor}`} />
+                          </div>
+                        )}
+                      </div>
+                      <div className="ml-4">
+                        <h3 className="text-xl font-semibold text-gray-900">
+                          {row.display_name}
+                        </h3>
+                        <p className="text-xs text-gray-400 mt-0.5">{subtitle}</p>
+                        <div className="flex items-center space-x-4 mt-2">
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${badgeStyle}`}>
+                            {badge}
+                          </span>
+                          {row.metadata?.linked_page_id && isIg && (
+                            <span className="text-sm text-gray-500">
+                              linked to FB Page
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                        {row.status || 'active'}
+                      </span>
+                      <button
+                        onClick={() => navigate(`/posts?social=${row.id}`)}
+                        className="inline-flex items-center px-3 py-1.5 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500"
+                      >
+                        <Eye className="h-4 w-4 mr-1" />
+                        View Posts
+                      </button>
+                      <button
+                        onClick={() => handleDisconnectSocial(row)}
+                        className="inline-flex items-center px-3 py-1.5 border border-red-300 shadow-sm text-sm font-medium rounded-md text-red-700 bg-white hover:bg-red-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
+                        title={`Disconnect ${row.display_name}`}
+                      >
+                        <LogOut className="h-4 w-4 mr-1" />
+                        Disconnect
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+          </>
         ) : (
           <div className="bg-white shadow rounded-lg px-6 py-8 text-center">
             <Building2 className="mx-auto h-12 w-12 text-gray-400" />

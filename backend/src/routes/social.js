@@ -33,6 +33,59 @@ router.get('/_diagnose', async (req, res) => {
   });
 });
 
+// Recent posts feeds. Response shape matches the fields the frontend
+// Posts.js post card already expects (id, content, media[], createdAt) so no
+// per-provider branching is needed in the renderer.
+router.get('/facebook/pages/:connectionId/posts', async (req, res) => {
+  try {
+    const row = await connections.getRawForUser(req.user.userId, req.params.connectionId);
+    if (!row) return res.status(404).json({ error: 'Connection not found' });
+    if (row.provider !== 'facebook') return res.status(400).json({ error: 'Not a Facebook connection' });
+    const pageId = row.metadata?.page_id;
+    const pageAccessToken = row.metadata?.page_access_token;
+    if (!pageId || !pageAccessToken) return res.status(400).json({ error: 'Reconnect Facebook' });
+
+    const limit = Math.min(Math.max(1, parseInt(req.query.limit || '10', 10)), 50);
+    const posts = await meta.getRecentFacebookPosts({ pageId, pageAccessToken, limit });
+    res.json({ posts });
+  } catch (err) {
+    const n = meta.normalizeApiError(err);
+    logger.warn('social.facebook.posts_failed', {
+      user_id: req.user.userId,
+      connection_id: req.params.connectionId,
+      error: n.message,
+      code: n.code,
+      needsReauth: n.needsReauth,
+    });
+    res.status(n.status).json({ error: n.message, code: n.code, needsReauth: n.needsReauth });
+  }
+});
+
+router.get('/instagram/:connectionId/media', async (req, res) => {
+  try {
+    const row = await connections.getRawForUser(req.user.userId, req.params.connectionId);
+    if (!row) return res.status(404).json({ error: 'Connection not found' });
+    if (row.provider !== 'instagram') return res.status(400).json({ error: 'Not an Instagram connection' });
+    const igBusinessId = row.metadata?.ig_business_id;
+    const pageAccessToken = row.metadata?.page_access_token;
+    if (!igBusinessId || !pageAccessToken) return res.status(400).json({ error: 'Reconnect Facebook' });
+
+    const limit = Math.min(Math.max(1, parseInt(req.query.limit || '10', 10)), 50);
+    const posts = await meta.getRecentInstagramMedia({ igBusinessId, pageAccessToken, limit });
+    res.json({ posts });
+  } catch (err) {
+    const n = meta.normalizeApiError(err);
+    logger.warn('social.instagram.media_failed', {
+      user_id: req.user.userId,
+      connection_id: req.params.connectionId,
+      error: n.message,
+      code: n.code,
+      needsReauth: n.needsReauth,
+    });
+    res.status(n.status).json({ error: n.message, code: n.code, needsReauth: n.needsReauth });
+  }
+});
+
 router.post(
   '/facebook/publish',
   [
