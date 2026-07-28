@@ -15,7 +15,6 @@
 //   GET /_health         → JSON health (unauthenticated, ignores host)
 
 const express = require('express');
-require('dotenv').config();
 
 const supabase = require('./supabase');
 const logger = require('./logger');
