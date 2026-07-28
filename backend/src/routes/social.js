@@ -12,10 +12,32 @@ const { body, validationResult } = require('express-validator');
 const authMiddleware = require('../middleware/authMiddleware');
 const connections = require('../services/connectionsService');
 const meta = require('../services/metaService');
+const driveRouter = require('./drive');
 const logger = require('../utils/logger');
 
 const router = express.Router();
 router.use(authMiddleware);
+
+// If imageUrl is a Google Drive URL, rewrite it to our signed public
+// proxy URL so Meta fetches the original bytes via our backend (OAuth-
+// authenticated read of the Drive file). Sending Meta the raw Drive URL
+// either gets them a login-page redirect (private file) or a preview
+// thumbnail — that's what was making FB photos come out tiny.
+function rewriteDriveImageUrl(rawUrl, req) {
+  if (!rawUrl) return rawUrl;
+  const fileId = driveRouter.driveFileIdFromUrl(rawUrl);
+  if (!fileId) return rawUrl;
+  const publicBaseUrl =
+    process.env.PUBLIC_BACKEND_URL ||
+    process.env.BACKEND_URL ||
+    `https://${req.get('host')}`;
+  return driveRouter.buildSignedDriveProxyUrl({
+    userId: req.user?.userId,
+    fileId,
+    baseUrl: publicBaseUrl,
+    ttlSeconds: 3600,
+  });
+}
 
 router.get('/_diagnose', async (req, res) => {
   const hasAppId = !!process.env.META_APP_ID;
@@ -113,12 +135,20 @@ router.post(
         return res.status(400).json({ error: 'One of message, imageUrl, or link is required' });
       }
 
-      const result = await meta.publishFacebookPost({ pageId, pageAccessToken, message, imageUrl, link });
+      const rewrittenUrl = rewriteDriveImageUrl(imageUrl, req);
+      const result = await meta.publishFacebookPost({
+        pageId,
+        pageAccessToken,
+        message,
+        imageUrl: rewrittenUrl,
+        link,
+      });
       logger.info('social.facebook.published', {
         user_id: req.user.userId,
         connection_id: connectionId,
         page_id: pageId,
         has_image: !!imageUrl,
+        image_rewritten: rewrittenUrl !== imageUrl,
         has_link: !!link,
         result_id: result.id,
       });
@@ -161,11 +191,18 @@ router.post(
         return res.status(400).json({ error: 'Connection is missing IG business ID or Page token — reconnect Facebook' });
       }
 
-      const result = await meta.publishInstagramPost({ igBusinessId, pageAccessToken, caption, imageUrl });
+      const rewrittenUrl = rewriteDriveImageUrl(imageUrl, req);
+      const result = await meta.publishInstagramPost({
+        igBusinessId,
+        pageAccessToken,
+        caption,
+        imageUrl: rewrittenUrl,
+      });
       logger.info('social.instagram.published', {
         user_id: req.user.userId,
         connection_id: connectionId,
         ig_business_id: igBusinessId,
+        image_rewritten: rewrittenUrl !== imageUrl,
         result_id: result.id,
         creation_id: result.creation_id,
       });
