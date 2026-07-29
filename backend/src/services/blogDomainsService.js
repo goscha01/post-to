@@ -25,6 +25,11 @@ const BLOG_SERVICE_ID = process.env.BLOG_SERVICE_ID || '4fba7cf7-5458-44dd-80b4-
 const BLOG_ENVIRONMENT_ID = process.env.BLOG_ENVIRONMENT_ID || '811f397a-2108-46aa-9feb-a5785164c840';
 const BLOG_PROJECT_ID = process.env.BLOG_PROJECT_ID || '774da08a-3338-4022-99a3-d6098e7116b6';
 const BLOG_CNAME_TARGET = process.env.BLOG_CNAME_TARGET || 'post-to-blogs-production.up.railway.app';
+// Railway's HTTP router requires an explicit target port on custom domains
+// (unlike auto-provisioned service domains). Without it, requests hit the
+// edge but the edge returns "Application not found" (x-railway-fallback:true)
+// because it can't figure out which container port to forward to.
+const BLOG_TARGET_PORT = Number(process.env.BLOG_TARGET_PORT) || 8080;
 
 function normalizeHost(raw) {
   if (!raw || typeof raw !== 'string') return null;
@@ -83,7 +88,13 @@ async function attachRailwayDomain(hostname) {
           }
         }
       }`,
-      { input: { domain: hostname, environmentId: BLOG_ENVIRONMENT_ID, serviceId: BLOG_SERVICE_ID, projectId: BLOG_PROJECT_ID } }
+      { input: {
+        domain: hostname,
+        environmentId: BLOG_ENVIRONMENT_ID,
+        serviceId: BLOG_SERVICE_ID,
+        projectId: BLOG_PROJECT_ID,
+        targetPort: BLOG_TARGET_PORT,
+      } }
     );
     return { ok: true, customDomain: data.customDomainCreate };
   } catch (err) {
