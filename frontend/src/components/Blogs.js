@@ -1037,7 +1037,6 @@ const BlogDomainsPanel = ({ connections = [] }) => {
   const [manuallyEdited, setManuallyEdited] = useState(false);
   const [err, setErr] = useState('');
   const [busyId, setBusyId] = useState(null);
-  const [copied, setCopied] = useState(false);
 
   // Best guess: first website connection, otherwise first GSC connection.
   const sourceConnection = useMemo(() => {
@@ -1077,13 +1076,6 @@ const BlogDomainsPanel = ({ connections = [] }) => {
     if (!manuallyEdited && suggestedHost && !hostname) setHostname(suggestedHost);
     if (!manuallyEdited && suggestedSiteName && !siteName) setSiteName(suggestedSiteName);
   }, [suggestedHost, suggestedSiteName, hostname, siteName, manuallyEdited]);
-
-  const copyTarget = () => {
-    if (!state.cnameTarget) return;
-    navigator.clipboard?.writeText(state.cnameTarget);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
-  };
 
   // Save row, then immediately try to verify. If DNS isn't set yet, the row
   // stays in pending state and the retry button reuses the same handler.
@@ -1172,9 +1164,6 @@ const BlogDomainsPanel = ({ connections = [] }) => {
   const hasVerified = state.domains.some(d => d.metadata?.verified);
   const pending = state.domains.filter(d => !d.metadata?.verified);
   const verifiedRows = state.domains.filter(d => d.metadata?.verified);
-  // Split the hostname into host + root so we can show 'blog' on its own line
-  // in the DNS instructions (matches what registrars expect in the "Host" field).
-  const hostLabel = (hostname || suggestedHost).split('.')[0] || 'blog';
 
   return (
     <div className="mb-6 bg-white border border-gray-200 rounded-lg overflow-hidden">
@@ -1187,8 +1176,8 @@ const BlogDomainsPanel = ({ connections = [] }) => {
               {hasVerified
                 ? 'Your published articles show up on the domain below.'
                 : sourceConnection
-                  ? 'We pre-filled the subdomain from your connected site. Copy the DNS record, add it at your registrar, then click Save & verify.'
-                  : 'Enter the subdomain you want your published articles to live on, then follow the DNS steps.'}
+                  ? 'We pre-filled the subdomain from your connected site. Click Save & verify — we\'ll show you the exact DNS record to add at your registrar.'
+                  : 'Enter the subdomain you want your published articles to live on. We\'ll register it and give you the DNS record to add.'}
             </p>
           </div>
         </div>
@@ -1240,44 +1229,21 @@ const BlogDomainsPanel = ({ connections = [] }) => {
 
             {/* Add-new form only when there's no pending domain (avoid two
                 overlapping DNS instruction blocks). If a pending one exists,
-                the user should finish verifying it first. */}
+                the user should finish verifying it first.
+
+                The DNS record is NOT previewed here — Railway assigns a
+                unique per-domain CNAME target after we register the hostname,
+                and that value is what Let's Encrypt validates against for
+                SSL. Showing a generic target here would be misleading. Once
+                the user clicks Save & verify, the pending row that appears
+                below shows the correct per-domain CNAME value. */}
             {pending.length === 0 && (
               <form onSubmit={saveAndVerify} className="space-y-3">
-                {!hasVerified && state.cnameTarget && (
-                  <div className="rounded-md border border-gray-200 bg-gray-50 p-3">
-                    <div className="text-xs font-medium text-gray-700 mb-2">
-                      Add this DNS record at your registrar (GoDaddy, Namecheap, Cloudflare, etc.):
-                    </div>
-                    <div className="grid grid-cols-3 gap-2 text-xs font-mono bg-white border border-gray-200 rounded p-2">
-                      <div>
-                        <div className="text-[10px] uppercase text-gray-500 font-sans">Type</div>
-                        <div>CNAME</div>
-                      </div>
-                      <div>
-                        <div className="text-[10px] uppercase text-gray-500 font-sans">Host</div>
-                        <div>{hostLabel}</div>
-                      </div>
-                      <div className="min-w-0">
-                        <div className="text-[10px] uppercase text-gray-500 font-sans flex items-center gap-1">
-                          Value
-                          <button
-                            type="button"
-                            onClick={copyTarget}
-                            className="inline-flex items-center gap-0.5 text-primary-600 hover:text-primary-700"
-                            title="Copy value"
-                          >
-                            <Copy className="h-3 w-3" />
-                            {copied ? 'copied' : 'copy'}
-                          </button>
-                        </div>
-                        <div className="truncate">{state.cnameTarget}</div>
-                      </div>
-                    </div>
-                    <p className="mt-2 text-[11px] text-gray-500">
-                      DNS changes usually propagate in 1–5 minutes. When you're done, click Save &amp; verify below.
-                    </p>
-                  </div>
-                )}
+                <div className="text-xs text-gray-600">
+                  We'll register the subdomain on our blog service and give you the
+                  exact DNS record (CNAME) to add at your registrar. SSL is
+                  auto-provisioned by Let's Encrypt once DNS resolves.
+                </div>
 
                 <div className="flex flex-wrap items-end gap-2">
                   <div className="flex-1 min-w-[220px]">
