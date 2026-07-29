@@ -11,6 +11,8 @@ const { generateCacheKey } = require('../utils/cacheUtils');
 const { processImages } = require('../utils/imageCache');
 const { tryWithEachBusinessToken } = require('../utils/businessTokens');
 const logger = require('../utils/logger');
+const connections = require('../services/connectionsService');
+const meta = require('../services/metaService');
 const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
@@ -718,6 +720,67 @@ router.get('/location/:locationId', async (req, res) => {
       error: 'Failed to fetch posts',
       details: error.message
     });
+  }
+});
+
+// Sync recent posts for a Facebook Page / Instagram Business connection into
+// social_media_posts, mirroring what /location/:locationId does for GMB.
+// The Calendar page consumes this so FB/IG posts appear on the grid.
+//
+// The row shape we cache:
+//   platform      = 'facebook' | 'instagram'
+//   location_id   = connectionId   (used as the chip identity on the FE)
+//   gmb_account_id = null          (not applicable)
+//   post_id       = Meta post/media ID
+//   published_at  = Meta created_time / timestamp
+router.post('/social/sync/:connectionId', async (req, res) => {
+  const userId = req.user?.userId;
+  const { connectionId } = req.params;
+  try {
+    const row = await connections.getRawForUser(userId, connectionId);
+    if (!row) return res.status(404).json({ error: 'Connection not found' });
+    if (row.provider !== 'facebook' && row.provider !== 'instagram') {
+      return res.status(400).json({ error: 'Only facebook or instagram connections are supported here' });
+    }
+    const pageAccessToken = row.metadata?.page_access_token;
+    if (!pageAccessToken) return res.status(400).json({ error: 'Reconnect Facebook / Instagram' });
+
+    const limit = Math.min(Math.max(1, parseInt(req.query.limit || '30', 10)), 50);
+    let posts = [];
+    if (row.provider === 'facebook') {
+      const pageId = row.metadata?.page_id;
+      if (!pageId) return res.status(400).json({ error: 'Missing page_id' });
+      posts = await meta.getRecentFacebookPosts({ pageId, pageAccessToken, limit });
+    } else {
+      const igBusinessId = row.metadata?.ig_business_id;
+      if (!igBusinessId) return res.status(400).json({ error: 'Missing ig_business_id' });
+      posts = await meta.getRecentInstagramMedia({ igBusinessId, pageAccessToken, limit });
+    }
+
+    // Tag each with the connectionId as location_id so saveExistingPostsToDatabase
+    // (which reads post.locationId) drops it into the right column. Also stamp
+    // accountId=null explicitly so gmb_account_id ends up null, not undefined.
+    for (const p of posts) {
+      p.locationId = connectionId;
+      p.accountId = null;
+    }
+
+    const saved = await saveExistingPostsToDatabase(userId, posts, row.provider);
+    logger.info('posts.social.sync', {
+      user_id: userId,
+      connection_id: connectionId,
+      provider: row.provider,
+      fetched: posts.length,
+      saved: saved.length,
+    });
+    return res.json({ success: true, fetched: posts.length, saved: saved.length });
+  } catch (err) {
+    logger.warn('posts.social.sync_failed', {
+      user_id: userId,
+      connection_id: connectionId,
+      error: err?.message,
+    });
+    return res.status(500).json({ success: false, error: err?.message || 'Failed to sync social posts' });
   }
 });
 

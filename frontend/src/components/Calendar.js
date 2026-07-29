@@ -187,6 +187,19 @@ const colorForLocation = (locationId, allLocations) => {
   return LOCATION_COLORS[(idx >= 0 ? idx : 0) % LOCATION_COLORS.length];
 };
 
+// Provider-tinted pill colors for FB/IG items so they read as *not* GMB
+// at a glance. GMB continues to use the rotating LOCATION_COLORS palette
+// (one color per location) so different Google businesses stay
+// distinguishable in the same cell.
+const FACEBOOK_COLOR = { bg: 'bg-indigo-50', border: 'border-indigo-300', dot: 'bg-indigo-500', text: 'text-indigo-900' };
+const INSTAGRAM_COLOR = { bg: 'bg-pink-50', border: 'border-pink-300', dot: 'bg-pink-500', text: 'text-pink-900' };
+
+const colorForItem = (item, allLocations) => {
+  if (item?.platform === 'facebook') return FACEBOOK_COLOR;
+  if (item?.platform === 'instagram') return INSTAGRAM_COLOR;
+  return colorForLocation(item?.locationId, allLocations);
+};
+
 // Same rendering rules as Posts.js ChipAvatar: googleusercontent URLs
 // need the backend proxy (Google's CDN returns 400 for direct <img>),
 // everything else loads directly, and any failure falls back to a
@@ -433,56 +446,84 @@ const Calendar = () => {
     async (opts = {}) => {
       const { force = false } = opts;
       if (syncing) return;
-      const targets = locations.filter(
+      // GMB targets keep the (accountId, locationId) shape /api/posts/location
+      // expects. FB/IG targets are flat connectionIds hitting the new
+      // /api/posts/social/sync route.
+      const gmbTargets = locations.filter(
         (l) => l.accountId && l.locationId && (force || !syncedLocationsRef.current.has(l.key))
       );
-      if (targets.length === 0) return;
+      const socialTargets = (socialProfiles || [])
+        .filter((r) => r.provider === 'facebook' || r.provider === 'instagram')
+        .map((r) => ({
+          key: `${r.provider === 'facebook' ? 'fb' : 'ig'}:${r.id}`,
+          connectionId: r.id,
+          provider: r.provider,
+        }))
+        .filter((t) => force || !syncedLocationsRef.current.has(t.key));
+
+      const totalTargets = gmbTargets.length + socialTargets.length;
+      if (totalTargets === 0) return;
       setSyncing(true);
       let totalPosts = 0;
-      let okLocations = 0;
+      let okTargets = 0;
       try {
         const CONCURRENCY = 3;
+        const queue = [
+          ...gmbTargets.map((t) => ({ kind: 'gmb', t })),
+          ...socialTargets.map((t) => ({ kind: 'social', t })),
+        ];
         let i = 0;
         const worker = async () => {
-          while (i < targets.length) {
+          while (i < queue.length) {
             const idx = i++;
-            const t = targets[idx];
+            const job = queue[idx];
             try {
-              const posts = await postsService.getPostsForLocation(t.locationId, t.accountId, true);
-              if (Array.isArray(posts)) {
-                totalPosts += posts.length;
-                okLocations += 1;
+              if (job.kind === 'gmb') {
+                const posts = await postsService.getPostsForLocation(job.t.locationId, job.t.accountId, true);
+                if (Array.isArray(posts)) {
+                  totalPosts += posts.length;
+                  okTargets += 1;
+                }
+              } else {
+                // FB/IG: hit the new backend sync endpoint. Response reports
+                // how many rows persisted, not how many Meta returned, but
+                // both are close enough for the status line.
+                const resp = await axios.post(`/api/posts/social/sync/${job.t.connectionId}`);
+                const n = Number(resp?.data?.fetched || 0);
+                totalPosts += n;
+                okTargets += 1;
               }
             } catch {
-              // Per-location failure is fine — other locations still sync.
+              // Per-target failure is fine — other targets still sync.
             }
-            syncedLocationsRef.current.add(t.key);
+            syncedLocationsRef.current.add(job.t.key);
           }
         };
         await Promise.all(
-          Array.from({ length: Math.min(CONCURRENCY, targets.length) }, worker)
+          Array.from({ length: Math.min(CONCURRENCY, queue.length) }, worker)
         );
-        setLastSync({ locations: okLocations, total: targets.length, posts: totalPosts });
+        setLastSync({ locations: okTargets, total: totalTargets, posts: totalPosts });
         // Re-read the calendar range now that the cache is populated.
         await fetchRange({ silent: true });
       } finally {
         setSyncing(false);
       }
     },
-    [locations, syncing, fetchRange]
+    [locations, socialProfiles, syncing, fetchRange]
   );
 
-  // Auto-sync once per session, after locations load, only if the current
-  // range has zero published items. Avoids surprising the user with a slow
-  // sync when the calendar already has data cached from prior visits.
+  // Auto-sync once per session, after any target (GMB or FB/IG) is known
+  // and the initial calendar fetch has settled. Only fires when the visible
+  // window is empty, so returning users with cached data don't wait on a
+  // fan-out they don't need.
   useEffect(() => {
     if (autoSyncFiredRef.current) return;
-    if (loading) return; // wait for initial calendar fetch to settle
-    if (locations.length === 0) return;
+    if (loading) return;
+    if (locations.length === 0 && socialProfiles.length === 0) return;
     if (items.published.length > 0) return;
     autoSyncFiredRef.current = true;
     syncPublishedFromGmb();
-  }, [loading, locations, items.published.length, syncPublishedFromGmb]);
+  }, [loading, locations, socialProfiles, items.published.length, syncPublishedFromGmb]);
 
   // Group filtered items by yyyy-mm-dd for the grid
   const itemsByDay = useMemo(() => {
@@ -494,11 +535,12 @@ const Calendar = () => {
       if (!it?.when) continue;
       const d = new Date(it.when);
       if (Number.isNaN(d.getTime())) continue;
-      // Location filter: an item with no locationId is always shown
-      // (defensive — some legacy rows may have missing IDs).
-      if (it.locationId && selectedLocationKeys.size > 0) {
-        const key = `${it.accountId || ''}:${it.locationId}`;
-        if (!selectedLocationKeys.has(key)) continue;
+      // Location filter: prefer the backend-computed chipKey (handles GMB +
+      // FB + IG uniformly). Fall back to the legacy composite for rows
+      // returned by older backends before the chipKey field existed.
+      if (selectedLocationKeys.size > 0) {
+        const key = it.chipKey || `${it.accountId || ''}:${it.locationId || ''}`;
+        if (key && !selectedLocationKeys.has(key)) continue;
       }
       const dayKey = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
       const arr = map.get(dayKey) || [];
@@ -635,7 +677,7 @@ const Calendar = () => {
                   )}
                   {items.published.length === 0 && items.scheduled.length === 0 && !lastSync && (
                     <span className="ml-1 text-gray-400">
-                      — try another month or click <span className="font-medium">Sync from Google</span>
+                      — try another month or click <span className="font-medium">Sync accounts</span>
                     </span>
                   )}
                 </>
@@ -646,12 +688,12 @@ const Calendar = () => {
         <div className="flex items-center gap-2">
           <button
             onClick={() => syncPublishedFromGmb({ force: true })}
-            disabled={syncing || locations.length === 0}
-            title="Pull the latest published posts from Google Business Profile for every connected location"
+            disabled={syncing || (locations.length === 0 && socialProfiles.length === 0)}
+            title="Pull the latest published posts from every connected account (Google Business, Facebook, Instagram)"
             className="inline-flex items-center gap-2 px-3 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-60"
           >
             <RefreshCw className={`h-4 w-4 ${syncing ? 'animate-spin' : ''}`} />
-            {syncing ? 'Syncing…' : 'Sync from Google'}
+            {syncing ? 'Syncing…' : 'Sync accounts'}
           </button>
           <button
             onClick={() => fetchRange({ silent: true })}
@@ -887,9 +929,9 @@ const Calendar = () => {
       {detailItem && (
         <DetailModal
           item={detailItem}
-          location={locations.find(
-            (l) => l.key === `${detailItem.accountId || ''}:${detailItem.locationId || ''}`
-          )}
+          // chipTargets covers GMB + FB + IG; matching by chipKey gives us
+          // a real account label for social posts too, not just GMB.
+          location={chipTargets.find((t) => t.key === detailItem.chipKey) || null}
           allLocations={locations}
           onClose={() => setDetailItem(null)}
           onCancelled={handleCancelled}
@@ -901,6 +943,7 @@ const Calendar = () => {
           day={dayModal.day}
           items={dayModal.items}
           allLocations={locations}
+          chipTargets={chipTargets}
           onClose={() => setDayModal(null)}
           onPickItem={(it) => {
             setDayModal(null);
@@ -1016,7 +1059,7 @@ const DayCell = ({ day, items, allLocations, isOtherMonth, isToday, isWeekendCol
       </div>
       <div className="flex-1 flex flex-col gap-1 overflow-hidden">
         {visible.map((item) => {
-          const color = colorForLocation(item.locationId, allLocations);
+          const color = colorForItem(item, allLocations);
           const isScheduled = item.kind === 'scheduled';
           return (
             <button
@@ -1067,7 +1110,7 @@ const DayCell = ({ day, items, allLocations, isOtherMonth, isToday, isWeekendCol
 // item on that day in a scrollable list; clicking one hands off to the
 // single-item DetailModal.
 
-const DayItemsModal = ({ day, items, allLocations, onClose, onPickItem }) => {
+const DayItemsModal = ({ day, items, allLocations, chipTargets = [], onClose, onPickItem }) => {
   const dayLabel = day.toLocaleDateString(undefined, {
     weekday: 'long',
     month: 'long',
@@ -1101,12 +1144,10 @@ const DayItemsModal = ({ day, items, allLocations, onClose, onPickItem }) => {
         </div>
         <ul className="divide-y divide-gray-100">
           {items.map((item) => {
-            const color = colorForLocation(item.locationId, allLocations);
+            const color = colorForItem(item, allLocations);
             const isScheduled = item.kind === 'scheduled';
             const when = new Date(item.when);
-            const loc = allLocations.find(
-              (l) => l.key === `${item.accountId || ''}:${item.locationId || ''}`
-            );
+            const loc = chipTargets.find((t) => t.key === item.chipKey) || null;
             return (
               <li key={item.kind + '-' + item.id}>
                 <button
@@ -1130,7 +1171,7 @@ const DayItemsModal = ({ day, items, allLocations, onClose, onPickItem }) => {
                     <div className="flex items-center gap-1.5 mb-1">
                       <span className={`h-2 w-2 rounded-full flex-none ${color.dot}`} />
                       <span className="text-xs font-medium text-gray-700 truncate">
-                        {loc?.title || 'Business post'}
+                        {loc?.label || 'Business post'}
                       </span>
                       <span
                         className={`ml-auto inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium flex-none ${
@@ -1162,7 +1203,7 @@ const DayItemsModal = ({ day, items, allLocations, onClose, onPickItem }) => {
 
 const DetailModal = ({ item, location, allLocations, onClose, onCancelled }) => {
   const when = new Date(item.when);
-  const color = colorForLocation(item.locationId, allLocations);
+  const color = colorForItem(item, allLocations);
   const isScheduled = item.kind === 'scheduled';
   const [cancelling, setCancelling] = useState(false);
   const [cancelError, setCancelError] = useState(null);
@@ -1197,7 +1238,7 @@ const DetailModal = ({ item, location, allLocations, onClose, onCancelled }) => 
             <span className={`h-2.5 w-2.5 rounded-full flex-none ${color.dot}`} />
             <div className="min-w-0">
               <div className="text-sm font-semibold text-gray-900 truncate">
-                {location?.title || 'Business post'}
+                {location?.label || location?.title || 'Business post'}
               </div>
               <div className="text-xs text-gray-500 flex items-center gap-2 mt-0.5">
                 <span

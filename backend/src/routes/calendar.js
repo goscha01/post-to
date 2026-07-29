@@ -423,31 +423,52 @@ router.get('/', async (req, res) => {
       logger.warn('calendar.scheduled_query_error', { user_id: userId, error: schedQ.error.message });
     }
 
-    const published = (pubQ.data || []).map((r) => ({
-      id: r.id,
-      externalId: r.post_id || null,
-      kind: 'published',
-      when: r.published_at,
-      accountId: r.gmb_account_id || null,
-      locationId: r.location_id || null,
-      platform: r.platform || 'google',
-      content: r.content || '',
-      thumbUrl: firstMediaUrl(r),
-      status: 'published',
-    }));
+    // chipKey mirrors the identifier the frontend's account bar uses:
+    //   GMB          → `${gmb_account_id}:${location_id}`
+    //   Facebook     → `fb:${location_id}`   (location_id holds the connectionId)
+    //   Instagram    → `ig:${location_id}`
+    // The frontend filters day items by set membership against these keys, so
+    // getting them straight from the backend avoids a stale/wrong mapping
+    // getting duplicated in two places.
+    const chipKeyForRow = (r, platform) => {
+      if (platform === 'facebook') return `fb:${r.location_id || ''}`;
+      if (platform === 'instagram') return `ig:${r.location_id || ''}`;
+      return `${r.gmb_account_id || ''}:${r.location_id || ''}`;
+    };
 
-    const scheduled = (schedQ.data || []).map((r) => ({
-      id: r.id,
-      externalId: null,
-      kind: 'scheduled',
-      when: r.scheduled_time,
-      accountId: r.gmb_account_id || null,
-      locationId: r.location_id || null,
-      platform: (Array.isArray(r.platforms) && r.platforms[0]) || 'google',
-      content: r.content || '',
-      thumbUrl: firstMediaUrl(r),
-      status: r.status || 'scheduled',
-    }));
+    const published = (pubQ.data || []).map((r) => {
+      const platform = r.platform || 'google';
+      return {
+        id: r.id,
+        externalId: r.post_id || null,
+        kind: 'published',
+        when: r.published_at,
+        accountId: r.gmb_account_id || null,
+        locationId: r.location_id || null,
+        platform,
+        chipKey: chipKeyForRow(r, platform),
+        content: r.content || '',
+        thumbUrl: firstMediaUrl(r),
+        status: 'published',
+      };
+    });
+
+    const scheduled = (schedQ.data || []).map((r) => {
+      const platform = (Array.isArray(r.platforms) && r.platforms[0]) || 'google';
+      return {
+        id: r.id,
+        externalId: null,
+        kind: 'scheduled',
+        when: r.scheduled_time,
+        accountId: r.gmb_account_id || null,
+        locationId: r.location_id || null,
+        platform,
+        chipKey: chipKeyForRow(r, platform),
+        content: r.content || '',
+        thumbUrl: firstMediaUrl(r),
+        status: r.status || 'scheduled',
+      };
+    });
 
     logger.info('calendar.response', {
       user_id: userId,
