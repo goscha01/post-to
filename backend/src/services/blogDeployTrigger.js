@@ -19,6 +19,12 @@ async function fireGithubDispatch({ domain, blog }) {
   const repo = meta.github_repo;                                // 'owner/repo'
   const eventType = meta.github_workflow_event || 'publish-blog';
   if (!token || !repo) {
+    // Log the skip explicitly. Previously we returned silently which made
+    // "auto-deploy never fired" invisible in production — a missing token
+    // looked identical to a successful publish with no trigger configured.
+    logger.warn('blog_deploy.github_dispatch_skipped', {
+      reason: 'missing config', has_token: !!token, has_repo: !!repo, host: meta.hostname,
+    });
     return { ok: false, skipped: true, reason: 'no github_token or github_repo' };
   }
 
