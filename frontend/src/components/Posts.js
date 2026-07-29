@@ -796,7 +796,7 @@ const Posts = () => {
 
     const hasIg = targetKeys.some((k) => k.startsWith('ig:'));
     const hasSocial = targetKeys.some((k) => k.startsWith('fb:') || k.startsWith('ig:'));
-    const socialImage = validMediaUrls.find((u) => /^https:\/\//i.test(u));
+    let socialImage = validMediaUrls.find((u) => /^https:\/\//i.test(u));
     if (hasIg && !socialImage) {
       alert('Instagram posts require a public HTTPS image URL. Paste one in the media URL field.');
       setCreatingPost(false);
@@ -813,14 +813,38 @@ const Posts = () => {
       const badMedia = validMediaUrls.filter((u) => cdnRe.test(u));
       if (badMedia.length > 0) {
         // eslint-disable-next-line no-console
-        console.warn('[handleCreatePost] bailed: selected media is a platform-CDN thumbnail', badMedia);
-        alert(
-          `Can't publish — the selected image is a low-res platform thumbnail (fbcdn.net / cdninstagram.com / googleusercontent.com).\n\n` +
-          `Facebook/Instagram will only re-serve a small compressed copy from that URL.\n\n` +
-          `Fix: click "Add from Google Drive" and repick the original photo, then try again.`
+        console.warn('[handleCreatePost] CDN thumbnail(s) detected — asking user how to proceed', badMedia);
+        // eslint-disable-next-line no-restricted-globals, no-alert
+        const proceed = window.confirm(
+          `The selected image is a low-res platform thumbnail (${badMedia.length} of ${validMediaUrls.length}).\n\n` +
+          `Facebook/Instagram will only re-serve a tiny compressed copy from it — no way to publish at full quality without repicking from Drive.\n\n` +
+          `Click OK to publish TEXT-ONLY (drop the image and post the caption).\n` +
+          `Click Cancel to keep the draft open so you can repick from Google Drive.`
         );
-        setCreatingPost(false);
-        return;
+        if (!proceed) {
+          setCreatingPost(false);
+          return;
+        }
+        // User chose text-only — strip the CDN URL from formData AND from
+        // validMediaUrls in this closure so the rest of the flow behaves
+        // as if there was no image.
+        const goodUrls = validMediaUrls.filter((u) => !cdnRe.test(u));
+        setFormData((prev) => ({
+          ...prev,
+          mediaUrls: goodUrls.length > 0 ? goodUrls : [''],
+        }));
+        // Overwrite the local variables the rest of this handler uses.
+        validMediaUrls.length = 0;
+        validMediaUrls.push(...goodUrls);
+        socialImage = validMediaUrls.find((u) => /^https:\/\//i.test(u));
+        // eslint-disable-next-line no-console
+        console.log('[handleCreatePost] user chose text-only — stripped', badMedia.length, 'CDN url(s), socialImage now:', socialImage || '(none)');
+        // Also block IG if there's now no image (IG requires one).
+        if (hasIg && goodUrls.length === 0) {
+          alert('Instagram requires an image. Deselect the Instagram chip or repick from Drive.');
+          setCreatingPost(false);
+          return;
+        }
       }
     }
     if (postingMode === 'later' && hasSocial) {
