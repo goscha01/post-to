@@ -70,15 +70,15 @@ function extractMeta(html) {
 }
 
 // Extract theme signals (accent color, fonts URL, logo URL) from a page's HTML
-// head. Best-effort regex — never throws, returns partial data. Used to
-// auto-populate the base look of a customer's blog subdomain so it looks
-// recognizably like their main site without manual configuration.
+// head. Best-effort regex — never throws, returns partial data. Returns
+// multiple logo candidates in priority order so the caller can HEAD-verify
+// each and pick the first that returns 2xx (declared logos often 404 in
+// practice).
 function extractTheme(html, baseUrl) {
-  const out = {};
+  const out = { logoCandidates: [] };
   if (!html || typeof html !== 'string') return out;
   const head = html.slice(0, 200000);
 
-  // Absolutize relative URLs against the fetched page URL.
   const absolutize = (url) => {
     try { return new URL(url, baseUrl).toString(); } catch { return null; }
   };
@@ -88,36 +88,64 @@ function extractTheme(html, baseUrl) {
     || head.match(/<meta[^>]*content\s*=\s*["']([^"']+)["'][^>]*(?:name|property)\s*=\s*["']theme-color["']/i);
   if (themeColor) out.primaryColor = themeColor[1].trim();
 
-  // First Google Fonts stylesheet link — usually captures the site's main
-  // font. Preserve the full URL so all weights the site loaded come along.
+  // First Google Fonts stylesheet link. Preserve the URL verbatim so all
+  // weights the site loaded come along.
   const fontsLink = head.match(/<link[^>]*rel\s*=\s*["']stylesheet["'][^>]*href\s*=\s*["'](https?:\/\/fonts\.googleapis\.com\/css2?\?[^"']+)["']/i)
     || head.match(/<link[^>]*href\s*=\s*["'](https?:\/\/fonts\.googleapis\.com\/css2?\?[^"']+)["'][^>]*rel\s*=\s*["']stylesheet["']/i);
   if (fontsLink) {
     out.fontsUrl = fontsLink[1];
-    // Try to also extract the primary family name so we can set body font
-    // family without loading the actual font file (font already loaded via
-    // fontsUrl link).
     const famMatch = fontsLink[1].match(/family=([^&:+]+)/i);
     if (famMatch) out.fontFamily = decodeURIComponent(famMatch[1].replace(/\+/g, ' '));
   }
 
-  // Logo — prefer apple-touch-icon (usually higher-res + no favicon fallback
-  // squishing), then icon rel, then og:image.
-  const appleIcon = head.match(/<link[^>]*rel\s*=\s*["']apple-touch-icon(?:-precomposed)?["'][^>]*href\s*=\s*["']([^"']+)["']/i);
-  const iconLink = head.match(/<link[^>]*rel\s*=\s*["'](?:shortcut )?icon["'][^>]*href\s*=\s*["']([^"']+)["']/i);
+  // Logo candidates in priority order:
+  //   1. og:image — purpose-built by the site owner as their share image
+  //   2. apple-touch-icon (usually 180×180+, better than the tiny favicon)
+  //   3. <img> tags with class containing "logo" from anywhere in the doc
+  //   4. Rel=icon <link>s (favicon.ico / favicon.png)
   const ogImage = head.match(/<meta[^>]*property\s*=\s*["']og:image["'][^>]*content\s*=\s*["']([^"']+)["']/i);
-  const rawLogo = appleIcon?.[1] || iconLink?.[1] || ogImage?.[1];
-  if (rawLogo) {
-    const abs = absolutize(rawLogo);
-    if (abs) out.logoUrl = abs;
+  if (ogImage?.[1]) { const u = absolutize(ogImage[1]); if (u) out.logoCandidates.push(u); }
+
+  const appleIcon = head.match(/<link[^>]*rel\s*=\s*["']apple-touch-icon(?:-precomposed)?["'][^>]*href\s*=\s*["']([^"']+)["']/i);
+  if (appleIcon?.[1]) { const u = absolutize(appleIcon[1]); if (u) out.logoCandidates.push(u); }
+
+  const logoImgRe = /<img[^>]*class\s*=\s*["'][^"']*\blogo\b[^"']*["'][^>]*src\s*=\s*["']([^"']+)["']|<img[^>]*src\s*=\s*["']([^"']+)["'][^>]*class\s*=\s*["'][^"']*\blogo\b[^"']*["']/gi;
+  let m;
+  while ((m = logoImgRe.exec(html)) !== null) {
+    const raw = m[1] || m[2];
+    if (raw) { const u = absolutize(raw); if (u) out.logoCandidates.push(u); }
+    if (out.logoCandidates.length > 5) break;
   }
+
+  const iconLinkRe = /<link[^>]*rel\s*=\s*["'](?:shortcut )?icon["'][^>]*href\s*=\s*["']([^"']+)["']/gi;
+  while ((m = iconLinkRe.exec(head)) !== null) {
+    const u = absolutize(m[1]);
+    if (u) out.logoCandidates.push(u);
+  }
+
+  // De-dupe while preserving order.
+  out.logoCandidates = [...new Set(out.logoCandidates)];
 
   return out;
 }
 
-// Public helper: fetch a page and return theme signals only. Used by blog
-// domain creation to auto-populate metadata.theme. Best-effort, all fields
-// optional in the returned object.
+// HEAD-check a URL, following redirects. Returns true only if the final
+// response is a 2xx status. Bounded by a short timeout.
+async function urlIsReachable(url) {
+  try {
+    const res = await axios.head(url, {
+      timeout: 5000,
+      maxRedirects: 3,
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; PostToBot/1.0; +https://post-to.app)' },
+      validateStatus: () => true,
+    });
+    return res.status >= 200 && res.status < 300;
+  } catch { return false; }
+}
+
+// Public helper: fetch a page and return theme signals. Follows redirects
+// (many sites redirect apex → www) and picks the first logo candidate whose
+// URL actually returns 2xx (declared icons frequently 404).
 async function fetchSiteTheme(rawUrl) {
   try {
     const url = normalizeUrl(rawUrl);
@@ -127,13 +155,26 @@ async function fetchSiteTheme(rawUrl) {
       maxRedirects: 5,
       maxContentLength: 5 * 1024 * 1024,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; PostToBot/1.0; +https://post-to.app)',
-        Accept: 'text/html,application/xhtml+xml',
+        // Bot-friendly UA reveals us; browser-shaped UA gets through sites
+        // that reject non-browser traffic (spotless.homes returns 60-byte
+        // redirect page to bot UAs — hero HTML only to browsers).
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       },
       validateStatus: s => s >= 200 && s < 400,
     });
-    const finalUrl = res.request?.res?.responseUrl || url;
-    return extractTheme(res.data, finalUrl);
+    const finalUrl = res.request?.res?.responseUrl || res.request?._redirectable?._currentUrl || url;
+    const raw = extractTheme(res.data, finalUrl);
+
+    // Pick the first logo candidate that HEAD-verifies. Cap the number of
+    // probes so a site with many broken images doesn't spend forever here.
+    let logoUrl = null;
+    for (const candidate of (raw.logoCandidates || []).slice(0, 6)) {
+      if (await urlIsReachable(candidate)) { logoUrl = candidate; break; }
+    }
+
+    const { logoCandidates, ...rest } = raw;
+    return { ...rest, ...(logoUrl ? { logoUrl } : {}) };
   } catch (err) {
     logger.warn('connections.theme.fetch_failed', { url: rawUrl, error: err.message });
     return {};
