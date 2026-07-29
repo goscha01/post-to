@@ -8,7 +8,8 @@
 // URL stored on the row is root-relative (e.g. /assets/blog/<slug>-hero.jpg)
 // which is what customer site templates expect for `heroImage:` frontmatter.
 
-const { S3Client, PutObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
+const { S3Client, PutObjectCommand, DeleteObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
+const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const { createClient } = require('@supabase/supabase-js');
 const logger = require('../utils/logger');
 const blogDomainsService = require('./blogDomainsService');
@@ -165,4 +166,28 @@ async function uploadFromBuffer({ userId, blogId, buffer, contentType, bytes }) 
   });
 }
 
-module.exports = { upload, uploadFromBuffer, remove, publicPath, objectKey };
+// Generate a short-lived pre-signed GET URL for the row's hero image so the
+// frontend can preview it BEFORE the customer's site has rebuilt (which is
+// when the image would actually be reachable at their public /assets/blog/…
+// path). Returns null if the row has no hero, or no S3 domain is configured.
+async function getPreviewUrl({ userId, heroImagePath }) {
+  if (!heroImagePath) return null;
+  let domain;
+  try { domain = await pickS3Domain(userId); }
+  catch { return null; }
+  try {
+    const client = s3ClientFromDomain(domain);
+    const cmd = new GetObjectCommand({
+      Bucket: domain.metadata.s3_bucket,
+      Key: heroImagePath.replace(/^\/+/, ''),
+    });
+    // 1 hour — plenty for a page-load preview; frontend can refetch on
+    // the next request if the user leaves the page open long enough.
+    return await getSignedUrl(client, cmd, { expiresIn: 3600 });
+  } catch (e) {
+    logger.warn('blog_hero.preview_url_failed', { userId, error: e.message });
+    return null;
+  }
+}
+
+module.exports = { upload, uploadFromBuffer, remove, publicPath, objectKey, getPreviewUrl };

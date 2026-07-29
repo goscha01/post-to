@@ -17,6 +17,20 @@ const blogDomainsService = require('../services/blogDomainsService');
 const blogPublisherS3 = require('../services/blogPublisherS3');
 const blogDeployTrigger = require('../services/blogDeployTrigger');
 const blogHeroImageService = require('../services/blogHeroImageService');
+
+// Augment a blog row with hero_image_preview_url so the frontend can render
+// a thumbnail before the customer's site build has published the image to
+// its public /assets/blog/… path. Non-persisted; computed on read via a
+// pre-signed S3 URL. Falls back to null if we can't generate one (e.g. no
+// S3 domain configured yet).
+async function withPreview(userId, blog) {
+  if (!blog || !blog.hero_image) return blog;
+  const url = await blogHeroImageService.getPreviewUrl({
+    userId,
+    heroImagePath: blog.hero_image,
+  });
+  return { ...blog, hero_image_preview_url: url };
+}
 const stockImageService = require('../services/stockImageService');
 
 const router = express.Router();
@@ -221,7 +235,7 @@ router.get('/:id', [param('id').isUUID()], async (req, res) => {
       if (error.code === 'PGRST116') return res.status(404).json({ error: 'Blog not found' });
       throw error;
     }
-    res.json({ blog: data });
+    res.json({ blog: await withPreview(req.user.userId, data) });
   } catch (err) {
     logger.error('blogs.get_failed', { error: err.message });
     res.status(500).json({ error: 'Failed to load blog' });
@@ -526,7 +540,7 @@ router.post(
         blogId: req.params.id,
         file: req.file,
       });
-      res.json({ blog: updated });
+      res.json({ blog: await withPreview(req.user.userId, updated) });
     } catch (err) {
       logger.error('blogs.hero_upload_failed', { error: err.message, id: req.params.id });
       res.status(err.status || 500).json({ error: err.message || 'Failed to upload hero image' });
@@ -542,6 +556,7 @@ router.delete('/:id/hero-image', [param('id').isUUID()], async (req, res) => {
       userId: req.user.userId,
       blogId: req.params.id,
     });
+    // updated.hero_image is null after remove — withPreview short-circuits.
     res.json({ blog: updated });
   } catch (err) {
     logger.error('blogs.hero_remove_failed', { error: err.message, id: req.params.id });
@@ -656,7 +671,7 @@ router.post(
           .eq('id', req.params.id).eq('user_id', req.user.userId)
           .then(() => {}, (e) => logger.warn('blogs.hero.source_id_save_failed', { error: e.message }));
       }
-      res.json({ blog: updated });
+      res.json({ blog: await withPreview(req.user.userId, updated) });
     } catch (err) {
       logger.error('blogs.hero_from_url_failed', { error: err.message, id: req.params.id });
       res.status(err.status || 500).json({ error: err.message || 'Failed to download / upload' });

@@ -615,7 +615,11 @@ const EditorModal = ({ blogId, onClose, onSaved, onDeleted }) => {
               )}
               <HeroImageField
                 blog={blog}
-                onChange={(updated) => setBlog(prev => ({ ...prev, hero_image: updated.hero_image }))}
+                onChange={(updated) => setBlog(prev => ({
+                  ...prev,
+                  hero_image: updated.hero_image,
+                  hero_image_preview_url: updated.hero_image_preview_url,
+                }))}
               />
               <div>
                 <label className="block text-xs font-medium text-gray-600 mb-1">Title</label>
@@ -1555,7 +1559,15 @@ const HeroImageField = ({ blog, onChange }) => {
       {hero ? (
         <div className="flex items-start gap-3 p-2 border border-gray-200 rounded-md">
           <div className="h-16 w-24 flex-shrink-0 bg-gray-100 rounded overflow-hidden flex items-center justify-center">
-            <ImageIcon className="h-5 w-5 text-gray-400" />
+            {blog?.hero_image_preview_url ? (
+              <img
+                src={blog.hero_image_preview_url}
+                alt="Hero preview"
+                className="h-full w-full object-cover"
+              />
+            ) : (
+              <ImageIcon className="h-5 w-5 text-gray-400" />
+            )}
           </div>
           <div className="flex-1 min-w-0">
             <div className="text-xs font-mono text-gray-700 truncate">{hero}</div>
