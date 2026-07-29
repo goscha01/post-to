@@ -865,9 +865,12 @@ const Posts = () => {
           if (badUrl) {
             // eslint-disable-next-line no-console
             console.error(
-              '[publishOne] 🚨 About to send a PLATFORM CDN URL to ' + (isIg ? 'Instagram' : 'Facebook') +
-              '. This will publish a LOW-RES thumbnail. Repick the image from Drive:',
+              '[publishOne] 🚨 Blocked: about to send a PLATFORM CDN URL to ' + (isIg ? 'Instagram' : 'Facebook') +
+              '. Repick the image from Drive:',
               socialImage
+            );
+            throw new Error(
+              `Image is a ${(isIg ? 'Instagram' : 'Facebook')}/Google thumbnail (low-res). Repick the image from Google Drive to publish at full quality.`
             );
           }
           // eslint-disable-next-line no-console
@@ -1290,23 +1293,14 @@ const Posts = () => {
       const rawUrls = media
         .map((m) => m.sourceUrl || m.url || m.thumbnailUrl)
         .filter(Boolean);
-      const usableUrls = rawUrls.filter((u) => {
-        const bad = isPlatformCdnUrl(u);
-        if (bad) {
-          // eslint-disable-next-line no-console
-          console.warn('[handleRepost] stripped platform-CDN URL — repick from Drive:', u);
-        }
-        return !bad;
-      });
-      const droppedCount = rawUrls.length - usableUrls.length;
+      const cdnCount = rawUrls.filter((u) => isPlatformCdnUrl(u)).length;
       // eslint-disable-next-line no-console
-      console.log('[handleRepost] media rewriting', {
+      console.log('[handleRepost] media copied as-is', {
         source_post_id: post.id,
         raw: rawUrls,
-        kept: usableUrls,
-        dropped: droppedCount,
+        cdn_flagged: cdnCount,
       });
-      const mediaObjs = usableUrls.map((sourceUrl) => ({ sourceUrl, mediaFormat: 'PHOTO' }));
+      const mediaObjs = rawUrls.map((sourceUrl) => ({ sourceUrl, mediaFormat: 'PHOTO' }));
       const ctaPayload =
         cta?.actionType && (cta.url || '').trim()
           ? { actionType: cta.actionType, url: cta.url.trim() }
@@ -1329,9 +1323,9 @@ const Posts = () => {
           await loadSavedDrafts();
           loadDraftIntoComposer(draft);
           setShowComposer(true);
-          if (droppedCount > 0) {
+          if (cdnCount > 0) {
             showNotification(
-              `Draft created — but ${droppedCount} image was a platform thumbnail (would post low-res). Pick the original from Google Drive.`,
+              `Draft created — ${cdnCount} image is a low-res platform thumbnail. Repick from Google Drive before publishing to FB/IG.`,
               'error'
             );
           } else {
@@ -1565,20 +1559,17 @@ const Posts = () => {
            .map((m) => (typeof m === 'string' ? m : m?.sourceUrl || m?.url || ''))
            .filter(Boolean)
        : [];
-     // Strip any platform-CDN URLs saved into the draft before we knew
-     // better. Log LOUDLY so the user can see which URL got stripped and
-     // WHY the draft lost its image. Otherwise it looks silent.
-     const media = rawMedia.filter((u) => {
-       const bad = isPlatformCdnUrl(u);
-       if (bad) {
-         // eslint-disable-next-line no-console
-         console.warn('[loadDraftIntoComposer] stripped platform-CDN URL from draft — repick from Drive for full quality:', u);
-       }
-       return !bad;
-     });
-     if (media.length < rawMedia.length) {
+     // Keep all URLs visible in the composer so the user can see what was
+     // in the original post. If any are platform-CDN thumbnails, flag them
+     // so the user knows to repick from Drive for full quality. publishOne
+     // will hard-block FB/IG send if a CDN URL is still selected.
+     const media = rawMedia;
+     const cdnCount = rawMedia.filter((u) => isPlatformCdnUrl(u)).length;
+     if (cdnCount > 0) {
+       // eslint-disable-next-line no-console
+       console.warn('[loadDraftIntoComposer] draft contains', cdnCount, 'platform-CDN thumbnail URL(s). Repick from Drive before publishing to FB/IG.');
        showNotification(
-         `Removed ${rawMedia.length - media.length} low-quality thumbnail(s) from the draft. Repick from Drive.`,
+         `Draft has ${cdnCount} low-quality thumbnail(s). Repick from Drive before publishing to FB/IG.`,
          'error'
        );
      }
