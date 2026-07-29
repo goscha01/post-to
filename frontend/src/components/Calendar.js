@@ -267,6 +267,7 @@ const Calendar = () => {
   const [error, setError] = useState(null);
   const [showKind, setShowKind] = useState('both'); // 'both' | 'scheduled' | 'published'
   const [detailItem, setDetailItem] = useState(null);
+  const [dayModal, setDayModal] = useState(null); // { day: Date, items: [] }
   const [scheduleModal, setScheduleModal] = useState(null); // { defaultDate, draft? }
   const [drafts, setDrafts] = useState([]);
   const [draftsLoading, setDraftsLoading] = useState(false);
@@ -877,6 +878,7 @@ const Calendar = () => {
               allLocations={locations}
               onPillClick={setDetailItem}
               onEmptyClick={openCreateForDate}
+              onSeeAll={(day, items) => setDayModal({ day, items })}
             />
           )}
         </section>
@@ -891,6 +893,19 @@ const Calendar = () => {
           allLocations={locations}
           onClose={() => setDetailItem(null)}
           onCancelled={handleCancelled}
+        />
+      )}
+
+      {dayModal && (
+        <DayItemsModal
+          day={dayModal.day}
+          items={dayModal.items}
+          allLocations={locations}
+          onClose={() => setDayModal(null)}
+          onPickItem={(it) => {
+            setDayModal(null);
+            setDetailItem(it);
+          }}
         />
       )}
 
@@ -924,7 +939,7 @@ const FilterCard = ({ title, headerRight, children }) => (
 
 // ── Grid (month or week) ───────────────────────────────────
 
-const MonthWeekGrid = ({ days, view, anchor, today, itemsByDay, allLocations, onPillClick, onEmptyClick }) => {
+const MonthWeekGrid = ({ days, view, anchor, today, itemsByDay, allLocations, onPillClick, onEmptyClick, onSeeAll }) => {
   const rows = view === 'month' ? 6 : 1;
 
   return (
@@ -958,6 +973,7 @@ const MonthWeekGrid = ({ days, view, anchor, today, itemsByDay, allLocations, on
               isWeekendCol={isWeekendCol}
               onPillClick={onPillClick}
               onEmptyClick={onEmptyClick}
+              onSeeAll={onSeeAll}
               rows={rows}
             />
           );
@@ -967,7 +983,7 @@ const MonthWeekGrid = ({ days, view, anchor, today, itemsByDay, allLocations, on
   );
 };
 
-const DayCell = ({ day, items, allLocations, isOtherMonth, isToday, isWeekendCol, onPillClick, onEmptyClick, rows }) => {
+const DayCell = ({ day, items, allLocations, isOtherMonth, isToday, isWeekendCol, onPillClick, onEmptyClick, onSeeAll, rows }) => {
   const maxVisible = rows === 6 ? 3 : 12;
   const visible = items.slice(0, maxVisible);
   const overflow = items.length - visible.length;
@@ -1034,15 +1050,109 @@ const DayCell = ({ day, items, allLocations, isOtherMonth, isToday, isWeekendCol
             type="button"
             onClick={(e) => {
               e.stopPropagation();
-              // Show the first hidden item's day — for now just open the
-              // first overflow item in the detail modal.
-              onPillClick(items[maxVisible]);
+              onSeeAll?.(day, items);
             }}
             className="text-[11px] text-primary-600 hover:underline text-left"
           >
             +{overflow} more
           </button>
         )}
+      </div>
+    </div>
+  );
+};
+
+// ── Day items modal ───────────────────────────────────────
+// Opened from "+N more" (or a future click on the day number). Shows every
+// item on that day in a scrollable list; clicking one hands off to the
+// single-item DetailModal.
+
+const DayItemsModal = ({ day, items, allLocations, onClose, onPickItem }) => {
+  const dayLabel = day.toLocaleDateString(undefined, {
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric',
+  });
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-lg shadow-xl max-w-lg w-full max-h-[90vh] overflow-y-auto"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between p-5 border-b border-gray-200">
+          <div>
+            <div className="text-sm font-semibold text-gray-900">{dayLabel}</div>
+            <div className="text-xs text-gray-500 mt-0.5">
+              {items.length} post{items.length === 1 ? '' : 's'}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-1 rounded hover:bg-gray-100 text-gray-500"
+            aria-label="Close"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <ul className="divide-y divide-gray-100">
+          {items.map((item) => {
+            const color = colorForLocation(item.locationId, allLocations);
+            const isScheduled = item.kind === 'scheduled';
+            const when = new Date(item.when);
+            const loc = allLocations.find(
+              (l) => l.key === `${item.accountId || ''}:${item.locationId || ''}`
+            );
+            return (
+              <li key={item.kind + '-' + item.id}>
+                <button
+                  type="button"
+                  onClick={() => onPickItem(item)}
+                  className="w-full text-left p-4 flex gap-3 hover:bg-gray-50"
+                >
+                  {item.thumbUrl ? (
+                    <img
+                      src={item.thumbUrl}
+                      alt=""
+                      className="h-14 w-14 rounded object-cover flex-none bg-gray-100"
+                      onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                    />
+                  ) : (
+                    <div className="h-14 w-14 rounded bg-gray-100 flex items-center justify-center flex-none">
+                      <ImageIcon className="h-5 w-5 text-gray-400" />
+                    </div>
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <span className={`h-2 w-2 rounded-full flex-none ${color.dot}`} />
+                      <span className="text-xs font-medium text-gray-700 truncate">
+                        {loc?.title || 'Business post'}
+                      </span>
+                      <span
+                        className={`ml-auto inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium flex-none ${
+                          isScheduled
+                            ? 'bg-amber-100 text-amber-800'
+                            : 'bg-emerald-100 text-emerald-800'
+                        }`}
+                      >
+                        {isScheduled ? <Clock className="h-3 w-3" /> : <CalendarIcon className="h-3 w-3" />}
+                        {isScheduled ? 'Scheduled' : 'Published'}
+                      </span>
+                    </div>
+                    <div className="text-sm text-gray-900 line-clamp-2">
+                      {item.content || (isScheduled ? 'Scheduled post' : 'Post')}
+                    </div>
+                    <div className="text-[11px] text-gray-500 mt-1">{fmtTime(when)}</div>
+                  </div>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
       </div>
     </div>
   );
