@@ -116,6 +116,22 @@ async function getRailwayCustomDomainByName(hostname) {
   return all.find(d => d.domain?.toLowerCase() === hostname.toLowerCase()) || null;
 }
 
+// Nudge Railway to issue a Let's Encrypt cert right now instead of waiting
+// for its background poller (which can take several minutes to notice new
+// DNS). Called on verify when DNS matches but cert is still missing.
+async function triggerRailwayCertIssuance(customDomainId) {
+  if (!customDomainId) return { ok: false, error: 'no domain id' };
+  try {
+    await railwayGraphql(
+      `mutation($id: String!) { customDomainIssueCertificate(id: $id) }`,
+      { id: customDomainId }
+    );
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
 async function detachRailwayDomain(customDomainId) {
   if (!customDomainId) return { ok: true };
   try {
@@ -274,8 +290,28 @@ async function verifyDomain({ userId, id }) {
   const currentValue = currentValueRaw ? currentValueRaw.toLowerCase().replace(/\.$/, '') : null;
   const expected = requiredValue ? requiredValue.toLowerCase().replace(/\.$/, '') : null;
   const dnsOk = !!(expected && currentValue && currentValue === expected);
-  const cert = (railwayDomain.status?.certificates || [])[0];
-  const certIssued = !!cert?.issuedAt;
+  let cert = (railwayDomain.status?.certificates || [])[0];
+  let certIssued = !!cert?.issuedAt;
+
+  // Nudge Railway to issue a cert right now if DNS is correct but there's
+  // no cert yet. Their background poller can take several minutes to notice
+  // — the explicit mutation kicks off issuance immediately. Then re-fetch
+  // once to see if the cert already landed.
+  if (dnsOk && !certIssued) {
+    const trigger = await triggerRailwayCertIssuance(railwayDomain.id);
+    logger.info('blog_domain.cert_issuance_triggered', { hostname, ok: trigger.ok, error: trigger.error });
+    if (trigger.ok) {
+      // Give Let's Encrypt ~4s to complete the ACME dance, then refetch.
+      await new Promise(r => setTimeout(r, 4000));
+      try {
+        const refreshed = await getRailwayCustomDomainByName(hostname);
+        if (refreshed) {
+          const c2 = (refreshed.status?.certificates || [])[0];
+          if (c2?.issuedAt) { cert = c2; certIssued = true; }
+        }
+      } catch { /* ignore, user can retry */ }
+    }
+  }
   const fullyReady = dnsOk && certIssued;
 
   const updatedMeta = {
