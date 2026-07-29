@@ -280,9 +280,12 @@ const savePostToDatabase = async (userId, postData) => {
       .select()
       .single();
 
-    if (error && /column .*media_data.* does not exist/i.test(error.message || '')) {
-      // Retry without the missing optional column so the media_urls fallback
-      // still gives us a thumbnail on the calendar.
+    if (error && /media_data/i.test(error.message || '')) {
+      // Prod schema is missing the optional media_data column (Supabase
+      // reports it as "Could not find the 'media_data' column ... in the
+      // schema cache", not "column does not exist"). Retry without it so
+      // the row still lands — media_urls carries the thumbnail via
+      // firstMediaUrl.
       ({ data, error } = await supabase
         .from('social_media_posts')
         .insert(insertData)
