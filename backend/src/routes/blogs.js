@@ -91,7 +91,13 @@ router.post('/domains/:id/verify', [param('id').isUUID()], async (req, res) => {
     res.json({ domain: row });
   } catch (err) {
     logger.warn('blogs.domains.verify_failed', { error: err.message, id: req.params.id });
-    res.status(err.status || 500).json({ error: err.message || 'Verification failed', details: err.details });
+    // Include `domain` in the 400 response so frontend can update the row
+    // with the corrected per-domain cname_target Railway returned to us.
+    res.status(err.status || 500).json({
+      error: err.message || 'Verification failed',
+      details: err.details,
+      domain: err.domain,
+    });
   }
 });
 

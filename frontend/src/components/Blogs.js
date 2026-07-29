@@ -1116,8 +1116,17 @@ const BlogDomainsPanel = ({ connections = [] }) => {
         setSiteName('');
         setManuallyEdited(false);
       } catch (verifyErr) {
-        // Row was created; verification will be retried from the row's button.
-        setErr(verifyErr.response?.data?.error || 'DNS not resolved yet — add the CNAME below and retry.');
+        // Backend returns the refreshed row on 400 (DNS pending / SSL
+        // pending). Apply it so the row's CNAME instructions show Railway's
+        // per-domain target, not the stale global default.
+        const refreshed = verifyErr.response?.data?.domain;
+        if (refreshed) {
+          setState(s => ({
+            ...s,
+            domains: s.domains.map(d => (d.id === refreshed.id ? refreshed : d)),
+          }));
+        }
+        setErr(verifyErr.response?.data?.error || 'DNS not resolved yet — copy the CNAME below and set it at your DNS provider, then click Verify.');
       }
     } catch (e2) {
       setErr(e2.response?.data?.error || 'Failed to add domain');
@@ -1133,6 +1142,13 @@ const BlogDomainsPanel = ({ connections = [] }) => {
       const updated = await blogsService.verifyDomain(id);
       setState(s => ({ ...s, domains: s.domains.map(d => d.id === id ? updated : d) }));
     } catch (e) {
+      // Backend returns the refreshed row even on 400 (DNS not ready / SSL
+      // pending) so the DNS instructions can update with the correct
+      // per-domain Railway CNAME target. Apply that before showing the error.
+      const refreshed = e.response?.data?.domain;
+      if (refreshed) {
+        setState(s => ({ ...s, domains: s.domains.map(d => d.id === id ? refreshed : d) }));
+      }
       setErr(e.response?.data?.error || 'Verification failed');
     } finally {
       setBusyId(null);
@@ -1317,8 +1333,6 @@ const BlogDomainRow = ({ domain, cnameTarget, busy, onVerify, onDelete }) => {
   const hostname = domain.metadata?.hostname;
   const verified = !!domain.metadata?.verified;
   const target = domain.metadata?.cname_target || cnameTarget;
-  const lastError = domain.metadata?.last_check_error;
-  const foundCnames = domain.metadata?.last_check_cnames || [];
 
   // Verified: single-line chip.
   if (verified) {
@@ -1350,14 +1364,21 @@ const BlogDomainRow = ({ domain, cnameTarget, busy, onVerify, onDelete }) => {
     );
   }
 
-  // Pending: DNS instructions + Verify.
+  // Pending: DNS instructions + Verify. Split into two sub-states — DNS
+  // pointing at the wrong value vs DNS OK but SSL cert still provisioning —
+  // so the user knows whether to touch DNS again or just wait.
+  const currentCname = (domain.metadata?.railway_current_cname || '').toLowerCase().replace(/\.$/, '');
+  const expectedCname = (target || '').toLowerCase().replace(/\.$/, '');
+  const dnsOk = !!(currentCname && expectedCname && currentCname === expectedCname);
+  const sslPending = dnsOk;
+
   return (
-    <li className="border border-amber-200 bg-amber-50/40 rounded-md p-3">
+    <li className={`border rounded-md p-3 ${sslPending ? 'border-blue-200 bg-blue-50/40' : 'border-amber-200 bg-amber-50/40'}`}>
       <div className="flex items-center justify-between gap-3 mb-2">
         <div className="flex items-center gap-2 min-w-0">
           <span className="font-medium text-gray-900 text-sm truncate">{hostname}</span>
-          <span className="inline-flex items-center text-xs px-2 py-0.5 rounded bg-amber-100 text-amber-800">
-            Waiting for DNS
+          <span className={`inline-flex items-center text-xs px-2 py-0.5 rounded ${sslPending ? 'bg-blue-100 text-blue-800' : 'bg-amber-100 text-amber-800'}`}>
+            {sslPending ? 'Provisioning SSL (~1–2 min)' : 'Waiting for DNS'}
           </span>
         </div>
         <div className="flex items-center gap-1 flex-shrink-0">
@@ -1379,39 +1400,47 @@ const BlogDomainRow = ({ domain, cnameTarget, busy, onVerify, onDelete }) => {
           </button>
         </div>
       </div>
-      <div className="text-xs text-gray-700">
-        Add this DNS record, then click Verify:
-      </div>
-      <div className="mt-1 grid grid-cols-3 gap-2 text-xs font-mono bg-white border border-gray-200 rounded p-2">
-        <div>
-          <div className="text-[10px] uppercase text-gray-500 font-sans">Type</div>
-          <div>CNAME</div>
+      {sslPending ? (
+        <div className="text-xs text-gray-700">
+          DNS is correct. Railway is issuing a Let's Encrypt certificate. This usually
+          finishes within 1–2 minutes — click Verify again shortly.
         </div>
-        <div>
-          <div className="text-[10px] uppercase text-gray-500 font-sans">Host</div>
-          <div>{hostname?.split('.')[0]}</div>
-        </div>
-        <div className="min-w-0">
-          <div className="text-[10px] uppercase text-gray-500 font-sans flex items-center gap-1">
-            Value
-            <button
-              type="button"
-              onClick={() => navigator.clipboard?.writeText(target)}
-              className="inline-flex items-center gap-0.5 text-primary-600 hover:text-primary-700"
-              title="Copy value"
-            >
-              <Copy className="h-3 w-3" />
-              copy
-            </button>
+      ) : (
+        <>
+          <div className="text-xs text-gray-700">
+            Add this DNS record at your registrar, then click Verify:
           </div>
-          <div className="truncate">{target}</div>
-        </div>
-      </div>
-      {lastError && (
-        <div className="mt-2 text-xs text-red-700">
-          Last check: {lastError}
-          {foundCnames.length > 0 && <> — found {foundCnames.join(', ')}</>}
-        </div>
+          <div className="mt-1 grid grid-cols-3 gap-2 text-xs font-mono bg-white border border-gray-200 rounded p-2">
+            <div>
+              <div className="text-[10px] uppercase text-gray-500 font-sans">Type</div>
+              <div>CNAME</div>
+            </div>
+            <div>
+              <div className="text-[10px] uppercase text-gray-500 font-sans">Host</div>
+              <div>{hostname?.split('.')[0]}</div>
+            </div>
+            <div className="min-w-0">
+              <div className="text-[10px] uppercase text-gray-500 font-sans flex items-center gap-1">
+                Value
+                <button
+                  type="button"
+                  onClick={() => navigator.clipboard?.writeText(target)}
+                  className="inline-flex items-center gap-0.5 text-primary-600 hover:text-primary-700"
+                  title="Copy value"
+                >
+                  <Copy className="h-3 w-3" />
+                  copy
+                </button>
+              </div>
+              <div className="truncate">{target}</div>
+            </div>
+          </div>
+          {currentCname && (
+            <div className="mt-2 text-xs text-amber-800">
+              DNS currently resolves to <code className="bg-white px-1 rounded">{currentCname}</code> — needs to be <code className="bg-white px-1 rounded">{expectedCname}</code>.
+            </div>
+          )}
+        </>
       )}
     </li>
   );
