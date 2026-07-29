@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   ChevronLeft,
@@ -24,6 +24,7 @@ import axios from '../utils/axiosConfig';
 import { useAuth } from '../contexts/AuthContext';
 import businessProfileService from '../services/businessProfileService';
 import calendarService from '../services/calendarService';
+import postsService from '../services/postsService';
 import {
   getRecentUrls,
   rememberUrl,
@@ -195,6 +196,12 @@ const Calendar = () => {
   const [scheduleModal, setScheduleModal] = useState(null); // { defaultDate, draft? }
   const [drafts, setDrafts] = useState([]);
   const [draftsLoading, setDraftsLoading] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  // Track which locations we've already synced this session so an auto-run
+  // doesn't re-hit GMB every time locations refresh. Ref (not state) because
+  // it participates only in guard logic, not render.
+  const syncedLocationsRef = useRef(new Set());
+  const autoSyncFiredRef = useRef(false);
 
   // Load accounts + locations
   const loadAccounts = useCallback(
@@ -253,6 +260,63 @@ const Calendar = () => {
   useEffect(() => {
     fetchRange();
   }, [fetchRange]);
+
+  // Pull recent published posts from GMB for every connected location and
+  // cache them into social_media_posts. The calendar reads only from that
+  // table, so without this step a fresh user (or a user who's never opened
+  // the Posts page) sees an empty "Published" bucket even though their
+  // profiles have posts.
+  //
+  // Bounded concurrency so 20+ locations don't fan out into a burst of
+  // parallel GMB requests. Guarded by syncedLocationsRef so repeat calls
+  // (auto + manual) don't re-fetch the same location.
+  const syncPublishedFromGmb = useCallback(
+    async (opts = {}) => {
+      const { force = false } = opts;
+      if (syncing) return;
+      const targets = locations.filter(
+        (l) => l.accountId && l.locationId && (force || !syncedLocationsRef.current.has(l.key))
+      );
+      if (targets.length === 0) return;
+      setSyncing(true);
+      try {
+        const CONCURRENCY = 3;
+        let i = 0;
+        const worker = async () => {
+          while (i < targets.length) {
+            const idx = i++;
+            const t = targets[idx];
+            try {
+              await postsService.getPostsForLocation(t.locationId, t.accountId, true);
+            } catch {
+              // Per-location failure is fine — other locations still sync.
+            }
+            syncedLocationsRef.current.add(t.key);
+          }
+        };
+        await Promise.all(
+          Array.from({ length: Math.min(CONCURRENCY, targets.length) }, worker)
+        );
+        // Re-read the calendar range now that the cache is populated.
+        await fetchRange({ silent: true });
+      } finally {
+        setSyncing(false);
+      }
+    },
+    [locations, syncing, fetchRange]
+  );
+
+  // Auto-sync once per session, after locations load, only if the current
+  // range has zero published items. Avoids surprising the user with a slow
+  // sync when the calendar already has data cached from prior visits.
+  useEffect(() => {
+    if (autoSyncFiredRef.current) return;
+    if (loading) return; // wait for initial calendar fetch to settle
+    if (locations.length === 0) return;
+    if (items.published.length > 0) return;
+    autoSyncFiredRef.current = true;
+    syncPublishedFromGmb();
+  }, [loading, locations, items.published.length, syncPublishedFromGmb]);
 
   // Group filtered items by yyyy-mm-dd for the grid
   const itemsByDay = useMemo(() => {
@@ -387,6 +451,15 @@ const Calendar = () => {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => syncPublishedFromGmb({ force: true })}
+            disabled={syncing || locations.length === 0}
+            title="Pull the latest published posts from Google Business Profile for every connected location"
+            className="inline-flex items-center gap-2 px-3 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-60"
+          >
+            <RefreshCw className={`h-4 w-4 ${syncing ? 'animate-spin' : ''}`} />
+            {syncing ? 'Syncing…' : 'Sync from Google'}
+          </button>
           <button
             onClick={() => fetchRange({ silent: true })}
             disabled={refreshing}
