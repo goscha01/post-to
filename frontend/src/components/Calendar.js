@@ -108,6 +108,22 @@ const truncate = (s, n = 60) => {
 
 // ── Account flattening ─────────────────────────────────────
 
+// GMB returns `address` as a PostalAddress object ({ addressLines, locality, ... }).
+// Rendering that object as a React child crashes with error #31.
+const formatLocationAddress = (loc) => {
+  const short = loc?.storefrontAddress?.locality;
+  if (short) return short;
+  const addr = loc?.address;
+  if (!addr) return '';
+  if (typeof addr === 'string') return addr;
+  const parts = [];
+  if (Array.isArray(addr.addressLines)) parts.push(...addr.addressLines);
+  if (addr.locality) parts.push(addr.locality);
+  if (addr.administrativeArea) parts.push(addr.administrativeArea);
+  if (addr.postalCode) parts.push(addr.postalCode);
+  return parts.join(', ');
+};
+
 // businessProfileService.getAccounts() returns [{ ...account, locations: [{...loc, accountId, fullPath}] }]
 // We flatten to a per-location list — one row per business "profile" the
 // user thinks about (each GMB location). Tolerant of missing fields — the
@@ -135,7 +151,7 @@ const flattenLocations = (profiles) => {
         locationId,
         title: loc?.title || loc?.locationName || `Location ${li + 1}`,
         accountLabel,
-        addressLine: loc?.storefrontAddress?.locality || loc?.address || '',
+        addressLine: formatLocationAddress(loc),
       });
     });
   });
