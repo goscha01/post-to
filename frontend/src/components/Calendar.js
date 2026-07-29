@@ -21,6 +21,8 @@ import {
   Home as HomeIcon,
   Building2,
   Check,
+  Facebook,
+  Instagram,
 } from 'lucide-react';
 import axios from '../utils/axiosConfig';
 import { useAuth } from '../contexts/AuthContext';
@@ -28,6 +30,7 @@ import businessProfileService from '../services/businessProfileService';
 import calendarService from '../services/calendarService';
 import postsService from '../services/postsService';
 import imageService from '../services/imageService';
+import connectionsService from '../services/connectionsService';
 import {
   getRecentUrls,
   rememberUrl,
@@ -187,8 +190,8 @@ const colorForLocation = (locationId, allLocations) => {
 // Same rendering rules as Posts.js ChipAvatar: googleusercontent URLs
 // need the backend proxy (Google's CDN returns 400 for direct <img>),
 // everything else loads directly, and any failure falls back to a
-// Building2 icon on a tinted background so the chip still reads.
-const ChipAvatar = ({ url, label, selected }) => {
+// provider-tinted icon so the chip still communicates *what* it is.
+const ChipAvatar = ({ url, label, selected, provider }) => {
   const needsProxy = typeof url === 'string' && url.includes('googleusercontent.com');
   const [resolvedUrl, setResolvedUrl] = useState(needsProxy ? null : url);
   const [errored, setErrored] = useState(false);
@@ -218,11 +221,31 @@ const ChipAvatar = ({ url, label, selected }) => {
       />
     );
   }
+  if (provider === 'facebook') {
+    return (
+      <div className="h-full w-full bg-indigo-50 flex items-center justify-center">
+        <Facebook className="h-6 w-6 text-indigo-600" />
+      </div>
+    );
+  }
+  if (provider === 'instagram') {
+    return (
+      <div className="h-full w-full bg-pink-50 flex items-center justify-center">
+        <Instagram className="h-6 w-6 text-pink-600" />
+      </div>
+    );
+  }
   return (
     <div className="h-full w-full bg-blue-50 flex items-center justify-center">
       <Building2 className="h-6 w-6 text-blue-600" />
     </div>
   );
+};
+
+const providerBadge = (provider) => {
+  if (provider === 'facebook') return { Icon: Facebook, wrap: 'bg-indigo-600' };
+  if (provider === 'instagram') return { Icon: Instagram, wrap: 'bg-pink-600' };
+  return { Icon: Building2, wrap: 'bg-blue-600' };
 };
 
 // ── Main component ─────────────────────────────────────────
@@ -234,7 +257,9 @@ const Calendar = () => {
   const [anchor, setAnchor] = useState(() => startOfDay(new Date()));
   const [view, setView] = useState('month'); // 'month' | 'week'
   const [profiles, setProfiles] = useState([]); // raw response from businessProfileService — matches Posts.js iteration
+  const [socialProfiles, setSocialProfiles] = useState([]); // FB Pages + IG Business connections
   const [locations, setLocations] = useState([]);
+  const [lastSync, setLastSync] = useState(null); // { locations, posts } counts from most recent sync
   const [selectedLocationKeys, setSelectedLocationKeys] = useState(() => new Set());
   const [items, setItems] = useState({ published: [], scheduled: [] });
   const [loading, setLoading] = useState(true);
@@ -252,18 +277,59 @@ const Calendar = () => {
   const syncedLocationsRef = useRef(new Set());
   const autoSyncFiredRef = useRef(false);
 
-  // Load accounts + locations
+  // Load accounts + locations. Same fan-out as Posts.js: pull GMB profiles
+  // and FB/IG connections in parallel, then background-enrich GMB profiles
+  // with account logos (getAccounts() omits accountProfilePicture).
   const loadAccounts = useCallback(
     async (forceRefresh = false) => {
       try {
-        const p = await businessProfileService.getAccounts(forceRefresh);
+        const [p, connectionsRaw] = await Promise.all([
+          businessProfileService.getAccounts(forceRefresh),
+          connectionsService.list().catch(() => []),
+        ]);
         setProfiles(Array.isArray(p) ? p : []);
+        const socials = (connectionsRaw || []).filter(
+          (r) => r.provider === 'facebook' || r.provider === 'instagram'
+        );
+        setSocialProfiles(socials);
         const flat = flattenLocations(p);
         setLocations(flat);
         setSelectedLocationKeys((prev) => {
           if (prev.size > 0) return prev; // keep user selection across reloads
-          return new Set(flat.map((l) => l.key));
+          const keys = flat.map((l) => l.key);
+          for (const r of socials) keys.push(`${r.provider === 'facebook' ? 'fb' : 'ig'}:${r.id}`);
+          return new Set(keys);
         });
+
+        // Background enrichment for logos. Chips already rendered with the
+        // Building2 fallback; we upgrade in place as each media fetch
+        // resolves. Fire-and-forget — a slow one doesn't block the calendar.
+        (async () => {
+          for (const acct of p || []) {
+            if (acct.accountProfilePicture) continue;
+            const firstLoc = acct.locations?.[0];
+            if (!firstLoc) continue;
+            const accountId = (acct.name || '').split('/').pop();
+            const locationId = (firstLoc.name || '').split('/').pop();
+            if (!accountId || !locationId) continue;
+            try {
+              const media = await businessProfileService.getMediaForLocation(accountId, locationId);
+              if (!media?.success) continue;
+              const pic =
+                media.profilePicture ||
+                (media.logos && media.logos[0]) ||
+                (media.media && media.media.find((m) => m.category === 'PROFILE' || m.category === 'LOGO')) ||
+                (media.media && media.media[0]) ||
+                null;
+              if (!pic) continue;
+              setProfiles((prev) =>
+                prev.map((pr) => (pr.name === acct.name ? { ...pr, accountProfilePicture: pic } : pr))
+              );
+            } catch {
+              // Non-fatal — chip keeps its fallback icon
+            }
+          }
+        })();
       } catch (e) {
         // Non-fatal — calendar still works without location filter
       }
@@ -277,6 +343,49 @@ const Calendar = () => {
     // (Posts, Reviews, etc.) doesn't hide accounts the user just connected.
     loadAccounts(true);
   }, [isAuthenticated, isDisconnected, loadAccounts]);
+
+  // Re-derive `locations` whenever `profiles` changes so background logo
+  // enrichment (getMediaForLocation) shows up on the chips without a manual
+  // refresh. Mirrors the Posts.js pattern where `targets` is memoized.
+  useEffect(() => {
+    setLocations(flattenLocations(profiles));
+  }, [profiles]);
+
+  // Combined chip list for the accounts filter: GMB locations first, then
+  // FB Pages, then IG. Same ordering as Posts.js `targets` so the two pages
+  // stay visually consistent.
+  const chipTargets = useMemo(() => {
+    const out = locations.map((l) => ({
+      key: l.key,
+      provider: 'gmb',
+      label: l.title,
+      accountLabel: l.accountLabel,
+      avatarUrl: l.avatarUrl,
+    }));
+    for (const r of socialProfiles || []) {
+      if (r.provider === 'facebook') {
+        out.push({
+          key: `fb:${r.id}`,
+          provider: 'facebook',
+          label: r.display_name,
+          accountLabel: r.metadata?.category || 'Facebook Page',
+          avatarUrl: r.metadata?.picture_url || null,
+        });
+      }
+    }
+    for (const r of socialProfiles || []) {
+      if (r.provider === 'instagram') {
+        out.push({
+          key: `ig:${r.id}`,
+          provider: 'instagram',
+          label: r.display_name,
+          accountLabel: r.metadata?.ig_username ? `@${r.metadata.ig_username}` : 'Instagram Business',
+          avatarUrl: r.metadata?.picture_url || null,
+        });
+      }
+    }
+    return out;
+  }, [locations, socialProfiles]);
 
   // Fetch calendar range whenever the anchor/view changes. We over-fetch
   // by ~1 month on each side so paging between adjacent months doesn't
@@ -328,6 +437,8 @@ const Calendar = () => {
       );
       if (targets.length === 0) return;
       setSyncing(true);
+      let totalPosts = 0;
+      let okLocations = 0;
       try {
         const CONCURRENCY = 3;
         let i = 0;
@@ -336,7 +447,11 @@ const Calendar = () => {
             const idx = i++;
             const t = targets[idx];
             try {
-              await postsService.getPostsForLocation(t.locationId, t.accountId, true);
+              const posts = await postsService.getPostsForLocation(t.locationId, t.accountId, true);
+              if (Array.isArray(posts)) {
+                totalPosts += posts.length;
+                okLocations += 1;
+              }
             } catch {
               // Per-location failure is fine — other locations still sync.
             }
@@ -346,6 +461,7 @@ const Calendar = () => {
         await Promise.all(
           Array.from({ length: Math.min(CONCURRENCY, targets.length) }, worker)
         );
+        setLastSync({ locations: okLocations, total: targets.length, posts: totalPosts });
         // Re-read the calendar range now that the cache is populated.
         await fetchRange({ silent: true });
       } finally {
@@ -416,7 +532,7 @@ const Calendar = () => {
     });
   };
 
-  const selectAllLocations = () => setSelectedLocationKeys(new Set(locations.map((l) => l.key)));
+  const selectAllLocations = () => setSelectedLocationKeys(new Set(chipTargets.map((t) => t.key)));
   const clearAllLocations = () => setSelectedLocationKeys(new Set());
 
   // Empty cell click → open the composer with the clicked date as default.
@@ -511,7 +627,12 @@ const Calendar = () => {
               ) : (
                 <>
                   {items.published.length} published · {items.scheduled.length} scheduled in this window
-                  {items.published.length === 0 && items.scheduled.length === 0 && (
+                  {lastSync && (
+                    <span className="ml-1 text-gray-400">
+                      · last sync pulled {lastSync.posts} post{lastSync.posts === 1 ? '' : 's'} from {lastSync.locations}/{lastSync.total} location{lastSync.total === 1 ? '' : 's'}
+                    </span>
+                  )}
+                  {items.published.length === 0 && items.scheduled.length === 0 && !lastSync && (
                     <span className="ml-1 text-gray-400">
                       — try another month or click <span className="font-medium">Sync from Google</span>
                     </span>
@@ -577,7 +698,7 @@ const Calendar = () => {
           <FilterCard
             title="Accounts"
             headerRight={
-              locations.length > 0 && (
+              chipTargets.length > 0 && (
                 <div className="flex gap-2 text-xs">
                   <button onClick={selectAllLocations} className="text-primary-600 hover:underline">
                     All
@@ -590,7 +711,7 @@ const Calendar = () => {
               )
             }
           >
-            {locations.length === 0 ? (
+            {chipTargets.length === 0 ? (
               <div className="text-xs text-gray-500">
                 No connected business profiles yet.
                 <button
@@ -603,26 +724,27 @@ const Calendar = () => {
               </div>
             ) : (
               <div className="flex flex-wrap gap-3 max-h-72 overflow-y-auto pr-1">
-                {locations.map((loc) => {
-                  const color = colorForLocation(loc.locationId, locations);
-                  const selected = selectedLocationKeys.has(loc.key);
+                {chipTargets.map((t) => {
+                  const selected = selectedLocationKeys.has(t.key);
+                  const { Icon, wrap } = providerBadge(t.provider);
                   return (
                     <button
-                      key={loc.key}
+                      key={t.key}
                       type="button"
-                      onClick={() => toggleLocation(loc.key)}
-                      title={`${loc.title} — ${loc.accountLabel}`}
+                      onClick={() => toggleLocation(t.key)}
+                      title={`${t.label} — ${t.accountLabel}`}
                       className={`relative group flex-shrink-0 rounded-full transition
                         ${selected
                           ? 'ring-2 ring-primary-500 ring-offset-2'
                           : 'ring-1 ring-gray-200 hover:ring-primary-300'}`}
                     >
                       <div className="h-12 w-12 rounded-full overflow-hidden bg-gray-100 flex items-center justify-center">
-                        <ChipAvatar url={loc.avatarUrl} label={loc.title} selected={selected} />
+                        <ChipAvatar url={t.avatarUrl} label={t.label} selected={selected} provider={t.provider} />
                       </div>
-                      {/* Location-color badge (bottom-right) so the chip ties
-                          visually to the pill color used in day cells. */}
-                      <span className={`absolute -bottom-0.5 -right-0.5 h-4 w-4 rounded-full ${color.dot} ring-2 ring-white`} />
+                      {/* Provider badge (bottom-right) — matches Posts.js chip style. */}
+                      <span className={`absolute -bottom-0.5 -right-0.5 h-5 w-5 rounded-full ${wrap} flex items-center justify-center ring-2 ring-white`}>
+                        <Icon className="h-3 w-3 text-white" />
+                      </span>
                       {selected && (
                         <span className="absolute -top-0.5 -right-0.5 h-4 w-4 rounded-full bg-primary-600 flex items-center justify-center ring-2 ring-white">
                           <Check className="h-3 w-3 text-white" />
