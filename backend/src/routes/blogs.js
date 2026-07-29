@@ -14,6 +14,7 @@ const authMiddleware = require('../middleware/authMiddleware');
 const logger = require('../utils/logger');
 const blogDomainsService = require('../services/blogDomainsService');
 const blogPublisherS3 = require('../services/blogPublisherS3');
+const blogDeployTrigger = require('../services/blogDeployTrigger');
 
 const router = express.Router();
 
@@ -328,17 +329,30 @@ router.post('/:id/publish', [param('id').isUUID()], async (req, res) => {
         hasS3 = true;
         try {
           await blogPublisherS3.publish({ blog: updated, domain });
-          // Public URL pattern is the customer's site's blog route. Default
-          // to https://<hostname-without-blog-subdomain>/blog/<slug>.
           const publicHost = (domain.metadata?.public_hostname
             || (host.startsWith('blog.') ? host.slice(5) : host));
           const wwwHost = publicHost.startsWith('www.') ? publicHost : `www.${publicHost}`;
           const pattern = domain.metadata?.public_url_pattern || `https://${wwwHost}/blog/{slug}`;
           urls.push(pattern.replace('{slug}', updated.slug));
-          deployHints.push({
-            host,
-            hint: 'Article uploaded to S3. Run your site build to publish it live.',
-          });
+
+          // Fire the configured deploy trigger (e.g. GitHub repository_dispatch).
+          // Best-effort — publish already succeeded, so trigger failure just
+          // means the customer will run their deploy manually.
+          const dep = await blogDeployTrigger.trigger({ domain, blog: updated });
+          if (dep.ok) {
+            deployHints.push({
+              host,
+              hint: `Article uploaded to S3. Auto-deploy fired via ${dep.provider} — should be live within a couple minutes.`,
+              autoDeployed: true,
+            });
+          } else {
+            deployHints.push({
+              host,
+              hint: 'Article uploaded to S3. Run your site build to publish it live.',
+              autoDeployed: false,
+              reason: dep.reason || dep.error,
+            });
+          }
         } catch (e) {
           logger.error('blogs.publish.s3_failed', { userId: req.user.userId, host, error: e.message });
           deployHints.push({ host, hint: `S3 publish failed: ${e.message}` });

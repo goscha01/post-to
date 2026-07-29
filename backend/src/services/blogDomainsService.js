@@ -130,7 +130,7 @@ async function verifyVercelDomain(hostname) {
 // Metadata fields that must NEVER leave the server. Blog publisher AWS creds
 // live inside metadata for now (same pattern as other providers) so we strip
 // them here before returning to the frontend.
-const SENSITIVE_META_KEYS = ['s3_access_key_secret'];
+const SENSITIVE_META_KEYS = ['s3_access_key_secret', 'github_token'];
 function stripSensitiveMeta(row) {
   if (!row?.metadata) return row;
   const meta = { ...row.metadata };

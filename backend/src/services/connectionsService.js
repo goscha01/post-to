@@ -207,6 +207,8 @@ const SENSITIVE_METADATA_KEYS = [
   'api_key', 'page_access_token', 'user_access_token',
   // Blog publisher AWS creds — scoped IAM user per customer, still sensitive.
   's3_access_key_secret',
+  // GitHub PAT used to fire repository_dispatch after publish (auto-deploy).
+  'github_token',
 ];
 
 function stripSensitiveMetadata(row) {
