@@ -189,22 +189,27 @@ async function publishOne(row) {
     media = media.slice(0, 1);
   }
 
+  // Build callToAction — GMB validates strictly:
+  //   - CALL: URL is not allowed. GMB uses the location's registered
+  //     phone. Sending { actionType:'CALL', url:'tel:...' } → 400
+  //     ValidationError "URL is not needed for CALL actions."
+  //   - All other action types: URL required.
+  let cta = null;
+  const ct = row.call_to_action;
+  if (ct && ct.actionType) {
+    if (ct.actionType === 'CALL') {
+      cta = { actionType: 'CALL' };
+    } else if (ct.url) {
+      cta = { actionType: ct.actionType, url: ct.url };
+    }
+  }
+
   const gmbBody = {
     languageCode: 'en-US',
     summary: row.content,
     topicType: mapPostTypeToTopicType(row.post_type),
     ...(media.length ? { media } : {}),
-    ...(row.call_to_action && row.call_to_action.actionType && row.call_to_action.url
-      ? {
-          callToAction: {
-            actionType: row.call_to_action.actionType,
-            url:
-              row.call_to_action.actionType === 'CALL'
-                ? normalizeTelUrl(row.call_to_action.url)
-                : row.call_to_action.url,
-          },
-        }
-      : {}),
+    ...(cta ? { callToAction: cta } : {}),
   };
 
   const url = `https://mybusiness.googleapis.com/v4/accounts/${row.gmb_account_id}/locations/${row.location_id}/localPosts`;
@@ -239,16 +244,22 @@ async function publishOne(row) {
   return { gmbPostId, gmbResponse };
 }
 
-// GMB nests useful failure detail under error.details[].fieldViolations[]
-// or error.errors[0].message. The top-level message is generic. Surface as
-// much as we can so a "Request contains an invalid argument" doesn't stay
-// opaque forever.
+// GMB's v4 API returns validation detail under
+// error.details[].errorDetails[] (each entry has {field, message, value}),
+// while newer Google APIs use error.details[].fieldViolations[]. Handle
+// both plus the flat error.errors[] shape so a "Request contains an
+// invalid argument" always surfaces the specific field GMB rejected.
 function extractGmbErrorMessage(err) {
   const top = err?.response?.data?.error;
   const parts = [];
   if (top?.message) parts.push(top.message);
   if (Array.isArray(top?.details)) {
     for (const d of top.details) {
+      if (Array.isArray(d?.errorDetails)) {
+        for (const ed of d.errorDetails) {
+          if (ed?.message) parts.push(`${ed.field || 'field'}: ${ed.message}`);
+        }
+      }
       if (Array.isArray(d?.fieldViolations)) {
         for (const fv of d.fieldViolations) {
           if (fv?.description) parts.push(`${fv.field || 'field'}: ${fv.description}`);

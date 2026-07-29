@@ -1000,12 +1000,18 @@ router.post('/', upload.array('images', 10), parseMultipartJsonFields, [
           }
         }
 
-        // Add call to action if provided
-        if (callToAction && callToAction.actionType && callToAction.url) {
-          gmbPostData.callToAction = {
-            actionType: callToAction.actionType,
-            url: callToAction.url
-          };
+        // Add call to action if provided. GMB rejects `url` for CALL
+        // actions ("URL is not needed for CALL actions") — that CTA type
+        // implicitly uses the location's registered phone.
+        if (callToAction && callToAction.actionType) {
+          if (callToAction.actionType === 'CALL') {
+            gmbPostData.callToAction = { actionType: 'CALL' };
+          } else if (callToAction.url) {
+            gmbPostData.callToAction = {
+              actionType: callToAction.actionType,
+              url: callToAction.url,
+            };
+          }
         }
 
         // Add event data if it's an EVENT post
