@@ -710,7 +710,17 @@ const Posts = () => {
           return [];
         }
       }));
-      const flat = perTarget.flat();
+      const flatAll = perTarget.flat();
+      // Dedupe: when two GMB targets both own the same physical location
+      // (same location authorized under multiple connected Google accounts),
+      // the same post comes back from BOTH fetches. Collapse by post id.
+      const seen = new Set();
+      const flat = flatAll.filter((p) => {
+        if (!p?.id) return true;
+        if (seen.has(p.id)) return false;
+        seen.add(p.id);
+        return true;
+      });
       // Sort: newest first. Use createdAt / created_time / timestamp fallbacks.
       flat.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
       // Preserve optimistic drafts (drop any whose content matches a fresh post).
@@ -802,13 +812,12 @@ const Posts = () => {
       setCreatingPost(false);
       return;
     }
-    // Early block: if any selected media is a platform-CDN thumbnail
-    // (fbcdn, cdninstagram, googleusercontent) AND the target list
-    // includes a FB or IG account, refuse to publish. FB/IG will re-serve
-    // their own compressed thumbnail from those URLs → low-quality post.
-    // Surface a single loud alert (not just a toast) so the user can't
-    // miss why nothing published.
-    if (hasSocial) {
+    // Guard: platform-CDN URLs (fbcdn / cdninstagram / googleusercontent)
+    // publish as low-res thumbnails to ANY target — FB/IG re-serve their
+    // own compressed copy, and GMB re-hosts whatever tiny image is at
+    // the URL. Same symptom regardless of destination. Show a single
+    // confirm() with two exits: strip + text-only, or bail to repick.
+    {
       const cdnRe = /(fbcdn\.net|cdninstagram\.com|googleusercontent\.com)/i;
       const badMedia = validMediaUrls.filter((u) => cdnRe.test(u));
       if (badMedia.length > 0) {
@@ -817,7 +826,7 @@ const Posts = () => {
         // eslint-disable-next-line no-restricted-globals, no-alert
         const proceed = window.confirm(
           `The selected image is a low-res platform thumbnail (${badMedia.length} of ${validMediaUrls.length}).\n\n` +
-          `Facebook/Instagram will only re-serve a tiny compressed copy from it — no way to publish at full quality without repicking from Drive.\n\n` +
+          `Whether we send it to Facebook, Instagram, or Google Business, the destination just re-serves a tiny compressed copy — no way to publish at full quality without repicking from Drive.\n\n` +
           `Click OK to publish TEXT-ONLY (drop the image and post the caption).\n` +
           `Click Cancel to keep the draft open so you can repick from Google Drive.`
         );

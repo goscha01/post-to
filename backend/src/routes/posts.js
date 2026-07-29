@@ -1264,10 +1264,7 @@ router.delete('/:postId', invalidateCacheMiddleware({ pattern: 'user:*:posts*' }
     }
     
     try {
-      // Attempt to delete the post from Google My Business API
-      
-      
-      const deleteResponse = await axios.delete(
+      await axios.delete(
         `https://mybusiness.googleapis.com/v4/accounts/${gmbAccountId}/locations/${gmbLocationId}/localPosts/${postId}`,
         {
           headers: {
@@ -1276,18 +1273,36 @@ router.delete('/:postId', invalidateCacheMiddleware({ pattern: 'user:*:posts*' }
           }
         }
       );
-      
-      
-      res.json({ success: true, message: 'Post deleted successfully from Google My Business' });
-      
+      logger.info('posts.gmb.delete_ok', {
+        user_id: req.user?.userId,
+        post_id: postId,
+        gmb_account_id: gmbAccountId,
+        gmb_location_id: gmbLocationId,
+      });
+      res.json({ success: true, message: 'Post deleted from Google Business Profile' });
     } catch (gmbError) {
-      
-      
-      // Fallback: return success for now
-      res.json({ 
-        success: true, 
-        message: 'Post marked for deletion (GMB API unavailable)',
-        note: 'Post will be removed from local cache'
+      const status = gmbError?.response?.status || 500;
+      const gmbBody = gmbError?.response?.data;
+      logger.error('posts.gmb.delete_failed', {
+        user_id: req.user?.userId,
+        post_id: postId,
+        gmb_account_id: gmbAccountId,
+        gmb_location_id: gmbLocationId,
+        gmb_status: status,
+        gmb_error: gmbBody?.error?.message || gmbError?.message,
+      });
+      // No more silent success — surface the real reason so the user
+      // knows the post is still live and duplicates aren't just a
+      // display glitch. Common cases: token lacks locations write scope,
+      // wrong account for the location, post already deleted (404 →
+      // treat as idempotent success).
+      if (status === 404) {
+        return res.json({ success: true, message: 'Post already gone from Google Business Profile' });
+      }
+      return res.status(status >= 400 && status < 600 ? status : 502).json({
+        success: false,
+        error: gmbBody?.error?.message || 'Google Business Profile rejected the delete',
+        gmbStatus: status,
       });
     }
     
