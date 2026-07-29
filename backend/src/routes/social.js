@@ -9,14 +9,64 @@
 
 const express = require('express');
 const { body, validationResult } = require('express-validator');
+const { createClient } = require('@supabase/supabase-js');
 const authMiddleware = require('../middleware/authMiddleware');
 const connections = require('../services/connectionsService');
 const meta = require('../services/metaService');
 const driveRouter = require('./drive');
 const logger = require('../utils/logger');
 
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY
+);
+
 const router = express.Router();
 router.use(authMiddleware);
+
+// Save the ORIGINAL source URL the user submitted alongside the
+// provider-returned post ID. Copying that FB/IG post later can then
+// re-publish using the Drive URL instead of Meta's fbcdn thumbnail.
+// Non-fatal on error — the publish already succeeded.
+async function rememberPublishedSource({ userId, provider, providerPostId, sourceUrl }) {
+  if (!userId || !providerPostId || !sourceUrl) return;
+  const driveFileId = driveRouter.driveFileIdFromUrl(sourceUrl) || null;
+  try {
+    const { error } = await supabase
+      .from('published_media_source')
+      .upsert(
+        { user_id: userId, provider, provider_post_id: providerPostId, source_url: sourceUrl, drive_file_id: driveFileId },
+        { onConflict: 'user_id,provider,provider_post_id' }
+      );
+    if (error) throw error;
+    logger.info('social.source_saved', { user_id: userId, provider, provider_post_id: providerPostId, has_drive_file_id: !!driveFileId });
+  } catch (err) {
+    logger.warn('social.source_save_failed', { user_id: userId, provider, provider_post_id: providerPostId, error: err.message });
+  }
+}
+
+// Attach _originalSourceUrl to each post so the frontend "Copy" flow can
+// use the raw Drive URL instead of the fbcdn / cdninstagram thumbnail
+// the platform returned.
+async function attachOriginalSourceUrls({ userId, provider, posts }) {
+  if (!posts || posts.length === 0) return posts;
+  const ids = posts.map((p) => p.id).filter(Boolean);
+  if (ids.length === 0) return posts;
+  try {
+    const { data, error } = await supabase
+      .from('published_media_source')
+      .select('provider_post_id, source_url')
+      .eq('user_id', userId)
+      .eq('provider', provider)
+      .in('provider_post_id', ids);
+    if (error) throw error;
+    const byId = new Map((data || []).map((r) => [r.provider_post_id, r.source_url]));
+    return posts.map((p) => (byId.has(p.id) ? { ...p, _originalSourceUrl: byId.get(p.id) } : p));
+  } catch (err) {
+    logger.warn('social.source_lookup_failed', { user_id: userId, provider, error: err.message });
+    return posts;
+  }
+}
 
 // If imageUrl is a Google Drive URL, rewrite it to our signed public
 // proxy URL so Meta fetches the original bytes via our backend (OAuth-
@@ -89,7 +139,8 @@ router.get('/facebook/pages/:connectionId/posts', async (req, res) => {
 
     const limit = Math.min(Math.max(1, parseInt(req.query.limit || '10', 10)), 50);
     const posts = await meta.getRecentFacebookPosts({ pageId, pageAccessToken, limit });
-    res.json({ posts });
+    const enriched = await attachOriginalSourceUrls({ userId: req.user.userId, provider: 'facebook', posts });
+    res.json({ posts: enriched });
   } catch (err) {
     const n = meta.normalizeApiError(err);
     logger.warn('social.facebook.posts_failed', {
@@ -114,7 +165,8 @@ router.get('/instagram/:connectionId/media', async (req, res) => {
 
     const limit = Math.min(Math.max(1, parseInt(req.query.limit || '10', 10)), 50);
     const posts = await meta.getRecentInstagramMedia({ igBusinessId, pageAccessToken, limit });
-    res.json({ posts });
+    const enriched = await attachOriginalSourceUrls({ userId: req.user.userId, provider: 'instagram', posts });
+    res.json({ posts: enriched });
   } catch (err) {
     const n = meta.normalizeApiError(err);
     logger.warn('social.instagram.media_failed', {
@@ -172,6 +224,14 @@ router.post(
         has_link: !!link,
         result_id: result.id,
       });
+      if (imageUrl && result?.id) {
+        await rememberPublishedSource({
+          userId: req.user.userId,
+          provider: 'facebook',
+          providerPostId: result.id,
+          sourceUrl: imageUrl,
+        });
+      }
       res.status(201).json({ ok: true, result });
     } catch (err) {
       const n = meta.normalizeApiError(err);
@@ -226,6 +286,14 @@ router.post(
         result_id: result.id,
         creation_id: result.creation_id,
       });
+      if (imageUrl && result?.id) {
+        await rememberPublishedSource({
+          userId: req.user.userId,
+          provider: 'instagram',
+          providerPostId: result.id,
+          sourceUrl: imageUrl,
+        });
+      }
       res.status(201).json({ ok: true, result });
     } catch (err) {
       const n = meta.normalizeApiError(err);

@@ -1361,13 +1361,20 @@ const Posts = () => {
       // Uses the shared isPlatformCdnUrl helper defined above so
       // repost + draft-load use the same logic. See handleDraftLoad for
       // rationale.
-      const rawUrls = media
-        .map((m) => m.sourceUrl || m.url || m.thumbnailUrl)
-        .filter(Boolean);
+      // Prefer the ORIGINAL source URL the backend remembered from the
+      // publish (typically a Drive URL) so we don't inherit the platform-
+      // CDN thumbnail Meta returns for our own posts. Falls back to the
+      // post's media if we don't have a mapping (older posts published
+      // before this feature landed).
+      const originalUrl = post._originalSourceUrl;
+      const rawUrls = originalUrl
+        ? [originalUrl]
+        : media.map((m) => m.sourceUrl || m.url || m.thumbnailUrl).filter(Boolean);
       const cdnCount = rawUrls.filter((u) => isPlatformCdnUrl(u)).length;
       // eslint-disable-next-line no-console
-      console.log('[handleRepost] media copied as-is', {
+      console.log('[handleRepost] media copied', {
         source_post_id: post.id,
+        used_original_source: !!originalUrl,
         raw: rawUrls,
         cdn_flagged: cdnCount,
       });
