@@ -19,12 +19,15 @@ import {
   Folder,
   ChevronRight as ChevronRightIcon,
   Home as HomeIcon,
+  Building2,
+  Check,
 } from 'lucide-react';
 import axios from '../utils/axiosConfig';
 import { useAuth } from '../contexts/AuthContext';
 import businessProfileService from '../services/businessProfileService';
 import calendarService from '../services/calendarService';
 import postsService from '../services/postsService';
+import imageService from '../services/imageService';
 import {
   getRecentUrls,
   rememberUrl,
@@ -139,6 +142,9 @@ const flattenLocations = (profiles) => {
       account?.name?.replace(/^accounts\//, '').split('/')[0] ||
       null;
     const accountLabel = account?.accountName || account?.displayName || `Account ${ai + 1}`;
+    // Same shape as Posts.js `targets`: profile picture from GMB is the
+    // account-level `accountProfilePicture.googleUrl`, not per-location.
+    const avatarUrl = account?.accountProfilePicture?.googleUrl || null;
     (account?.locations || []).forEach((loc, li) => {
       const locationId =
         loc?.locationId ||
@@ -153,6 +159,8 @@ const flattenLocations = (profiles) => {
         title: loc?.title || loc?.locationName || `Location ${li + 1}`,
         accountLabel,
         addressLine: formatLocationAddress(loc),
+        avatarUrl,
+        provider: 'gmb',
       });
     });
   });
@@ -174,6 +182,47 @@ const colorForLocation = (locationId, allLocations) => {
   if (!locationId) return LOCATION_COLORS[0];
   const idx = allLocations.findIndex((l) => l.locationId === locationId);
   return LOCATION_COLORS[(idx >= 0 ? idx : 0) % LOCATION_COLORS.length];
+};
+
+// Same rendering rules as Posts.js ChipAvatar: googleusercontent URLs
+// need the backend proxy (Google's CDN returns 400 for direct <img>),
+// everything else loads directly, and any failure falls back to a
+// Building2 icon on a tinted background so the chip still reads.
+const ChipAvatar = ({ url, label, selected }) => {
+  const needsProxy = typeof url === 'string' && url.includes('googleusercontent.com');
+  const [resolvedUrl, setResolvedUrl] = useState(needsProxy ? null : url);
+  const [errored, setErrored] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!url) { setResolvedUrl(null); return; }
+    if (!needsProxy) { setResolvedUrl(url); setErrored(false); return; }
+    setResolvedUrl(null);
+    setErrored(false);
+    imageService.getImage(url).then((result) => {
+      if (cancelled) return;
+      if (result?.success && result.dataUrl) setResolvedUrl(result.dataUrl);
+      else setErrored(true);
+    }).catch(() => { if (!cancelled) setErrored(true); });
+    return () => { cancelled = true; };
+  }, [url, needsProxy]);
+
+  const dim = selected ? '' : 'opacity-70 grayscale group-hover:grayscale-0';
+  if (resolvedUrl && !errored) {
+    return (
+      <img
+        src={resolvedUrl}
+        alt={label}
+        className={`h-full w-full object-cover ${dim}`}
+        onError={() => setErrored(true)}
+      />
+    );
+  }
+  return (
+    <div className="h-full w-full bg-blue-50 flex items-center justify-center">
+      <Building2 className="h-6 w-6 text-blue-600" />
+    </div>
+  );
 };
 
 // ── Main component ─────────────────────────────────────────
@@ -449,6 +498,28 @@ const Calendar = () => {
           <p className="text-sm text-gray-500 mt-1">
             Published posts and upcoming scheduled posts across your business profiles.
           </p>
+          {/* Status line: how many items landed in the current window, plus
+              sync state. Helps the user distinguish "no data yet" from
+              "you're viewing a month where nothing was posted". */}
+          {!loading && (
+            <p className="text-xs text-gray-500 mt-1">
+              {syncing ? (
+                <span className="inline-flex items-center gap-1 text-primary-700">
+                  <RefreshCw className="h-3 w-3 animate-spin" />
+                  Syncing posts from Google…
+                </span>
+              ) : (
+                <>
+                  {items.published.length} published · {items.scheduled.length} scheduled in this window
+                  {items.published.length === 0 && items.scheduled.length === 0 && (
+                    <span className="ml-1 text-gray-400">
+                      — try another month or click <span className="font-medium">Sync from Google</span>
+                    </span>
+                  )}
+                </>
+              )}
+            </p>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -531,35 +602,36 @@ const Calendar = () => {
                 .
               </div>
             ) : (
-              <ul className="space-y-1 max-h-72 overflow-y-auto pr-1">
+              <div className="flex flex-wrap gap-3 max-h-72 overflow-y-auto pr-1">
                 {locations.map((loc) => {
                   const color = colorForLocation(loc.locationId, locations);
-                  const checked = selectedLocationKeys.has(loc.key);
+                  const selected = selectedLocationKeys.has(loc.key);
                   return (
-                    <li key={loc.key}>
-                      <label className="flex items-start gap-2 py-1.5 px-2 rounded hover:bg-gray-50 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          className="mt-1 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-                          checked={checked}
-                          onChange={() => toggleLocation(loc.key)}
-                        />
-                        <span className="flex-1 min-w-0">
-                          <span className="flex items-center gap-1.5">
-                            <span className={`inline-block h-2 w-2 rounded-full ${color.dot}`} />
-                            <span className="text-sm text-gray-900 truncate">{loc.title}</span>
-                          </span>
-                          {loc.addressLine && (
-                            <span className="block text-xs text-gray-500 truncate">
-                              {loc.addressLine}
-                            </span>
-                          )}
+                    <button
+                      key={loc.key}
+                      type="button"
+                      onClick={() => toggleLocation(loc.key)}
+                      title={`${loc.title} — ${loc.accountLabel}`}
+                      className={`relative group flex-shrink-0 rounded-full transition
+                        ${selected
+                          ? 'ring-2 ring-primary-500 ring-offset-2'
+                          : 'ring-1 ring-gray-200 hover:ring-primary-300'}`}
+                    >
+                      <div className="h-12 w-12 rounded-full overflow-hidden bg-gray-100 flex items-center justify-center">
+                        <ChipAvatar url={loc.avatarUrl} label={loc.title} selected={selected} />
+                      </div>
+                      {/* Location-color badge (bottom-right) so the chip ties
+                          visually to the pill color used in day cells. */}
+                      <span className={`absolute -bottom-0.5 -right-0.5 h-4 w-4 rounded-full ${color.dot} ring-2 ring-white`} />
+                      {selected && (
+                        <span className="absolute -top-0.5 -right-0.5 h-4 w-4 rounded-full bg-primary-600 flex items-center justify-center ring-2 ring-white">
+                          <Check className="h-3 w-3 text-white" />
                         </span>
-                      </label>
-                    </li>
+                      )}
+                    </button>
                   );
                 })}
-              </ul>
+              </div>
             )}
           </FilterCard>
 
