@@ -116,12 +116,24 @@ async function markPosted(id, gmbPostId, gmbResponse) {
     .eq('id', id);
 }
 
-async function mirrorToSocialMediaPosts(row, gmbPostId) {
+async function mirrorToSocialMediaPosts(row, gmbPostId, gmbResponse) {
   try {
     const platform = (Array.isArray(row.platforms) && row.platforms[0]) || 'google';
-    const mediaUrls = Array.isArray(row.media)
-      ? row.media.map((m) => (typeof m === 'string' ? m : m?.sourceUrl || m?.url)).filter(Boolean)
-      : [];
+    // Prefer GMB's own googleUrl values from the publish response — the
+    // scheduled row's `media` still holds raw drive.google.com URLs
+    // (which the browser can't render without OAuth). GMB gives us
+    // publicly renderable lh3.googleusercontent.com URLs post-publish.
+    let mediaUrls = [];
+    if (Array.isArray(gmbResponse?.media) && gmbResponse.media.length) {
+      mediaUrls = gmbResponse.media
+        .map((m) => m?.googleUrl || m?.sourceUrl || null)
+        .filter(Boolean);
+    }
+    if (mediaUrls.length === 0 && Array.isArray(row.media)) {
+      mediaUrls = row.media
+        .map((m) => (typeof m === 'string' ? m : m?.sourceUrl || m?.url))
+        .filter(Boolean);
+    }
     // media_data column is optional in prod (add-image-storage.sql may
     // not be applied). Omit it so the insert doesn't 400 and drop the
     // mirrored calendar row.
@@ -301,7 +313,7 @@ async function tick() {
     try {
       const { gmbPostId, gmbResponse } = await publishOne(claimed);
       await markPosted(row.id, gmbPostId, gmbResponse);
-      if (gmbPostId) await mirrorToSocialMediaPosts(claimed, gmbPostId);
+      if (gmbPostId) await mirrorToSocialMediaPosts(claimed, gmbPostId, gmbResponse);
       logger.info('scheduled_publisher.published', {
         scheduled_id: row.id,
         user_id: row.user_id,

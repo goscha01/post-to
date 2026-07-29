@@ -405,7 +405,7 @@ async function getCachedPosts(locationId, userId, accountId) {
     // Process cached posts and ensure images are properly formatted
     const processedPosts = await Promise.all(cachedPosts.map(async (post) => {
       let processedMedia = [];
-      
+
       // If post has media data, process it to include cached base64 data
       if (post.media_data && Array.isArray(post.media_data) && post.media_data.length > 0) {
         processedMedia = post.media_data.map(mediaItem => {
@@ -418,7 +418,7 @@ async function getCachedPosts(locationId, userId, accountId) {
               mediaItem.source_url = `${mediaItem.source_url}=h305-no`;
             }
           }
-          
+
           return {
             id: mediaItem.id || `media-${Date.now()}`,
             mediaFormat: mediaItem.mediaFormat || 'PHOTO',
@@ -434,6 +434,25 @@ async function getCachedPosts(locationId, userId, accountId) {
             // Mark as cached so frontend knows to use base64 data directly
             cached: true,
             fromCache: true
+          };
+        });
+      } else if (Array.isArray(post.media_urls) && post.media_urls.length > 0) {
+        // Fallback: media_data is empty (the add-image-storage.sql migration
+        // never ran in prod, so recent inserts skip that column). Rebuild
+        // media[] from the media_urls array, which is always populated.
+        processedMedia = post.media_urls.map((rawUrl, i) => {
+          let sourceUrl = rawUrl;
+          if (typeof sourceUrl === 'string' && sourceUrl.includes('lh3.googleusercontent.com') && !sourceUrl.includes('=')) {
+            sourceUrl = `${sourceUrl}=h305-no`;
+          }
+          return {
+            id: `media-${post.id}-${i}`,
+            mediaFormat: 'PHOTO',
+            sourceUrl,
+            thumbnailUrl: null,
+            altText: 'Post image',
+            cached: false,
+            fromCache: false,
           };
         });
       }
