@@ -209,6 +209,21 @@ async function publishOne(row) {
 
   const url = `https://mybusiness.googleapis.com/v4/accounts/${row.gmb_account_id}/locations/${row.location_id}/localPosts`;
 
+  // Log the shape we're about to send so a 400 from GMB is diagnosable.
+  // Truncate the summary + serialize a preview of media[0] instead of
+  // dumping the whole signed URL (which has a secret + is huge).
+  logger.info('scheduled_publisher.request', {
+    scheduled_id: row.id,
+    location_id: row.location_id,
+    body_keys: Object.keys(gmbBody).join(','),
+    summary_len: (gmbBody.summary || '').length,
+    media_count: (gmbBody.media || []).length,
+    media0_host: (gmbBody.media?.[0]?.sourceUrl || '').replace(/^https?:\/\//, '').split('/')[0] || null,
+    has_cta: !!gmbBody.callToAction,
+    cta_action: gmbBody.callToAction?.actionType || null,
+    cta_scheme: (gmbBody.callToAction?.url || '').split(':')[0] || null,
+  });
+
   const attempt = await tryWithEachBusinessToken(row.user_id, null, async (accessToken) => {
     const resp = await axios.post(url, gmbBody, {
       headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
@@ -284,6 +299,11 @@ async function tick() {
       });
     } catch (err) {
       const message = extractGmbErrorMessage(err) || 'unknown error';
+      // Dump the raw GMB error body + request shape so we can see WHY the
+      // truncate+rewrite path is still 400'ing. Trimmed to keep loki
+      // structured-metadata under limits.
+      let rawErrorBody = '';
+      try { rawErrorBody = JSON.stringify(err?.response?.data || {}).slice(0, 900); } catch {}
       await releaseFailed(row.id, message);
       logger.error('scheduled_publisher.failed', {
         scheduled_id: row.id,
@@ -291,6 +311,7 @@ async function tick() {
         location_id: row.location_id,
         error: message,
         status: err?.response?.status,
+        raw_error_body: rawErrorBody,
       });
     }
   }
