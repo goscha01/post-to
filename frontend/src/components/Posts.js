@@ -739,6 +739,19 @@ const Posts = () => {
 
   const handleCreatePost = async (e) => {
     e.preventDefault();
+    // eslint-disable-next-line no-console
+    console.log('[handleCreatePost] 🟢 fired', {
+      selectedTargets: [...selectedTargets],
+      target_count: selectedTargets.size,
+      mediaUrls: formData.mediaUrls,
+      valid_media_count: formData.mediaUrls.filter((u) => u.trim() !== '').length,
+      summary_len: (formData.summary || '').length,
+      postingMode,
+      editingPost: !!editingPost,
+      creatingPost,
+      updatingPost,
+      skipDupCheck: !!e?._skipDupCheck,
+    });
     setCreatingPost(true);
     setPublishSummary(null);
 
@@ -748,6 +761,8 @@ const Posts = () => {
       try { new URL(url); return false; } catch { return true; }
     });
     if (invalidUrls.length > 0) {
+      // eslint-disable-next-line no-console
+      console.warn('[handleCreatePost] bailed: invalid media URLs', invalidUrls);
       alert('Please enter valid image URLs for all media files.');
       setCreatingPost(false);
       return;
@@ -772,6 +787,8 @@ const Posts = () => {
     // ---- Fan-out over selectedTargets ----
     const targetKeys = [...selectedTargets];
     if (targetKeys.length === 0) {
+      // eslint-disable-next-line no-console
+      console.warn('[handleCreatePost] bailed: no targets selected');
       alert('Select at least one account to post to.');
       setCreatingPost(false);
       return;
