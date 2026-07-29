@@ -33,6 +33,46 @@ function toFrontmatter(fields) {
   return lines.join('\n');
 }
 
+// Inject an inline image after the first prose paragraph — matches how
+// Spotless's legacy posts render (hero above the fold via frontmatter, then
+// the same or a related image inside the body). Uses the article title as
+// alt text (mirrors the legacy pattern: `![<title>](/assets/blog/…)`).
+//
+// Skip conditions (return markdown unchanged):
+//   - No heroUrl to insert.
+//   - Body already references that URL (user hand-edited or previous publish
+//     already injected — we don't want to duplicate).
+//
+// If the body has no paragraph break (single paragraph or trailing prose)
+// we append at the end so the image still shows up.
+function injectHeroInBody({ markdown, heroUrl, title }) {
+  if (!heroUrl) return markdown || '';
+  const body = markdown || '';
+  if (body.includes(heroUrl)) return body;
+
+  const safeAlt = String(title || 'Article image').replace(/\]/g, '\\]').replace(/\n/g, ' ');
+  const imgMd = `![${safeAlt}](${heroUrl})`;
+
+  const lines = body.split('\n');
+  let inFirstPara = false;
+  let insertAfter = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    if (!inFirstPara) {
+      if (!trimmed) continue;                          // leading blanks
+      if (trimmed.startsWith('#')) continue;           // headings (H1, H2, …)
+      if (trimmed.startsWith('![') || trimmed.startsWith('<img')) continue;
+      inFirstPara = true;
+      continue;
+    }
+    if (!trimmed) { insertAfter = i; break; }          // end of first paragraph
+  }
+  if (insertAfter === -1) return `${body}\n\n${imgMd}\n`;
+  const before = lines.slice(0, insertAfter + 1).join('\n');
+  const after = lines.slice(insertAfter + 1).join('\n');
+  return `${before}\n${imgMd}\n${after}`;
+}
+
 // Build the markdown body the customer's site expects. Field mapping is
 // currently hardcoded to Spotless's schema (title/slug/date/updated/author/
 // description/heroImage/wixOriginal). Future: read a mapping from
@@ -56,9 +96,16 @@ function buildMarkdown({ blog, domain }) {
     heroImage: blog.hero_image || '',
   });
 
-  // Body: raw markdown as-is. Site templates like Spotless's already strip
-  // the duplicated H1 (see cleanerflow/src/lib/blog.js), so we don't need to.
-  return `${frontmatter}\n\n${blog.markdown || ''}\n`;
+  // Body: strip nothing (site templates like Spotless's already strip the
+  // duplicated H1 in cleanerflow/src/lib/blog.js). Inject hero image after
+  // the first paragraph so the article body has the same visual rhythm as
+  // the customer's legacy posts.
+  const body = injectHeroInBody({
+    markdown: blog.markdown || '',
+    heroUrl: blog.hero_image,
+    title: blog.title,
+  });
+  return `${frontmatter}\n\n${body}\n`;
 }
 
 function s3ClientFromDomain(domain) {
