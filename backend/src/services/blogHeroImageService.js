@@ -150,4 +150,19 @@ async function remove({ userId, blogId }) {
   return updated;
 }
 
-module.exports = { upload, remove, publicPath, objectKey };
+// Variant of upload() where the file bytes come from a URL (e.g. a Pexels
+// candidate the user picked). Same S3 target and DB write — just the source
+// is a Buffer we fetch ourselves instead of a multer file.
+async function uploadFromBuffer({ userId, blogId, buffer, contentType, bytes }) {
+  return upload({
+    userId,
+    blogId,
+    file: {
+      buffer,
+      mimetype: contentType,
+      size: bytes ?? buffer.byteLength,
+    },
+  });
+}
+
+module.exports = { upload, uploadFromBuffer, remove, publicPath, objectKey };

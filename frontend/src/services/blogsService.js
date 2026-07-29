@@ -91,11 +91,21 @@ const removeHeroImage = async (id) => {
   return res.data?.blog;
 };
 
+const suggestHeroImages = async (id, q) => {
+  const res = await axios.get(`/api/blogs/${id}/suggest-hero-images`, { params: q ? { q } : {} });
+  return res.data; // { query, photos: [...] }
+};
+
+const setHeroImageFromUrl = async (id, url) => {
+  const res = await axios.post(`/api/blogs/${id}/hero-image/from-url`, { url });
+  return res.data?.blog;
+};
+
 const blogsService = {
   list, get, update, remove, generate,
   publish, unpublish,
   listDomains, createDomain, verifyDomain, deleteDomain,
   refreshDomainTheme, updateDomainTheme,
-  uploadHeroImage, removeHeroImage,
+  uploadHeroImage, removeHeroImage, suggestHeroImages, setHeroImageFromUrl,
 };
 export default blogsService;

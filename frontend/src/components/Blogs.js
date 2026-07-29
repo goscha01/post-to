@@ -1494,13 +1494,15 @@ const VerifiedThemeStrip = ({ domain }) => {
 };
 
 // HeroImageField — upload / preview / remove for the blog's hero image.
-// Uploads via multipart POST, stores a root-relative path on the row (e.g.
-// /assets/blog/<slug>-hero.jpg). Renders inline preview from the same path
-// once the customer's site build syncs the file; before then, the img may
-// 404 for a couple minutes — that's expected and we show a helper note.
+// Three ways to set it:
+//   1. Upload a file (multipart)
+//   2. Pick from Pexels stock search (server-side downloads + uploads to S3)
+//   3. Remove
+// Stores a root-relative path on the row (e.g. /assets/blog/<slug>-hero.jpg).
 const HeroImageField = ({ blog, onChange }) => {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [suggesting, setSuggesting] = useState(false);
   const inputRef = React.useRef(null);
   const hero = blog?.hero_image;
   // Preview URL: the path is relative to the customer's domain. Best-effort
@@ -1561,7 +1563,7 @@ const HeroImageField = ({ blog, onChange }) => {
               Will render as the article's hero once the site build syncs.
             </div>
             {err && <div className="text-[11px] text-red-700 mt-1">{err}</div>}
-            <div className="mt-2 flex items-center gap-2">
+            <div className="mt-2 flex items-center gap-2 flex-wrap">
               <button
                 type="button"
                 onClick={openPicker}
@@ -1570,6 +1572,15 @@ const HeroImageField = ({ blog, onChange }) => {
               >
                 <Upload className="h-3 w-3" />
                 {busy ? 'Uploading…' : 'Replace'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setSuggesting(true)}
+                disabled={busy}
+                className="inline-flex items-center gap-1 px-2 py-1 text-xs text-primary-700 hover:bg-primary-50 rounded disabled:opacity-50"
+              >
+                <Sparkles className="h-3 w-3" />
+                Suggest
               </button>
               <button
                 type="button"
@@ -1584,20 +1595,159 @@ const HeroImageField = ({ blog, onChange }) => {
           </div>
         </div>
       ) : (
-        <div>
+        <div className="flex flex-col sm:flex-row gap-2">
           <button
             type="button"
             onClick={openPicker}
             disabled={busy}
-            className="inline-flex items-center gap-2 px-3 py-2 text-sm text-gray-700 border border-dashed border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50 w-full"
+            className="flex-1 inline-flex items-center gap-2 px-3 py-2 text-sm text-gray-700 border border-dashed border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50"
           >
             <Upload className="h-4 w-4" />
-            {busy ? 'Uploading…' : 'Upload hero image'}
-            <span className="ml-auto text-xs text-gray-500">JPG / PNG / WebP · &lt;10MB</span>
+            {busy ? 'Uploading…' : 'Upload'}
+            <span className="ml-auto text-[11px] text-gray-500">JPG / PNG / WebP · &lt;10MB</span>
           </button>
-          {err && <div className="mt-1 text-[11px] text-red-700">{err}</div>}
+          <button
+            type="button"
+            onClick={() => setSuggesting(true)}
+            disabled={busy}
+            className="flex-1 inline-flex items-center justify-center gap-2 px-3 py-2 text-sm text-primary-700 border border-dashed border-primary-300 bg-primary-50/50 rounded-md hover:bg-primary-50 disabled:opacity-50"
+          >
+            <Sparkles className="h-4 w-4" />
+            Suggest from stock
+          </button>
         </div>
       )}
+      {err && !hero && <div className="mt-1 text-[11px] text-red-700">{err}</div>}
+      {suggesting && (
+        <HeroSuggestModal
+          blog={blog}
+          onClose={() => setSuggesting(false)}
+          onPicked={(updated) => { onChange(updated); setSuggesting(false); }}
+        />
+      )}
+    </div>
+  );
+};
+
+// HeroSuggestModal — Pexels stock grid. Loads on mount using the article's
+// keyword (falls back to title). User can edit the query and re-search;
+// clicking a photo triggers server-side download → S3 upload → row update.
+const HeroSuggestModal = ({ blog, onClose, onPicked }) => {
+  const [query, setQuery] = useState(blog?.keyword || blog?.title || '');
+  const [photos, setPhotos] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState('');
+  const [pickingId, setPickingId] = useState(null);
+
+  const search = useCallback(async (q) => {
+    setLoading(true);
+    setErr('');
+    try {
+      const data = await blogsService.suggestHeroImages(blog.id, q || undefined);
+      setPhotos(data.photos || []);
+      if (data.query && data.query !== query) setQuery(data.query);
+    } catch (e) {
+      setErr(e.response?.data?.error || e.message || 'Search failed');
+      setPhotos([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [blog.id, query]);
+
+  useEffect(() => { search(); /* initial */ }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const pick = async (photo) => {
+    setPickingId(photo.id);
+    setErr('');
+    try {
+      const updated = await blogsService.setHeroImageFromUrl(blog.id, photo.full_url);
+      onPicked(updated);
+    } catch (e) {
+      setErr(e.response?.data?.error || 'Failed to set hero image');
+    } finally {
+      setPickingId(null);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+          <h2 className="text-lg font-semibold text-gray-900">Suggest a hero image</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X className="h-5 w-5" /></button>
+        </div>
+
+        <form
+          onSubmit={(e) => { e.preventDefault(); search(query); }}
+          className="px-6 py-3 border-b border-gray-100 flex items-center gap-2"
+        >
+          <Search className="h-4 w-4 text-gray-500 flex-shrink-0" />
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="cleaning services Tampa"
+            className="flex-1 px-2 py-1.5 border border-gray-300 rounded-md text-sm"
+          />
+          <button
+            type="submit"
+            disabled={loading || !query.trim()}
+            className="px-3 py-1.5 text-sm text-white bg-primary-600 rounded-md hover:bg-primary-700 disabled:opacity-50"
+          >
+            {loading ? 'Searching…' : 'Search'}
+          </button>
+        </form>
+
+        <div className="flex-1 overflow-y-auto p-6">
+          {err && (
+            <div className="mb-3 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-800 flex items-start gap-2">
+              <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+              <span>{err}</span>
+            </div>
+          )}
+          {loading ? (
+            <div className="text-sm text-gray-500">Loading candidates…</div>
+          ) : photos.length === 0 ? (
+            <div className="text-sm text-gray-500">No photos found. Try a broader query.</div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+              {photos.map((p) => {
+                const picking = pickingId === p.id;
+                return (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => pick(p)}
+                    disabled={!!pickingId}
+                    className="group text-left border border-gray-200 rounded-md overflow-hidden hover:border-primary-500 hover:shadow-md disabled:opacity-40 transition"
+                  >
+                    <div className="relative aspect-[3/2] bg-gray-100">
+                      <img
+                        src={p.thumb_url}
+                        alt={p.alt}
+                        loading="lazy"
+                        className="absolute inset-0 w-full h-full object-cover"
+                      />
+                      {picking && (
+                        <div className="absolute inset-0 bg-black/40 flex items-center justify-center text-white text-xs">
+                          Uploading…
+                        </div>
+                      )}
+                    </div>
+                    <div className="px-2 py-1.5 text-[11px] text-gray-500 truncate">
+                      by {p.photographer} · {p.source}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="px-6 py-3 border-t border-gray-100 text-[11px] text-gray-500">
+          Photos from Pexels. Clicking one downloads it to your storage — no hotlinking.
+        </div>
+      </div>
     </div>
   );
 };

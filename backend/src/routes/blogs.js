@@ -17,6 +17,7 @@ const blogDomainsService = require('../services/blogDomainsService');
 const blogPublisherS3 = require('../services/blogPublisherS3');
 const blogDeployTrigger = require('../services/blogDeployTrigger');
 const blogHeroImageService = require('../services/blogHeroImageService');
+const stockImageService = require('../services/stockImageService');
 
 const router = express.Router();
 
@@ -545,5 +546,58 @@ router.delete('/:id/hero-image', [param('id').isUUID()], async (req, res) => {
     res.status(err.status || 500).json({ error: err.message || 'Failed to remove hero image' });
   }
 });
+
+// Suggest hero-image candidates from Pexels. Query defaults to the blog's
+// keyword (from GSC-driven generation) → title → user-supplied override
+// via ?q=. Returns up to 9 landscape candidates the UI displays as a grid.
+router.get('/:id/suggest-hero-images', [param('id').isUUID()], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ error: 'Invalid id' });
+  try {
+    const { data: blog, error: loadErr } = await supabase
+      .from('blog_articles')
+      .select('id, keyword, title')
+      .eq('user_id', req.user.userId).eq('id', req.params.id).single();
+    if (loadErr || !blog) return res.status(404).json({ error: 'Blog not found' });
+
+    const query = String(req.query.q || blog.keyword || blog.title || '').trim();
+    if (!query) return res.status(400).json({ error: 'No query available — pass ?q=…' });
+
+    const photos = await stockImageService.searchPexels(query);
+    res.json({ query, photos });
+  } catch (err) {
+    logger.warn('blogs.hero_suggest_failed', { error: err.message, id: req.params.id });
+    res.status(err.status || 500).json({ error: err.message || 'Suggestion failed' });
+  }
+});
+
+// Set the hero image from a picked candidate URL. Server-side downloads the
+// image bytes (so the image lands on the customer's own S3 — no hotlinking)
+// then goes through the same upload pipeline as a manual file upload.
+router.post(
+  '/:id/hero-image/from-url',
+  [
+    param('id').isUUID(),
+    body('url').isString().isURL({ require_protocol: true }).isLength({ max: 2048 }),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ error: 'Invalid input', details: errors.array() });
+    try {
+      const { buffer, contentType, bytes } = await stockImageService.downloadImage(req.body.url);
+      const updated = await blogHeroImageService.uploadFromBuffer({
+        userId: req.user.userId,
+        blogId: req.params.id,
+        buffer,
+        contentType,
+        bytes,
+      });
+      res.json({ blog: updated });
+    } catch (err) {
+      logger.error('blogs.hero_from_url_failed', { error: err.message, id: req.params.id });
+      res.status(err.status || 500).json({ error: err.message || 'Failed to download / upload' });
+    }
+  }
+);
 
 module.exports = router;
