@@ -293,7 +293,7 @@ router.patch(
         throw error;
       }
       logger.info('blogs.updated', { userId: req.user.userId, blogId: req.params.id, fields: Object.keys(patch) });
-      res.json({ blog: data });
+      res.json({ blog: await withPreview(req.user.userId, data) });
     } catch (err) {
       logger.error('blogs.update_failed', { error: err.message });
       res.status(500).json({ error: 'Failed to update blog' });
@@ -404,7 +404,7 @@ router.post('/:id/publish', [param('id').isUUID()], async (req, res) => {
       hasS3,
     });
     res.json({
-      blog: updated,
+      blog: await withPreview(req.user.userId, updated),
       urls,
       hasVerifiedDomain: verifiedDomains.length > 0,
       deployHints,
@@ -480,7 +480,7 @@ router.post('/:id/unpublish', [param('id').isUUID()], async (req, res) => {
 
     const removals = await fanoutRemoval({ userId: req.user.userId, blog: data });
     logger.info('blogs.unpublished', { userId: req.user.userId, blogId: req.params.id, removedFrom: removals.length });
-    res.json({ blog: data, removals });
+    res.json({ blog: await withPreview(req.user.userId, data), removals });
   } catch (err) {
     logger.error('blogs.unpublish_failed', { error: err.message, id: req.params.id });
     res.status(500).json({ error: 'Failed to unpublish blog' });
