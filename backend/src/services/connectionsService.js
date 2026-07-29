@@ -203,7 +203,11 @@ async function fetchSiteMeta(url) {
 // Fields inside metadata that must never leave the server (BYO API keys, OAuth
 // tokens etc.). Strip before returning to the caller. Callers that need the
 // raw value should call getRawForUser instead.
-const SENSITIVE_METADATA_KEYS = ['api_key', 'page_access_token', 'user_access_token'];
+const SENSITIVE_METADATA_KEYS = [
+  'api_key', 'page_access_token', 'user_access_token',
+  // Blog publisher AWS creds — scoped IAM user per customer, still sensitive.
+  's3_access_key_secret',
+];
 
 function stripSensitiveMetadata(row) {
   if (!row || !row.metadata) return row;

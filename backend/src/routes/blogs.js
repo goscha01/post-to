@@ -13,6 +13,7 @@ const { createClient } = require('@supabase/supabase-js');
 const authMiddleware = require('../middleware/authMiddleware');
 const logger = require('../utils/logger');
 const blogDomainsService = require('../services/blogDomainsService');
+const blogPublisherS3 = require('../services/blogPublisherS3');
 
 const router = express.Router();
 
@@ -266,10 +267,17 @@ router.patch(
   }
 );
 
-// Publish: flip status → 'published', stamp published_at, and (if the user
-// has any verified blog_domain rows) return the public URLs the article is
-// reachable at. Idempotent: re-publishing an already-published article just
-// refreshes published_at.
+// Publish routing:
+//   publish_target = 's3' (default for customers who own their site)
+//     → write markdown to the customer's S3 bucket via blogPublisherS3.
+//       Article lives on their main domain (e.g. www.spotless.homes/blog/…)
+//       after their site's build pipeline syncs from S3 and rebuilds.
+//   publish_target = 'hosted' (or unset)
+//     → legacy path: just flip status='published' and let post-to-blogs
+//       Vercel render the article on the user's custom subdomain.
+//
+// Returns urls[] the customer can share, plus a `deployHint` when they need
+// to manually rebuild their site to make the article public.
 router.post('/:id/publish', [param('id').isUUID()], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) return res.status(400).json({ error: 'Invalid id' });
@@ -298,14 +306,62 @@ router.post('/:id/publish', [param('id').isUUID()], async (req, res) => {
       .single();
     if (updateErr) throw updateErr;
 
-    const domains = await blogDomainsService.listForUser(req.user.userId);
-    const verifiedHosts = domains
-      .filter(d => d.status === 'active' && d.metadata?.verified && d.metadata?.hostname)
-      .map(d => d.metadata.hostname);
-    const urls = verifiedHosts.map(h => `https://${h}/${updated.slug}`);
+    // Route by publish_target on each verified domain. A blog with N verified
+    // domains can publish to N destinations in the same call.
+    const domainsRaw = await Promise.all(
+      // use getForUser to keep sensitive S3 secret available for the publish call
+      (await blogDomainsService.listForUser(req.user.userId)).map(async d => {
+        if (!(d.status === 'active' && d.metadata?.verified && d.metadata?.hostname)) return null;
+        // Need raw metadata (including s3_access_key_secret) for S3 publish.
+        return blogDomainsService.getForUser({ userId: req.user.userId, id: d.id });
+      })
+    );
+    const verifiedDomains = domainsRaw.filter(Boolean);
 
-    logger.info('blogs.published', { userId: req.user.userId, blogId: req.params.id, slug: updated.slug, hostCount: verifiedHosts.length });
-    res.json({ blog: updated, urls, hasVerifiedDomain: verifiedHosts.length > 0 });
+    const urls = [];
+    const deployHints = [];
+    let hasS3 = false;
+    for (const domain of verifiedDomains) {
+      const target = domain.metadata?.publish_target || 'hosted';
+      const host = domain.metadata?.hostname;
+      if (target === 's3') {
+        hasS3 = true;
+        try {
+          await blogPublisherS3.publish({ blog: updated, domain });
+          // Public URL pattern is the customer's site's blog route. Default
+          // to https://<hostname-without-blog-subdomain>/blog/<slug>.
+          const publicHost = (domain.metadata?.public_hostname
+            || (host.startsWith('blog.') ? host.slice(5) : host));
+          const wwwHost = publicHost.startsWith('www.') ? publicHost : `www.${publicHost}`;
+          const pattern = domain.metadata?.public_url_pattern || `https://${wwwHost}/blog/{slug}`;
+          urls.push(pattern.replace('{slug}', updated.slug));
+          deployHints.push({
+            host,
+            hint: 'Article uploaded to S3. Run your site build to publish it live.',
+          });
+        } catch (e) {
+          logger.error('blogs.publish.s3_failed', { userId: req.user.userId, host, error: e.message });
+          deployHints.push({ host, hint: `S3 publish failed: ${e.message}` });
+        }
+      } else {
+        // hosted (post-to-blogs Vercel subdomain renderer)
+        urls.push(`https://${host}/${updated.slug}`);
+      }
+    }
+
+    logger.info('blogs.published', {
+      userId: req.user.userId,
+      blogId: req.params.id,
+      slug: updated.slug,
+      domainCount: verifiedDomains.length,
+      hasS3,
+    });
+    res.json({
+      blog: updated,
+      urls,
+      hasVerifiedDomain: verifiedDomains.length > 0,
+      deployHints,
+    });
   } catch (err) {
     logger.error('blogs.publish_failed', { error: err.message, id: req.params.id });
     res.status(500).json({ error: 'Failed to publish blog' });
@@ -327,6 +383,21 @@ router.post('/:id/unpublish', [param('id').isUUID()], async (req, res) => {
       if (error.code === 'PGRST116') return res.status(404).json({ error: 'Blog not found' });
       throw error;
     }
+
+    // Remove from any S3 destinations too, so a rebuild doesn't republish
+    // the unpublished article. Best-effort per domain — failures are logged
+    // but don't fail the request.
+    const domains = await blogDomainsService.listForUser(req.user.userId);
+    for (const d of domains) {
+      if (d.metadata?.publish_target !== 's3') continue;
+      try {
+        const raw = await blogDomainsService.getForUser({ userId: req.user.userId, id: d.id });
+        await blogPublisherS3.unpublish({ blog: data, domain: raw });
+      } catch (e) {
+        logger.warn('blogs.unpublish.s3_cleanup_failed', { userId: req.user.userId, domainId: d.id, error: e.message });
+      }
+    }
+
     logger.info('blogs.unpublished', { userId: req.user.userId, blogId: req.params.id });
     res.json({ blog: data });
   } catch (err) {

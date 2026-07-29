@@ -127,6 +127,17 @@ async function verifyVercelDomain(hostname) {
   return { ok: false, status, error: data?.error?.message || `Vercel verify ${status}` };
 }
 
+// Metadata fields that must NEVER leave the server. Blog publisher AWS creds
+// live inside metadata for now (same pattern as other providers) so we strip
+// them here before returning to the frontend.
+const SENSITIVE_META_KEYS = ['s3_access_key_secret'];
+function stripSensitiveMeta(row) {
+  if (!row?.metadata) return row;
+  const meta = { ...row.metadata };
+  for (const k of SENSITIVE_META_KEYS) delete meta[k];
+  return { ...row, metadata: meta };
+}
+
 async function listForUser(userId) {
   const { data, error } = await supabase
     .from('connected_accounts')
@@ -135,9 +146,12 @@ async function listForUser(userId) {
     .eq('provider', 'blog_domain')
     .order('created_at', { ascending: false });
   if (error) throw error;
-  return data || [];
+  return (data || []).map(stripSensitiveMeta);
 }
 
+// Server-only: returns the full row including sensitive metadata (S3 secret,
+// etc.). Only publishers / verifiers should call this. Route handlers should
+// go through the stripped equivalents.
 async function getForUser({ userId, id }) {
   const { data, error } = await supabase
     .from('connected_accounts')
@@ -149,6 +163,9 @@ async function getForUser({ userId, id }) {
   if (error) throw error;
   return data;
 }
+
+// Public / route-facing: strips sensitive metadata before returning.
+function sanitize(row) { return stripSensitiveMeta(row); }
 
 // Attach the hostname to Vercel first so we know it's accepted, then insert/
 // update the DB row. cname_target is always Vercel's shared CNAME —
@@ -397,4 +414,5 @@ module.exports = {
   deleteDomain,
   refreshTheme,
   updateTheme,
+  sanitize,
 };
