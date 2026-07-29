@@ -8,7 +8,7 @@
 //   3. Framework-free CSS. One inline <style> block, no external assets.
 //      Renders fast + no CLS + no third-party requests.
 
-const { marked } = require('marked');
+import { marked } from 'marked';
 
 marked.setOptions({ gfm: true, breaks: false, headerIds: true, mangle: false });
 
@@ -184,7 +184,7 @@ function renderUnknownHostHtml({ hostname }) {
 </html>`;
 }
 
-module.exports = {
+export {
   renderArticleHtml,
   renderIndexHtml,
   renderNotFoundHtml,

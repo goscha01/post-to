@@ -1,21 +1,21 @@
 // Resolves an incoming Host header to the user_id that owns the domain.
 //
 // Lookup source: connected_accounts where provider='blog_domain', with
-// metadata.hostname matching. A tiny in-memory cache avoids hammering
-// Supabase on every request. On Vercel, module-level caches persist across
-// invocations that hit the same warm instance (typical case for busy hosts).
+// external_id matching. A tiny in-memory cache avoids hammering Supabase on
+// every request. On Vercel, module-level caches persist across invocations
+// that reuse a warm serverless instance.
 
-const supabase = require('./supabase');
+import supabase from './supabase';
 
 const CACHE_TTL_MS = 60 * 1000;
 const cache = new Map(); // hostname -> { userId, connectionId, metadata, hostname, expiresAt }
 
-function normalizeHost(raw) {
+export function normalizeHost(raw) {
   if (!raw || typeof raw !== 'string') return '';
   return raw.trim().toLowerCase().replace(/^www\./, '').split(':')[0];
 }
 
-async function resolveHost(hostRaw) {
+export async function resolveHost(hostRaw) {
   const host = normalizeHost(hostRaw);
   if (!host) return null;
 
@@ -49,5 +49,3 @@ async function resolveHost(hostRaw) {
   cache.set(host, record);
   return record;
 }
-
-module.exports = { resolveHost, normalizeHost };
