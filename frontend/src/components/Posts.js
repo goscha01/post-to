@@ -851,12 +851,32 @@ const Posts = () => {
           const body = isIg
             ? { connectionId, caption: formData.summary, imageUrl: socialImage }
             : { connectionId, message: formData.summary, imageUrl: socialImage || undefined };
+          // Hard guard: warn LOUDLY if we're about to send a platform-
+          // CDN URL. Every symptom we've seen ('image_rewritten: false',
+          // tiny FB image, low quality) traces back to this.
+          const isPlatformCdnUrl = (u) => {
+            if (!u) return false;
+            try {
+              const h = new URL(u).hostname.toLowerCase();
+              return h.endsWith('fbcdn.net') || h.endsWith('cdninstagram.com') || h.includes('googleusercontent.com');
+            } catch { return false; }
+          };
+          const badUrl = isPlatformCdnUrl(socialImage);
+          if (badUrl) {
+            // eslint-disable-next-line no-console
+            console.error(
+              '[publishOne] 🚨 About to send a PLATFORM CDN URL to ' + (isIg ? 'Instagram' : 'Facebook') +
+              '. This will publish a LOW-RES thumbnail. Repick the image from Drive:',
+              socialImage
+            );
+          }
           // eslint-disable-next-line no-console
           console.log('[publishOne] social publish start', {
             key,
             endpoint,
             imageUrl: socialImage,
             isDriveUrl: /drive\.google\.com/i.test(socialImage || ''),
+            isPlatformCdn: badUrl,
             allMediaUrls: validMediaUrls,
             captionLen: (formData.summary || '').length,
           });
@@ -1263,34 +1283,29 @@ const Posts = () => {
       setEditingPost(null);
       const cta = post.callToAction || null;
       const media = Array.isArray(post.media) ? post.media : [];
-      // Detect platform-CDN URLs (Facebook, Instagram, GMB proxy). These
-      // aren't the original bytes — they're the platform's already-
-      // resized thumbnail served from their CDN. Reposting them back to
-      // Facebook / Instagram means we send Facebook its own thumbnail
-      // which it then re-compresses, yielding a tiny/blurry post
-      // (Loki: url_host=scontent-*.xx.fbcdn.net → image_rewritten:false).
-      // Strip those URLs so the user re-picks from Drive for full
-      // quality. Drive URLs and generic public URLs pass through.
-      const isPlatformCdn = (url) => {
-        if (!url) return false;
-        try {
-          const h = new URL(url).hostname.toLowerCase();
-          return (
-            h.endsWith('fbcdn.net') ||
-            h.endsWith('cdninstagram.com') ||
-            h.includes('lh3.googleusercontent.com') ||
-            h.includes('lh4.googleusercontent.com') ||
-            h.includes('lh5.googleusercontent.com')
-          );
-        } catch {
-          return false;
-        }
-      };
+      // Strip platform-CDN URLs (fbcdn, cdninstagram, lh*.googleusercontent).
+      // Uses the shared isPlatformCdnUrl helper defined above so
+      // repost + draft-load use the same logic. See handleDraftLoad for
+      // rationale.
       const rawUrls = media
         .map((m) => m.sourceUrl || m.url || m.thumbnailUrl)
         .filter(Boolean);
-      const usableUrls = rawUrls.filter((u) => !isPlatformCdn(u));
+      const usableUrls = rawUrls.filter((u) => {
+        const bad = isPlatformCdnUrl(u);
+        if (bad) {
+          // eslint-disable-next-line no-console
+          console.warn('[handleRepost] stripped platform-CDN URL — repick from Drive:', u);
+        }
+        return !bad;
+      });
       const droppedCount = rawUrls.length - usableUrls.length;
+      // eslint-disable-next-line no-console
+      console.log('[handleRepost] media rewriting', {
+        source_post_id: post.id,
+        raw: rawUrls,
+        kept: usableUrls,
+        dropped: droppedCount,
+      });
       const mediaObjs = usableUrls.map((sourceUrl) => ({ sourceUrl, mediaFormat: 'PHOTO' }));
       const ctaPayload =
         cta?.actionType && (cta.url || '').trim()
@@ -1522,15 +1537,60 @@ const Posts = () => {
    };
 
    // Load a saved draft into the composer (formData). Clears any edit-mode.
+   // Platform CDN detector — shared between repost + draft-load flows.
+   // If any of these show up in the composer we WILL end up publishing a
+   // low-res thumbnail because Facebook/Instagram/Google will re-serve
+   // their own compressed copy instead of the original.
+   const isPlatformCdnUrl = (url) => {
+     if (!url) return false;
+     try {
+       const h = new URL(url).hostname.toLowerCase();
+       return (
+         h.endsWith('fbcdn.net') ||
+         h.endsWith('cdninstagram.com') ||
+         h.includes('lh3.googleusercontent.com') ||
+         h.includes('lh4.googleusercontent.com') ||
+         h.includes('lh5.googleusercontent.com')
+       );
+     } catch {
+       return false;
+     }
+   };
+
    const loadDraftIntoComposer = (draft) => {
      setEditingPost(null);
      setActiveDraftId(draft.id);
-     const media = Array.isArray(draft.media)
+     const rawMedia = Array.isArray(draft.media)
        ? draft.media
            .map((m) => (typeof m === 'string' ? m : m?.sourceUrl || m?.url || ''))
            .filter(Boolean)
        : [];
+     // Strip any platform-CDN URLs saved into the draft before we knew
+     // better. Log LOUDLY so the user can see which URL got stripped and
+     // WHY the draft lost its image. Otherwise it looks silent.
+     const media = rawMedia.filter((u) => {
+       const bad = isPlatformCdnUrl(u);
+       if (bad) {
+         // eslint-disable-next-line no-console
+         console.warn('[loadDraftIntoComposer] stripped platform-CDN URL from draft — repick from Drive for full quality:', u);
+       }
+       return !bad;
+     });
+     if (media.length < rawMedia.length) {
+       showNotification(
+         `Removed ${rawMedia.length - media.length} low-quality thumbnail(s) from the draft. Repick from Drive.`,
+         'error'
+       );
+     }
      const cta = draft.call_to_action || null;
+     // eslint-disable-next-line no-console
+     console.log('[loadDraftIntoComposer] loaded draft', {
+       draftId: draft.id,
+       raw_media_count: rawMedia.length,
+       kept_media_count: media.length,
+       raw_media_urls: rawMedia,
+       kept_media_urls: media,
+     });
      setFormData({
        summary: draft.content || '',
        postType: draft.post_type || 'UPDATE',
