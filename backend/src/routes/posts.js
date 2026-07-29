@@ -1324,48 +1324,66 @@ router.delete('/:postId', invalidateCacheMiddleware({ pattern: 'user:*:posts*' }
       });
     }
     
-    try {
-      await axios.delete(
-        `https://mybusiness.googleapis.com/v4/accounts/${gmbAccountId}/locations/${gmbLocationId}/localPosts/${postId}`,
-        {
-          headers: {
-            'Authorization': `Bearer ${accessToken}`,
-            'Content-Type': 'application/json'
+    // Multi-token fanout: the post was created under exactly one of the
+    // user's connected Google accounts, so only that account's token
+    // can delete it. Anyone else gets 404 "Requested entity was not
+    // found." The previous single-token attempt then treated the 404
+    // as "already gone" and lied to the frontend — nothing was actually
+    // deleted. Try every token; only give up if ALL of them return 404.
+    let last404 = false;
+    const deleteAttempt = await tryWithEachBusinessToken(req.user?.userId, accessToken, async (tok) => {
+      try {
+        const resp = await axios.delete(
+          `https://mybusiness.googleapis.com/v4/accounts/${gmbAccountId}/locations/${gmbLocationId}/localPosts/${postId}`,
+          {
+            headers: { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' },
+            timeout: 10_000,
           }
-        }
-      );
+        );
+        return resp;
+      } catch (err) {
+        last404 = err?.response?.status === 404;
+        throw err;
+      }
+    });
+
+    if (deleteAttempt.ok) {
       logger.info('posts.gmb.delete_ok', {
         user_id: req.user?.userId,
         post_id: postId,
         gmb_account_id: gmbAccountId,
         gmb_location_id: gmbLocationId,
+        tokens_tried: deleteAttempt.tried,
       });
-      res.json({ success: true, message: 'Post deleted from Google Business Profile' });
-    } catch (gmbError) {
-      const status = gmbError?.response?.status || 500;
-      const gmbBody = gmbError?.response?.data;
-      logger.error('posts.gmb.delete_failed', {
-        user_id: req.user?.userId,
-        post_id: postId,
-        gmb_account_id: gmbAccountId,
-        gmb_location_id: gmbLocationId,
-        gmb_status: status,
-        gmb_error: gmbBody?.error?.message || gmbError?.message,
-      });
-      // No more silent success — surface the real reason so the user
-      // knows the post is still live and duplicates aren't just a
-      // display glitch. Common cases: token lacks locations write scope,
-      // wrong account for the location, post already deleted (404 →
-      // treat as idempotent success).
-      if (status === 404) {
-        return res.json({ success: true, message: 'Post already gone from Google Business Profile' });
-      }
-      return res.status(status >= 400 && status < 600 ? status : 502).json({
-        success: false,
-        error: gmbBody?.error?.message || 'Google Business Profile rejected the delete',
-        gmbStatus: status,
-      });
+      return res.json({ success: true, message: 'Post deleted from Google Business Profile' });
     }
+
+    // Every token failed. If all of them returned 404 the post really
+    // isn't accessible under any connected account — either it was
+    // already deleted or it was never owned by this user in the first
+    // place. Either way, from the app's perspective it's gone; treat
+    // as idempotent success so the UI stops showing a stale card.
+    const gmbError = deleteAttempt.error;
+    const status = gmbError?.response?.status || 500;
+    const gmbBody = gmbError?.response?.data;
+    logger.error('posts.gmb.delete_failed', {
+      user_id: req.user?.userId,
+      post_id: postId,
+      gmb_account_id: gmbAccountId,
+      gmb_location_id: gmbLocationId,
+      gmb_status: status,
+      tokens_tried: deleteAttempt.tried,
+      all_404: deleteAttempt.allUnauthorized ? 'unauthorized' : last404 ? 'yes' : 'no',
+      gmb_error: gmbBody?.error?.message || gmbError?.message,
+    });
+    if (status === 404) {
+      return res.json({ success: true, message: 'Post already gone from Google Business Profile' });
+    }
+    return res.status(status >= 400 && status < 600 ? status : 502).json({
+      success: false,
+      error: gmbBody?.error?.message || 'Google Business Profile rejected the delete',
+      gmbStatus: status,
+    });
     
   } catch (error) {
     console.error('Error deleting post:', error);
