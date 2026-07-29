@@ -670,6 +670,68 @@ const Calendar = () => {
         </div>
       </div>
 
+      {/* Accounts chip picker — pinned above the calendar so the layout
+          matches the Posts page (chips at the top, workspace below). */}
+      <div className="bg-white shadow rounded-lg p-4 mb-6">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-medium text-gray-900">Accounts</h3>
+          {chipTargets.length > 0 && (
+            <div className="flex gap-2 text-xs">
+              <button onClick={selectAllLocations} className="text-primary-600 hover:underline">
+                All
+              </button>
+              <span className="text-gray-300">·</span>
+              <button onClick={clearAllLocations} className="text-gray-500 hover:underline">
+                None
+              </button>
+            </div>
+          )}
+        </div>
+        {chipTargets.length === 0 ? (
+          <div className="text-xs text-gray-500">
+            No connected business profiles yet.
+            <button
+              onClick={() => navigate('/connections')}
+              className="ml-1 text-primary-600 hover:underline"
+            >
+              Connect one
+            </button>
+            .
+          </div>
+        ) : (
+          <div className="flex flex-wrap gap-3">
+            {chipTargets.map((t) => {
+              const selected = selectedLocationKeys.has(t.key);
+              const { Icon, wrap } = providerBadge(t.provider);
+              return (
+                <button
+                  key={t.key}
+                  type="button"
+                  onClick={() => toggleLocation(t.key)}
+                  title={`${t.label} — ${t.accountLabel}`}
+                  className={`relative group flex-shrink-0 rounded-full transition
+                    ${selected
+                      ? 'ring-2 ring-primary-500 ring-offset-2'
+                      : 'ring-1 ring-gray-200 hover:ring-primary-300'}`}
+                >
+                  <div className="h-12 w-12 rounded-full overflow-hidden bg-gray-100 flex items-center justify-center">
+                    <ChipAvatar url={t.avatarUrl} label={t.label} selected={selected} provider={t.provider} />
+                  </div>
+                  <span className={`absolute -bottom-0.5 -right-0.5 h-5 w-5 rounded-full ${wrap} flex items-center justify-center ring-2 ring-white`}>
+                    <Icon className="h-3 w-3 text-white" />
+                  </span>
+                  {selected && (
+                    <span className="absolute -top-0.5 -right-0.5 h-4 w-4 rounded-full bg-primary-600 flex items-center justify-center ring-2 ring-white">
+                      <Check className="h-3 w-3 text-white" />
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-[260px_1fr] gap-6">
         {/* Sidebar */}
         <aside className="space-y-6">
@@ -693,68 +755,6 @@ const Calendar = () => {
                 </button>
               ))}
             </div>
-          </FilterCard>
-
-          <FilterCard
-            title="Accounts"
-            headerRight={
-              chipTargets.length > 0 && (
-                <div className="flex gap-2 text-xs">
-                  <button onClick={selectAllLocations} className="text-primary-600 hover:underline">
-                    All
-                  </button>
-                  <span className="text-gray-300">·</span>
-                  <button onClick={clearAllLocations} className="text-gray-500 hover:underline">
-                    None
-                  </button>
-                </div>
-              )
-            }
-          >
-            {chipTargets.length === 0 ? (
-              <div className="text-xs text-gray-500">
-                No connected business profiles yet.
-                <button
-                  onClick={() => navigate('/connections')}
-                  className="ml-1 text-primary-600 hover:underline"
-                >
-                  Connect one
-                </button>
-                .
-              </div>
-            ) : (
-              <div className="flex flex-wrap gap-3 max-h-72 overflow-y-auto pr-1">
-                {chipTargets.map((t) => {
-                  const selected = selectedLocationKeys.has(t.key);
-                  const { Icon, wrap } = providerBadge(t.provider);
-                  return (
-                    <button
-                      key={t.key}
-                      type="button"
-                      onClick={() => toggleLocation(t.key)}
-                      title={`${t.label} — ${t.accountLabel}`}
-                      className={`relative group flex-shrink-0 rounded-full transition
-                        ${selected
-                          ? 'ring-2 ring-primary-500 ring-offset-2'
-                          : 'ring-1 ring-gray-200 hover:ring-primary-300'}`}
-                    >
-                      <div className="h-12 w-12 rounded-full overflow-hidden bg-gray-100 flex items-center justify-center">
-                        <ChipAvatar url={t.avatarUrl} label={t.label} selected={selected} provider={t.provider} />
-                      </div>
-                      {/* Provider badge (bottom-right) — matches Posts.js chip style. */}
-                      <span className={`absolute -bottom-0.5 -right-0.5 h-5 w-5 rounded-full ${wrap} flex items-center justify-center ring-2 ring-white`}>
-                        <Icon className="h-3 w-3 text-white" />
-                      </span>
-                      {selected && (
-                        <span className="absolute -top-0.5 -right-0.5 h-4 w-4 rounded-full bg-primary-600 flex items-center justify-center ring-2 ring-white">
-                          <Check className="h-3 w-3 text-white" />
-                        </span>
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
           </FilterCard>
 
           <FilterCard

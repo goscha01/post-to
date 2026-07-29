@@ -390,9 +390,12 @@ router.get('/', async (req, res) => {
 
   try {
     const [pubQ, schedQ] = await Promise.all([
+      // media_data column is optional in prod (add-image-storage.sql may
+      // not be applied). media_urls is universal — firstMediaUrl handles
+      // both shapes.
       supabase
         .from('social_media_posts')
-        .select('id, post_id, platform, content, media_urls, media_data, published_at, gmb_account_id, location_id')
+        .select('id, post_id, platform, content, media_urls, published_at, gmb_account_id, location_id')
         .eq('user_id', userId)
         .gte('published_at', from.toISOString())
         .lte('published_at', to.toISOString())

@@ -263,21 +263,41 @@ const savePostToDatabase = async (userId, postData) => {
       post_id: postData.postId || null,
       content: postData.content,
       media_urls: mediaUrls,
-      media_data: [...mediaData, ...cachedImageData],
       published_at: postData.posted_at || new Date().toISOString(),
       status: 'published'
     };
+    // media_data is an optional JSONB column (see add-image-storage.sql).
+    // Only include it when we actually have media metadata AND the column
+    // exists — otherwise the whole insert 400s and every cached post is
+    // silently dropped. Detect the column by attempting the insert with it,
+    // and fall back to the base shape on the specific "column does not
+    // exist" error.
+    const combinedMedia = [...mediaData, ...cachedImageData];
 
-    // Inserting post data
-
-
-    const { data, error } = await supabase
+    let { data, error } = await supabase
       .from('social_media_posts')
-      .insert(insertData)
+      .insert(combinedMedia.length > 0 ? { ...insertData, media_data: combinedMedia } : insertData)
       .select()
       .single();
 
+    if (error && /column .*media_data.* does not exist/i.test(error.message || '')) {
+      // Retry without the missing optional column so the media_urls fallback
+      // still gives us a thumbnail on the calendar.
+      ({ data, error } = await supabase
+        .from('social_media_posts')
+        .insert(insertData)
+        .select()
+        .single());
+    }
+
     if (error) {
+      logger.error('savePostToDatabase.insert_error', {
+        user_id: userId,
+        gmb_account_id: insertData.gmb_account_id,
+        location_id: insertData.location_id,
+        post_id: insertData.post_id,
+        error: error.message,
+      });
       return null;
     }
 
