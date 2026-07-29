@@ -1633,7 +1633,10 @@ const HeroImageField = ({ blog, onChange }) => {
 // keyword (falls back to title). User can edit the query and re-search;
 // clicking a photo triggers server-side download → S3 upload → row update.
 const HeroSuggestModal = ({ blog, onClose, onPicked }) => {
-  const [query, setQuery] = useState(blog?.keyword || blog?.title || '');
+  // Initial query: prefer the cached AI-generated visual query if the row
+  // already has one (subsequent opens don't hit OpenAI). Blank otherwise —
+  // backend will generate + return one on the first search.
+  const [query, setQuery] = useState(blog?.visual_search_query || '');
   const [photos, setPhotos] = useState([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
@@ -1660,7 +1663,7 @@ const HeroSuggestModal = ({ blog, onClose, onPicked }) => {
     setPickingId(photo.id);
     setErr('');
     try {
-      const updated = await blogsService.setHeroImageFromUrl(blog.id, photo.full_url);
+      const updated = await blogsService.setHeroImageFromUrl(blog.id, photo.full_url, photo.id);
       onPicked(updated);
     } catch (e) {
       setErr(e.response?.data?.error || 'Failed to set hero image');

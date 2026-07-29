@@ -58,6 +58,8 @@ const PUBLIC_FIELDS = [
   'status',
   'published_at',
   'hero_image',
+  'hero_image_source_id',
+  'visual_search_query',
   'created_at',
   'updated_at',
 ].join(', ');
@@ -547,24 +549,75 @@ router.delete('/:id/hero-image', [param('id').isUUID()], async (req, res) => {
   }
 });
 
-// Suggest hero-image candidates from Pexels. Query defaults to the blog's
-// keyword (from GSC-driven generation) → title → user-supplied override
-// via ?q=. Returns up to 9 landscape candidates the UI displays as a grid.
+// Suggest hero-image candidates from Pexels.
+//
+// Query resolution (first available wins):
+//   1. explicit ?q= (user typed one in the UI's search box)
+//   2. blog.visual_search_query (cached AI-generated visual terms — populated
+//      lazily by this endpoint on first call for the article)
+//   3. AI-generated on-the-fly using title + excerpt (cached back onto the row)
+//   4. blog.keyword (SEO term — usually wrong for visual results but a safe
+//      last resort)
+//   5. blog.title
+//
+// Dedup: collects hero_image_source_id from every other blog_articles row
+// for this user and passes them to searchPexels() as excludeIds. Photos the
+// user has ever picked are filtered out of the results.
 router.get('/:id/suggest-hero-images', [param('id').isUUID()], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) return res.status(400).json({ error: 'Invalid id' });
   try {
     const { data: blog, error: loadErr } = await supabase
       .from('blog_articles')
-      .select('id, keyword, title')
+      .select('id, keyword, title, meta_description, suggested_excerpt, visual_search_query')
       .eq('user_id', req.user.userId).eq('id', req.params.id).single();
     if (loadErr || !blog) return res.status(404).json({ error: 'Blog not found' });
 
-    const query = String(req.query.q || blog.keyword || blog.title || '').trim();
+    let query = String(req.query.q || '').trim();
+    let generated = false;
+
+    if (!query) {
+      // Prefer cached visual query on the row.
+      if (blog.visual_search_query && blog.visual_search_query.trim()) {
+        query = blog.visual_search_query.trim();
+      } else {
+        // Generate + cache. Falls back to keyword/title if OpenAI is
+        // unavailable — better a mediocre search than a 500.
+        const excerpt = blog.suggested_excerpt || blog.meta_description || '';
+        const generatedQuery = await stockImageService.generateVisualQuery({
+          title: blog.title || '',
+          excerpt,
+        });
+        if (generatedQuery) {
+          query = generatedQuery;
+          generated = true;
+          // Persist so we don't re-call OpenAI on every modal-open. Non-fatal
+          // if the write fails (query still works for this call).
+          await supabase.from('blog_articles')
+            .update({ visual_search_query: generatedQuery })
+            .eq('id', blog.id).eq('user_id', req.user.userId)
+            .then(() => {}, () => {});
+        } else {
+          query = String(blog.keyword || blog.title || '').trim();
+        }
+      }
+    }
     if (!query) return res.status(400).json({ error: 'No query available — pass ?q=…' });
 
-    const photos = await stockImageService.searchPexels(query);
-    res.json({ query, photos });
+    // Gather source_ids already used by this user's other articles, so we
+    // don't recommend the same photo twice. Only rows that HAVE an id
+    // (i.e. picked from a suggest flow) count — manual uploads don't need
+    // deduping.
+    const { data: usedRows } = await supabase.from('blog_articles')
+      .select('hero_image_source_id')
+      .eq('user_id', req.user.userId)
+      .not('hero_image_source_id', 'is', null);
+    const excludeIds = (usedRows || [])
+      .map(r => r.hero_image_source_id)
+      .filter(Boolean);
+
+    const photos = await stockImageService.searchPexels(query, { excludeIds });
+    res.json({ query, photos, generated, excludedCount: excludeIds.length });
   } catch (err) {
     logger.warn('blogs.hero_suggest_failed', { error: err.message, id: req.params.id });
     res.status(err.status || 500).json({ error: err.message || 'Suggestion failed' });
@@ -574,11 +627,14 @@ router.get('/:id/suggest-hero-images', [param('id').isUUID()], async (req, res) 
 // Set the hero image from a picked candidate URL. Server-side downloads the
 // image bytes (so the image lands on the customer's own S3 — no hotlinking)
 // then goes through the same upload pipeline as a manual file upload.
+// Also persists sourceId (e.g. "pexels:12345") when provided so future
+// suggest calls can dedupe it out of results.
 router.post(
   '/:id/hero-image/from-url',
   [
     param('id').isUUID(),
     body('url').isString().isURL({ require_protocol: true }).isLength({ max: 2048 }),
+    body('sourceId').optional().isString().isLength({ max: 128 }),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -592,6 +648,14 @@ router.post(
         contentType,
         bytes,
       });
+      // Non-fatal: dedup breaks a bit if this fails but the image itself is
+      // already on S3 and the row's hero_image is set.
+      if (req.body.sourceId) {
+        await supabase.from('blog_articles')
+          .update({ hero_image_source_id: req.body.sourceId })
+          .eq('id', req.params.id).eq('user_id', req.user.userId)
+          .then(() => {}, (e) => logger.warn('blogs.hero.source_id_save_failed', { error: e.message }));
+      }
       res.json({ blog: updated });
     } catch (err) {
       logger.error('blogs.hero_from_url_failed', { error: err.message, id: req.params.id });

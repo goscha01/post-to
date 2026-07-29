@@ -96,8 +96,9 @@ const suggestHeroImages = async (id, q) => {
   return res.data; // { query, photos: [...] }
 };
 
-const setHeroImageFromUrl = async (id, url) => {
-  const res = await axios.post(`/api/blogs/${id}/hero-image/from-url`, { url });
+const setHeroImageFromUrl = async (id, url, sourceId) => {
+  const body = sourceId ? { url, sourceId } : { url };
+  const res = await axios.post(`/api/blogs/${id}/hero-image/from-url`, body);
   return res.data?.blog;
 };
 
