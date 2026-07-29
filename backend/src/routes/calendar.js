@@ -403,11 +403,15 @@ router.get('/', async (req, res) => {
         .limit(500),
       supabase
         .from('scheduled_posts')
-        .select('id, content, media, platforms, scheduled_time, status, gmb_account_id, location_id')
+        // Include 'failed' too so the user sees what didn't land — hiding
+        // them made scheduled posts appear to have "vanished" once the
+        // publisher hit a 400. Also grab `error` so the detail modal can
+        // explain why.
+        .select('id, content, media, platforms, scheduled_time, status, gmb_account_id, location_id, error')
         .eq('user_id', userId)
         .gte('scheduled_time', from.toISOString())
         .lte('scheduled_time', to.toISOString())
-        .in('status', ['scheduled'])
+        .in('status', ['scheduled', 'failed'])
         .order('scheduled_time', { ascending: true })
         .limit(500),
     ]);
@@ -467,6 +471,7 @@ router.get('/', async (req, res) => {
         content: r.content || '',
         thumbUrl: firstMediaUrl(r),
         status: r.status || 'scheduled',
+        error: r.error || null,
       };
     });
 

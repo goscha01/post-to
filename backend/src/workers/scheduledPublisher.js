@@ -16,6 +16,19 @@ const axios = require('axios');
 const { tryWithEachBusinessToken } = require('../utils/businessTokens');
 const logger = require('../utils/logger');
 
+// Reuse the immediate-publish path's Drive URL detection + signed proxy
+// builder so scheduled posts get the same URL rewrites. Prior version sent
+// raw drive.google.com URLs, which GMB cannot fetch — every scheduled
+// post with Drive media 400'd at publish time.
+function extractDriveFileIdFromUrl(url) {
+  if (!url || typeof url !== 'string') return null;
+  let m = url.match(/[?&]id=([a-zA-Z0-9_-]{10,})/);
+  if (m) return m[1];
+  m = url.match(/\/file\/d\/([a-zA-Z0-9_-]{10,})/);
+  if (m) return m[1];
+  return null;
+}
+
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY
@@ -109,6 +122,9 @@ async function mirrorToSocialMediaPosts(row, gmbPostId) {
     const mediaUrls = Array.isArray(row.media)
       ? row.media.map((m) => (typeof m === 'string' ? m : m?.sourceUrl || m?.url)).filter(Boolean)
       : [];
+    // media_data column is optional in prod (add-image-storage.sql may
+    // not be applied). Omit it so the insert doesn't 400 and drop the
+    // mirrored calendar row.
     await supabase.from('social_media_posts').insert({
       user_id: row.user_id,
       gmb_account_id: row.gmb_account_id,
@@ -117,7 +133,6 @@ async function mirrorToSocialMediaPosts(row, gmbPostId) {
       post_id: gmbPostId,
       content: row.content,
       media_urls: mediaUrls,
-      media_data: [],
       published_at: new Date().toISOString(),
       status: 'published',
     });
@@ -132,7 +147,16 @@ async function mirrorToSocialMediaPosts(row, gmbPostId) {
 }
 
 async function publishOne(row) {
-  const media = Array.isArray(row.media)
+  // Rewrite Drive URLs to our signed proxy — same trick the immediate
+  // publish path uses. Required late-bind of ./routes/drive because that
+  // module pulls express and would introduce a cycle if required at top.
+  const publicBaseUrl =
+    process.env.PUBLIC_BACKEND_URL ||
+    process.env.BACKEND_URL ||
+    'https://self-post-production.up.railway.app';
+  const { buildSignedDriveProxyUrl } = require('../routes/drive');
+
+  let media = Array.isArray(row.media)
     ? row.media
         .map((m) => {
           if (!m) return null;
@@ -142,6 +166,28 @@ async function publishOne(row) {
         })
         .filter(Boolean)
     : [];
+
+  media = media.map((m) => {
+    const fileId = extractDriveFileIdFromUrl(m.sourceUrl);
+    if (!fileId) return m;
+    const signed = buildSignedDriveProxyUrl({
+      userId: row.user_id,
+      fileId,
+      baseUrl: publicBaseUrl,
+      ttlSeconds: 3600,
+    });
+    return { ...m, sourceUrl: signed };
+  });
+
+  // GMB localPosts.create accepts exactly 1 photo. More → 400 INVALID_ARGUMENT.
+  // Truncate defensively so multi-image drafts still publish.
+  if (media.length > 1) {
+    logger.info('scheduled_publisher.media_truncated', {
+      scheduled_id: row.id,
+      dropped_count: media.length - 1,
+    });
+    media = media.slice(0, 1);
+  }
 
   const gmbBody = {
     languageCode: 'en-US',
@@ -178,6 +224,31 @@ async function publishOne(row) {
   return { gmbPostId, gmbResponse };
 }
 
+// GMB nests useful failure detail under error.details[].fieldViolations[]
+// or error.errors[0].message. The top-level message is generic. Surface as
+// much as we can so a "Request contains an invalid argument" doesn't stay
+// opaque forever.
+function extractGmbErrorMessage(err) {
+  const top = err?.response?.data?.error;
+  const parts = [];
+  if (top?.message) parts.push(top.message);
+  if (Array.isArray(top?.details)) {
+    for (const d of top.details) {
+      if (Array.isArray(d?.fieldViolations)) {
+        for (const fv of d.fieldViolations) {
+          if (fv?.description) parts.push(`${fv.field || 'field'}: ${fv.description}`);
+        }
+      }
+      if (d?.reason) parts.push(`reason=${d.reason}`);
+    }
+  }
+  if (Array.isArray(top?.errors)) {
+    for (const e of top.errors) if (e?.message) parts.push(e.message);
+  }
+  if (!parts.length && err?.message) parts.push(err.message);
+  return parts.join(' | ');
+}
+
 async function tick() {
   let due = [];
   try {
@@ -212,7 +283,7 @@ async function tick() {
         location_id: row.location_id,
       });
     } catch (err) {
-      const message = err?.response?.data?.error?.message || err?.message || 'unknown error';
+      const message = extractGmbErrorMessage(err) || 'unknown error';
       await releaseFailed(row.id, message);
       logger.error('scheduled_publisher.failed', {
         scheduled_id: row.id,

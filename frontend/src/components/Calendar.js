@@ -1059,7 +1059,10 @@ const DayCell = ({ day, items, allLocations, isOtherMonth, isToday, isWeekendCol
       </div>
       <div className="flex-1 flex flex-col gap-1 overflow-hidden">
         {visible.map((item) => {
-          const color = colorForItem(item, allLocations);
+          const isFailed = item.status === 'failed';
+          const color = isFailed
+            ? { bg: 'bg-red-50', border: 'border-red-300', dot: 'bg-red-500', text: 'text-red-900' }
+            : colorForItem(item, allLocations);
           const isScheduled = item.kind === 'scheduled';
           return (
             <button
@@ -1070,16 +1073,18 @@ const DayCell = ({ day, items, allLocations, isOtherMonth, isToday, isWeekendCol
                 onPillClick(item);
               }}
               className={`text-left rounded border ${color.border} ${color.bg} px-1.5 py-1 hover:brightness-95 transition-all`}
-              title={item.content}
+              title={isFailed ? `Failed: ${item.error || 'unknown error'}` : item.content}
             >
               <div className="flex items-center gap-1.5 min-w-0">
                 <span className={`h-1.5 w-1.5 rounded-full flex-none ${color.dot}`} />
                 <span className={`text-[11px] font-medium ${color.text} truncate flex-1`}>
                   {truncate(item.content, 40) || (isScheduled ? 'Scheduled post' : 'Post')}
                 </span>
-                {isScheduled && (
+                {isFailed ? (
+                  <AlertCircle className="h-3 w-3 text-red-600 flex-none" />
+                ) : isScheduled ? (
                   <Clock className="h-3 w-3 text-gray-500 flex-none" />
-                )}
+                ) : null}
               </div>
               <div className="text-[10px] text-gray-500 mt-0.5 flex items-center gap-1">
                 {fmtTime(item._date)}
@@ -1175,13 +1180,19 @@ const DayItemsModal = ({ day, items, allLocations, chipTargets = [], onClose, on
                       </span>
                       <span
                         className={`ml-auto inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium flex-none ${
-                          isScheduled
+                          item.status === 'failed'
+                            ? 'bg-red-100 text-red-800'
+                            : isScheduled
                             ? 'bg-amber-100 text-amber-800'
                             : 'bg-emerald-100 text-emerald-800'
                         }`}
                       >
-                        {isScheduled ? <Clock className="h-3 w-3" /> : <CalendarIcon className="h-3 w-3" />}
-                        {isScheduled ? 'Scheduled' : 'Published'}
+                        {item.status === 'failed'
+                          ? <AlertCircle className="h-3 w-3" />
+                          : isScheduled
+                          ? <Clock className="h-3 w-3" />
+                          : <CalendarIcon className="h-3 w-3" />}
+                        {item.status === 'failed' ? 'Failed' : isScheduled ? 'Scheduled' : 'Published'}
                       </span>
                     </div>
                     <div className="text-sm text-gray-900 line-clamp-2">
@@ -1243,13 +1254,19 @@ const DetailModal = ({ item, location, allLocations, onClose, onCancelled }) => 
               <div className="text-xs text-gray-500 flex items-center gap-2 mt-0.5">
                 <span
                   className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium ${
-                    isScheduled
+                    item.status === 'failed'
+                      ? 'bg-red-100 text-red-800'
+                      : isScheduled
                       ? 'bg-amber-100 text-amber-800'
                       : 'bg-emerald-100 text-emerald-800'
                   }`}
                 >
-                  {isScheduled ? <Clock className="h-3 w-3" /> : <CalendarIcon className="h-3 w-3" />}
-                  {isScheduled ? 'Scheduled' : 'Published'}
+                  {item.status === 'failed'
+                    ? <AlertCircle className="h-3 w-3" />
+                    : isScheduled
+                    ? <Clock className="h-3 w-3" />
+                    : <CalendarIcon className="h-3 w-3" />}
+                  {item.status === 'failed' ? 'Failed' : isScheduled ? 'Scheduled' : 'Published'}
                 </span>
                 <span>
                   {when.toLocaleDateString(undefined, {
@@ -1286,6 +1303,14 @@ const DetailModal = ({ item, location, allLocations, onClose, onCancelled }) => 
         )}
 
         <div className="p-5">
+          {item.status === 'failed' && item.error && (
+            <div className="mb-4 p-3 rounded-md bg-red-50 border border-red-200">
+              <div className="text-xs font-semibold text-red-800 mb-1">
+                Publish failed
+              </div>
+              <div className="text-xs text-red-700 break-words">{item.error}</div>
+            </div>
+          )}
           <div className="text-sm text-gray-800 whitespace-pre-wrap">
             {item.content || <span className="text-gray-400 italic">No content</span>}
           </div>
