@@ -2,14 +2,13 @@
 //
 // Lookup source: connected_accounts where provider='blog_domain', with
 // metadata.hostname matching. A tiny in-memory cache avoids hammering
-// Supabase on every request; cache TTL is short so a newly-added domain
-// starts working within a minute without a service restart.
+// Supabase on every request. On Vercel, module-level caches persist across
+// invocations that hit the same warm instance (typical case for busy hosts).
 
 const supabase = require('./supabase');
-const logger = require('./logger');
 
 const CACHE_TTL_MS = 60 * 1000;
-const cache = new Map(); // hostname -> { userId, connectionId, metadata, expiresAt }
+const cache = new Map(); // hostname -> { userId, connectionId, metadata, hostname, expiresAt }
 
 function normalizeHost(raw) {
   if (!raw || typeof raw !== 'string') return '';
@@ -32,7 +31,7 @@ async function resolveHost(hostRaw) {
     .maybeSingle();
 
   if (error) {
-    logger.error('host_resolver.query_failed', { host, error: error.message });
+    console.error('host_resolver.query_failed', host, error.message);
     return null;
   }
   if (!data || data.status !== 'active' || !data.metadata?.verified) {
@@ -51,8 +50,4 @@ async function resolveHost(hostRaw) {
   return record;
 }
 
-function invalidateHost(hostRaw) {
-  cache.delete(normalizeHost(hostRaw));
-}
-
-module.exports = { resolveHost, invalidateHost, normalizeHost };
+module.exports = { resolveHost, normalizeHost };
