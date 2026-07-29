@@ -802,6 +802,27 @@ const Posts = () => {
       setCreatingPost(false);
       return;
     }
+    // Early block: if any selected media is a platform-CDN thumbnail
+    // (fbcdn, cdninstagram, googleusercontent) AND the target list
+    // includes a FB or IG account, refuse to publish. FB/IG will re-serve
+    // their own compressed thumbnail from those URLs → low-quality post.
+    // Surface a single loud alert (not just a toast) so the user can't
+    // miss why nothing published.
+    if (hasSocial) {
+      const cdnRe = /(fbcdn\.net|cdninstagram\.com|googleusercontent\.com)/i;
+      const badMedia = validMediaUrls.filter((u) => cdnRe.test(u));
+      if (badMedia.length > 0) {
+        // eslint-disable-next-line no-console
+        console.warn('[handleCreatePost] bailed: selected media is a platform-CDN thumbnail', badMedia);
+        alert(
+          `Can't publish — the selected image is a low-res platform thumbnail (fbcdn.net / cdninstagram.com / googleusercontent.com).\n\n` +
+          `Facebook/Instagram will only re-serve a small compressed copy from that URL.\n\n` +
+          `Fix: click "Add from Google Drive" and repick the original photo, then try again.`
+        );
+        setCreatingPost(false);
+        return;
+      }
+    }
     if (postingMode === 'later' && hasSocial) {
       alert('Scheduling is not supported for Facebook / Instagram yet. Deselect those chips or switch to "publish now".');
       setCreatingPost(false);
