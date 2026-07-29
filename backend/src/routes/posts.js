@@ -623,6 +623,32 @@ router.get('/location/:locationId', async (req, res) => {
           // Save existing posts to database
           const savedPosts = await saveExistingPostsToDatabase(req.user.userId, realPosts, 'google');
 
+          // Enrich each post with the ORIGINAL source URL the user
+          // submitted at publish time, so a "Copy" of the post can be
+          // re-published at full quality instead of using the tiny
+          // googleusercontent thumbnail Google returns for its own posts.
+          try {
+            const ids = realPosts.map((p) => p.id).filter(Boolean);
+            if (ids.length > 0) {
+              const { data: srcRows, error: srcErr } = await supabase
+                .from('published_media_source')
+                .select('provider_post_id, source_url')
+                .eq('user_id', userId)
+                .eq('provider', 'gmb')
+                .in('provider_post_id', ids);
+              if (srcErr) throw srcErr;
+              const byId = new Map((srcRows || []).map((r) => [r.provider_post_id, r.source_url]));
+              for (const p of realPosts) {
+                if (byId.has(p.id)) p._originalSourceUrl = byId.get(p.id);
+              }
+            }
+          } catch (srcErr) {
+            logger.warn('posts.location.source_lookup_failed', {
+              user_id: userId,
+              error: srcErr.message,
+            });
+          }
+
           logger.info('posts.location.response', {
             user_id: userId,
             account_id: accountId,
@@ -1053,7 +1079,42 @@ router.post('/', upload.array('images', 10), parseMultipartJsonFields, [
           };
           
           const savedPost = await savePostToDatabase(req.user.userId, postData);
-          
+
+          // Remember the original source URL the user submitted so a later
+          // "Copy" of this post re-publishes at full quality (bypassing
+          // Google's re-hosted googleusercontent thumbnail).
+          try {
+            const providerPostId = gmbResponse.data.name.split('/').pop();
+            const originalSource =
+              (Array.isArray(media) && (media[0]?.sourceUrl || media[0]?.url)) || null;
+            if (providerPostId && originalSource) {
+              const driveFileId = extractDriveFileIdFromUrl(originalSource) || null;
+              const { error: srcErr } = await supabase
+                .from('published_media_source')
+                .upsert(
+                  {
+                    user_id: req.user.userId,
+                    provider: 'gmb',
+                    provider_post_id: providerPostId,
+                    source_url: originalSource,
+                    drive_file_id: driveFileId,
+                  },
+                  { onConflict: 'user_id,provider,provider_post_id' }
+                );
+              if (srcErr) throw srcErr;
+              logger.info('posts.gmb.source_saved', {
+                user_id: req.user.userId,
+                provider_post_id: providerPostId,
+                has_drive_file_id: !!driveFileId,
+              });
+            }
+          } catch (srcErr) {
+            logger.warn('posts.gmb.source_save_failed', {
+              user_id: req.user?.userId,
+              error: srcErr.message,
+            });
+          }
+
           return res.json({
             success: true,
             message: 'Post created successfully on Google My Business',
