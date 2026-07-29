@@ -1300,32 +1300,35 @@ const BlogDomainRow = ({ domain, cnameTarget, busy, onVerify, onDelete }) => {
   const verified = !!domain.metadata?.verified;
   const target = domain.metadata?.cname_target || cnameTarget;
 
-  // Verified: single-line chip.
+  // Verified: single-line chip with a mini theme preview + refresh button.
   if (verified) {
     return (
-      <li className="flex items-center justify-between gap-3 border border-green-200 bg-green-50 rounded-md px-3 py-2">
-        <div className="flex items-center gap-2 min-w-0">
-          <Check className="h-4 w-4 text-green-700 flex-shrink-0" />
-          <a
-            href={`https://${hostname}`}
-            target="_blank"
-            rel="noreferrer"
-            className="font-medium text-gray-900 text-sm truncate hover:underline"
+      <li className="border border-green-200 bg-green-50 rounded-md px-3 py-2 space-y-2">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2 min-w-0">
+            <Check className="h-4 w-4 text-green-700 flex-shrink-0" />
+            <a
+              href={`https://${hostname}`}
+              target="_blank"
+              rel="noreferrer"
+              className="font-medium text-gray-900 text-sm truncate hover:underline"
+            >
+              {hostname}
+            </a>
+            <span className="inline-flex items-center gap-1 text-xs text-green-800">
+              <ExternalLink className="h-3 w-3" /> live
+            </span>
+          </div>
+          <button
+            onClick={onDelete}
+            disabled={busy}
+            className="p-1 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded disabled:opacity-50"
+            title="Remove"
           >
-            {hostname}
-          </a>
-          <span className="inline-flex items-center gap-1 text-xs text-green-800">
-            <ExternalLink className="h-3 w-3" /> live
-          </span>
+            <Trash2 className="h-4 w-4" />
+          </button>
         </div>
-        <button
-          onClick={onDelete}
-          disabled={busy}
-          className="p-1 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded disabled:opacity-50"
-          title="Remove"
-        >
-          <Trash2 className="h-4 w-4" />
-        </button>
+        <VerifiedThemeStrip domain={domain} />
       </li>
     );
   }
@@ -1409,6 +1412,72 @@ const BlogDomainRow = ({ domain, cnameTarget, busy, onVerify, onDelete }) => {
         </>
       )}
     </li>
+  );
+};
+
+// VerifiedThemeStrip — mini theme preview + Refresh button under a verified
+// blog domain row. Shows the scraped primary color swatch, logo thumbnail,
+// and detected font family, so the user can see at a glance whether the
+// auto-populated theme looks right. Refresh re-runs the scrape.
+const VerifiedThemeStrip = ({ domain }) => {
+  const [busy, setBusy] = useState(false);
+  const [flash, setFlash] = useState('');
+  const [current, setCurrent] = useState(domain);
+  const theme = current.metadata?.theme || {};
+  const hasAnything = theme.primaryColor || theme.fontFamily || theme.logoUrl;
+
+  const refresh = async () => {
+    setBusy(true);
+    setFlash('');
+    try {
+      const updated = await blogsService.refreshDomainTheme(current.id);
+      setCurrent(updated);
+      setFlash('Refreshed from main site');
+      setTimeout(() => setFlash(''), 2500);
+    } catch (e) {
+      setFlash(e.response?.data?.error || 'Refresh failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="flex items-center justify-between gap-3 text-xs">
+      <div className="flex items-center gap-3 min-w-0 text-gray-600">
+        {theme.logoUrl && (
+          <img src={theme.logoUrl} alt="logo" className="h-5 w-5 rounded object-contain bg-white border border-gray-200" />
+        )}
+        {theme.primaryColor && (
+          <span className="inline-flex items-center gap-1">
+            <span
+              className="h-3 w-3 rounded-full border border-gray-300"
+              style={{ backgroundColor: theme.primaryColor }}
+              title={theme.primaryColor}
+            />
+            <span className="font-mono text-[11px]">{theme.primaryColor}</span>
+          </span>
+        )}
+        {theme.fontFamily && (
+          <span className="text-[11px] text-gray-500">{theme.fontFamily}</span>
+        )}
+        {!hasAnything && (
+          <span className="text-[11px] text-gray-500 italic">No theme scraped yet — click Refresh.</span>
+        )}
+      </div>
+      <div className="flex items-center gap-2 flex-shrink-0">
+        {flash && <span className="text-[11px] text-green-700">{flash}</span>}
+        <button
+          type="button"
+          onClick={refresh}
+          disabled={busy}
+          className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] text-gray-600 hover:text-gray-900 hover:bg-white rounded disabled:opacity-50"
+          title="Re-scrape the main site for theme signals"
+        >
+          <RefreshCw className={`h-3 w-3 ${busy ? 'animate-spin' : ''}`} />
+          {busy ? 'Scanning…' : 'Refresh theme'}
+        </button>
+      </div>
+    </div>
   );
 };
 

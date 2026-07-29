@@ -22,17 +22,25 @@ function escapeHtml(str) {
     .replace(/'/g, '&#39;');
 }
 
-function baseStyles() {
+function baseStyles(theme) {
+  const primary = theme?.primaryColor || '#2563eb';
+  // Font stack: if we know the site's primary family, put it first with the
+  // usual system fallbacks after. Fonts URL (Google Fonts) is emitted
+  // separately in <head> so the family is actually loaded.
+  const fontStack = theme?.fontFamily
+    ? `"${theme.fontFamily}", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif`
+    : `-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif`;
   return `
-    :root { --fg:#111827; --muted:#6b7280; --link:#2563eb; --bg:#ffffff; --border:#e5e7eb; --code-bg:#f3f4f6; }
+    :root { --fg:#111827; --muted:#6b7280; --link:${primary}; --bg:#ffffff; --border:#e5e7eb; --code-bg:#f3f4f6; }
     * { box-sizing: border-box; }
     html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); }
-    body { font: 17px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+    body { font: 17px/1.65 ${fontStack}; }
     a { color: var(--link); text-decoration: none; }
     a:hover { text-decoration: underline; }
     .container { max-width: 720px; margin: 0 auto; padding: 32px 20px 96px; }
     header.site { padding: 20px 0 8px; border-bottom: 1px solid var(--border); margin-bottom: 32px; }
-    header.site a.brand { font-weight: 600; color: var(--fg); font-size: 15px; }
+    header.site a.brand { font-weight: 600; color: var(--fg); font-size: 15px; display: inline-flex; align-items: center; gap: 10px; }
+    header.site a.brand img.logo { height: 28px; width: auto; display: block; }
     h1 { font-size: 2rem; line-height: 1.25; margin: 0 0 12px; letter-spacing: -0.01em; }
     h2 { font-size: 1.5rem; line-height: 1.3; margin: 2rem 0 0.75rem; }
     h3 { font-size: 1.2rem; margin: 1.5rem 0 0.5rem; }
@@ -54,13 +62,32 @@ function baseStyles() {
   `.replace(/\s+/g, ' ').trim();
 }
 
-function renderArticleHtml({ article, hostname, siteName }) {
+// Emit the Google Fonts <link> stack in <head>. Preconnect first for a
+// faster paint since fonts often block layout.
+function fontsHeadTags(theme) {
+  if (!theme?.fontsUrl) return '';
+  return `<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link rel="stylesheet" href="${escapeHtml(theme.fontsUrl)}" />`;
+}
+
+// Brand: if we have a logo URL from the theme scrape, use it (with the site
+// name as alt for accessibility + SEO); otherwise fall back to text.
+function brandInner(theme, siteLabel) {
+  if (theme?.logoUrl) {
+    return `<img class="logo" src="${escapeHtml(theme.logoUrl)}" alt="${escapeHtml(siteLabel)}" />`;
+  }
+  return escapeHtml(siteLabel);
+}
+
+function renderArticleHtml({ article, hostname, siteName, theme }) {
   const canonical = `https://${hostname}/${escapeHtml(article.slug)}`;
   const title = article.title || '(untitled)';
   const description = article.meta_description || article.suggested_excerpt || '';
   const bodyHtml = marked.parse(article.markdown || '');
   const published = article.published_at || article.updated_at || article.created_at;
   const published_iso = published ? new Date(published).toISOString() : null;
+  const siteLabel = siteName || hostname;
 
   const jsonLd = {
     '@context': 'https://schema.org',
@@ -89,25 +116,29 @@ ${siteName ? `<meta property="og:site_name" content="${escapeHtml(siteName)}" />
 <meta name="twitter:card" content="summary_large_image" />
 <meta name="twitter:title" content="${escapeHtml(title)}" />
 ${description ? `<meta name="twitter:description" content="${escapeHtml(description)}" />` : ''}
+${theme?.primaryColor ? `<meta name="theme-color" content="${escapeHtml(theme.primaryColor)}" />` : ''}
+${theme?.logoUrl ? `<link rel="icon" href="${escapeHtml(theme.logoUrl)}" />` : ''}
 <meta name="robots" content="index, follow" />
-<style>${baseStyles()}</style>
+${fontsHeadTags(theme)}
+<style>${baseStyles(theme)}</style>
 <script type="application/ld+json">${JSON.stringify(jsonLd)}</script>
 </head>
 <body>
 <div class="container">
-  <header class="site"><a class="brand" href="/">${escapeHtml(siteName || hostname)}</a></header>
+  <header class="site"><a class="brand" href="/">${brandInner(theme, siteLabel)}</a></header>
   <article>
     <h1>${escapeHtml(title)}</h1>
     ${published_iso ? `<div class="meta"><time datetime="${published_iso}">${new Date(published).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}</time></div>` : ''}
     ${bodyHtml}
   </article>
-  <footer class="site">&copy; ${new Date().getFullYear()} ${escapeHtml(siteName || hostname)}</footer>
+  <footer class="site">&copy; ${new Date().getFullYear()} ${escapeHtml(siteLabel)}</footer>
 </div>
 </body>
 </html>`;
 }
 
-function renderIndexHtml({ articles, hostname, siteName }) {
+function renderIndexHtml({ articles, hostname, siteName, theme }) {
+  const siteLabel = siteName || hostname;
   const items = articles.map(a => {
     const excerpt = a.meta_description || a.suggested_excerpt || '';
     return `<li>
@@ -121,20 +152,23 @@ function renderIndexHtml({ articles, hostname, siteName }) {
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>${escapeHtml(siteName || hostname)}</title>
-<meta name="description" content="Articles from ${escapeHtml(siteName || hostname)}" />
+<title>${escapeHtml(siteLabel)}</title>
+<meta name="description" content="Articles from ${escapeHtml(siteLabel)}" />
 <link rel="canonical" href="https://${escapeHtml(hostname)}/" />
+${theme?.primaryColor ? `<meta name="theme-color" content="${escapeHtml(theme.primaryColor)}" />` : ''}
+${theme?.logoUrl ? `<link rel="icon" href="${escapeHtml(theme.logoUrl)}" />` : ''}
 <meta name="robots" content="index, follow" />
-<style>${baseStyles()}</style>
+${fontsHeadTags(theme)}
+<style>${baseStyles(theme)}</style>
 </head>
 <body>
 <div class="container">
-  <header class="site"><a class="brand" href="/">${escapeHtml(siteName || hostname)}</a></header>
+  <header class="site"><a class="brand" href="/">${brandInner(theme, siteLabel)}</a></header>
   <h1>Articles</h1>
   ${articles.length === 0
     ? '<p class="meta">No articles published yet.</p>'
     : `<ul class="article-list">${items}</ul>`}
-  <footer class="site">&copy; ${new Date().getFullYear()} ${escapeHtml(siteName || hostname)}</footer>
+  <footer class="site">&copy; ${new Date().getFullYear()} ${escapeHtml(siteLabel)}</footer>
 </div>
 </body>
 </html>`;

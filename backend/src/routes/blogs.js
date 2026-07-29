@@ -113,6 +113,50 @@ router.delete('/domains/:id', [param('id').isUUID()], async (req, res) => {
   }
 });
 
+// Re-scrape the linked main site for theme signals (primary color, fonts,
+// logo). Used to backfill existing domains + let users refresh after a
+// redesign.
+router.post('/domains/:id/refresh-theme', [param('id').isUUID()], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ error: 'Invalid id' });
+  try {
+    const row = await blogDomainsService.refreshTheme({ userId: req.user.userId, id: req.params.id });
+    res.json({ domain: row });
+  } catch (err) {
+    logger.error('blogs.domains.refresh_theme_failed', { error: err.message, id: req.params.id });
+    res.status(err.status || 500).json({ error: err.message || 'Failed to refresh theme' });
+  }
+});
+
+// Manual theme override. Accepts { primaryColor, fontFamily, fontsUrl,
+// logoUrl }. Any field omitted is left as-is. Pass null / '' to clear a
+// field (falls back to renderer default).
+router.patch(
+  '/domains/:id/theme',
+  [
+    param('id').isUUID(),
+    body('primaryColor').optional({ nullable: true }).isString().isLength({ max: 32 }),
+    body('fontFamily').optional({ nullable: true }).isString().isLength({ max: 128 }),
+    body('fontsUrl').optional({ nullable: true }).isString().isLength({ max: 1024 }),
+    body('logoUrl').optional({ nullable: true }).isString().isLength({ max: 1024 }),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ error: 'Invalid input', details: errors.array() });
+    try {
+      const row = await blogDomainsService.updateTheme({
+        userId: req.user.userId,
+        id: req.params.id,
+        patch: req.body,
+      });
+      res.json({ domain: row });
+    } catch (err) {
+      logger.error('blogs.domains.update_theme_failed', { error: err.message, id: req.params.id });
+      res.status(err.status || 500).json({ error: err.message || 'Failed to update theme' });
+    }
+  }
+);
+
 router.get(
   '/',
   [

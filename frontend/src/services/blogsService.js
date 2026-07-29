@@ -67,9 +67,20 @@ const deleteDomain = async (id) => {
   return res.data;
 };
 
+const refreshDomainTheme = async (id) => {
+  const res = await axios.post(`/api/blogs/domains/${id}/refresh-theme`);
+  return res.data?.domain;
+};
+
+const updateDomainTheme = async (id, patch) => {
+  const res = await axios.patch(`/api/blogs/domains/${id}/theme`, patch);
+  return res.data?.domain;
+};
+
 const blogsService = {
   list, get, update, remove, generate,
   publish, unpublish,
   listDomains, createDomain, verifyDomain, deleteDomain,
+  refreshDomainTheme, updateDomainTheme,
 };
 export default blogsService;

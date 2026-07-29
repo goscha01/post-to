@@ -8,6 +8,7 @@ export default async function handler(req, res) {
     if (!record) return;
     const { userId, hostname, metadata } = record;
     const siteName = metadata?.site_name;
+    const theme = metadata?.theme || {};
     const slug = String(req.query.slug || '').slice(0, 512);
 
     if (!slug || !/^[a-z0-9-]+$/i.test(slug)) {
@@ -34,7 +35,7 @@ export default async function handler(req, res) {
       return;
     }
     res.status(200).setHeader('Content-Type', 'text/html; charset=utf-8');
-    res.send(renderArticleHtml({ article: data, hostname, siteName }));
+    res.send(renderArticleHtml({ article: data, hostname, siteName, theme }));
   } catch (err) {
     console.error('article.unhandled', err?.message, err?.stack);
     res.status(500).setHeader('Content-Type', 'text/plain').send(`Server error: ${err?.message || 'unknown'}`);

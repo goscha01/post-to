@@ -17,6 +17,19 @@ const dns = require('dns').promises;
 const axios = require('axios');
 const { createClient } = require('@supabase/supabase-js');
 const logger = require('../utils/logger');
+const { fetchSiteTheme } = require('./connectionsService');
+
+// Given a blog subdomain like `blog.spotless.homes`, return the URL of the
+// most likely main-site homepage to scrape theme signals from. Strips the
+// first label so `blog.foo.com` → `https://foo.com/`, `blog.co.uk` → itself
+// (weird edge case, best-effort). If the caller already knows a linked
+// `website` connection URL, they should pass that instead — this is only the
+// fallback when we have nothing else.
+function guessMainSiteUrl(hostname) {
+  const parts = String(hostname || '').split('.').filter(Boolean);
+  if (parts.length < 3) return `https://${hostname}/`;
+  return `https://${parts.slice(1).join('.')}/`;
+}
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -166,11 +179,30 @@ async function createDomain({ userId, hostname, siteName }) {
     .eq('external_id', externalId)
     .maybeSingle();
 
+  // Auto-populate the theme (primary color / fonts / logo) from the user's
+  // main site. We infer the main site URL from the blog subdomain (strip
+  // leading label), scrape best-effort. Kept alongside site_name so the
+  // renderer has everything it needs from one metadata blob.
+  //
+  // If the user already had a theme (previous create or manual override),
+  // preserve it — re-scraping on re-add shouldn't clobber their tweaks.
+  let theme = existing?.metadata?.theme;
+  if (!theme || Object.keys(theme).length === 0) {
+    const mainSiteUrl = guessMainSiteUrl(host);
+    theme = await fetchSiteTheme(mainSiteUrl).catch(() => ({}));
+    if (theme && Object.keys(theme).length > 0) {
+      theme.scraped_at = new Date().toISOString();
+      theme.scraped_from = mainSiteUrl;
+      logger.info('blog_domain.theme_scraped', { userId, hostname: host, keys: Object.keys(theme) });
+    }
+  }
+
   const commonMetadata = {
     hostname: host,
     site_name: siteName || existing?.metadata?.site_name || null,
     cname_target: BLOG_CNAME_TARGET,
     vercel_project_id: VERCEL_BLOG_PROJECT_ID,
+    theme: theme || {},
   };
 
   if (existing) {
@@ -283,6 +315,63 @@ async function verifyDomain({ userId, id }) {
   throw err;
 }
 
+// Re-run the theme scrape for an existing blog_domain row. Used to backfill
+// rows created before theme-scrape shipped, and to let users refresh after
+// they change their main site's design. Returns the updated row.
+async function refreshTheme({ userId, id }) {
+  const record = await getForUser({ userId, id });
+  if (!record) { const err = new Error('Domain not found'); err.status = 404; throw err; }
+  const hostname = record.metadata?.hostname;
+  if (!hostname) { const err = new Error('Domain record is missing hostname'); err.status = 400; throw err; }
+
+  const mainSiteUrl = guessMainSiteUrl(hostname);
+  const theme = await fetchSiteTheme(mainSiteUrl).catch(() => ({}));
+  const themeWithMeta = {
+    ...theme,
+    scraped_at: new Date().toISOString(),
+    scraped_from: mainSiteUrl,
+  };
+
+  const { data, error } = await supabase
+    .from('connected_accounts')
+    .update({ metadata: { ...record.metadata, theme: themeWithMeta } })
+    .eq('id', id)
+    .select()
+    .single();
+  if (error) throw error;
+  logger.info('blog_domain.theme_refreshed', { userId, hostname, connectionId: id, keys: Object.keys(theme || {}) });
+  return data;
+}
+
+// Manual theme override. Accepts a subset of theme fields; unspecified fields
+// are left alone. Passing null for a field clears it (falls back to renderer
+// default). Field allowlist keeps arbitrary metadata out of the theme blob.
+const THEME_FIELDS = ['primaryColor', 'fontFamily', 'fontsUrl', 'logoUrl'];
+async function updateTheme({ userId, id, patch }) {
+  const record = await getForUser({ userId, id });
+  if (!record) { const err = new Error('Domain not found'); err.status = 404; throw err; }
+  const current = record.metadata?.theme || {};
+  const nextTheme = { ...current };
+  for (const key of THEME_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(patch || {}, key)) {
+      const v = patch[key];
+      if (v === null || v === '') delete nextTheme[key];
+      else nextTheme[key] = String(v);
+    }
+  }
+  nextTheme.overridden_at = new Date().toISOString();
+
+  const { data, error } = await supabase
+    .from('connected_accounts')
+    .update({ metadata: { ...record.metadata, theme: nextTheme } })
+    .eq('id', id)
+    .select()
+    .single();
+  if (error) throw error;
+  logger.info('blog_domain.theme_updated', { userId, connectionId: id, keys: Object.keys(patch || {}) });
+  return data;
+}
+
 async function deleteDomain({ userId, id }) {
   const record = await getForUser({ userId, id });
   if (!record) return { ok: true };
@@ -306,4 +395,6 @@ module.exports = {
   createDomain,
   verifyDomain,
   deleteDomain,
+  refreshTheme,
+  updateTheme,
 };

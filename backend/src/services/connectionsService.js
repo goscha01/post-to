@@ -62,8 +62,82 @@ function extractMeta(html) {
     if (key === 'og:site_name' && !out.siteName) out.siteName = val;
     if (key === 'og:image' && !out.ogImage) out.ogImage = val;
     if (key === 'keywords' && !out.keywords) out.keywords = val;
+    // Brand color hint used by mobile chrome / installed PWAs. Good proxy
+    // for "the site's accent color" when they have one set.
+    if (key === 'theme-color' && !out.themeColor) out.themeColor = val;
   }
   return out;
+}
+
+// Extract theme signals (accent color, fonts URL, logo URL) from a page's HTML
+// head. Best-effort regex — never throws, returns partial data. Used to
+// auto-populate the base look of a customer's blog subdomain so it looks
+// recognizably like their main site without manual configuration.
+function extractTheme(html, baseUrl) {
+  const out = {};
+  if (!html || typeof html !== 'string') return out;
+  const head = html.slice(0, 200000);
+
+  // Absolutize relative URLs against the fetched page URL.
+  const absolutize = (url) => {
+    try { return new URL(url, baseUrl).toString(); } catch { return null; }
+  };
+
+  // theme-color meta tag → primary/accent color
+  const themeColor = head.match(/<meta[^>]*(?:name|property)\s*=\s*["']theme-color["'][^>]*content\s*=\s*["']([^"']+)["']/i)
+    || head.match(/<meta[^>]*content\s*=\s*["']([^"']+)["'][^>]*(?:name|property)\s*=\s*["']theme-color["']/i);
+  if (themeColor) out.primaryColor = themeColor[1].trim();
+
+  // First Google Fonts stylesheet link — usually captures the site's main
+  // font. Preserve the full URL so all weights the site loaded come along.
+  const fontsLink = head.match(/<link[^>]*rel\s*=\s*["']stylesheet["'][^>]*href\s*=\s*["'](https?:\/\/fonts\.googleapis\.com\/css2?\?[^"']+)["']/i)
+    || head.match(/<link[^>]*href\s*=\s*["'](https?:\/\/fonts\.googleapis\.com\/css2?\?[^"']+)["'][^>]*rel\s*=\s*["']stylesheet["']/i);
+  if (fontsLink) {
+    out.fontsUrl = fontsLink[1];
+    // Try to also extract the primary family name so we can set body font
+    // family without loading the actual font file (font already loaded via
+    // fontsUrl link).
+    const famMatch = fontsLink[1].match(/family=([^&:+]+)/i);
+    if (famMatch) out.fontFamily = decodeURIComponent(famMatch[1].replace(/\+/g, ' '));
+  }
+
+  // Logo — prefer apple-touch-icon (usually higher-res + no favicon fallback
+  // squishing), then icon rel, then og:image.
+  const appleIcon = head.match(/<link[^>]*rel\s*=\s*["']apple-touch-icon(?:-precomposed)?["'][^>]*href\s*=\s*["']([^"']+)["']/i);
+  const iconLink = head.match(/<link[^>]*rel\s*=\s*["'](?:shortcut )?icon["'][^>]*href\s*=\s*["']([^"']+)["']/i);
+  const ogImage = head.match(/<meta[^>]*property\s*=\s*["']og:image["'][^>]*content\s*=\s*["']([^"']+)["']/i);
+  const rawLogo = appleIcon?.[1] || iconLink?.[1] || ogImage?.[1];
+  if (rawLogo) {
+    const abs = absolutize(rawLogo);
+    if (abs) out.logoUrl = abs;
+  }
+
+  return out;
+}
+
+// Public helper: fetch a page and return theme signals only. Used by blog
+// domain creation to auto-populate metadata.theme. Best-effort, all fields
+// optional in the returned object.
+async function fetchSiteTheme(rawUrl) {
+  try {
+    const url = normalizeUrl(rawUrl);
+    if (!url) return {};
+    const res = await axios.get(url, {
+      timeout: 8000,
+      maxRedirects: 5,
+      maxContentLength: 5 * 1024 * 1024,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; PostToBot/1.0; +https://post-to.app)',
+        Accept: 'text/html,application/xhtml+xml',
+      },
+      validateStatus: s => s >= 200 && s < 400,
+    });
+    const finalUrl = res.request?.res?.responseUrl || url;
+    return extractTheme(res.data, finalUrl);
+  } catch (err) {
+    logger.warn('connections.theme.fetch_failed', { url: rawUrl, error: err.message });
+    return {};
+  }
 }
 
 async function fetchSiteMeta(url) {
@@ -778,6 +852,7 @@ module.exports = {
   upsertFacebookPage,
   upsertInstagramBusiness,
   reconcileFacebookPictures,
+  fetchSiteTheme,
   // exposed for tests / future callers
-  _internal: { normalizeUrl, hostOf, extractMeta, fetchSiteMeta, maskApiKey, normalizeAdAccountId, stripSensitiveMetadata },
+  _internal: { normalizeUrl, hostOf, extractMeta, extractTheme, fetchSiteMeta, fetchSiteTheme, maskApiKey, normalizeAdAccountId, stripSensitiveMetadata },
 };

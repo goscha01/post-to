@@ -10,6 +10,7 @@ export default async function handler(req, res) {
     if (!record) return;
     const { userId, hostname, metadata } = record;
     const siteName = metadata?.site_name || hostname;
+    const theme = metadata?.theme || {};
 
     const { data, error } = await supabase
       .from('blog_articles')
@@ -25,7 +26,7 @@ export default async function handler(req, res) {
       return;
     }
     res.status(200).setHeader('Content-Type', 'text/html; charset=utf-8');
-    res.send(renderIndexHtml({ articles: data || [], hostname, siteName }));
+    res.send(renderIndexHtml({ articles: data || [], hostname, siteName, theme }));
   } catch (err) {
     console.error('root.unhandled', err?.message, err?.stack);
     res.status(500).setHeader('Content-Type', 'text/plain').send(`Server error: ${err?.message || 'unknown'}`);
