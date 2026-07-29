@@ -8,6 +8,7 @@
 // existing rows.
 
 const express = require('express');
+const multer = require('multer');
 const { body, param, query, validationResult } = require('express-validator');
 const { createClient } = require('@supabase/supabase-js');
 const authMiddleware = require('../middleware/authMiddleware');
@@ -15,8 +16,20 @@ const logger = require('../utils/logger');
 const blogDomainsService = require('../services/blogDomainsService');
 const blogPublisherS3 = require('../services/blogPublisherS3');
 const blogDeployTrigger = require('../services/blogDeployTrigger');
+const blogHeroImageService = require('../services/blogHeroImageService');
 
 const router = express.Router();
+
+// Multer config for hero image uploads — same pattern as posts.js. In-memory
+// buffer, image-only, 10MB cap.
+const heroUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) cb(null, true);
+    else cb(new Error('Only image files are allowed'), false);
+  },
+});
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -43,6 +56,7 @@ const PUBLIC_FIELDS = [
   'suggested_social_post',
   'status',
   'published_at',
+  'hero_image',
   'created_at',
   'updated_at',
 ].join(', ');
@@ -219,6 +233,7 @@ const EDITABLE_FIELDS_MAP = {
   suggestedExcerpt: 'suggested_excerpt',
   suggestedSocialPost: 'suggested_social_post',
   status: 'status',
+  heroImage: 'hero_image',
 };
 
 router.patch(
@@ -232,6 +247,7 @@ router.patch(
     body('suggestedExcerpt').optional().isString().isLength({ max: 4000 }),
     body('suggestedSocialPost').optional().isString().isLength({ max: 4000 }),
     body('status').optional().isIn(['draft', 'published', 'failed']),
+    body('heroImage').optional({ nullable: true }).isString().isLength({ max: 1024 }),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -382,6 +398,53 @@ router.post('/:id/publish', [param('id').isUUID()], async (req, res) => {
   }
 });
 
+// Fan out an "article no longer exists" event to every S3-publishing domain:
+//   1. Delete posts/<date>-<slug>.md so the customer's next build won't
+//      include it
+//   2. Delete the hero image (if any) so orphan bytes don't accumulate
+//   3. Fire deploy trigger so the customer's site actually rebuilds and
+//      the article disappears from the live site (otherwise it stays live
+//      until an unrelated build fires)
+//
+// Best-effort — any per-domain failure is logged, doesn't fail the caller.
+// Callers pass the blog row (post-DB-change) so we know slug + hero_image.
+async function fanoutRemoval({ userId, blog }) {
+  const results = [];
+  const domains = await blogDomainsService.listForUser(userId);
+  for (const d of domains) {
+    if (d.metadata?.publish_target !== 's3') continue;
+    const raw = await blogDomainsService.getForUser({ userId, id: d.id }).catch(() => null);
+    if (!raw) continue;
+
+    try { await blogPublisherS3.unpublish({ blog, domain: raw }); }
+    catch (e) { logger.warn('blogs.removal.md_delete_failed', { userId, domainId: d.id, error: e.message }); }
+
+    // Delete hero image object too, if the row still points at one.
+    if (blog.hero_image) {
+      try {
+        const { S3Client, DeleteObjectCommand } = require('@aws-sdk/client-s3');
+        const client = new S3Client({
+          region: raw.metadata.s3_region,
+          credentials: {
+            accessKeyId: raw.metadata.s3_access_key_id,
+            secretAccessKey: raw.metadata.s3_access_key_secret,
+          },
+        });
+        await client.send(new DeleteObjectCommand({
+          Bucket: raw.metadata.s3_bucket,
+          Key: blog.hero_image.replace(/^\/+/, ''),
+        }));
+      } catch (e) {
+        logger.warn('blogs.removal.hero_delete_failed', { userId, domainId: d.id, error: e.message });
+      }
+    }
+
+    const dep = await blogDeployTrigger.trigger({ domain: raw, blog });
+    results.push({ host: raw.metadata?.hostname, autoDeployed: !!dep.ok, reason: dep.reason || dep.error });
+  }
+  return results;
+}
+
 router.post('/:id/unpublish', [param('id').isUUID()], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) return res.status(400).json({ error: 'Invalid id' });
@@ -398,22 +461,9 @@ router.post('/:id/unpublish', [param('id').isUUID()], async (req, res) => {
       throw error;
     }
 
-    // Remove from any S3 destinations too, so a rebuild doesn't republish
-    // the unpublished article. Best-effort per domain — failures are logged
-    // but don't fail the request.
-    const domains = await blogDomainsService.listForUser(req.user.userId);
-    for (const d of domains) {
-      if (d.metadata?.publish_target !== 's3') continue;
-      try {
-        const raw = await blogDomainsService.getForUser({ userId: req.user.userId, id: d.id });
-        await blogPublisherS3.unpublish({ blog: data, domain: raw });
-      } catch (e) {
-        logger.warn('blogs.unpublish.s3_cleanup_failed', { userId: req.user.userId, domainId: d.id, error: e.message });
-      }
-    }
-
-    logger.info('blogs.unpublished', { userId: req.user.userId, blogId: req.params.id });
-    res.json({ blog: data });
+    const removals = await fanoutRemoval({ userId: req.user.userId, blog: data });
+    logger.info('blogs.unpublished', { userId: req.user.userId, blogId: req.params.id, removedFrom: removals.length });
+    res.json({ blog: data, removals });
   } catch (err) {
     logger.error('blogs.unpublish_failed', { error: err.message, id: req.params.id });
     res.status(500).json({ error: 'Failed to unpublish blog' });
@@ -424,17 +474,75 @@ router.delete('/:id', [param('id').isUUID()], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) return res.status(400).json({ error: 'Invalid id' });
   try {
+    // Load the row first so fanoutRemoval knows slug + hero_image before we
+    // drop the DB row.
+    const { data: blog, error: loadErr } = await supabase
+      .from('blog_articles')
+      .select(PUBLIC_FIELDS)
+      .eq('user_id', req.user.userId).eq('id', req.params.id).single();
+    if (loadErr) {
+      if (loadErr.code === 'PGRST116') return res.status(404).json({ error: 'Blog not found' });
+      throw loadErr;
+    }
+
+    let removals = [];
+    if (blog.status === 'published' || blog.hero_image) {
+      // Only pay the fanout cost if there's something to remove out there.
+      removals = await fanoutRemoval({ userId: req.user.userId, blog });
+    }
+
     const { error } = await supabase
       .from('blog_articles')
       .delete()
       .eq('user_id', req.user.userId)
       .eq('id', req.params.id);
     if (error) throw error;
-    logger.info('blogs.deleted', { userId: req.user.userId, blogId: req.params.id });
-    res.json({ ok: true });
+
+    logger.info('blogs.deleted', { userId: req.user.userId, blogId: req.params.id, removedFrom: removals.length });
+    res.json({ ok: true, removals });
   } catch (err) {
     logger.error('blogs.delete_failed', { error: err.message });
     res.status(500).json({ error: 'Failed to delete blog' });
+  }
+});
+
+// Hero image endpoints. Uploads land in the customer's S3 bucket under
+// assets/blog/<slug>-hero.<ext>; the site's build syncs the assets/ prefix
+// into public/assets/ so the image bundles into dist/ and ends up on their
+// domain at /assets/blog/<slug>-hero.<ext>.
+router.post(
+  '/:id/hero-image',
+  [param('id').isUUID()],
+  heroUpload.single('image'),
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ error: 'Invalid id' });
+    try {
+      const updated = await blogHeroImageService.upload({
+        userId: req.user.userId,
+        blogId: req.params.id,
+        file: req.file,
+      });
+      res.json({ blog: updated });
+    } catch (err) {
+      logger.error('blogs.hero_upload_failed', { error: err.message, id: req.params.id });
+      res.status(err.status || 500).json({ error: err.message || 'Failed to upload hero image' });
+    }
+  }
+);
+
+router.delete('/:id/hero-image', [param('id').isUUID()], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ error: 'Invalid id' });
+  try {
+    const updated = await blogHeroImageService.remove({
+      userId: req.user.userId,
+      blogId: req.params.id,
+    });
+    res.json({ blog: updated });
+  } catch (err) {
+    logger.error('blogs.hero_remove_failed', { error: err.message, id: req.params.id });
+    res.status(err.status || 500).json({ error: err.message || 'Failed to remove hero image' });
   }
 });
 

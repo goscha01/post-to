@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Plus, Sparkles, Trash2, Edit3, Globe, Search, X, AlertCircle, Check, FileText, RefreshCw, Send, ExternalLink, Copy } from 'lucide-react';
+import { Plus, Sparkles, Trash2, Edit3, Globe, Search, X, AlertCircle, Check, FileText, RefreshCw, Send, ExternalLink, Copy, Upload, Image as ImageIcon } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import blogsService from '../services/blogsService';
 import connectionsService from '../services/connectionsService';
@@ -69,7 +69,11 @@ const Blogs = () => {
   };
 
   const handleDelete = async (id) => {
-    if (!window.confirm('Delete this blog draft?')) return;
+    const target = blogs.find(b => b.id === id);
+    const msg = target?.status === 'published'
+      ? 'Delete this article? It will be removed from your live site on the next build.'
+      : 'Delete this blog draft?';
+    if (!window.confirm(msg)) return;
     try {
       await blogsService.remove(id);
       setBlogs(prev => prev.filter(b => b.id !== id));
@@ -464,7 +468,11 @@ const EditorModal = ({ blogId, onClose, onSaved, onDeleted }) => {
 
   const handleDelete = async () => {
     if (!blog) return;
-    if (!window.confirm('Delete this blog draft? This cannot be undone.')) return;
+    const wasPublished = blog.status === 'published';
+    const msg = wasPublished
+      ? 'Delete this article? It will be removed from your live site on the next build.'
+      : 'Delete this blog draft? This cannot be undone.';
+    if (!window.confirm(msg)) return;
     try {
       await blogsService.remove(blog.id);
       onDeleted(blog.id);
@@ -605,6 +613,10 @@ const EditorModal = ({ blogId, onClose, onSaved, onDeleted }) => {
                   Article is marked published, but no verified blog domain is connected yet — add one at the top of the Blogs page to get a public URL.
                 </div>
               )}
+              <HeroImageField
+                blog={blog}
+                onChange={(updated) => setBlog(prev => ({ ...prev, hero_image: updated.hero_image }))}
+              />
               <div>
                 <label className="block text-xs font-medium text-gray-600 mb-1">Title</label>
                 <input
@@ -1477,6 +1489,115 @@ const VerifiedThemeStrip = ({ domain }) => {
           {busy ? 'Scanning…' : 'Refresh theme'}
         </button>
       </div>
+    </div>
+  );
+};
+
+// HeroImageField — upload / preview / remove for the blog's hero image.
+// Uploads via multipart POST, stores a root-relative path on the row (e.g.
+// /assets/blog/<slug>-hero.jpg). Renders inline preview from the same path
+// once the customer's site build syncs the file; before then, the img may
+// 404 for a couple minutes — that's expected and we show a helper note.
+const HeroImageField = ({ blog, onChange }) => {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const inputRef = React.useRef(null);
+  const hero = blog?.hero_image;
+  // Preview URL: the path is relative to the customer's domain. Best-effort
+  // guess for preview: assume first published-live domain. Since we don't
+  // have that available here without extra plumbing, we just show a
+  // filename + upload-time indicator; the real preview is on the live site.
+  // TODO: pass linked domain hostname in from the parent for a real preview.
+
+  const openPicker = () => inputRef.current?.click();
+
+  const upload = async (file) => {
+    if (!file) return;
+    setBusy(true);
+    setErr('');
+    try {
+      const updated = await blogsService.uploadHeroImage(blog.id, file);
+      onChange(updated);
+    } catch (e) {
+      setErr(e.response?.data?.error || 'Upload failed');
+    } finally {
+      setBusy(false);
+      if (inputRef.current) inputRef.current.value = '';
+    }
+  };
+
+  const remove = async () => {
+    if (!window.confirm('Remove this hero image? The image file will be deleted from your storage.')) return;
+    setBusy(true);
+    setErr('');
+    try {
+      const updated = await blogsService.removeHeroImage(blog.id);
+      onChange(updated);
+    } catch (e) {
+      setErr(e.response?.data?.error || 'Remove failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div>
+      <label className="block text-xs font-medium text-gray-600 mb-1">Hero image</label>
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/jpeg,image/png,image/webp,image/avif,image/gif"
+        className="hidden"
+        onChange={(e) => upload(e.target.files?.[0])}
+      />
+      {hero ? (
+        <div className="flex items-start gap-3 p-2 border border-gray-200 rounded-md">
+          <div className="h-16 w-24 flex-shrink-0 bg-gray-100 rounded overflow-hidden flex items-center justify-center">
+            <ImageIcon className="h-5 w-5 text-gray-400" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="text-xs font-mono text-gray-700 truncate">{hero}</div>
+            <div className="text-[11px] text-gray-500 mt-0.5">
+              Will render as the article's hero once the site build syncs.
+            </div>
+            {err && <div className="text-[11px] text-red-700 mt-1">{err}</div>}
+            <div className="mt-2 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={openPicker}
+                disabled={busy}
+                className="inline-flex items-center gap-1 px-2 py-1 text-xs text-gray-700 border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50"
+              >
+                <Upload className="h-3 w-3" />
+                {busy ? 'Uploading…' : 'Replace'}
+              </button>
+              <button
+                type="button"
+                onClick={remove}
+                disabled={busy}
+                className="inline-flex items-center gap-1 px-2 py-1 text-xs text-red-600 hover:bg-red-50 rounded disabled:opacity-50"
+              >
+                <Trash2 className="h-3 w-3" />
+                Remove
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div>
+          <button
+            type="button"
+            onClick={openPicker}
+            disabled={busy}
+            className="inline-flex items-center gap-2 px-3 py-2 text-sm text-gray-700 border border-dashed border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50 w-full"
+          >
+            <Upload className="h-4 w-4" />
+            {busy ? 'Uploading…' : 'Upload hero image'}
+            <span className="ml-auto text-xs text-gray-500">JPG / PNG / WebP · &lt;10MB</span>
+          </button>
+          {err && <div className="mt-1 text-[11px] text-red-700">{err}</div>}
+        </div>
+      )}
     </div>
   );
 };

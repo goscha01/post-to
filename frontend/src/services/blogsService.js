@@ -77,10 +77,25 @@ const updateDomainTheme = async (id, patch) => {
   return res.data?.domain;
 };
 
+const uploadHeroImage = async (id, file) => {
+  const form = new FormData();
+  form.append('image', file);
+  const res = await axios.post(`/api/blogs/${id}/hero-image`, form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+  return res.data?.blog;
+};
+
+const removeHeroImage = async (id) => {
+  const res = await axios.delete(`/api/blogs/${id}/hero-image`);
+  return res.data?.blog;
+};
+
 const blogsService = {
   list, get, update, remove, generate,
   publish, unpublish,
   listDomains, createDomain, verifyDomain, deleteDomain,
   refreshDomainTheme, updateDomainTheme,
+  uploadHeroImage, removeHeroImage,
 };
 export default blogsService;
