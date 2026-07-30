@@ -23,7 +23,9 @@ const clientLogRoutes = require('./routes/clientLog');
 const calendarRoutes = require('./routes/calendar');
 const driveRoutes = require('./routes/drive');
 const socialRoutes = require('./routes/social');
+const automationsRoutes = require('./routes/automations');
 const scheduledPublisher = require('./workers/scheduledPublisher');
+const automationScheduler = require('./workers/automationScheduler');
 const apiLogger = require('./middleware/apiLogger');
 
 const app = express();
@@ -126,6 +128,7 @@ app.use('/api/client-log', clientLogRoutes);
 app.use('/api/calendar', calendarRoutes);
 app.use('/api/drive', driveRoutes);
 app.use('/api/social', socialRoutes);
+app.use('/api/automations', automationsRoutes);
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -169,6 +172,14 @@ app.listen(PORT, () => {
       scheduledPublisher.start();
     } catch (err) {
       console.error('scheduled_publisher.start_error', err?.message);
+    }
+  }
+  // Automation-rule scheduler. Opt-out via DISABLE_AUTOMATION_SCHEDULER=1.
+  if (process.env.DISABLE_AUTOMATION_SCHEDULER !== '1') {
+    try {
+      automationScheduler.start();
+    } catch (err) {
+      console.error('automation_scheduler.start_error', err?.message);
     }
   }
 });

@@ -28,7 +28,8 @@
     "node-cron": "^3.0.3"
   },
   "devDependencies": {
-    "nodemon": "^3.0.2"
+    "nodemon": "^3.0.2",
+    "pg": "^8.22.0"
   },
   "keywords": [
     "google-my-business",
