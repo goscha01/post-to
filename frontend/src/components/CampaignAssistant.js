@@ -136,6 +136,7 @@ const CampaignAssistant = () => {
   const selectedCustomer = customers.find(c =>
     (c.customerId || c.customer_id) === selectedCustomerId
   );
+  const selectedCustomerEmail = (selectedCustomer?.ownerEmail || selectedCustomer?.owner_email || '').toLowerCase();
   const selectedCampaign = campaigns.find(c => String(c.id) === String(selectedCampaignId));
 
   // -- Actions --
@@ -328,6 +329,7 @@ const CampaignAssistant = () => {
           onSelectOpenAiAds={setSelectedOpenAiAdsConnectionId}
           days={days}
           onSelectDays={setDays}
+          selectedCustomerEmail={selectedCustomerEmail}
           creating={creating || streaming}
           onStart={startNewAnalysis}
           error={setupError}
@@ -427,9 +429,48 @@ const SetupCard = ({
   ga4Properties, selectedGa4PropertyId, onSelectGa4Property,
   selectedFirebasePropertyId, onSelectFirebaseProperty,
   openAiAdsConnections, selectedOpenAiAdsConnectionId, onSelectOpenAiAds,
-  days, onSelectDays,
+  days, onSelectDays, selectedCustomerEmail,
   creating, onStart, error,
-}) => (
+}) => {
+  // Split GA4 into "matches the selected Ads customer's Google login" vs the
+  // rest. Same list gets used by both the web GA4 and Firebase-linked GA4
+  // pickers. Cross-owner is allowed by the backend (per-resource token
+  // routing), but visually surfacing the matching ones removes the "why
+  // are these different emails?" confusion.
+  const ga4MatchesCustomer = (p) => {
+    if (!selectedCustomerEmail) return false;
+    return (p.ownerEmail || p.owner_email || '').toLowerCase() === selectedCustomerEmail;
+  };
+  const ga4Matching = ga4Properties.filter(ga4MatchesCustomer);
+  const ga4Other = ga4Properties.filter(p => !ga4MatchesCustomer(p));
+
+  const renderGa4Option = (p) => {
+    const id = p.propertyId || p.property_id;
+    const rawName = p.displayName || p.display_name;
+    const email = p.ownerEmail || p.owner_email;
+    const name = rawName || `Property ${id}`;
+    const label = email ? `${name} — ${email}` : name;
+    return <option key={id} value={id}>{label}</option>;
+  };
+
+  const renderGa4Options = () => {
+    // No selected customer email OR only one group has entries: flat list.
+    if (!selectedCustomerEmail || ga4Matching.length === 0 || ga4Other.length === 0) {
+      return ga4Properties.map(renderGa4Option);
+    }
+    return (
+      <>
+        <optgroup label={`Same Google account as customer (${selectedCustomerEmail})`}>
+          {ga4Matching.map(renderGa4Option)}
+        </optgroup>
+        <optgroup label="Other Google accounts">
+          {ga4Other.map(renderGa4Option)}
+        </optgroup>
+      </>
+    );
+  };
+
+  return (
   <div className="bg-white border border-gray-200 rounded-lg p-4 space-y-3">
     <div className="flex items-center gap-2 mb-1">
       <Sparkles className="h-4 w-4 text-primary-600" />
@@ -504,14 +545,7 @@ const SetupCard = ({
         className="w-full text-sm border border-gray-300 rounded-md px-2 py-1.5"
       >
         <option value="">— None —</option>
-        {ga4Properties.map(p => {
-          const id = p.propertyId || p.property_id;
-          const rawName = p.displayName || p.display_name;
-          const email = p.ownerEmail || p.owner_email;
-          const name = rawName || `Property ${id}`;
-          const label = email ? `${name} — ${email}` : name;
-          return <option key={id} value={id}>{label}</option>;
-        })}
+        {renderGa4Options()}
       </select>
     </Field>
 
@@ -523,14 +557,7 @@ const SetupCard = ({
         className="w-full text-sm border border-gray-300 rounded-md px-2 py-1.5"
       >
         <option value="">— None —</option>
-        {ga4Properties.map(p => {
-          const id = p.propertyId || p.property_id;
-          const rawName = p.displayName || p.display_name;
-          const email = p.ownerEmail || p.owner_email;
-          const name = rawName || `Property ${id}`;
-          const label = email ? `${name} — ${email}` : name;
-          return <option key={id} value={id}>{label}</option>;
-        })}
+        {renderGa4Options()}
       </select>
     </Field>
 
@@ -568,7 +595,8 @@ const SetupCard = ({
       {creating ? 'Building report…' : 'Run analysis'}
     </button>
   </div>
-);
+  );
+};
 
 const Field = ({ label, children, optional, hint }) => (
   <div>
