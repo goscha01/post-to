@@ -55,12 +55,13 @@ const CampaignAssistant = () => {
         // Only show customers the user has explicitly connected to Post To.
         // Drop error/revoked rows — "active" here means status is null|'active'
         // (older rows have no status set).
-        const activeCustomers = (connectedCustomers || []).filter(c => {
-          const s = (c.status || '').toLowerCase();
+        // Only show "active" (or blank-status legacy) rows. Drop revoked/error.
+        const isActive = (r) => {
+          const s = (r?.status || '').toLowerCase();
           return s === '' || s === 'active';
-        });
-        setCustomers(activeCustomers);
-        setGa4Properties(gaProps);
+        };
+        setCustomers((connectedCustomers || []).filter(isActive));
+        setGa4Properties((gaProps || []).filter(isActive));
         setOpenAiAdsConnections(
           (connections || []).filter(c => c.provider === 'openai_ads')
         );
@@ -503,11 +504,14 @@ const SetupCard = ({
         className="w-full text-sm border border-gray-300 rounded-md px-2 py-1.5"
       >
         <option value="">— None —</option>
-        {ga4Properties.map(p => (
-          <option key={p.propertyId || p.property_id} value={p.propertyId || p.property_id}>
-            {p.displayName || p.display_name || (p.propertyId || p.property_id)}
-          </option>
-        ))}
+        {ga4Properties.map(p => {
+          const id = p.propertyId || p.property_id;
+          const rawName = p.displayName || p.display_name;
+          const email = p.ownerEmail || p.owner_email;
+          const name = rawName || `Property ${id}`;
+          const label = email ? `${name} — ${email}` : name;
+          return <option key={id} value={id}>{label}</option>;
+        })}
       </select>
     </Field>
 
@@ -519,11 +523,14 @@ const SetupCard = ({
         className="w-full text-sm border border-gray-300 rounded-md px-2 py-1.5"
       >
         <option value="">— None —</option>
-        {ga4Properties.map(p => (
-          <option key={p.propertyId || p.property_id} value={p.propertyId || p.property_id}>
-            {p.displayName || p.display_name || (p.propertyId || p.property_id)}
-          </option>
-        ))}
+        {ga4Properties.map(p => {
+          const id = p.propertyId || p.property_id;
+          const rawName = p.displayName || p.display_name;
+          const email = p.ownerEmail || p.owner_email;
+          const name = rawName || `Property ${id}`;
+          const label = email ? `${name} — ${email}` : name;
+          return <option key={id} value={id}>{label}</option>;
+        })}
       </select>
     </Field>
 
