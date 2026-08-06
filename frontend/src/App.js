@@ -16,6 +16,7 @@ import Insights from './components/Insights';
 import Analytics from './components/Analytics';
 import GoogleAds from './components/GoogleAds';
 import OpenAiAds from './components/OpenAiAds';
+import CampaignAssistant from './components/CampaignAssistant';
 import Automations from './components/Automations';
 import Services from './components/Services';
 import Layout from './components/Layout';
@@ -168,6 +169,16 @@ const AppContent = () => {
             <ProtectedRoute>
               <Layout>
                 <OpenAiAds />
+              </Layout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/campaign-assistant"
+          element={
+            <ProtectedRoute>
+              <Layout>
+                <CampaignAssistant />
               </Layout>
             </ProtectedRoute>
           }

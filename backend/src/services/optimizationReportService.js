@@ -270,6 +270,9 @@ async function generateReport({
   campaignId,
   ga4AccessToken,
   propertyId,
+  firebasePropertyId,          // optional: GA4 property receiving Firebase app events
+  firebaseAccessToken,         // optional: token that can read firebasePropertyId (falls back to ga4AccessToken)
+  openAiAdsHistory,            // optional: pre-fetched OpenAI Ads context blob (campaigns/insights/ads)
   days,
   thresholds,
   userId,   // for logging
@@ -296,6 +299,8 @@ async function generateReport({
   });
 
   const ga4Wrap = (section, fn) => propertyId ? safe(section, fn) : Promise.resolve(null);
+  const fbWrap = (section, fn) => firebasePropertyId ? safe(section, fn) : Promise.resolve(null);
+  const fbToken = firebaseAccessToken || ga4AccessToken;
 
   const [
     campaigns, adGroups, keywords, searchTerms, adsList, assets,
@@ -303,6 +308,7 @@ async function generateReport({
     audience, auctionInsights, quality, changeHistory, diagnostics,
     ga4Overview, ga4LandingPages, ga4TrafficSources, ga4EventsRes,
     ga4Campaigns, ga4Geography, ga4Devices,
+    fbOverview, fbEvents, fbCampaigns, fbDevices, fbGeography,
   ] = await Promise.all([
     safe('campaigns',        () => ads.getCampaigns(adsAccessToken, customerId, days, opts)),
     safe('adGroups',         () => ads.getAdGroups(adsAccessToken, customerId, days, opts)),
@@ -327,6 +333,14 @@ async function generateReport({
     ga4Wrap('ga4.campaigns',       () => ga4.getCampaigns(ga4AccessToken, propertyId, days)),
     ga4Wrap('ga4.geography',       () => ga4.getGeography(ga4AccessToken, propertyId, days)),
     ga4Wrap('ga4.devices',         () => ga4.getDevices(ga4AccessToken, propertyId, days)),
+    // Firebase-linked app-stream GA4 property. Runs the same GA4 API endpoints
+    // (Firebase Analytics IS GA4 for apps) — we just point at a different
+    // property id. Skip if not supplied.
+    fbWrap('firebase.overview',    () => ga4.getOverview(fbToken, firebasePropertyId, days)),
+    fbWrap('firebase.events',      () => ga4.getEvents(fbToken, firebasePropertyId, days)),
+    fbWrap('firebase.campaigns',   () => ga4.getCampaigns(fbToken, firebasePropertyId, days)),
+    fbWrap('firebase.devices',     () => ga4.getDevices(fbToken, firebasePropertyId, days)),
+    fbWrap('firebase.geography',   () => ga4.getGeography(fbToken, firebasePropertyId, days)),
   ]);
 
   const summary = computeSummary({ campaigns, days });
@@ -345,6 +359,7 @@ async function generateReport({
       dateRangeDays: days,
       campaignFilter: campaignId || null,
       ga4PropertyId: propertyId || null,
+      firebasePropertyId: firebasePropertyId || null,
       durationMs: Date.now() - t0,
     },
     summary,
@@ -375,6 +390,15 @@ async function generateReport({
       geography: ga4Geography,
       devices: ga4Devices,
     } : null,
+    firebase: firebasePropertyId ? {
+      propertyId: firebasePropertyId,
+      overview: fbOverview,
+      events: fbEvents,
+      campaigns: fbCampaigns,
+      devices: fbDevices,
+      geography: fbGeography,
+    } : null,
+    openAiAds: openAiAdsHistory || null,
     crossReference,
   };
   if (errors.length) report.errors = errors;
