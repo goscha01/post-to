@@ -46,20 +46,20 @@ const CampaignAssistant = () => {
     (async () => {
       setCustomersLoading(true);
       try {
-        const [connectedCustomers, availableCustomers, gaProps, connections] = await Promise.all([
+        const [connectedCustomers, gaProps, connections] = await Promise.all([
           googleAdsService.listConnectedCustomers().catch(() => []),
-          googleAdsService.listAvailableCustomers().catch(() => []),
           analyticsService.listConnectedProperties().catch(() => []),
           connectionsService.list().catch(() => []),
         ]);
         if (cancelled) return;
-        // Prefer connected customers, but merge any unconnected ones the user has access to.
-        const seen = new Set(connectedCustomers.map(c => c.customerId || c.customer_id));
-        const merged = [
-          ...connectedCustomers,
-          ...availableCustomers.filter(c => !seen.has(c.customerId || c.customer_id)),
-        ];
-        setCustomers(merged);
+        // Only show customers the user has explicitly connected to Post To.
+        // Drop error/revoked rows — "active" here means status is null|'active'
+        // (older rows have no status set).
+        const activeCustomers = (connectedCustomers || []).filter(c => {
+          const s = (c.status || '').toLowerCase();
+          return s === '' || s === 'active';
+        });
+        setCustomers(activeCustomers);
         setGa4Properties(gaProps);
         setOpenAiAdsConnections(
           (connections || []).filter(c => c.provider === 'openai_ads')
@@ -435,18 +435,27 @@ const SetupCard = ({
       <h2 className="font-semibold text-sm text-gray-900">New analysis</h2>
     </div>
 
-    <Field label="Google Ads customer">
+    <Field
+      label="Google Ads customer"
+      hint={customers.length === 0 && !customersLoading
+        ? 'No connected customers. Connect one on the Ads page first.'
+        : undefined}
+    >
       <select
         value={selectedCustomerId}
         onChange={(e) => onSelectCustomer(e.target.value)}
-        disabled={customersLoading || creating}
+        disabled={customersLoading || creating || customers.length === 0}
         className="w-full text-sm border border-gray-300 rounded-md px-2 py-1.5 disabled:bg-gray-50"
       >
-        <option value="">— Select customer —</option>
+        <option value="">
+          {customersLoading ? 'Loading…' : '— Select customer —'}
+        </option>
         {customers.map(c => {
           const id = c.customerId || c.customer_id;
           const rawName = c.descriptiveName || c.descriptive_name || c.display_name;
-          const label = rawName ? rawName : `Customer ${id}`;
+          const email = c.ownerEmail || c.owner_email;
+          const name = rawName || `Customer ${id}`;
+          const label = email ? `${name} — ${email}` : name;
           return <option key={id} value={id}>{label}</option>;
         })}
       </select>
