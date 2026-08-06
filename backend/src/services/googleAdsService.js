@@ -33,10 +33,12 @@
 const axios = require('axios');
 const logger = require('../utils/logger');
 
-// v21 as of 2026-07 — v20 was deprecated (returns UNSUPPORTED_VERSION).
-// Whenever a version returns UNSUPPORTED_VERSION, bump this and update the
-// Railway env var. Also probe via curl to verify: 401 = alive, 404 = sunset.
-const API_VERSION = process.env.GOOGLE_ADS_API_VERSION || 'v21';
+// v22 as of 2026-08 — v21 was deprecated ("Requests to this version will be
+// blocked"). Google Ads API releases roughly 3 major versions per year (Feb,
+// Jun, Oct) and sunsets each ~12 months after release. Whenever a version
+// returns UNSUPPORTED_VERSION, bump this and update the Railway env var. Also
+// probe via curl to verify: 401 = alive, 404 = sunset.
+const API_VERSION = process.env.GOOGLE_ADS_API_VERSION || 'v22';
 const BASE_URL = `https://googleads.googleapis.com/${API_VERSION}`;
 
 function developerToken() {
