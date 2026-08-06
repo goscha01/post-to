@@ -445,10 +445,16 @@ const SetupCard = ({
         <option value="">— Select customer —</option>
         {customers.map(c => {
           const id = c.customerId || c.customer_id;
-          const name = c.descriptiveName || c.descriptive_name || c.display_name || id;
-          return <option key={id} value={id}>{name} ({id})</option>;
+          const rawName = c.descriptiveName || c.descriptive_name || c.display_name;
+          const label = rawName ? rawName : `Customer ${id}`;
+          return <option key={id} value={id}>{label}</option>;
         })}
       </select>
+      {selectedCustomerId && (
+        <p className="text-[11px] text-gray-500 mt-1">
+          Customer ID {selectedCustomerId}
+        </p>
+      )}
     </Field>
 
     <Field label="Campaign">
