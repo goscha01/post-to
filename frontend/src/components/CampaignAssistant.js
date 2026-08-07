@@ -748,8 +748,10 @@ const ProviderColumn = ({ title, msg, onRate, accent, bg, border }) => {
           <span>{msg.error || 'Provider failed'}</span>
         </div>
       ) : (
-        <div className="prose prose-sm max-w-none text-sm text-gray-800 whitespace-pre-wrap flex-1">
-          {msg.content || (isStreaming ? <span className="text-gray-400">Thinking…</span> : '')}
+        <div className="flex-1">
+          {msg.content
+            ? <AssistantBody content={msg.content} />
+            : (isStreaming ? <span className="text-sm text-gray-400">Thinking…</span> : null)}
         </div>
       )}
 
@@ -778,6 +780,142 @@ const ProviderColumn = ({ title, msg, onRate, accent, bg, border }) => {
           </div>
         </div>
       )}
+    </div>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// AssistantBody — parses the "## Title / **Fix:** ... / details" format
+// into collapsible cards. Falls back to plain text for follow-up answers
+// that don't use that format.
+// ---------------------------------------------------------------------------
+
+const HEADING_RE = /^##\s+(.+?)\s*$/m;
+const FIX_RE = /^\s*(?:\*\*)?Fix(?:\*\*)?\s*:\s*(.+?)\s*$/im;
+
+// Split content into sections keyed by "## <title>" headings. A prelude before
+// the first heading (if any) becomes its own section with no title.
+function splitSections(content) {
+  const trimmed = (content || '').trim();
+  if (!trimmed) return [];
+  const parts = trimmed.split(/\n(?=##\s+)/);
+  const out = [];
+  for (const part of parts) {
+    const m = part.match(HEADING_RE);
+    if (m) {
+      out.push({ title: m[1], body: part.replace(HEADING_RE, '').trim() });
+    } else if (part.trim()) {
+      out.push({ title: null, body: part.trim() });
+    }
+  }
+  return out;
+}
+
+// Extract the "Fix:" one-liner from a section body and return { fix, details }.
+function splitFix(body) {
+  const m = body.match(FIX_RE);
+  if (!m) return { fix: null, details: body };
+  const fix = m[1].trim();
+  const details = body.replace(FIX_RE, '').trim();
+  return { fix, details };
+}
+
+// Tiny inline markdown: **bold** + *italic* → React nodes. No links / code /
+// tables — good enough for the small formatting the model uses in the Fix
+// line and details paragraphs.
+function renderInline(text) {
+  const nodes = [];
+  const re = /(\*\*[^*]+\*\*)|(\*[^*]+\*)/g;
+  let last = 0;
+  let m;
+  let key = 0;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) nodes.push(text.slice(last, m.index));
+    if (m[1]) nodes.push(<strong key={key++}>{m[1].slice(2, -2)}</strong>);
+    else if (m[2]) nodes.push(<em key={key++}>{m[2].slice(1, -1)}</em>);
+    last = re.lastIndex;
+  }
+  if (last < text.length) nodes.push(text.slice(last));
+  return nodes;
+}
+
+// Render a details body: preserves paragraphs and bullet lines.
+const DetailsBody = ({ text }) => {
+  const paragraphs = text.split(/\n{2,}/).filter(p => p.trim());
+  return (
+    <div className="text-xs text-gray-700 space-y-2 leading-relaxed">
+      {paragraphs.map((p, i) => {
+        const lines = p.split('\n');
+        const allBullets = lines.every(l => /^\s*[-*]\s+/.test(l));
+        if (allBullets) {
+          return (
+            <ul key={i} className="list-disc pl-4 space-y-0.5">
+              {lines.map((l, j) => (
+                <li key={j}>{renderInline(l.replace(/^\s*[-*]\s+/, ''))}</li>
+              ))}
+            </ul>
+          );
+        }
+        return <p key={i}>{renderInline(p)}</p>;
+      })}
+    </div>
+  );
+};
+
+const IssueCard = ({ title, fix, details }) => {
+  const [open, setOpen] = useState(false);
+  const hasDetails = details && details.trim().length > 0;
+  return (
+    <div className="border border-gray-200 rounded-md bg-white">
+      {title && (
+        <div className="px-3 pt-2.5 text-sm font-semibold text-gray-900">
+          {renderInline(title)}
+        </div>
+      )}
+      {fix && (
+        <div className="px-3 pt-1 pb-2.5 text-sm text-gray-800">
+          <span className="font-medium text-primary-700">Fix:</span> {renderInline(fix)}
+        </div>
+      )}
+      {hasDetails && (
+        <div className="border-t border-gray-100">
+          <button
+            onClick={() => setOpen(v => !v)}
+            className="w-full flex items-center gap-1 px-3 py-1.5 text-[11px] font-medium text-gray-500 hover:bg-gray-50"
+          >
+            {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+            {open ? 'Hide details' : 'Show details'}
+          </button>
+          {open && <div className="px-3 pb-3"><DetailsBody text={details} /></div>}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const AssistantBody = ({ content }) => {
+  const sections = useMemo(() => splitSections(content), [content]);
+  // No headings at all → follow-up answer / non-issue response. Render as
+  // plain text with basic inline formatting.
+  const hasHeadings = sections.some(s => s.title);
+  if (!hasHeadings) {
+    return <div className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">{renderInline(content)}</div>;
+  }
+  return (
+    <div className="space-y-2">
+      {sections.map((s, i) => {
+        const { fix, details } = splitFix(s.body);
+        // If a section has no title AND no Fix, render it as a small prelude
+        // paragraph (e.g. an opening summary before the first ## issue).
+        if (!s.title && !fix) {
+          return (
+            <p key={i} className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">
+              {renderInline(s.body)}
+            </p>
+          );
+        }
+        return <IssueCard key={i} title={s.title} fix={fix} details={details} />;
+      })}
     </div>
   );
 };
