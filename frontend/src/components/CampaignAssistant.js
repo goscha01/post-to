@@ -990,6 +990,26 @@ const ProviderColumn = ({ title, provider, msg, onRate, conversationId, accent, 
   );
 };
 
+// One row in the per-card Ask history — user turns as a right-aligned
+// blue chip, assistant turns as a left-aligned white card. Purposely
+// minimal styling so the panel doesn't compete with the main chat.
+const CardHistoryBubble = ({ msg }) => {
+  if (msg.role === 'user') {
+    return (
+      <div className="flex justify-end">
+        <div className="max-w-[85%] bg-blue-600 text-white rounded-md px-2 py-1 text-xs whitespace-pre-wrap">
+          {msg.content}
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="bg-white border border-blue-100 rounded-md px-2 py-1.5">
+      <DetailsBody text={msg.content} />
+    </div>
+  );
+};
+
 // ---------------------------------------------------------------------------
 // ThinkingIndicator — live-elapsed timer while a provider is streaming
 // but hasn't emitted any text yet. Long-running Anthropic/OpenAI calls
@@ -1094,15 +1114,28 @@ const DetailsBody = ({ text }) => {
   );
 };
 
+// Stable client-side key for a specific issue card. Combines provider with
+// a slug of the issue title/fix so per-card history bucket is deterministic
+// (and OpenAI's card for "Missing Conversion Tracking" is a different bucket
+// than Claude's card of the same name).
+function computeCardKey({ provider, title, fix }) {
+  const base = String(title || fix || '').toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 200);
+  if (!base) return null;
+  return `${provider}:${base}`;
+}
+
 // Generic one-shot state hook used by both the "steps" and "ask about this"
 // inline flows in an IssueCard. Handles a single active stream at a time,
-// with content accumulation + terminal state.
+// with content accumulation + terminal state. When cardKey is provided the
+// server also persists the user+assistant rows and loads prior card history
+// so the model sees the running per-card conversation.
 function useOneShotStream({ conversationId, provider }) {
   const [content, setContent] = useState('');
   const [status, setStatus] = useState('idle'); // idle | streaming | complete | failed
   const [error, setError] = useState(null);
   const ctrlRef = useRef(null);
-  const start = useCallback(({ prompt, attachments }) => {
+  const start = useCallback(({ prompt, attachments, cardKey }) => {
     if (status === 'streaming') return;
     setStatus('streaming');
     setContent('');
@@ -1113,6 +1146,7 @@ function useOneShotStream({ conversationId, provider }) {
       prompt,
       provider,
       attachments,
+      cardKey,
       onEvent: (evt) => {
         if (evt.type === 'delta') {
           acc += evt.text;
@@ -1152,13 +1186,55 @@ const IssueCard = ({ title, fix, details, provider, conversationId }) => {
   const [askText, setAskText] = useState('');
   const [askAttachments, setAskAttachments] = useState([]);
   const [askError, setAskError] = useState(null);
+  const [cardHistory, setCardHistory] = useState([]); // prior persisted turns for this card
+  const [historyLoaded, setHistoryLoaded] = useState(false);
   const askFileInputRef = useRef(null);
 
   const hasDetails = details && details.trim().length > 0;
   const canAsk = provider && conversationId && (title || fix);
+  const cardKey = useMemo(
+    () => computeCardKey({ provider, title, fix }),
+    [provider, title, fix]
+  );
 
   const steps = useOneShotStream({ conversationId, provider });
   const ask = useOneShotStream({ conversationId, provider });
+
+  // Lazy-load prior card history the first time either Steps or Ask opens.
+  // Skip if we've already loaded it, or if the card has no stable key
+  // (e.g. missing title/fix — can't scope history reliably).
+  const loadHistory = useCallback(async () => {
+    if (historyLoaded || !cardKey || !conversationId) return;
+    try {
+      const msgs = await campaignAssistantService.getCardMessages(conversationId, cardKey);
+      // Show user turns + this-provider assistant turns; skip other-provider
+      // turns so this card's Ask panel doesn't leak cross-provider history.
+      const filtered = (msgs || []).filter(m =>
+        m.role === 'user' || m.provider === provider
+      );
+      setCardHistory(filtered);
+      setHistoryLoaded(true);
+    } catch (err) {
+      console.warn('loadHistory failed', err);
+      setHistoryLoaded(true); // don't retry forever
+    }
+  }, [cardKey, conversationId, historyLoaded, provider]);
+
+  useEffect(() => {
+    if (askOpen || stepsOpen) loadHistory();
+  }, [askOpen, stepsOpen, loadHistory]);
+
+  // When a one-shot stream completes, append the (user, assistant) pair to
+  // local history so the panel reflects it without an extra fetch.
+  const rememberTurn = useCallback((userContent, assistantContent) => {
+    if (!cardKey) return;
+    const nowIso = new Date().toISOString();
+    setCardHistory(prev => [
+      ...prev,
+      { id: `local-user-${Date.now()}`, role: 'user', content: userContent, created_at: nowIso },
+      { id: `local-assistant-${Date.now() + 1}`, role: 'assistant', provider, content: assistantContent, created_at: nowIso },
+    ]);
+  }, [cardKey, provider]);
 
   const providerLabel = provider === 'openai' ? 'OpenAI' : 'Claude';
 
@@ -1178,15 +1254,38 @@ const IssueCard = ({ title, fix, details, provider, conversationId }) => {
     if (fix) parts.push(`with the fix "${fix}"`);
     const scope = parts.join(' ') || 'the recommendation';
     const prompt = `Give me the exact click-by-click steps to implement ${scope}. Return a numbered list only — no explanation, no rationale, no data citations. If the fix belongs in a different tool (Google Ads, GA4, Firebase, landing page CMS, tag manager), state which tool at the top on its own line and give steps for that tool.`;
-    steps.start({ prompt });
-  }, [canAsk, fix, steps, title]);
+    steps.start({ prompt, cardKey });
+  }, [canAsk, cardKey, fix, steps, title]);
+
+  // When steps complete, add to per-card history so future Asks have context.
+  useEffect(() => {
+    if (steps.status === 'complete' && steps.content && cardKey) {
+      const label = title ? `[requested step-by-step for "${title}"]` : '[requested step-by-step]';
+      // Only append once per completion — guard with content pointer via ref.
+      setCardHistory(prev => {
+        const alreadyAppended = prev.length > 0 && prev[prev.length - 1].content === steps.content;
+        if (alreadyAppended) return prev;
+        const nowIso = new Date().toISOString();
+        return [
+          ...prev,
+          { id: `local-steps-user-${Date.now()}`, role: 'user', content: label, created_at: nowIso },
+          { id: `local-steps-assistant-${Date.now() + 1}`, role: 'assistant', provider, content: steps.content, created_at: nowIso },
+        ];
+      });
+    }
+  }, [steps.status, steps.content, cardKey, title, provider]);
 
   const submitAsk = useCallback(async () => {
     if (!canAsk) return;
     const text = askText.trim();
     if (!text && askAttachments.length === 0) return;
     setAskError(null);
-    const prompt = `You are answering a follow-up question scoped to a SPECIFIC issue on this campaign. Focus your entire response on this one issue — do NOT re-list other issues or re-do a full analysis.
+    // Only inject the pinned card context on the FIRST turn — subsequent
+    // asks reuse the persisted history the server loads by cardKey, so we
+    // don't need to keep re-pasting the same block into every prompt.
+    const isFirstTurnForCard = cardHistory.length === 0;
+    const prompt = isFirstTurnForCard
+      ? `You are answering a follow-up question scoped to a SPECIFIC issue on this campaign. Focus your entire response on this one issue — do NOT re-list other issues or re-do a full analysis.
 
 --- ISSUE CONTEXT ---
 ${cardContext()}
@@ -1194,14 +1293,34 @@ ${cardContext()}
 
 USER QUESTION: ${text || '(see attached image)'}
 
-Answer plainly — no ## headings, no "Fix:" format. Prose or short bullets are fine. Cite specific numbers from the campaign data when useful.`;
+Answer plainly — no ## headings, no "Fix:" format. Prose or short bullets are fine. Cite specific numbers from the campaign data when useful.`
+      : text || '(see attached image)';
     const clean = askAttachments.map(a => ({
       type: a.type, mediaType: a.mediaType, data: a.data,
     }));
-    ask.start({ prompt, attachments: clean });
+    // Optimistically append the user turn to local history so the UI reflects
+    // it immediately, before the server round-trip completes.
+    const localTurnMarker = text || '(image)';
+    setCardHistory(prev => [
+      ...prev,
+      { id: `local-user-${Date.now()}`, role: 'user', content: localTurnMarker, created_at: new Date().toISOString() },
+    ]);
+    ask.start({ prompt, attachments: clean, cardKey });
     setAskText('');
     setAskAttachments([]);
-  }, [ask, askAttachments, askText, canAsk, cardContext]);
+  }, [ask, askAttachments, askText, canAsk, cardContext, cardHistory.length, cardKey]);
+
+  // When the current Ask completes, append the assistant turn to history.
+  const lastAppendedRef = useRef('');
+  useEffect(() => {
+    if (ask.status === 'complete' && ask.content && ask.content !== lastAppendedRef.current && cardKey) {
+      lastAppendedRef.current = ask.content;
+      setCardHistory(prev => [
+        ...prev,
+        { id: `local-ask-assistant-${Date.now()}`, role: 'assistant', provider, content: ask.content, created_at: new Date().toISOString() },
+      ]);
+    }
+  }, [ask.status, ask.content, cardKey, provider]);
 
   const addAskFiles = useCallback(async (files) => {
     setAskError(null);
@@ -1302,6 +1421,11 @@ Answer plainly — no ## headings, no "Fix:" format. Prose or short bullets are 
           <div className="flex items-center justify-between mb-1.5">
             <div className="text-[11px] font-semibold uppercase tracking-wide text-blue-800 flex items-center gap-1">
               <HelpCircle className="h-3 w-3" /> Ask {providerLabel} about this issue
+              {cardHistory.length > 0 && (
+                <span className="ml-1 text-blue-600 normal-case font-normal">
+                  · {cardHistory.filter(m => m.role === 'user').length} prior turn{cardHistory.filter(m => m.role === 'user').length === 1 ? '' : 's'}
+                </span>
+              )}
             </div>
             <button
               onClick={() => setAskOpen(false)}
@@ -1311,6 +1435,15 @@ Answer plainly — no ## headings, no "Fix:" format. Prose or short bullets are 
               Close
             </button>
           </div>
+
+          {cardHistory.length > 0 && (
+            <div className="mb-2 max-h-64 overflow-y-auto space-y-1.5 pr-1">
+              {cardHistory.map(m => (
+                <CardHistoryBubble key={m.id} msg={m} />
+              ))}
+            </div>
+          )}
+
           <AttachmentStrip items={askAttachments} onRemove={(id) => setAskAttachments(prev => prev.filter(a => a.id !== id))} />
           {askError && (
             <div className="flex items-start gap-1.5 text-[11px] text-red-700 mb-1.5">
@@ -1362,16 +1495,19 @@ Answer plainly — no ## headings, no "Fix:" format. Prose or short bullets are 
               Send
             </button>
           </div>
-          {(ask.status === 'streaming' || ask.content || ask.status === 'failed') && (
+          {/* Live streaming view — only while a request is in flight. Once
+              complete, the assistant turn is appended to cardHistory above
+              (via useEffect on ask.status), so we hide it here to avoid
+              double-rendering. */}
+          {ask.status === 'streaming' && (
             <div className="mt-2 pt-2 border-t border-blue-100">
-              {ask.status === 'streaming' && !ask.content && <ThinkingIndicator />}
-              {ask.content && <DetailsBody text={ask.content} />}
-              {ask.status === 'failed' && !ask.content && (
-                <div className="text-xs text-red-700 flex items-start gap-1.5">
-                  <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
-                  <span>{ask.error || 'Request failed.'}</span>
-                </div>
-              )}
+              {ask.content ? <DetailsBody text={ask.content} /> : <ThinkingIndicator />}
+            </div>
+          )}
+          {ask.status === 'failed' && !ask.content && (
+            <div className="mt-2 pt-2 border-t border-blue-100 text-xs text-red-700 flex items-start gap-1.5">
+              <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
+              <span>{ask.error || 'Request failed.'}</span>
             </div>
           )}
         </div>

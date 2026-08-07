@@ -166,10 +166,13 @@ router.get('/conversations/:id', async (req, res) => {
       .single();
     if (convErr || !conv) return res.status(404).json({ error: 'Not found' });
 
+    // Main chat only — exclude card-scoped rows (they're loaded on-demand
+    // by the IssueCard when its Ask panel opens).
     const { data: messages, error: msgErr } = await supabase
       .from('campaign_assistant_messages')
       .select('id, turn_index, role, provider, model, content, status, error, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens, cost_usd, rating, created_at')
       .eq('conversation_id', conv.id)
+      .is('card_key', null)
       .order('turn_index', { ascending: true })
       .order('created_at', { ascending: true });
     if (msgErr) throw msgErr;
@@ -369,11 +372,12 @@ router.post('/conversations/:id/chat', async (req, res) => {
     return res.status(400).json({ error: 'Conversation is missing a report snapshot' });
   }
 
-  // Load prior messages to build per-provider chat history.
+  // Load prior main-chat messages (exclude card-scoped ones) for provider history.
   const { data: priorMessages, error: histErr } = await supabase
     .from('campaign_assistant_messages')
     .select('id, turn_index, role, provider, content, status')
     .eq('conversation_id', conversationId)
+    .is('card_key', null)
     .order('turn_index', { ascending: true })
     .order('created_at', { ascending: true });
   if (histErr) {
@@ -588,6 +592,7 @@ router.post('/conversations/:id/one-shot', async (req, res) => {
   const prompt = String(req.body?.prompt || '').trim().slice(0, MAX_USER_MESSAGE_CHARS);
   const provider = req.body?.provider === 'openai' ? 'openai' : 'claude';
   const attachments = Array.isArray(req.body?.attachments) ? req.body.attachments : [];
+  const cardKey = req.body?.cardKey ? String(req.body.cardKey).slice(0, 255) : null;
   if (!prompt && attachments.length === 0) return res.status(400).json({ error: 'prompt or attachment required' });
 
   const { data: conv, error } = await supabase
@@ -598,6 +603,26 @@ router.post('/conversations/:id/one-shot', async (req, res) => {
     .single();
   if (error || !conv) return res.status(404).json({ error: 'Conversation not found' });
   if (!conv.report_snapshot) return res.status(400).json({ error: 'Conversation is missing a report snapshot' });
+
+  // Load prior card-scoped history if cardKey provided. Both Steps and Ask
+  // interactions on the same card share the same key so the AI sees the
+  // whole per-card thread.
+  let priorCardMessages = [];
+  if (cardKey) {
+    const { data } = await supabase
+      .from('campaign_assistant_messages')
+      .select('role, provider, content, status, created_at')
+      .eq('conversation_id', conversationId)
+      .eq('card_key', cardKey)
+      .eq('status', 'complete')
+      .order('created_at', { ascending: true })
+      .limit(50);
+    // Filter to messages this provider should see (user turns + own assistant
+    // turns; skip the other provider's replies to avoid style drift).
+    priorCardMessages = (data || [])
+      .filter(m => m.role === 'user' || m.provider === provider)
+      .map(m => ({ role: m.role, content: m.content }));
+  }
 
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
@@ -620,24 +645,78 @@ router.post('/conversations/:id/one-shot', async (req, res) => {
     try { res.end(); } catch (_) {}
   };
 
+  // Persist the user turn immediately (only when cardKey is provided; steps
+  // without a cardKey stay ephemeral). Attachments are NOT persisted — they
+  // travel with this turn only.
+  let userMessageId = null;
+  if (cardKey) {
+    const { data: uRow, error: uErr } = await supabase
+      .from('campaign_assistant_messages')
+      .insert({
+        conversation_id: conversationId,
+        turn_index: null,
+        role: 'user',
+        content: prompt,
+        card_key: cardKey,
+        status: 'complete',
+      })
+      .select('id')
+      .single();
+    if (uErr) {
+      logger.warn('campaignAssistant.one_shot_user_persist_failed', {
+        userId, conversationId, cardKey, error: uErr.message,
+      });
+    } else {
+      userMessageId = uRow.id;
+      write({ type: 'user_message_id', id: userMessageId });
+    }
+  }
+
   const streamFn = provider === 'openai'
     ? campaignAssistant.streamOpenAI
     : campaignAssistant.streamClaude;
 
   streamFn({
     report: conv.report_snapshot,
-    messages: [{ role: 'user', content: prompt }],
+    messages: [...priorCardMessages, { role: 'user', content: prompt }],
     attachments,
     onDelta: text => write({ type: 'delta', text }),
-    onComplete: result => closeOnce({
-      type: 'complete',
-      model: result.model,
-      costUsd: result.costUsd,
-      promptTokens: result.promptTokens,
-      completionTokens: result.completionTokens,
-      cacheReadTokens: result.cacheReadTokens,
-      cacheWriteTokens: result.cacheWriteTokens,
-    }),
+    onComplete: async result => {
+      let assistantMessageId = null;
+      if (cardKey) {
+        const { data: aRow, error: aErr } = await supabase
+          .from('campaign_assistant_messages')
+          .insert({
+            conversation_id: conversationId,
+            turn_index: null,
+            role: 'assistant',
+            provider,
+            content: result.content || '',
+            card_key: cardKey,
+            status: 'complete',
+            model: result.model,
+            prompt_tokens: result.promptTokens,
+            completion_tokens: result.completionTokens,
+            total_tokens: result.totalTokens,
+            cache_read_tokens: result.cacheReadTokens,
+            cache_write_tokens: result.cacheWriteTokens,
+            cost_usd: result.costUsd,
+          })
+          .select('id')
+          .single();
+        if (!aErr) assistantMessageId = aRow.id;
+      }
+      closeOnce({
+        type: 'complete',
+        model: result.model,
+        messageId: assistantMessageId,
+        costUsd: result.costUsd,
+        promptTokens: result.promptTokens,
+        completionTokens: result.completionTokens,
+        cacheReadTokens: result.cacheReadTokens,
+        cacheWriteTokens: result.cacheWriteTokens,
+      });
+    },
     onError: err => {
       logger.warn('campaignAssistant.one_shot_error', {
         userId, conversationId, provider, error: err.message,
@@ -645,6 +724,41 @@ router.post('/conversations/:id/one-shot', async (req, res) => {
       closeOnce({ type: 'error', error: err.message });
     },
   });
+});
+
+// ---------------------------------------------------------------------------
+// GET /conversations/:id/cards/:cardKey/messages — per-card history
+// ---------------------------------------------------------------------------
+router.get('/conversations/:id/cards/:cardKey/messages', async (req, res) => {
+  const userId = req.user.userId;
+  const conversationId = req.params.id;
+  const cardKey = String(req.params.cardKey || '').slice(0, 255);
+  if (!cardKey) return res.status(400).json({ error: 'cardKey required' });
+
+  try {
+    // Enforce ownership of the conversation before reading messages.
+    const { data: conv, error: convErr } = await supabase
+      .from('campaign_assistant_conversations')
+      .select('id')
+      .eq('id', conversationId)
+      .eq('user_id', userId)
+      .single();
+    if (convErr || !conv) return res.status(404).json({ error: 'Not found' });
+
+    const { data: messages, error: msgErr } = await supabase
+      .from('campaign_assistant_messages')
+      .select('id, role, provider, content, model, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens, cost_usd, status, created_at')
+      .eq('conversation_id', conversationId)
+      .eq('card_key', cardKey)
+      .order('created_at', { ascending: true });
+    if (msgErr) throw msgErr;
+    res.json({ messages: messages || [] });
+  } catch (err) {
+    logger.error('campaignAssistant.card_messages_failed', {
+      userId, conversationId, cardKey, error: err.message,
+    });
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ---------------------------------------------------------------------------

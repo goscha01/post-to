@@ -121,7 +121,14 @@ const streamChat = ({ conversationId, message, attachments, onEvent, onError }) 
 // One-shot single-provider stream. Used by the "Get step-by-step" button
 // inside an issue card — one provider, no DB persistence, response
 // rendered inline in the card. Same SSE frame protocol as streamChat.
-const streamOneShot = ({ conversationId, prompt, provider, attachments, onEvent, onError }) => {
+const getCardMessages = async (conversationId, cardKey) => {
+  const res = await axios.get(
+    `/api/campaign-assistant/conversations/${conversationId}/cards/${encodeURIComponent(cardKey)}/messages`
+  );
+  return res.data?.messages || [];
+};
+
+const streamOneShot = ({ conversationId, prompt, provider, attachments, cardKey, onEvent, onError }) => {
   const controller = new AbortController();
   const token = localStorage.getItem(TOKEN_KEY);
 
@@ -138,7 +145,7 @@ const streamOneShot = ({ conversationId, prompt, provider, attachments, onEvent,
             'Accept': 'text/event-stream',
             ...(token ? { Authorization: `Bearer ${token}` } : {}),
           },
-          body: JSON.stringify({ prompt, provider, attachments: attachments || [] }),
+          body: JSON.stringify({ prompt, provider, attachments: attachments || [], cardKey: cardKey || null }),
         }
       );
       if (!resp.ok) {
@@ -187,6 +194,7 @@ const campaignAssistantService = {
   rateMessage,
   streamChat,
   streamOneShot,
+  getCardMessages,
 };
 
 export default campaignAssistantService;
