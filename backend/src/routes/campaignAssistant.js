@@ -48,6 +48,44 @@ function digitsOnly(s) {
   return String(s || '').replace(/[^0-9]/g, '');
 }
 
+// Find every conversation the user owns for the same Ads customer + campaign.
+// Used to widen per-card history so a user re-analyzing the same campaign
+// weeks later still sees (and the model still remembers) the prior threads.
+async function siblingConversationIds({ userId, customerId, campaignId }) {
+  if (!customerId || !campaignId) return [];
+  const { data, error } = await supabase
+    .from('campaign_assistant_conversations')
+    .select('id')
+    .eq('user_id', userId)
+    .eq('google_ads_customer_id', customerId)
+    .eq('campaign_id', campaignId);
+  if (error || !data) return [];
+  return data.map(r => r.id);
+}
+
+// Given a conversationId, return { customerId, campaignId, siblingIds } where
+// siblingIds includes the conversation itself and every other conversation
+// scoped to the same campaign. Enforces user ownership.
+async function campaignScopeForConversation(userId, conversationId) {
+  const { data: conv, error } = await supabase
+    .from('campaign_assistant_conversations')
+    .select('id, google_ads_customer_id, campaign_id')
+    .eq('user_id', userId)
+    .eq('id', conversationId)
+    .single();
+  if (error || !conv) return null;
+  const siblings = await siblingConversationIds({
+    userId,
+    customerId: conv.google_ads_customer_id,
+    campaignId: conv.campaign_id,
+  });
+  return {
+    customerId: conv.google_ads_customer_id,
+    campaignId: conv.campaign_id,
+    siblingIds: siblings.length > 0 ? siblings : [conversationId],
+  };
+}
+
 // -- Google account resolution (reused from optimizationReport route pattern) --
 
 async function resolveAdsCustomer(userId, customerIdRaw) {
@@ -604,24 +642,28 @@ router.post('/conversations/:id/one-shot', async (req, res) => {
   if (error || !conv) return res.status(404).json({ error: 'Conversation not found' });
   if (!conv.report_snapshot) return res.status(400).json({ error: 'Conversation is missing a report snapshot' });
 
-  // Load prior card-scoped history if cardKey provided. Both Steps and Ask
-  // interactions on the same card share the same key so the AI sees the
-  // whole per-card thread.
+  // Load prior card-scoped history if cardKey provided. History is scoped
+  // to the CAMPAIGN (customer_id + campaign_id), not the individual
+  // conversation — so re-running "Run analysis" on the same campaign next
+  // week keeps every prior card thread available.
   let priorCardMessages = [];
   if (cardKey) {
-    const { data } = await supabase
-      .from('campaign_assistant_messages')
-      .select('role, provider, content, status, created_at')
-      .eq('conversation_id', conversationId)
-      .eq('card_key', cardKey)
-      .eq('status', 'complete')
-      .order('created_at', { ascending: true })
-      .limit(50);
-    // Filter to messages this provider should see (user turns + own assistant
-    // turns; skip the other provider's replies to avoid style drift).
-    priorCardMessages = (data || [])
-      .filter(m => m.role === 'user' || m.provider === provider)
-      .map(m => ({ role: m.role, content: m.content }));
+    const scope = await campaignScopeForConversation(userId, conversationId);
+    if (scope) {
+      const { data } = await supabase
+        .from('campaign_assistant_messages')
+        .select('role, provider, content, status, created_at')
+        .in('conversation_id', scope.siblingIds)
+        .eq('card_key', cardKey)
+        .eq('status', 'complete')
+        .order('created_at', { ascending: true })
+        .limit(80);
+      // Filter to messages this provider should see (user turns + own assistant
+      // turns; skip the other provider's replies to avoid style drift).
+      priorCardMessages = (data || [])
+        .filter(m => m.role === 'user' || m.provider === provider)
+        .map(m => ({ role: m.role, content: m.content }));
+    }
   }
 
   res.writeHead(200, {
@@ -736,23 +778,28 @@ router.get('/conversations/:id/cards/:cardKey/messages', async (req, res) => {
   if (!cardKey) return res.status(400).json({ error: 'cardKey required' });
 
   try {
-    // Enforce ownership of the conversation before reading messages.
-    const { data: conv, error: convErr } = await supabase
-      .from('campaign_assistant_conversations')
-      .select('id')
-      .eq('id', conversationId)
-      .eq('user_id', userId)
-      .single();
-    if (convErr || !conv) return res.status(404).json({ error: 'Not found' });
+    // Resolve the conversation to its campaign scope and enforce ownership.
+    const scope = await campaignScopeForConversation(userId, conversationId);
+    if (!scope) return res.status(404).json({ error: 'Not found' });
 
+    // Card history is CAMPAIGN-scoped, not conversation-scoped: pull from
+    // every conversation the user owns for the same customer+campaign so a
+    // fresh "Run analysis" still inherits prior sessions' per-card threads.
     const { data: messages, error: msgErr } = await supabase
       .from('campaign_assistant_messages')
-      .select('id, role, provider, content, model, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens, cost_usd, status, created_at')
-      .eq('conversation_id', conversationId)
+      .select('id, conversation_id, role, provider, content, model, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens, cost_usd, status, created_at')
+      .in('conversation_id', scope.siblingIds)
       .eq('card_key', cardKey)
       .order('created_at', { ascending: true });
     if (msgErr) throw msgErr;
-    res.json({ messages: messages || [] });
+    res.json({
+      messages: messages || [],
+      scope: {
+        customerId: scope.customerId,
+        campaignId: scope.campaignId,
+        siblingConversationCount: scope.siblingIds.length,
+      },
+    });
   } catch (err) {
     logger.error('campaignAssistant.card_messages_failed', {
       userId, conversationId, cardKey, error: err.message,
