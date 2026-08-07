@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import {
   Send, Bot, Sparkles, ThumbsUp, ThumbsDown, Trash2, Plus,
-  Loader2, MessageSquare, AlertCircle, ChevronDown, ChevronRight
+  Loader2, MessageSquare, AlertCircle, ChevronDown, ChevronRight, ListOrdered
 } from 'lucide-react';
 import googleAdsService from '../services/googleAdsService';
 import analyticsService from '../services/analyticsService';
@@ -292,6 +292,19 @@ const CampaignAssistant = () => {
     sendMessage(text);
   }, [composer, streaming, sendMessage]);
 
+  const handleAskSteps = useCallback(({ title, fix }) => {
+    if (streaming || !activeConversation) return;
+    // Compose a focused follow-up so the model returns just a numbered
+    // list of clicks, not another round of analysis. Include both the
+    // issue title and the fix so the model has the exact scope.
+    const parts = [];
+    if (title) parts.push(`For the issue "${title}"`);
+    if (fix) parts.push(`with the fix "${fix}"`);
+    const scope = parts.join(' ') || 'the recommendation above';
+    const text = `Give me the exact click-by-click steps to implement ${scope} in the Google Ads UI. Return a numbered list only — no explanation, no rationale, no data citations. Skip any step that requires access I clearly don't have. If the fix belongs in a different tool (GA4, Firebase, landing page CMS), say which tool at the top and give steps for that tool.`;
+    sendMessage(text);
+  }, [streaming, activeConversation, sendMessage]);
+
   const handleRate = useCallback(async (messageId, rating) => {
     // Optimistic toggle: click same rating twice to clear.
     setMessages(prev => prev.map(m => {
@@ -385,6 +398,8 @@ const CampaignAssistant = () => {
               key={turn.turnIndex}
               turn={turn}
               onRate={handleRate}
+              onAskSteps={handleAskSteps}
+              disabled={streaming}
             />
           ))}
         </div>
@@ -709,7 +724,7 @@ const Stat = ({ label, value }) => (
 // ---------------------------------------------------------------------------
 // One conversational turn: user prompt + two side-by-side assistant columns
 // ---------------------------------------------------------------------------
-const TurnBlock = ({ turn, onRate }) => (
+const TurnBlock = ({ turn, onRate, onAskSteps, disabled }) => (
   <div className="space-y-3">
     {turn.user && (
       <div className="flex justify-end">
@@ -719,13 +734,13 @@ const TurnBlock = ({ turn, onRate }) => (
       </div>
     )}
     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-      <ProviderColumn title="OpenAI" msg={turn.openai} onRate={onRate} accent="text-green-700" bg="bg-green-50" border="border-green-200" />
-      <ProviderColumn title="Claude" msg={turn.claude} onRate={onRate} accent="text-orange-700" bg="bg-orange-50" border="border-orange-200" />
+      <ProviderColumn title="OpenAI" msg={turn.openai} onRate={onRate} onAskSteps={onAskSteps} askDisabled={disabled} accent="text-green-700" bg="bg-green-50" border="border-green-200" />
+      <ProviderColumn title="Claude" msg={turn.claude} onRate={onRate} onAskSteps={onAskSteps} askDisabled={disabled} accent="text-orange-700" bg="bg-orange-50" border="border-orange-200" />
     </div>
   </div>
 );
 
-const ProviderColumn = ({ title, msg, onRate, accent, bg, border }) => {
+const ProviderColumn = ({ title, msg, onRate, onAskSteps, askDisabled, accent, bg, border }) => {
   if (!msg) return null;
   const isStreaming = msg.status === 'streaming';
   const failed = msg.status === 'failed';
@@ -750,7 +765,7 @@ const ProviderColumn = ({ title, msg, onRate, accent, bg, border }) => {
       ) : (
         <div className="flex-1">
           {msg.content
-            ? <AssistantBody content={msg.content} />
+            ? <AssistantBody content={msg.content} onAskSteps={onAskSteps} askDisabled={askDisabled} />
             : (isStreaming ? <span className="text-sm text-gray-400">Thinking…</span> : null)}
         </div>
       )}
@@ -862,9 +877,10 @@ const DetailsBody = ({ text }) => {
   );
 };
 
-const IssueCard = ({ title, fix, details }) => {
+const IssueCard = ({ title, fix, details, onAskSteps, askDisabled }) => {
   const [open, setOpen] = useState(false);
   const hasDetails = details && details.trim().length > 0;
+  const canAskSteps = !!onAskSteps && (title || fix);
   return (
     <div className="border border-gray-200 rounded-md bg-white">
       {title && (
@@ -877,23 +893,34 @@ const IssueCard = ({ title, fix, details }) => {
           <span className="font-medium text-primary-700">Fix:</span> {renderInline(fix)}
         </div>
       )}
-      {hasDetails && (
-        <div className="border-t border-gray-100">
+      <div className="border-t border-gray-100 flex items-stretch divide-x divide-gray-100">
+        {hasDetails && (
           <button
             onClick={() => setOpen(v => !v)}
-            className="w-full flex items-center gap-1 px-3 py-1.5 text-[11px] font-medium text-gray-500 hover:bg-gray-50"
+            className="flex-1 flex items-center justify-center gap-1 px-3 py-1.5 text-[11px] font-medium text-gray-500 hover:bg-gray-50"
           >
             {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
             {open ? 'Hide details' : 'Show details'}
           </button>
-          {open && <div className="px-3 pb-3"><DetailsBody text={details} /></div>}
-        </div>
-      )}
+        )}
+        {canAskSteps && (
+          <button
+            onClick={() => onAskSteps({ title, fix })}
+            disabled={askDisabled}
+            title={askDisabled ? 'Waiting for current response to finish…' : 'Ask both models for exact click-by-click steps'}
+            className="flex-1 flex items-center justify-center gap-1 px-3 py-1.5 text-[11px] font-medium text-primary-700 hover:bg-primary-50 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <ListOrdered className="h-3 w-3" />
+            Get step-by-step
+          </button>
+        )}
+      </div>
+      {open && hasDetails && <div className="px-3 pb-3 border-t border-gray-100"><DetailsBody text={details} /></div>}
     </div>
   );
 };
 
-const AssistantBody = ({ content }) => {
+const AssistantBody = ({ content, onAskSteps, askDisabled }) => {
   const sections = useMemo(() => splitSections(content), [content]);
   // No headings at all → follow-up answer / non-issue response. Render as
   // plain text with basic inline formatting.
@@ -914,7 +941,16 @@ const AssistantBody = ({ content }) => {
             </p>
           );
         }
-        return <IssueCard key={i} title={s.title} fix={fix} details={details} />;
+        return (
+          <IssueCard
+            key={i}
+            title={s.title}
+            fix={fix}
+            details={details}
+            onAskSteps={onAskSteps}
+            askDisabled={askDisabled}
+          />
+        );
       })}
     </div>
   );
