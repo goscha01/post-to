@@ -350,8 +350,9 @@ router.post('/conversations/:id/chat', async (req, res) => {
   const userId = req.user.userId;
   const conversationId = req.params.id;
   const message = String(req.body?.message || '').trim().slice(0, MAX_USER_MESSAGE_CHARS);
-  if (!message) {
-    return res.status(400).json({ error: 'message required' });
+  const attachments = Array.isArray(req.body?.attachments) ? req.body.attachments : [];
+  if (!message && attachments.length === 0) {
+    return res.status(400).json({ error: 'message or attachment required' });
   }
 
   // Load conversation (must belong to user) and its full report snapshot.
@@ -509,6 +510,7 @@ router.post('/conversations/:id/chat', async (req, res) => {
   campaignAssistant.streamOpenAI({
     report: conv.report_snapshot,
     messages: openaiMessages,
+    attachments,
     onDelta: text => write({ type: 'delta', provider: 'openai', text }),
     onComplete: async result => {
       await persistCompletion(openaiRow, result);
@@ -538,6 +540,7 @@ router.post('/conversations/:id/chat', async (req, res) => {
   campaignAssistant.streamClaude({
     report: conv.report_snapshot,
     messages: claudeMessages,
+    attachments,
     onDelta: text => write({ type: 'delta', provider: 'claude', text }),
     onComplete: async result => {
       await persistCompletion(claudeRow, result);
@@ -584,7 +587,8 @@ router.post('/conversations/:id/one-shot', async (req, res) => {
   const conversationId = req.params.id;
   const prompt = String(req.body?.prompt || '').trim().slice(0, MAX_USER_MESSAGE_CHARS);
   const provider = req.body?.provider === 'openai' ? 'openai' : 'claude';
-  if (!prompt) return res.status(400).json({ error: 'prompt required' });
+  const attachments = Array.isArray(req.body?.attachments) ? req.body.attachments : [];
+  if (!prompt && attachments.length === 0) return res.status(400).json({ error: 'prompt or attachment required' });
 
   const { data: conv, error } = await supabase
     .from('campaign_assistant_conversations')
@@ -623,6 +627,7 @@ router.post('/conversations/:id/one-shot', async (req, res) => {
   streamFn({
     report: conv.report_snapshot,
     messages: [{ role: 'user', content: prompt }],
+    attachments,
     onDelta: text => write({ type: 'delta', text }),
     onComplete: result => closeOnce({
       type: 'complete',

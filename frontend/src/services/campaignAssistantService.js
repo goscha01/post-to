@@ -51,7 +51,7 @@ const rateMessage = async (id, rating) => {
 //
 // Returns an AbortController — call .abort() to cancel client-side (server
 // keeps writing to the closed socket; that's fine).
-const streamChat = ({ conversationId, message, onEvent, onError }) => {
+const streamChat = ({ conversationId, message, attachments, onEvent, onError }) => {
   const controller = new AbortController();
   const token = localStorage.getItem(TOKEN_KEY);
 
@@ -68,7 +68,7 @@ const streamChat = ({ conversationId, message, onEvent, onError }) => {
             'Accept': 'text/event-stream',
             ...(token ? { Authorization: `Bearer ${token}` } : {}),
           },
-          body: JSON.stringify({ message }),
+          body: JSON.stringify({ message, attachments: attachments || [] }),
         }
       );
       if (!resp.ok) {
@@ -121,7 +121,7 @@ const streamChat = ({ conversationId, message, onEvent, onError }) => {
 // One-shot single-provider stream. Used by the "Get step-by-step" button
 // inside an issue card — one provider, no DB persistence, response
 // rendered inline in the card. Same SSE frame protocol as streamChat.
-const streamOneShot = ({ conversationId, prompt, provider, onEvent, onError }) => {
+const streamOneShot = ({ conversationId, prompt, provider, attachments, onEvent, onError }) => {
   const controller = new AbortController();
   const token = localStorage.getItem(TOKEN_KEY);
 
@@ -138,7 +138,7 @@ const streamOneShot = ({ conversationId, prompt, provider, onEvent, onError }) =
             'Accept': 'text/event-stream',
             ...(token ? { Authorization: `Bearer ${token}` } : {}),
           },
-          body: JSON.stringify({ prompt, provider }),
+          body: JSON.stringify({ prompt, provider, attachments: attachments || [] }),
         }
       );
       if (!resp.ok) {

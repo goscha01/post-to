@@ -90,15 +90,69 @@ function buildClaudeSystemArray(report) {
   ];
 }
 
+// Attachment schema (both providers):
+//   { type: 'image', mediaType: 'image/png'|'image/jpeg'|'image/webp'|'image/gif', data: '<base64>' }
+// Anything else is silently dropped — keep the surface small. Both providers'
+// current vision models accept these four image types inline as base64.
+const ALLOWED_IMAGE_MEDIA_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+
+function normalizeAttachments(list) {
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  for (const a of list) {
+    if (!a || a.type !== 'image') continue;
+    if (!ALLOWED_IMAGE_MEDIA_TYPES.has(a.mediaType)) continue;
+    if (typeof a.data !== 'string' || a.data.length === 0) continue;
+    out.push({ type: 'image', mediaType: a.mediaType, data: a.data });
+  }
+  return out;
+}
+
+// Wrap the FINAL user message with an image-carrying content array so both
+// providers can consume it. The prior conversation history stays as plain
+// { role, content: string } — attachments only travel with the current turn.
+function withAttachmentsOpenAI(messages, attachments) {
+  if (!attachments.length || !messages.length) return messages;
+  const rest = messages.slice(0, -1);
+  const last = messages[messages.length - 1];
+  if (last.role !== 'user') return messages;
+  const content = [
+    { type: 'text', text: last.content || '' },
+    ...attachments.map(a => ({
+      type: 'image_url',
+      image_url: { url: `data:${a.mediaType};base64,${a.data}` },
+    })),
+  ];
+  return [...rest, { role: 'user', content }];
+}
+
+function withAttachmentsClaude(messages, attachments) {
+  if (!attachments.length || !messages.length) return messages;
+  const rest = messages.slice(0, -1);
+  const last = messages[messages.length - 1];
+  if (last.role !== 'user') return messages;
+  const content = [
+    ...attachments.map(a => ({
+      type: 'image',
+      source: { type: 'base64', media_type: a.mediaType, data: a.data },
+    })),
+    { type: 'text', text: last.content || '' },
+  ];
+  return [...rest, { role: 'user', content }];
+}
+
 // ---------------------------------------------------------------------------
 // OpenAI streaming
 // ---------------------------------------------------------------------------
-async function streamOpenAI({ report, messages, onDelta, onComplete, onError }) {
+async function streamOpenAI({ report, messages, attachments, onDelta, onComplete, onError }) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
     onError(new Error('OPENAI_API_KEY is not configured'));
     return;
   }
+
+  const attach = normalizeAttachments(attachments);
+  const withAttach = withAttachmentsOpenAI(messages, attach);
 
   const body = {
     model: OPENAI_MODEL,
@@ -106,7 +160,7 @@ async function streamOpenAI({ report, messages, onDelta, onComplete, onError }) 
     stream_options: { include_usage: true },
     messages: [
       { role: 'system', content: buildOpenAiSystemContent(report) },
-      ...messages,
+      ...withAttach,
     ],
     temperature: 0.5,
   };
@@ -188,19 +242,22 @@ async function streamOpenAI({ report, messages, onDelta, onComplete, onError }) 
 // ---------------------------------------------------------------------------
 // Claude (Anthropic) streaming
 // ---------------------------------------------------------------------------
-async function streamClaude({ report, messages, onDelta, onComplete, onError }) {
+async function streamClaude({ report, messages, attachments, onDelta, onComplete, onError }) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     onError(new Error('ANTHROPIC_API_KEY is not configured'));
     return;
   }
 
+  const attach = normalizeAttachments(attachments);
+  const withAttach = withAttachmentsClaude(messages, attach);
+
   const body = {
     model: CLAUDE_MODEL,
     max_tokens: 4000,
     stream: true,
     system: buildClaudeSystemArray(report),
-    messages,
+    messages: withAttach,
     temperature: 0.5,
   };
 

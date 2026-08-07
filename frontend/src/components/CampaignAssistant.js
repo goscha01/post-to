@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import {
   Send, Bot, Sparkles, ThumbsUp, ThumbsDown, Trash2, Plus,
-  Loader2, MessageSquare, AlertCircle, ChevronDown, ChevronRight, ListOrdered
+  Loader2, MessageSquare, AlertCircle, ChevronDown, ChevronRight, ListOrdered,
+  Paperclip, X, HelpCircle, Image as ImageIcon
 } from 'lucide-react';
 import googleAdsService from '../services/googleAdsService';
 import analyticsService from '../services/analyticsService';
@@ -9,6 +10,64 @@ import connectionsService from '../services/connectionsService';
 import campaignAssistantService from '../services/campaignAssistantService';
 
 const DAYS_OPTIONS = [7, 14, 30, 60, 90];
+
+const ACCEPTED_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;   // 5 MB per file
+const MAX_ATTACHMENTS_PER_TURN = 4;
+
+// Convert a File/Blob to base64 (without the "data:...;base64," prefix) and
+// return the metadata we need to ship it upstream to OpenAI/Claude.
+async function fileToAttachment(file) {
+  if (!file) return null;
+  if (!ACCEPTED_IMAGE_TYPES.includes(file.type)) {
+    throw new Error(`Unsupported file type ${file.type || '(unknown)'}. Use PNG, JPEG, WebP, or GIF.`);
+  }
+  if (file.size > MAX_ATTACHMENT_BYTES) {
+    throw new Error(`File is ${(file.size / 1024 / 1024).toFixed(1)}MB — max 5MB.`);
+  }
+  const dataUrl = await new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = () => reject(r.error || new Error('Failed to read file'));
+    r.readAsDataURL(file);
+  });
+  const comma = dataUrl.indexOf(',');
+  const base64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
+  return {
+    id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    type: 'image',
+    mediaType: file.type,
+    name: file.name || 'pasted-image',
+    sizeBytes: file.size,
+    data: base64,
+    previewUrl: dataUrl,
+  };
+}
+
+// Small strip of thumbnails above a composer. Removes on X click.
+const AttachmentStrip = ({ items, onRemove }) => {
+  if (!items || items.length === 0) return null;
+  return (
+    <div className="flex flex-wrap gap-2 mb-2">
+      {items.map(a => (
+        <div key={a.id} className="relative group">
+          <img
+            src={a.previewUrl}
+            alt={a.name}
+            className="h-14 w-14 object-cover rounded border border-gray-300"
+          />
+          <button
+            onClick={() => onRemove(a.id)}
+            className="absolute -top-1 -right-1 bg-white border border-gray-300 rounded-full p-0.5 shadow-sm opacity-0 group-hover:opacity-100 hover:bg-red-50 hover:border-red-300"
+            aria-label={`Remove ${a.name}`}
+          >
+            <X className="h-3 w-3 text-gray-600" />
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+};
 
 const CampaignAssistant = () => {
   // Setup form state
@@ -35,10 +94,13 @@ const CampaignAssistant = () => {
   const [loadingConversation, setLoadingConversation] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [composer, setComposer] = useState('');
+  const [composerAttachments, setComposerAttachments] = useState([]);
+  const [composerError, setComposerError] = useState(null);
   const [showSnapshot, setShowSnapshot] = useState(true);
 
   const streamCtrlRef = useRef(null);
   const chatScrollRef = useRef(null);
+  const fileInputRef = useRef(null);
 
   // -- Initial loads --
   useEffect(() => {
@@ -207,9 +269,10 @@ const CampaignAssistant = () => {
     }
   }, [activeConversation]);
 
-  const sendMessage = useCallback(async (text, conversationId) => {
+  const sendMessage = useCallback(async (text, conversationId, attachments = []) => {
     const convId = conversationId || activeConversation?.id;
-    if (!convId || !text.trim()) return;
+    const hasContent = (text && text.trim()) || (attachments && attachments.length > 0);
+    if (!convId || !hasContent) return;
     setStreaming(true);
 
     // Local optimistic placeholders — replaced with real DB rows once the
@@ -225,9 +288,18 @@ const CampaignAssistant = () => {
     let claudeId = optimisticClaude.id;
     let userId = optimisticUser.id;
 
+    // Strip the local-only preview URL before sending; server only wants
+    // {type, mediaType, data} per attachment.
+    const cleanAttachments = (attachments || []).map(a => ({
+      type: a.type,
+      mediaType: a.mediaType,
+      data: a.data,
+    }));
+
     streamCtrlRef.current = campaignAssistantService.streamChat({
       conversationId: convId,
       message: text,
+      attachments: cleanAttachments,
       onEvent: (evt) => {
         if (evt.type === 'start') {
           // Swap temp ids for real DB ids.
@@ -308,12 +380,65 @@ const CampaignAssistant = () => {
     });
   }, [activeConversation, messages]);
 
+  const addAttachmentFiles = useCallback(async (files) => {
+    setComposerError(null);
+    const room = MAX_ATTACHMENTS_PER_TURN - composerAttachments.length;
+    if (room <= 0) {
+      setComposerError(`Max ${MAX_ATTACHMENTS_PER_TURN} attachments per message.`);
+      return;
+    }
+    const slice = Array.from(files).slice(0, room);
+    const added = [];
+    for (const f of slice) {
+      try {
+        const a = await fileToAttachment(f);
+        if (a) added.push(a);
+      } catch (err) {
+        setComposerError(err.message || 'Could not read file.');
+      }
+    }
+    if (added.length) {
+      setComposerAttachments(prev => [...prev, ...added]);
+    }
+  }, [composerAttachments.length]);
+
+  const handleComposerPaste = useCallback(async (e) => {
+    const items = e.clipboardData?.items || [];
+    const imageFiles = [];
+    for (const it of items) {
+      if (it.kind === 'file') {
+        const f = it.getAsFile();
+        if (f && ACCEPTED_IMAGE_TYPES.includes(f.type)) imageFiles.push(f);
+      }
+    }
+    if (imageFiles.length > 0) {
+      e.preventDefault();
+      await addAttachmentFiles(imageFiles);
+    }
+  }, [addAttachmentFiles]);
+
+  const handleFilePick = useCallback(async (e) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    await addAttachmentFiles(files);
+    e.target.value = ''; // allow selecting the same file again later
+  }, [addAttachmentFiles]);
+
+  const removeAttachment = useCallback((id) => {
+    setComposerAttachments(prev => prev.filter(a => a.id !== id));
+  }, []);
+
   const handleSend = useCallback(() => {
-    if (!composer.trim() || streaming) return;
     const text = composer.trim();
+    const hasAttachments = composerAttachments.length > 0;
+    if (streaming) return;
+    if (!text && !hasAttachments) return;
     setComposer('');
-    sendMessage(text);
-  }, [composer, streaming, sendMessage]);
+    const atts = composerAttachments;
+    setComposerAttachments([]);
+    setComposerError(null);
+    sendMessage(text, undefined, atts);
+  }, [composer, composerAttachments, streaming, sendMessage]);
 
   // Reload conversation + messages from DB. Used as a safety net after the
   // chat stream 'done' event to reconcile any client-state drift (server
@@ -439,10 +564,36 @@ const CampaignAssistant = () => {
         </div>
 
         <div className="border-t border-gray-200 p-3 bg-white">
-          <div className="flex gap-2">
+          <AttachmentStrip items={composerAttachments} onRemove={removeAttachment} />
+          {composerError && (
+            <div className="flex items-start gap-1.5 text-xs text-red-700 mb-2">
+              <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
+              <span>{composerError}</span>
+            </div>
+          )}
+          <div className="flex gap-2 items-end">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept={ACCEPTED_IMAGE_TYPES.join(',')}
+              multiple
+              onChange={handleFilePick}
+              className="hidden"
+            />
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={!activeConversation || streaming || composerAttachments.length >= MAX_ATTACHMENTS_PER_TURN}
+              title={composerAttachments.length >= MAX_ATTACHMENTS_PER_TURN
+                ? `Max ${MAX_ATTACHMENTS_PER_TURN} images per message`
+                : 'Attach image(s) — PNG / JPEG / WebP / GIF, ≤5MB each. You can also paste from the clipboard.'}
+              className="p-2 text-gray-500 hover:text-primary-600 hover:bg-gray-50 rounded-md disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <Paperclip className="h-4 w-4" />
+            </button>
             <textarea
               value={composer}
               onChange={(e) => setComposer(e.target.value)}
+              onPaste={handleComposerPaste}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault();
@@ -450,7 +601,7 @@ const CampaignAssistant = () => {
                 }
               }}
               placeholder={activeConversation
-                ? 'Ask a follow-up question about this campaign…'
+                ? 'Ask a follow-up… paste screenshots or click the clip to attach images.'
                 : 'Start a new analysis first (pick a customer + campaign on the left)'}
               disabled={!activeConversation || streaming}
               rows={2}
@@ -458,7 +609,7 @@ const CampaignAssistant = () => {
             />
             <button
               onClick={handleSend}
-              disabled={!activeConversation || streaming || !composer.trim()}
+              disabled={!activeConversation || streaming || (!composer.trim() && composerAttachments.length === 0)}
               className="px-4 py-2 bg-primary-600 text-white text-sm font-medium rounded-md hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
             >
               {streaming ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
@@ -943,67 +1094,149 @@ const DetailsBody = ({ text }) => {
   );
 };
 
-const IssueCard = ({ title, fix, details, provider, conversationId }) => {
-  const [detailsOpen, setDetailsOpen] = useState(false);
-  const [stepsOpen, setStepsOpen] = useState(false);
-  const [stepsContent, setStepsContent] = useState('');
-  const [stepsStatus, setStepsStatus] = useState('idle'); // idle | streaming | complete | failed
-  const [stepsError, setStepsError] = useState(null);
-  const stepsCtrlRef = useRef(null);
-  const hasDetails = details && details.trim().length > 0;
-  const canAskSteps = provider && conversationId && (title || fix);
-
-  const startSteps = useCallback(() => {
-    if (stepsStatus === 'streaming' || !canAskSteps) return;
-    setStepsOpen(true);
-    setStepsStatus('streaming');
-    setStepsContent('');
-    setStepsError(null);
-
-    const parts = [];
-    if (title) parts.push(`for the issue "${title}"`);
-    if (fix) parts.push(`with the fix "${fix}"`);
-    const scope = parts.join(' ') || 'the recommendation';
-    const prompt = `Give me the exact click-by-click steps to implement ${scope}. Return a numbered list only — no explanation, no rationale, no data citations. If the fix belongs in a different tool (Google Ads, GA4, Firebase, landing page CMS, tag manager), state which tool at the top on its own line and give steps for that tool.`;
-
-    let accumulated = '';
-    stepsCtrlRef.current = campaignAssistantService.streamOneShot({
+// Generic one-shot state hook used by both the "steps" and "ask about this"
+// inline flows in an IssueCard. Handles a single active stream at a time,
+// with content accumulation + terminal state.
+function useOneShotStream({ conversationId, provider }) {
+  const [content, setContent] = useState('');
+  const [status, setStatus] = useState('idle'); // idle | streaming | complete | failed
+  const [error, setError] = useState(null);
+  const ctrlRef = useRef(null);
+  const start = useCallback(({ prompt, attachments }) => {
+    if (status === 'streaming') return;
+    setStatus('streaming');
+    setContent('');
+    setError(null);
+    let acc = '';
+    ctrlRef.current = campaignAssistantService.streamOneShot({
       conversationId,
       prompt,
       provider,
+      attachments,
       onEvent: (evt) => {
         if (evt.type === 'delta') {
-          accumulated += evt.text;
-          setStepsContent(accumulated);
+          acc += evt.text;
+          setContent(acc);
         } else if (evt.type === 'complete') {
-          setStepsStatus('complete');
+          setStatus('complete');
         } else if (evt.type === 'error') {
-          setStepsStatus('failed');
-          setStepsError(evt.error || 'Provider failed');
+          setStatus('failed');
+          setError(evt.error || 'Provider failed');
         } else if (evt.type === 'done') {
-          stepsCtrlRef.current = null;
-          setStepsStatus(prev => {
-            if (prev === 'streaming') {
-              return accumulated ? 'complete' : 'failed';
-            }
-            return prev;
+          ctrlRef.current = null;
+          setStatus(prev => {
+            if (prev !== 'streaming') return prev;
+            return acc ? 'complete' : 'failed';
           });
-          if (!accumulated) {
-            setStepsError(evt.reason === 'connection_closed'
+          if (!acc) {
+            setError(evt.reason === 'connection_closed'
               ? 'Connection dropped before response finished.'
               : 'No response from provider.');
           }
         }
       },
       onError: (err) => {
-        stepsCtrlRef.current = null;
-        setStepsStatus('failed');
-        setStepsError(err.message || 'Request failed');
+        ctrlRef.current = null;
+        setStatus('failed');
+        setError(err.message || 'Request failed');
       },
     });
-  }, [canAskSteps, conversationId, fix, provider, stepsStatus, title]);
+  }, [conversationId, provider, status]);
+  return { content, status, error, start };
+}
+
+const IssueCard = ({ title, fix, details, provider, conversationId }) => {
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [stepsOpen, setStepsOpen] = useState(false);
+  const [askOpen, setAskOpen] = useState(false);
+  const [askText, setAskText] = useState('');
+  const [askAttachments, setAskAttachments] = useState([]);
+  const [askError, setAskError] = useState(null);
+  const askFileInputRef = useRef(null);
+
+  const hasDetails = details && details.trim().length > 0;
+  const canAsk = provider && conversationId && (title || fix);
+
+  const steps = useOneShotStream({ conversationId, provider });
+  const ask = useOneShotStream({ conversationId, provider });
 
   const providerLabel = provider === 'openai' ? 'OpenAI' : 'Claude';
+
+  const cardContext = () => {
+    const bits = [];
+    if (title) bits.push(`ISSUE: ${title}`);
+    if (fix) bits.push(`SUGGESTED FIX: ${fix}`);
+    if (details) bits.push(`DETAILS: ${details.slice(0, 1500)}`);
+    return bits.join('\n');
+  };
+
+  const startSteps = useCallback(() => {
+    if (!canAsk) return;
+    setStepsOpen(true);
+    const parts = [];
+    if (title) parts.push(`for the issue "${title}"`);
+    if (fix) parts.push(`with the fix "${fix}"`);
+    const scope = parts.join(' ') || 'the recommendation';
+    const prompt = `Give me the exact click-by-click steps to implement ${scope}. Return a numbered list only — no explanation, no rationale, no data citations. If the fix belongs in a different tool (Google Ads, GA4, Firebase, landing page CMS, tag manager), state which tool at the top on its own line and give steps for that tool.`;
+    steps.start({ prompt });
+  }, [canAsk, fix, steps, title]);
+
+  const submitAsk = useCallback(async () => {
+    if (!canAsk) return;
+    const text = askText.trim();
+    if (!text && askAttachments.length === 0) return;
+    setAskError(null);
+    const prompt = `You are answering a follow-up question scoped to a SPECIFIC issue on this campaign. Focus your entire response on this one issue — do NOT re-list other issues or re-do a full analysis.
+
+--- ISSUE CONTEXT ---
+${cardContext()}
+--- END ISSUE CONTEXT ---
+
+USER QUESTION: ${text || '(see attached image)'}
+
+Answer plainly — no ## headings, no "Fix:" format. Prose or short bullets are fine. Cite specific numbers from the campaign data when useful.`;
+    const clean = askAttachments.map(a => ({
+      type: a.type, mediaType: a.mediaType, data: a.data,
+    }));
+    ask.start({ prompt, attachments: clean });
+    setAskText('');
+    setAskAttachments([]);
+  }, [ask, askAttachments, askText, canAsk, cardContext]);
+
+  const addAskFiles = useCallback(async (files) => {
+    setAskError(null);
+    const room = MAX_ATTACHMENTS_PER_TURN - askAttachments.length;
+    if (room <= 0) {
+      setAskError(`Max ${MAX_ATTACHMENTS_PER_TURN} images.`);
+      return;
+    }
+    const slice = Array.from(files).slice(0, room);
+    const added = [];
+    for (const f of slice) {
+      try {
+        const a = await fileToAttachment(f);
+        if (a) added.push(a);
+      } catch (err) {
+        setAskError(err.message || 'Could not read file.');
+      }
+    }
+    if (added.length) setAskAttachments(prev => [...prev, ...added]);
+  }, [askAttachments.length]);
+
+  const handleAskPaste = useCallback(async (e) => {
+    const items = e.clipboardData?.items || [];
+    const imgs = [];
+    for (const it of items) {
+      if (it.kind === 'file') {
+        const f = it.getAsFile();
+        if (f && ACCEPTED_IMAGE_TYPES.includes(f.type)) imgs.push(f);
+      }
+    }
+    if (imgs.length > 0) {
+      e.preventDefault();
+      await addAskFiles(imgs);
+    }
+  }, [addAskFiles]);
 
   return (
     <div className="border border-gray-200 rounded-md bg-white">
@@ -1027,31 +1260,123 @@ const IssueCard = ({ title, fix, details, provider, conversationId }) => {
             {detailsOpen ? 'Hide details' : 'Show details'}
           </button>
         )}
-        {canAskSteps && (
+        {canAsk && (
+          <button
+            onClick={() => setAskOpen(v => !v)}
+            title={`Ask ${providerLabel} a question scoped to just this issue`}
+            className="flex-1 flex items-center justify-center gap-1 px-3 py-1.5 text-[11px] font-medium text-blue-700 hover:bg-blue-50"
+          >
+            <HelpCircle className="h-3 w-3" />
+            {askOpen ? 'Hide ask' : 'Ask about this'}
+          </button>
+        )}
+        {canAsk && (
           <button
             onClick={() => {
-              if (stepsStatus === 'complete' || stepsStatus === 'failed') {
+              if (steps.status === 'complete' || steps.status === 'failed') {
                 setStepsOpen(v => !v);
               } else {
                 startSteps();
               }
             }}
-            disabled={stepsStatus === 'streaming'}
+            disabled={steps.status === 'streaming'}
             title={`Ask ${providerLabel} for exact click-by-click steps`}
             className="flex-1 flex items-center justify-center gap-1 px-3 py-1.5 text-[11px] font-medium text-primary-700 hover:bg-primary-50 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <ListOrdered className="h-3 w-3" />
-            {stepsStatus === 'streaming' ? 'Getting steps…' :
-             stepsStatus === 'complete' && stepsOpen ? 'Hide steps' :
-             stepsStatus === 'complete' ? 'Show steps' :
-             stepsStatus === 'failed' ? 'Retry steps' :
+            {steps.status === 'streaming' ? 'Getting steps…' :
+             steps.status === 'complete' && stepsOpen ? 'Hide steps' :
+             steps.status === 'complete' ? 'Show steps' :
+             steps.status === 'failed' ? 'Retry steps' :
              'Get step-by-step'}
           </button>
         )}
       </div>
+
       {detailsOpen && hasDetails && (
         <div className="px-3 pb-3 border-t border-gray-100"><DetailsBody text={details} /></div>
       )}
+
+      {askOpen && canAsk && (
+        <div className="border-t border-blue-100 bg-blue-50 px-3 py-2.5">
+          <div className="flex items-center justify-between mb-1.5">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-blue-800 flex items-center gap-1">
+              <HelpCircle className="h-3 w-3" /> Ask {providerLabel} about this issue
+            </div>
+            <button
+              onClick={() => setAskOpen(false)}
+              className="text-[11px] text-blue-700 hover:text-blue-900"
+              aria-label="Close ask"
+            >
+              Close
+            </button>
+          </div>
+          <AttachmentStrip items={askAttachments} onRemove={(id) => setAskAttachments(prev => prev.filter(a => a.id !== id))} />
+          {askError && (
+            <div className="flex items-start gap-1.5 text-[11px] text-red-700 mb-1.5">
+              <AlertCircle className="h-3 w-3 flex-shrink-0 mt-0.5" />
+              <span>{askError}</span>
+            </div>
+          )}
+          <div className="flex gap-1.5 items-end">
+            <input
+              ref={askFileInputRef}
+              type="file"
+              accept={ACCEPTED_IMAGE_TYPES.join(',')}
+              multiple
+              onChange={async (e) => {
+                if (e.target.files?.length) await addAskFiles(e.target.files);
+                e.target.value = '';
+              }}
+              className="hidden"
+            />
+            <button
+              onClick={() => askFileInputRef.current?.click()}
+              disabled={ask.status === 'streaming' || askAttachments.length >= MAX_ATTACHMENTS_PER_TURN}
+              title="Attach image (or paste)"
+              className="p-1.5 text-gray-500 hover:text-blue-700 hover:bg-blue-100 rounded disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <ImageIcon className="h-3.5 w-3.5" />
+            </button>
+            <textarea
+              value={askText}
+              onChange={(e) => setAskText(e.target.value)}
+              onPaste={handleAskPaste}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  submitAsk();
+                }
+              }}
+              disabled={ask.status === 'streaming'}
+              rows={2}
+              placeholder="Question about this specific issue… (paste screenshots supported)"
+              className="flex-1 resize-none border border-blue-200 rounded px-2 py-1 text-xs bg-white focus:outline-none focus:ring-1 focus:ring-blue-400 disabled:opacity-60"
+            />
+            <button
+              onClick={submitAsk}
+              disabled={ask.status === 'streaming' || (!askText.trim() && askAttachments.length === 0)}
+              className="px-2.5 py-1 bg-blue-600 text-white text-xs font-medium rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
+            >
+              {ask.status === 'streaming' ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
+              Send
+            </button>
+          </div>
+          {(ask.status === 'streaming' || ask.content || ask.status === 'failed') && (
+            <div className="mt-2 pt-2 border-t border-blue-100">
+              {ask.status === 'streaming' && !ask.content && <ThinkingIndicator />}
+              {ask.content && <DetailsBody text={ask.content} />}
+              {ask.status === 'failed' && !ask.content && (
+                <div className="text-xs text-red-700 flex items-start gap-1.5">
+                  <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
+                  <span>{ask.error || 'Request failed.'}</span>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       {stepsOpen && (
         <div className="border-t border-primary-100 bg-primary-50 px-3 py-2.5">
           <div className="flex items-center justify-between mb-1.5">
@@ -1066,12 +1391,12 @@ const IssueCard = ({ title, fix, details, provider, conversationId }) => {
               Close
             </button>
           </div>
-          {stepsStatus === 'streaming' && !stepsContent && <ThinkingIndicator />}
-          {stepsContent && <DetailsBody text={stepsContent} />}
-          {stepsStatus === 'failed' && (
+          {steps.status === 'streaming' && !steps.content && <ThinkingIndicator />}
+          {steps.content && <DetailsBody text={steps.content} />}
+          {steps.status === 'failed' && !steps.content && (
             <div className="text-xs text-red-700 flex items-start gap-1.5 mt-1">
               <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
-              <span>{stepsError || 'Failed to fetch steps.'}</span>
+              <span>{steps.error || 'Failed to fetch steps.'}</span>
             </div>
           )}
         </div>
