@@ -137,7 +137,9 @@ const CampaignAssistant = () => {
     (c.customerId || c.customer_id) === selectedCustomerId
   );
   const selectedCustomerEmail = (selectedCustomer?.ownerEmail || selectedCustomer?.owner_email || '').toLowerCase();
-  const selectedCampaign = campaigns.find(c => String(c.id) === String(selectedCampaignId));
+  const selectedCampaign = campaigns.find(c =>
+    String(c.campaignId || c.id) === String(selectedCampaignId)
+  );
 
   // -- Actions --
   const startNewAnalysis = useCallback(async () => {
@@ -518,11 +520,14 @@ const SetupCard = ({
         <option value="">
           {campaignsLoading ? 'Loading campaigns…' : '— Select campaign —'}
         </option>
-        {campaigns.map(c => (
-          <option key={c.id} value={c.id}>
-            {c.name} {c.status ? `· ${c.status}` : ''}
-          </option>
-        ))}
+        {campaigns.map(c => {
+          const id = c.campaignId || c.id;
+          return (
+            <option key={id} value={id}>
+              {c.name} {c.status ? `· ${c.status}` : ''}
+            </option>
+          );
+        })}
       </select>
     </Field>
 
