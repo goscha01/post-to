@@ -265,6 +265,25 @@ const CampaignAssistant = () => {
         } else if (evt.type === 'done') {
           setStreaming(false);
           streamCtrlRef.current = null;
+          // Safety net: any provider message still tagged 'streaming' at
+          // this point (never got a 'complete' or 'error' frame — server
+          // hung up mid-turn, upstream API silently died, etc.) is stuck
+          // and would render "Thinking…" forever. Flip it to failed so
+          // the user gets a clear signal.
+          setMessages(prev => prev.map(m => {
+            if (m.status !== 'streaming') return m;
+            if (m.id !== openaiId && m.id !== claudeId) return m;
+            if (m.content && m.content.length > 0) {
+              return { ...m, status: 'complete' };
+            }
+            return {
+              ...m,
+              status: 'failed',
+              error: evt.reason === 'connection_closed'
+                ? 'Connection dropped before response finished.'
+                : 'No response from provider.',
+            };
+          }));
           // Bump the conversation to top of the sidebar list.
           setConversations(prev => {
             const cur = prev.find(c => c.id === convId);
@@ -345,7 +364,8 @@ const CampaignAssistant = () => {
           days={days}
           onSelectDays={setDays}
           selectedCustomerEmail={selectedCustomerEmail}
-          creating={creating || streaming}
+          creating={creating}
+          streaming={streaming}
           onStart={startNewAnalysis}
           error={setupError}
         />
@@ -447,8 +467,14 @@ const SetupCard = ({
   selectedFirebasePropertyId, onSelectFirebaseProperty,
   openAiAdsConnections, selectedOpenAiAdsConnectionId, onSelectOpenAiAds,
   days, onSelectDays, selectedCustomerEmail,
-  creating, onStart, error,
+  creating, streaming, onStart, error,
 }) => {
+  const busy = creating || streaming;
+  const buttonLabel = creating
+    ? 'Building report…'
+    : streaming
+    ? 'Streaming response…'
+    : 'Run analysis';
   // Split GA4 into "matches the selected Ads customer's Google login" vs the
   // rest. Same list gets used by both the web GA4 and Firebase-linked GA4
   // pickers. Cross-owner is allowed by the backend (per-resource token
@@ -503,7 +529,7 @@ const SetupCard = ({
       <select
         value={selectedCustomerId}
         onChange={(e) => onSelectCustomer(e.target.value)}
-        disabled={customersLoading || creating || customers.length === 0}
+        disabled={customersLoading || busy || customers.length === 0}
         className="w-full text-sm border border-gray-300 rounded-md px-2 py-1.5 disabled:bg-gray-50"
       >
         <option value="">
@@ -529,7 +555,7 @@ const SetupCard = ({
       <select
         value={selectedCampaignId}
         onChange={(e) => onSelectCampaign(e.target.value)}
-        disabled={!selectedCustomerId || campaignsLoading || creating}
+        disabled={!selectedCustomerId || campaignsLoading || busy}
         className="w-full text-sm border border-gray-300 rounded-md px-2 py-1.5 disabled:bg-gray-50"
       >
         <option value="">
@@ -550,7 +576,7 @@ const SetupCard = ({
       <select
         value={days}
         onChange={(e) => onSelectDays(parseInt(e.target.value, 10))}
-        disabled={creating}
+        disabled={busy}
         className="w-full text-sm border border-gray-300 rounded-md px-2 py-1.5"
       >
         {DAYS_OPTIONS.map(d => <option key={d} value={d}>{d} days</option>)}
@@ -561,7 +587,7 @@ const SetupCard = ({
       <select
         value={selectedGa4PropertyId}
         onChange={(e) => onSelectGa4Property(e.target.value)}
-        disabled={creating}
+        disabled={busy}
         className="w-full text-sm border border-gray-300 rounded-md px-2 py-1.5"
       >
         <option value="">— None —</option>
@@ -573,7 +599,7 @@ const SetupCard = ({
       <select
         value={selectedFirebasePropertyId}
         onChange={(e) => onSelectFirebaseProperty(e.target.value)}
-        disabled={creating}
+        disabled={busy}
         className="w-full text-sm border border-gray-300 rounded-md px-2 py-1.5"
       >
         <option value="">— None —</option>
@@ -586,7 +612,7 @@ const SetupCard = ({
         <select
           value={selectedOpenAiAdsConnectionId}
           onChange={(e) => onSelectOpenAiAds(e.target.value)}
-          disabled={creating}
+          disabled={busy}
           className="w-full text-sm border border-gray-300 rounded-md px-2 py-1.5"
         >
           <option value="">— None —</option>
@@ -608,11 +634,11 @@ const SetupCard = ({
 
     <button
       onClick={onStart}
-      disabled={creating || !selectedCustomerId || !selectedCampaignId}
+      disabled={busy || !selectedCustomerId || !selectedCampaignId}
       className="w-full py-2 bg-primary-600 text-white text-sm font-medium rounded-md hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
     >
-      {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-      {creating ? 'Building report…' : 'Run analysis'}
+      {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+      {buttonLabel}
     </button>
   </div>
   );
@@ -766,7 +792,7 @@ const ProviderColumn = ({ title, msg, onRate, onAskSteps, askDisabled, accent, b
         <div className="flex-1">
           {msg.content
             ? <AssistantBody content={msg.content} onAskSteps={onAskSteps} askDisabled={askDisabled} />
-            : (isStreaming ? <span className="text-sm text-gray-400">Thinking…</span> : null)}
+            : (isStreaming ? <ThinkingIndicator /> : null)}
         </div>
       )}
 
@@ -795,6 +821,32 @@ const ProviderColumn = ({ title, msg, onRate, onAskSteps, askDisabled, accent, b
           </div>
         </div>
       )}
+    </div>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// ThinkingIndicator — live-elapsed timer while a provider is streaming
+// but hasn't emitted any text yet. Long-running Anthropic/OpenAI calls
+// with big system prompts can take 30-90s to first token; without this
+// the card just says "Thinking…" and looks stuck.
+// ---------------------------------------------------------------------------
+const ThinkingIndicator = () => {
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setElapsed(e => e + 1), 1000);
+    return () => clearInterval(t);
+  }, []);
+  const hint = elapsed > 45
+    ? 'Big report — models can take up to 2 min for the first token.'
+    : elapsed > 15
+    ? 'Waiting on the model to start streaming…'
+    : 'Thinking…';
+  return (
+    <div className="flex items-center gap-2 text-sm text-gray-400">
+      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+      <span>{hint}</span>
+      <span className="text-[10px] text-gray-300">{elapsed}s</span>
     </div>
   );
 };

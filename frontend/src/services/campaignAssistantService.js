@@ -56,6 +56,7 @@ const streamChat = ({ conversationId, message, onEvent, onError }) => {
   const token = localStorage.getItem(TOKEN_KEY);
 
   const run = async () => {
+    let sawDone = false;
     try {
       const resp = await fetch(
         `${API_BASE}/api/campaign-assistant/conversations/${conversationId}/chat`,
@@ -95,10 +96,17 @@ const streamChat = ({ conversationId, message, onEvent, onError }) => {
             try {
               const obj = JSON.parse(payload);
               onEvent(obj);
-              if (obj.type === 'done') return;
+              if (obj.type === 'done') { sawDone = true; return; }
             } catch (_) { /* ignore malformed frame */ }
           }
         }
+      }
+      // Reader returned done=true without ever emitting a "done" frame —
+      // means the server closed the connection (crash, proxy timeout,
+      // network blip) mid-stream. Surface that so the UI doesn't sit on
+      // "Thinking…" forever.
+      if (!sawDone) {
+        onEvent({ type: 'done', reason: 'connection_closed' });
       }
     } catch (err) {
       if (err.name === 'AbortError') return;
