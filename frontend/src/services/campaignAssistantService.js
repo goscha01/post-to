@@ -118,6 +118,67 @@ const streamChat = ({ conversationId, message, onEvent, onError }) => {
   return controller;
 };
 
+// One-shot single-provider stream. Used by the "Get step-by-step" button
+// inside an issue card — one provider, no DB persistence, response
+// rendered inline in the card. Same SSE frame protocol as streamChat.
+const streamOneShot = ({ conversationId, prompt, provider, onEvent, onError }) => {
+  const controller = new AbortController();
+  const token = localStorage.getItem(TOKEN_KEY);
+
+  const run = async () => {
+    let sawDone = false;
+    try {
+      const resp = await fetch(
+        `${API_BASE}/api/campaign-assistant/conversations/${conversationId}/one-shot`,
+        {
+          method: 'POST',
+          signal: controller.signal,
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'text/event-stream',
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify({ prompt, provider }),
+        }
+      );
+      if (!resp.ok) {
+        const errText = await resp.text().catch(() => resp.statusText);
+        throw new Error(`One-shot failed: ${resp.status} ${errText}`);
+      }
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buf = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const parts = buf.split('\n\n');
+        buf = parts.pop() || '';
+        for (const frame of parts) {
+          for (const line of frame.split('\n')) {
+            const trimmed = line.trim();
+            if (!trimmed || !trimmed.startsWith('data:')) continue;
+            const payload = trimmed.slice(5).trim();
+            if (!payload) continue;
+            try {
+              const obj = JSON.parse(payload);
+              onEvent(obj);
+              if (obj.type === 'done') { sawDone = true; return; }
+            } catch (_) { /* ignore malformed frame */ }
+          }
+        }
+      }
+      if (!sawDone) onEvent({ type: 'done', reason: 'connection_closed' });
+    } catch (err) {
+      if (err.name === 'AbortError') return;
+      if (onError) onError(err);
+    }
+  };
+
+  run();
+  return controller;
+};
+
 const campaignAssistantService = {
   listConversations,
   getConversation,
@@ -125,6 +186,7 @@ const campaignAssistantService = {
   deleteConversation,
   rateMessage,
   streamChat,
+  streamOneShot,
 };
 
 export default campaignAssistantService;

@@ -265,11 +265,9 @@ const CampaignAssistant = () => {
         } else if (evt.type === 'done') {
           setStreaming(false);
           streamCtrlRef.current = null;
-          // Safety net: any provider message still tagged 'streaming' at
-          // this point (never got a 'complete' or 'error' frame — server
-          // hung up mid-turn, upstream API silently died, etc.) is stuck
-          // and would render "Thinking…" forever. Flip it to failed so
-          // the user gets a clear signal.
+          // Safety net 1 — mark any still-'streaming' provider message
+          // in this turn as complete/failed based on whether it has
+          // content. Prevents "Thinking…" from sitting forever.
           setMessages(prev => prev.map(m => {
             if (m.status !== 'streaming') return m;
             if (m.id !== openaiId && m.id !== claudeId) return m;
@@ -284,6 +282,12 @@ const CampaignAssistant = () => {
                 : 'No response from provider.',
             };
           }));
+          // Safety net 2 — refetch from DB. The server always persists
+          // every complete/error result to the messages table before
+          // sending the done frame, so pulling the authoritative row
+          // list here fixes any client drift (delta frame lost mid-
+          // stream, closure over stale message ids, etc.).
+          refetchActiveConversation(convId);
           // Bump the conversation to top of the sidebar list.
           setConversations(prev => {
             const cur = prev.find(c => c.id === convId);
@@ -311,18 +315,29 @@ const CampaignAssistant = () => {
     sendMessage(text);
   }, [composer, streaming, sendMessage]);
 
-  const handleAskSteps = useCallback(({ title, fix }) => {
-    if (streaming || !activeConversation) return;
-    // Compose a focused follow-up so the model returns just a numbered
-    // list of clicks, not another round of analysis. Include both the
-    // issue title and the fix so the model has the exact scope.
-    const parts = [];
-    if (title) parts.push(`For the issue "${title}"`);
-    if (fix) parts.push(`with the fix "${fix}"`);
-    const scope = parts.join(' ') || 'the recommendation above';
-    const text = `Give me the exact click-by-click steps to implement ${scope} in the Google Ads UI. Return a numbered list only — no explanation, no rationale, no data citations. Skip any step that requires access I clearly don't have. If the fix belongs in a different tool (GA4, Firebase, landing page CMS), say which tool at the top and give steps for that tool.`;
-    sendMessage(text);
-  }, [streaming, activeConversation, sendMessage]);
+  // Reload conversation + messages from DB. Used as a safety net after the
+  // chat stream 'done' event to reconcile any client-state drift (server
+  // persisted 'complete' status but frontend never saw the frame, etc.).
+  const refetchActiveConversation = useCallback(async (convId) => {
+    if (!convId) return;
+    try {
+      const res = await campaignAssistantService.getConversation(convId);
+      // Only apply if the user hasn't switched conversations in the meantime.
+      setActiveConversation(prev => (prev && prev.id === convId ? res.conversation : prev));
+      setMessages(prev => {
+        // Merge: if a DB message has more content or a terminal status,
+        // prefer the DB version. Keep any purely local temp rows.
+        const byId = new Map(prev.map(m => [m.id, m]));
+        for (const dbMsg of (res.messages || [])) {
+          byId.set(dbMsg.id, { ...byId.get(dbMsg.id), ...dbMsg });
+        }
+        // Drop any local temp rows that never got a real id assigned.
+        return Array.from(byId.values()).filter(m => !String(m.id || '').startsWith('tmp-'));
+      });
+    } catch (err) {
+      console.warn('refetchActiveConversation failed', err);
+    }
+  }, []);
 
   const handleRate = useCallback(async (messageId, rating) => {
     // Optimistic toggle: click same rating twice to clear.
@@ -418,8 +433,7 @@ const CampaignAssistant = () => {
               key={turn.turnIndex}
               turn={turn}
               onRate={handleRate}
-              onAskSteps={handleAskSteps}
-              disabled={streaming}
+              conversationId={activeConversation.id}
             />
           ))}
         </div>
@@ -750,7 +764,7 @@ const Stat = ({ label, value }) => (
 // ---------------------------------------------------------------------------
 // One conversational turn: user prompt + two side-by-side assistant columns
 // ---------------------------------------------------------------------------
-const TurnBlock = ({ turn, onRate, onAskSteps, disabled }) => (
+const TurnBlock = ({ turn, onRate, conversationId }) => (
   <div className="space-y-3">
     {turn.user && (
       <div className="flex justify-end">
@@ -760,13 +774,13 @@ const TurnBlock = ({ turn, onRate, onAskSteps, disabled }) => (
       </div>
     )}
     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-      <ProviderColumn title="OpenAI" msg={turn.openai} onRate={onRate} onAskSteps={onAskSteps} askDisabled={disabled} accent="text-green-700" bg="bg-green-50" border="border-green-200" />
-      <ProviderColumn title="Claude" msg={turn.claude} onRate={onRate} onAskSteps={onAskSteps} askDisabled={disabled} accent="text-orange-700" bg="bg-orange-50" border="border-orange-200" />
+      <ProviderColumn title="OpenAI" provider="openai" msg={turn.openai} onRate={onRate} conversationId={conversationId} accent="text-green-700" bg="bg-green-50" border="border-green-200" />
+      <ProviderColumn title="Claude" provider="claude" msg={turn.claude} onRate={onRate} conversationId={conversationId} accent="text-orange-700" bg="bg-orange-50" border="border-orange-200" />
     </div>
   </div>
 );
 
-const ProviderColumn = ({ title, msg, onRate, onAskSteps, askDisabled, accent, bg, border }) => {
+const ProviderColumn = ({ title, provider, msg, onRate, conversationId, accent, bg, border }) => {
   if (!msg) return null;
   const isStreaming = msg.status === 'streaming';
   const failed = msg.status === 'failed';
@@ -791,7 +805,7 @@ const ProviderColumn = ({ title, msg, onRate, onAskSteps, askDisabled, accent, b
       ) : (
         <div className="flex-1">
           {msg.content
-            ? <AssistantBody content={msg.content} onAskSteps={onAskSteps} askDisabled={askDisabled} />
+            ? <AssistantBody content={msg.content} provider={provider} conversationId={conversationId} />
             : (isStreaming ? <ThinkingIndicator /> : null)}
         </div>
       )}
@@ -929,10 +943,68 @@ const DetailsBody = ({ text }) => {
   );
 };
 
-const IssueCard = ({ title, fix, details, onAskSteps, askDisabled }) => {
-  const [open, setOpen] = useState(false);
+const IssueCard = ({ title, fix, details, provider, conversationId }) => {
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [stepsOpen, setStepsOpen] = useState(false);
+  const [stepsContent, setStepsContent] = useState('');
+  const [stepsStatus, setStepsStatus] = useState('idle'); // idle | streaming | complete | failed
+  const [stepsError, setStepsError] = useState(null);
+  const stepsCtrlRef = useRef(null);
   const hasDetails = details && details.trim().length > 0;
-  const canAskSteps = !!onAskSteps && (title || fix);
+  const canAskSteps = provider && conversationId && (title || fix);
+
+  const startSteps = useCallback(() => {
+    if (stepsStatus === 'streaming' || !canAskSteps) return;
+    setStepsOpen(true);
+    setStepsStatus('streaming');
+    setStepsContent('');
+    setStepsError(null);
+
+    const parts = [];
+    if (title) parts.push(`for the issue "${title}"`);
+    if (fix) parts.push(`with the fix "${fix}"`);
+    const scope = parts.join(' ') || 'the recommendation';
+    const prompt = `Give me the exact click-by-click steps to implement ${scope}. Return a numbered list only — no explanation, no rationale, no data citations. If the fix belongs in a different tool (Google Ads, GA4, Firebase, landing page CMS, tag manager), state which tool at the top on its own line and give steps for that tool.`;
+
+    let accumulated = '';
+    stepsCtrlRef.current = campaignAssistantService.streamOneShot({
+      conversationId,
+      prompt,
+      provider,
+      onEvent: (evt) => {
+        if (evt.type === 'delta') {
+          accumulated += evt.text;
+          setStepsContent(accumulated);
+        } else if (evt.type === 'complete') {
+          setStepsStatus('complete');
+        } else if (evt.type === 'error') {
+          setStepsStatus('failed');
+          setStepsError(evt.error || 'Provider failed');
+        } else if (evt.type === 'done') {
+          stepsCtrlRef.current = null;
+          setStepsStatus(prev => {
+            if (prev === 'streaming') {
+              return accumulated ? 'complete' : 'failed';
+            }
+            return prev;
+          });
+          if (!accumulated) {
+            setStepsError(evt.reason === 'connection_closed'
+              ? 'Connection dropped before response finished.'
+              : 'No response from provider.');
+          }
+        }
+      },
+      onError: (err) => {
+        stepsCtrlRef.current = null;
+        setStepsStatus('failed');
+        setStepsError(err.message || 'Request failed');
+      },
+    });
+  }, [canAskSteps, conversationId, fix, provider, stepsStatus, title]);
+
+  const providerLabel = provider === 'openai' ? 'OpenAI' : 'Claude';
+
   return (
     <div className="border border-gray-200 rounded-md bg-white">
       {title && (
@@ -948,34 +1020,68 @@ const IssueCard = ({ title, fix, details, onAskSteps, askDisabled }) => {
       <div className="border-t border-gray-100 flex items-stretch divide-x divide-gray-100">
         {hasDetails && (
           <button
-            onClick={() => setOpen(v => !v)}
+            onClick={() => setDetailsOpen(v => !v)}
             className="flex-1 flex items-center justify-center gap-1 px-3 py-1.5 text-[11px] font-medium text-gray-500 hover:bg-gray-50"
           >
-            {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-            {open ? 'Hide details' : 'Show details'}
+            {detailsOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+            {detailsOpen ? 'Hide details' : 'Show details'}
           </button>
         )}
         {canAskSteps && (
           <button
-            onClick={() => onAskSteps({ title, fix })}
-            disabled={askDisabled}
-            title={askDisabled ? 'Waiting for current response to finish…' : 'Ask both models for exact click-by-click steps'}
+            onClick={() => {
+              if (stepsStatus === 'complete' || stepsStatus === 'failed') {
+                setStepsOpen(v => !v);
+              } else {
+                startSteps();
+              }
+            }}
+            disabled={stepsStatus === 'streaming'}
+            title={`Ask ${providerLabel} for exact click-by-click steps`}
             className="flex-1 flex items-center justify-center gap-1 px-3 py-1.5 text-[11px] font-medium text-primary-700 hover:bg-primary-50 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <ListOrdered className="h-3 w-3" />
-            Get step-by-step
+            {stepsStatus === 'streaming' ? 'Getting steps…' :
+             stepsStatus === 'complete' && stepsOpen ? 'Hide steps' :
+             stepsStatus === 'complete' ? 'Show steps' :
+             stepsStatus === 'failed' ? 'Retry steps' :
+             'Get step-by-step'}
           </button>
         )}
       </div>
-      {open && hasDetails && <div className="px-3 pb-3 border-t border-gray-100"><DetailsBody text={details} /></div>}
+      {detailsOpen && hasDetails && (
+        <div className="px-3 pb-3 border-t border-gray-100"><DetailsBody text={details} /></div>
+      )}
+      {stepsOpen && (
+        <div className="border-t border-primary-100 bg-primary-50 px-3 py-2.5">
+          <div className="flex items-center justify-between mb-1.5">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-primary-800 flex items-center gap-1">
+              <ListOrdered className="h-3 w-3" /> Step-by-step ({providerLabel})
+            </div>
+            <button
+              onClick={() => setStepsOpen(false)}
+              className="text-[11px] text-primary-700 hover:text-primary-900"
+              aria-label="Close steps"
+            >
+              Close
+            </button>
+          </div>
+          {stepsStatus === 'streaming' && !stepsContent && <ThinkingIndicator />}
+          {stepsContent && <DetailsBody text={stepsContent} />}
+          {stepsStatus === 'failed' && (
+            <div className="text-xs text-red-700 flex items-start gap-1.5 mt-1">
+              <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
+              <span>{stepsError || 'Failed to fetch steps.'}</span>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 };
 
-const AssistantBody = ({ content, onAskSteps, askDisabled }) => {
+const AssistantBody = ({ content, provider, conversationId }) => {
   const sections = useMemo(() => splitSections(content), [content]);
-  // No headings at all → follow-up answer / non-issue response. Render as
-  // plain text with basic inline formatting.
   const hasHeadings = sections.some(s => s.title);
   if (!hasHeadings) {
     return <div className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">{renderInline(content)}</div>;
@@ -984,8 +1090,6 @@ const AssistantBody = ({ content, onAskSteps, askDisabled }) => {
     <div className="space-y-2">
       {sections.map((s, i) => {
         const { fix, details } = splitFix(s.body);
-        // If a section has no title AND no Fix, render it as a small prelude
-        // paragraph (e.g. an opening summary before the first ## issue).
         if (!s.title && !fix) {
           return (
             <p key={i} className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">
@@ -999,8 +1103,8 @@ const AssistantBody = ({ content, onAskSteps, askDisabled }) => {
             title={s.title}
             fix={fix}
             details={details}
-            onAskSteps={onAskSteps}
-            askDisabled={askDisabled}
+            provider={provider}
+            conversationId={conversationId}
           />
         );
       })}

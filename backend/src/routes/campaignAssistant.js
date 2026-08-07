@@ -566,6 +566,83 @@ router.post('/conversations/:id/chat', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// POST /conversations/:id/one-shot — single-provider SSE stream, NOT persisted
+//
+// Used for inline "step-by-step" requests on an issue card. Body:
+//   { prompt, provider }   where provider = 'openai' | 'claude'
+//
+// Streams just that provider's response, doesn't create a message row, no
+// chat-turn side effect. Cheaper (one provider vs two), lighter (no DB
+// writes), and keeps the followup response next to the issue it belongs
+// to instead of pushing it to the bottom of the chat.
+//
+// SSE frames: {type:'start'} → {type:'delta',text} × N → {type:'complete',...}
+//             or {type:'error',error} → {type:'done'}
+// ---------------------------------------------------------------------------
+router.post('/conversations/:id/one-shot', async (req, res) => {
+  const userId = req.user.userId;
+  const conversationId = req.params.id;
+  const prompt = String(req.body?.prompt || '').trim().slice(0, MAX_USER_MESSAGE_CHARS);
+  const provider = req.body?.provider === 'openai' ? 'openai' : 'claude';
+  if (!prompt) return res.status(400).json({ error: 'prompt required' });
+
+  const { data: conv, error } = await supabase
+    .from('campaign_assistant_conversations')
+    .select('id, report_snapshot')
+    .eq('user_id', userId)
+    .eq('id', conversationId)
+    .single();
+  if (error || !conv) return res.status(404).json({ error: 'Conversation not found' });
+  if (!conv.report_snapshot) return res.status(400).json({ error: 'Conversation is missing a report snapshot' });
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  const write = obj => {
+    try { res.write(`data: ${JSON.stringify(obj)}\n\n`); } catch (_) {}
+  };
+  write({ type: 'start', provider });
+
+  const heartbeat = setInterval(() => {
+    try { res.write(': ping\n\n'); } catch (_) {}
+  }, 25_000);
+  const closeOnce = (frame) => {
+    clearInterval(heartbeat);
+    write(frame);
+    write({ type: 'done' });
+    try { res.end(); } catch (_) {}
+  };
+
+  const streamFn = provider === 'openai'
+    ? campaignAssistant.streamOpenAI
+    : campaignAssistant.streamClaude;
+
+  streamFn({
+    report: conv.report_snapshot,
+    messages: [{ role: 'user', content: prompt }],
+    onDelta: text => write({ type: 'delta', text }),
+    onComplete: result => closeOnce({
+      type: 'complete',
+      model: result.model,
+      costUsd: result.costUsd,
+      promptTokens: result.promptTokens,
+      completionTokens: result.completionTokens,
+      cacheReadTokens: result.cacheReadTokens,
+      cacheWriteTokens: result.cacheWriteTokens,
+    }),
+    onError: err => {
+      logger.warn('campaignAssistant.one_shot_error', {
+        userId, conversationId, provider, error: err.message,
+      });
+      closeOnce({ type: 'error', error: err.message });
+    },
+  });
+});
+
+// ---------------------------------------------------------------------------
 // POST /messages/:id/rate — +1 / -1 / null
 // ---------------------------------------------------------------------------
 router.post('/messages/:id/rate', async (req, res) => {
