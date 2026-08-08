@@ -1181,8 +1181,7 @@ function useOneShotStream({ conversationId, provider }) {
 
 const IssueCard = ({ title, fix, details, provider, conversationId }) => {
   const [detailsOpen, setDetailsOpen] = useState(false);
-  const [stepsOpen, setStepsOpen] = useState(false);
-  const [askOpen, setAskOpen] = useState(false);
+  const [chatOpen, setChatOpen] = useState(false);
   const [askText, setAskText] = useState('');
   const [askAttachments, setAskAttachments] = useState([]);
   const [askError, setAskError] = useState(null);
@@ -1197,8 +1196,10 @@ const IssueCard = ({ title, fix, details, provider, conversationId }) => {
     [provider, title, fix]
   );
 
-  const steps = useOneShotStream({ conversationId, provider });
-  const ask = useOneShotStream({ conversationId, provider });
+  // Single unified stream — both "Ask about this" and "Get step-by-step"
+  // feed into the same conversation panel so the card's history stays a
+  // clean chronological chat instead of two disjoint boxes.
+  const chat = useOneShotStream({ conversationId, provider });
 
   // Lazy-load prior card history the first time either Steps or Ask opens.
   // Skip if we've already loaded it, or if the card has no stable key
@@ -1221,8 +1222,8 @@ const IssueCard = ({ title, fix, details, provider, conversationId }) => {
   }, [cardKey, conversationId, historyLoaded, provider]);
 
   useEffect(() => {
-    if (askOpen || stepsOpen) loadHistory();
-  }, [askOpen, stepsOpen, loadHistory]);
+    if (chatOpen) loadHistory();
+  }, [chatOpen, loadHistory]);
 
   // When a one-shot stream completes, append the (user, assistant) pair to
   // local history so the panel reflects it without an extra fetch.
@@ -1246,34 +1247,31 @@ const IssueCard = ({ title, fix, details, provider, conversationId }) => {
     return bits.join('\n');
   };
 
+  // Shared launcher: prepend a synthetic user marker + fire the request into
+  // the unified chat stream. Used by both the free-form Ask and the pre-
+  // canned Steps request.
+  const runInChat = useCallback(({ userMarker, prompt, attachments }) => {
+    if (!canAsk || chat.status === 'streaming') return;
+    setChatOpen(true);
+    setCardHistory(prev => [
+      ...prev,
+      { id: `local-user-${Date.now()}`, role: 'user', content: userMarker, created_at: new Date().toISOString() },
+    ]);
+    chat.start({ prompt, attachments, cardKey });
+  }, [canAsk, cardKey, chat]);
+
   const startSteps = useCallback(() => {
     if (!canAsk) return;
-    setStepsOpen(true);
     const parts = [];
     if (title) parts.push(`for the issue "${title}"`);
     if (fix) parts.push(`with the fix "${fix}"`);
     const scope = parts.join(' ') || 'the recommendation';
     const prompt = `Give me the exact click-by-click steps to implement ${scope}. Return a numbered list only — no explanation, no rationale, no data citations. If the fix belongs in a different tool (Google Ads, GA4, Firebase, landing page CMS, tag manager), state which tool at the top on its own line and give steps for that tool.`;
-    steps.start({ prompt, cardKey });
-  }, [canAsk, cardKey, fix, steps, title]);
-
-  // When steps complete, add to per-card history so future Asks have context.
-  useEffect(() => {
-    if (steps.status === 'complete' && steps.content && cardKey) {
-      const label = title ? `[requested step-by-step for "${title}"]` : '[requested step-by-step]';
-      // Only append once per completion — guard with content pointer via ref.
-      setCardHistory(prev => {
-        const alreadyAppended = prev.length > 0 && prev[prev.length - 1].content === steps.content;
-        if (alreadyAppended) return prev;
-        const nowIso = new Date().toISOString();
-        return [
-          ...prev,
-          { id: `local-steps-user-${Date.now()}`, role: 'user', content: label, created_at: nowIso },
-          { id: `local-steps-assistant-${Date.now() + 1}`, role: 'assistant', provider, content: steps.content, created_at: nowIso },
-        ];
-      });
-    }
-  }, [steps.status, steps.content, cardKey, title, provider]);
+    const userMarker = title
+      ? `Give me step-by-step instructions for "${title}".`
+      : 'Give me step-by-step instructions.';
+    runInChat({ userMarker, prompt });
+  }, [canAsk, fix, runInChat, title]);
 
   const submitAsk = useCallback(async () => {
     if (!canAsk) return;
@@ -1298,29 +1296,26 @@ Answer plainly — no ## headings, no "Fix:" format. Prose or short bullets are 
     const clean = askAttachments.map(a => ({
       type: a.type, mediaType: a.mediaType, data: a.data,
     }));
-    // Optimistically append the user turn to local history so the UI reflects
-    // it immediately, before the server round-trip completes.
-    const localTurnMarker = text || '(image)';
-    setCardHistory(prev => [
-      ...prev,
-      { id: `local-user-${Date.now()}`, role: 'user', content: localTurnMarker, created_at: new Date().toISOString() },
-    ]);
-    ask.start({ prompt, attachments: clean, cardKey });
+    runInChat({
+      userMarker: text || '(image)',
+      prompt,
+      attachments: clean,
+    });
     setAskText('');
     setAskAttachments([]);
-  }, [ask, askAttachments, askText, canAsk, cardContext, cardHistory.length, cardKey]);
+  }, [askAttachments, askText, canAsk, cardContext, cardHistory.length, runInChat]);
 
-  // When the current Ask completes, append the assistant turn to history.
+  // When the current turn completes, append the assistant reply to history.
   const lastAppendedRef = useRef('');
   useEffect(() => {
-    if (ask.status === 'complete' && ask.content && ask.content !== lastAppendedRef.current && cardKey) {
-      lastAppendedRef.current = ask.content;
+    if (chat.status === 'complete' && chat.content && chat.content !== lastAppendedRef.current && cardKey) {
+      lastAppendedRef.current = chat.content;
       setCardHistory(prev => [
         ...prev,
-        { id: `local-ask-assistant-${Date.now()}`, role: 'assistant', provider, content: ask.content, created_at: new Date().toISOString() },
+        { id: `local-chat-assistant-${Date.now()}`, role: 'assistant', provider, content: chat.content, created_at: new Date().toISOString() },
       ]);
     }
-  }, [ask.status, ask.content, cardKey, provider]);
+  }, [chat.status, chat.content, cardKey, provider]);
 
   const addAskFiles = useCallback(async (files) => {
     setAskError(null);
@@ -1381,33 +1376,23 @@ Answer plainly — no ## headings, no "Fix:" format. Prose or short bullets are 
         )}
         {canAsk && (
           <button
-            onClick={() => setAskOpen(v => !v)}
-            title={`Ask ${providerLabel} a question scoped to just this issue`}
+            onClick={() => setChatOpen(v => !v)}
+            title={`Open the chat panel for this issue`}
             className="flex-1 flex items-center justify-center gap-1 px-3 py-1.5 text-[11px] font-medium text-blue-700 hover:bg-blue-50"
           >
             <HelpCircle className="h-3 w-3" />
-            {askOpen ? 'Hide ask' : 'Ask about this'}
+            {chatOpen ? 'Hide chat' : 'Ask about this'}
           </button>
         )}
         {canAsk && (
           <button
-            onClick={() => {
-              if (steps.status === 'complete' || steps.status === 'failed') {
-                setStepsOpen(v => !v);
-              } else {
-                startSteps();
-              }
-            }}
-            disabled={steps.status === 'streaming'}
+            onClick={startSteps}
+            disabled={chat.status === 'streaming'}
             title={`Ask ${providerLabel} for exact click-by-click steps`}
             className="flex-1 flex items-center justify-center gap-1 px-3 py-1.5 text-[11px] font-medium text-primary-700 hover:bg-primary-50 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <ListOrdered className="h-3 w-3" />
-            {steps.status === 'streaming' ? 'Getting steps…' :
-             steps.status === 'complete' && stepsOpen ? 'Hide steps' :
-             steps.status === 'complete' ? 'Show steps' :
-             steps.status === 'failed' ? 'Retry steps' :
-             'Get step-by-step'}
+            Get step-by-step
           </button>
         )}
       </div>
@@ -1416,11 +1401,11 @@ Answer plainly — no ## headings, no "Fix:" format. Prose or short bullets are 
         <div className="px-3 pb-3 border-t border-gray-100"><DetailsBody text={details} /></div>
       )}
 
-      {askOpen && canAsk && (
-        <div className="border-t border-blue-100 bg-blue-50 px-3 py-2.5">
+      {chatOpen && canAsk && (
+        <div className="border-t border-blue-100 bg-blue-50 px-3 py-2.5 flex flex-col">
           <div className="flex items-center justify-between mb-1.5">
             <div className="text-[11px] font-semibold uppercase tracking-wide text-blue-800 flex items-center gap-1">
-              <HelpCircle className="h-3 w-3" /> Ask {providerLabel} about this issue
+              <HelpCircle className="h-3 w-3" /> {providerLabel} · this issue
               {cardHistory.length > 0 && (
                 <span className="ml-1 text-blue-600 normal-case font-normal">
                   · {cardHistory.filter(m => m.role === 'user').length} prior turn{cardHistory.filter(m => m.role === 'user').length === 1 ? '' : 's'}
@@ -1428,19 +1413,34 @@ Answer plainly — no ## headings, no "Fix:" format. Prose or short bullets are 
               )}
             </div>
             <button
-              onClick={() => setAskOpen(false)}
+              onClick={() => setChatOpen(false)}
               className="text-[11px] text-blue-700 hover:text-blue-900"
-              aria-label="Close ask"
+              aria-label="Close chat"
             >
               Close
             </button>
           </div>
 
-          {cardHistory.length > 0 && (
-            <div className="mb-2 max-h-64 overflow-y-auto space-y-1.5 pr-1">
+          {/* Unified chronological transcript: prior persisted turns +
+              current in-flight assistant reply (if streaming). Everything
+              sits above the composer so new messages push up as you chat,
+              like any modern chat UI. */}
+          {(cardHistory.length > 0 || chat.status === 'streaming') && (
+            <div className="mb-2 max-h-80 overflow-y-auto space-y-1.5 pr-1">
               {cardHistory.map(m => (
                 <CardHistoryBubble key={m.id} msg={m} />
               ))}
+              {chat.status === 'streaming' && (
+                <div className="bg-white border border-blue-100 rounded-md px-2 py-1.5">
+                  {chat.content ? <DetailsBody text={chat.content} /> : <ThinkingIndicator />}
+                </div>
+              )}
+              {chat.status === 'failed' && !chat.content && (
+                <div className="text-xs text-red-700 flex items-start gap-1.5">
+                  <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
+                  <span>{chat.error || 'Request failed.'}</span>
+                </div>
+              )}
             </div>
           )}
 
@@ -1465,7 +1465,7 @@ Answer plainly — no ## headings, no "Fix:" format. Prose or short bullets are 
             />
             <button
               onClick={() => askFileInputRef.current?.click()}
-              disabled={ask.status === 'streaming' || askAttachments.length >= MAX_ATTACHMENTS_PER_TURN}
+              disabled={chat.status === 'streaming' || askAttachments.length >= MAX_ATTACHMENTS_PER_TURN}
               title="Attach image (or paste)"
               className="p-1.5 text-gray-500 hover:text-blue-700 hover:bg-blue-100 rounded disabled:opacity-40 disabled:cursor-not-allowed"
             >
@@ -1481,60 +1481,20 @@ Answer plainly — no ## headings, no "Fix:" format. Prose or short bullets are 
                   submitAsk();
                 }
               }}
-              disabled={ask.status === 'streaming'}
+              disabled={chat.status === 'streaming'}
               rows={2}
               placeholder="Question about this specific issue… (paste screenshots supported)"
               className="flex-1 resize-none border border-blue-200 rounded px-2 py-1 text-xs bg-white focus:outline-none focus:ring-1 focus:ring-blue-400 disabled:opacity-60"
             />
             <button
               onClick={submitAsk}
-              disabled={ask.status === 'streaming' || (!askText.trim() && askAttachments.length === 0)}
+              disabled={chat.status === 'streaming' || (!askText.trim() && askAttachments.length === 0)}
               className="px-2.5 py-1 bg-blue-600 text-white text-xs font-medium rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
             >
-              {ask.status === 'streaming' ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
+              {chat.status === 'streaming' ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
               Send
             </button>
           </div>
-          {/* Live streaming view — only while a request is in flight. Once
-              complete, the assistant turn is appended to cardHistory above
-              (via useEffect on ask.status), so we hide it here to avoid
-              double-rendering. */}
-          {ask.status === 'streaming' && (
-            <div className="mt-2 pt-2 border-t border-blue-100">
-              {ask.content ? <DetailsBody text={ask.content} /> : <ThinkingIndicator />}
-            </div>
-          )}
-          {ask.status === 'failed' && !ask.content && (
-            <div className="mt-2 pt-2 border-t border-blue-100 text-xs text-red-700 flex items-start gap-1.5">
-              <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
-              <span>{ask.error || 'Request failed.'}</span>
-            </div>
-          )}
-        </div>
-      )}
-
-      {stepsOpen && (
-        <div className="border-t border-primary-100 bg-primary-50 px-3 py-2.5">
-          <div className="flex items-center justify-between mb-1.5">
-            <div className="text-[11px] font-semibold uppercase tracking-wide text-primary-800 flex items-center gap-1">
-              <ListOrdered className="h-3 w-3" /> Step-by-step ({providerLabel})
-            </div>
-            <button
-              onClick={() => setStepsOpen(false)}
-              className="text-[11px] text-primary-700 hover:text-primary-900"
-              aria-label="Close steps"
-            >
-              Close
-            </button>
-          </div>
-          {steps.status === 'streaming' && !steps.content && <ThinkingIndicator />}
-          {steps.content && <DetailsBody text={steps.content} />}
-          {steps.status === 'failed' && !steps.content && (
-            <div className="text-xs text-red-700 flex items-start gap-1.5 mt-1">
-              <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
-              <span>{steps.error || 'Failed to fetch steps.'}</span>
-            </div>
-          )}
         </div>
       )}
     </div>
