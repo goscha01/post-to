@@ -51,7 +51,7 @@ const rateMessage = async (id, rating) => {
 //
 // Returns an AbortController — call .abort() to cancel client-side (server
 // keeps writing to the closed socket; that's fine).
-const streamChat = ({ conversationId, message, attachments, onEvent, onError }) => {
+const streamChat = ({ conversationId, message, attachments, targets, onEvent, onError }) => {
   const controller = new AbortController();
   const token = localStorage.getItem(TOKEN_KEY);
 
@@ -68,7 +68,11 @@ const streamChat = ({ conversationId, message, attachments, onEvent, onError }) 
             'Accept': 'text/event-stream',
             ...(token ? { Authorization: `Bearer ${token}` } : {}),
           },
-          body: JSON.stringify({ message, attachments: attachments || [] }),
+          body: JSON.stringify({
+            message,
+            attachments: attachments || [],
+            targets: targets && targets.length ? targets : ['openai', 'claude'],
+          }),
         }
       );
       if (!resp.ok) {

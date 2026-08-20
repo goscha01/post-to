@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import {
   Send, Bot, Sparkles, ThumbsUp, ThumbsDown, Trash2, Plus,
   Loader2, MessageSquare, AlertCircle, ChevronDown, ChevronRight, ListOrdered,
-  Paperclip, X, HelpCircle, Image as ImageIcon
+  Paperclip, X, HelpCircle, Image as ImageIcon, Copy
 } from 'lucide-react';
 import googleAdsService from '../services/googleAdsService';
 import analyticsService from '../services/analyticsService';
@@ -269,23 +269,30 @@ const CampaignAssistant = () => {
     }
   }, [activeConversation]);
 
-  const sendMessage = useCallback(async (text, conversationId, attachments = []) => {
+  const sendMessage = useCallback(async (text, conversationId, attachments = [], targets = ['openai', 'claude']) => {
     const convId = conversationId || activeConversation?.id;
     const hasContent = (text && text.trim()) || (attachments && attachments.length > 0);
     if (!convId || !hasContent) return;
+    const wantOpenai = targets.includes('openai');
+    const wantClaude = targets.includes('claude');
     setStreaming(true);
 
     // Local optimistic placeholders — replaced with real DB rows once the
-    // 'start' frame arrives (carries the messageIds). Provider messages
-    // stream in via delta frames.
+    // 'start' frame arrives. Only insert placeholders for the providers
+    // we're actually sending to.
     const tempTurn = Math.max(0, ...messages.map(m => m.turn_index ?? 0)) + (messages.length ? 1 : 0);
     const optimisticUser = { id: `tmp-user-${Date.now()}`, turn_index: tempTurn, role: 'user', content: text, status: 'complete' };
-    const optimisticOpenai = { id: `tmp-openai-${Date.now()}`, turn_index: tempTurn, role: 'assistant', provider: 'openai', content: '', status: 'streaming' };
-    const optimisticClaude = { id: `tmp-claude-${Date.now()}`, turn_index: tempTurn, role: 'assistant', provider: 'claude', content: '', status: 'streaming' };
-    setMessages(prev => [...prev, optimisticUser, optimisticOpenai, optimisticClaude]);
+    const optimisticOpenai = wantOpenai
+      ? { id: `tmp-openai-${Date.now()}`, turn_index: tempTurn, role: 'assistant', provider: 'openai', content: '', status: 'streaming' }
+      : null;
+    const optimisticClaude = wantClaude
+      ? { id: `tmp-claude-${Date.now()}`, turn_index: tempTurn, role: 'assistant', provider: 'claude', content: '', status: 'streaming' }
+      : null;
+    const toInsert = [optimisticUser, optimisticOpenai, optimisticClaude].filter(Boolean);
+    setMessages(prev => [...prev, ...toInsert]);
 
-    let openaiId = optimisticOpenai.id;
-    let claudeId = optimisticClaude.id;
+    let openaiId = optimisticOpenai?.id || null;
+    let claudeId = optimisticClaude?.id || null;
     let userId = optimisticUser.id;
 
     // Strip the local-only preview URL before sending; server only wants
@@ -300,18 +307,19 @@ const CampaignAssistant = () => {
       conversationId: convId,
       message: text,
       attachments: cleanAttachments,
+      targets,
       onEvent: (evt) => {
         if (evt.type === 'start') {
           // Swap temp ids for real DB ids.
           setMessages(prev => prev.map(m => {
             if (m.id === userId) return { ...m, id: evt.userMessageId };
-            if (m.id === openaiId) return { ...m, id: evt.openaiMessageId, turn_index: evt.turnIndex };
-            if (m.id === claudeId) return { ...m, id: evt.claudeMessageId, turn_index: evt.turnIndex };
+            if (openaiId && m.id === openaiId && evt.openaiMessageId) return { ...m, id: evt.openaiMessageId, turn_index: evt.turnIndex };
+            if (claudeId && m.id === claudeId && evt.claudeMessageId) return { ...m, id: evt.claudeMessageId, turn_index: evt.turnIndex };
             return m;
           }));
           userId = evt.userMessageId;
-          openaiId = evt.openaiMessageId;
-          claudeId = evt.claudeMessageId;
+          if (evt.openaiMessageId) openaiId = evt.openaiMessageId;
+          if (evt.claudeMessageId) claudeId = evt.claudeMessageId;
         } else if (evt.type === 'delta') {
           const targetId = evt.provider === 'openai' ? openaiId : claudeId;
           setMessages(prev => prev.map(m =>
@@ -428,7 +436,7 @@ const CampaignAssistant = () => {
     setComposerAttachments(prev => prev.filter(a => a.id !== id));
   }, []);
 
-  const handleSend = useCallback(() => {
+  const handleSend = useCallback((targets = ['openai', 'claude']) => {
     const text = composer.trim();
     const hasAttachments = composerAttachments.length > 0;
     if (streaming) return;
@@ -437,8 +445,24 @@ const CampaignAssistant = () => {
     const atts = composerAttachments;
     setComposerAttachments([]);
     setComposerError(null);
-    sendMessage(text, undefined, atts);
+    sendMessage(text, undefined, atts, targets);
   }, [composer, composerAttachments, streaming, sendMessage]);
+
+  // "Copy for review" — puts the given assistant response into the main
+  // composer wrapped in a review-request prefix. User then picks a target
+  // (usually the OTHER provider) via the three send buttons.
+  const composerRef = useRef(null);
+  const copyForReview = useCallback(({ content, fromProvider }) => {
+    const label = fromProvider === 'openai' ? 'OpenAI (gpt-4o)' : 'Claude (Sonnet)';
+    const prefix = `Please review the following response from ${label} and give your critique — where do you agree, where would you push back, and what would you add?\n\n---\n`;
+    const suffix = '\n---\n\nYour take?';
+    setComposer(prefix + content + suffix);
+    // Focus + scroll to the composer so the user can immediately act on it.
+    setTimeout(() => {
+      composerRef.current?.focus();
+      composerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }, 0);
+  }, []);
 
   // Reload conversation + messages from DB. Used as a safety net after the
   // chat stream 'done' event to reconcile any client-state drift (server
@@ -558,6 +582,7 @@ const CampaignAssistant = () => {
               key={turn.turnIndex}
               turn={turn}
               onRate={handleRate}
+              onCopyForReview={copyForReview}
               conversationId={activeConversation.id}
             />
           ))}
@@ -591,13 +616,14 @@ const CampaignAssistant = () => {
               <Paperclip className="h-4 w-4" />
             </button>
             <textarea
+              ref={composerRef}
               value={composer}
               onChange={(e) => setComposer(e.target.value)}
               onPaste={handleComposerPaste}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault();
-                  handleSend();
+                  handleSend(['openai', 'claude']);
                 }
               }}
               placeholder={activeConversation
@@ -607,13 +633,32 @@ const CampaignAssistant = () => {
               rows={2}
               className="flex-1 resize-none border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:bg-gray-50 disabled:text-gray-400"
             />
+          </div>
+          <div className="flex gap-1.5 mt-2 justify-end">
             <button
-              onClick={handleSend}
+              onClick={() => handleSend(['claude'])}
               disabled={!activeConversation || streaming || (!composer.trim() && composerAttachments.length === 0)}
-              className="px-4 py-2 bg-primary-600 text-white text-sm font-medium rounded-md hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+              title="Send only to Claude"
+              className="px-3 py-1.5 border border-orange-300 text-orange-700 bg-orange-50 text-xs font-medium rounded-md hover:bg-orange-100 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
             >
-              {streaming ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-              Send
+              <Send className="h-3 w-3" /> Claude
+            </button>
+            <button
+              onClick={() => handleSend(['openai'])}
+              disabled={!activeConversation || streaming || (!composer.trim() && composerAttachments.length === 0)}
+              title="Send only to OpenAI"
+              className="px-3 py-1.5 border border-green-300 text-green-700 bg-green-50 text-xs font-medium rounded-md hover:bg-green-100 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
+            >
+              <Send className="h-3 w-3" /> OpenAI
+            </button>
+            <button
+              onClick={() => handleSend(['openai', 'claude'])}
+              disabled={!activeConversation || streaming || (!composer.trim() && composerAttachments.length === 0)}
+              title="Send to both providers (Enter)"
+              className="px-3 py-1.5 bg-primary-600 text-white text-xs font-medium rounded-md hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
+            >
+              {streaming ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
+              Send to Both
             </button>
           </div>
         </div>
@@ -915,23 +960,34 @@ const Stat = ({ label, value }) => (
 // ---------------------------------------------------------------------------
 // One conversational turn: user prompt + two side-by-side assistant columns
 // ---------------------------------------------------------------------------
-const TurnBlock = ({ turn, onRate, conversationId }) => (
-  <div className="space-y-3">
-    {turn.user && (
-      <div className="flex justify-end">
-        <div className="max-w-[85%] bg-primary-600 text-white rounded-lg px-4 py-2 text-sm whitespace-pre-wrap">
-          {turn.user.content}
+const TurnBlock = ({ turn, onRate, onCopyForReview, conversationId }) => {
+  // Grid layout adapts: 2-col only when both providers are present, 1-col
+  // full-width otherwise (avoids a big blank column when a turn was sent
+  // to just one provider via the "Send to Claude / OpenAI" buttons).
+  const bothPresent = turn.openai && turn.claude;
+  const gridCls = bothPresent ? 'grid grid-cols-1 md:grid-cols-2 gap-3' : 'flex flex-col gap-3';
+  return (
+    <div className="space-y-3">
+      {turn.user && (
+        <div className="flex justify-end">
+          <div className="max-w-[85%] bg-primary-600 text-white rounded-lg px-4 py-2 text-sm whitespace-pre-wrap">
+            {turn.user.content}
+          </div>
         </div>
+      )}
+      <div className={gridCls}>
+        {turn.openai && (
+          <ProviderColumn title="OpenAI" provider="openai" msg={turn.openai} onRate={onRate} onCopyForReview={onCopyForReview} conversationId={conversationId} accent="text-green-700" bg="bg-green-50" border="border-green-200" />
+        )}
+        {turn.claude && (
+          <ProviderColumn title="Claude" provider="claude" msg={turn.claude} onRate={onRate} onCopyForReview={onCopyForReview} conversationId={conversationId} accent="text-orange-700" bg="bg-orange-50" border="border-orange-200" />
+        )}
       </div>
-    )}
-    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-      <ProviderColumn title="OpenAI" provider="openai" msg={turn.openai} onRate={onRate} conversationId={conversationId} accent="text-green-700" bg="bg-green-50" border="border-green-200" />
-      <ProviderColumn title="Claude" provider="claude" msg={turn.claude} onRate={onRate} conversationId={conversationId} accent="text-orange-700" bg="bg-orange-50" border="border-orange-200" />
     </div>
-  </div>
-);
+  );
+};
 
-const ProviderColumn = ({ title, provider, msg, onRate, conversationId, accent, bg, border }) => {
+const ProviderColumn = ({ title, provider, msg, onRate, onCopyForReview, conversationId, accent, bg, border }) => {
   if (!msg) return null;
   const isStreaming = msg.status === 'streaming';
   const failed = msg.status === 'failed';
@@ -969,6 +1025,16 @@ const ProviderColumn = ({ title, provider, msg, onRate, conversationId, accent, 
             {msg.cache_read_tokens > 0 && ` (${Math.round(msg.cache_read_tokens)} cached)`}
           </div>
           <div className="flex items-center gap-1">
+            {onCopyForReview && (
+              <button
+                onClick={() => onCopyForReview({ content: msg.content, fromProvider: provider })}
+                title={`Copy this response into the composer wrapped in a review-request prompt (so you can send it to the ${provider === 'openai' ? 'Claude' : 'OpenAI'} for critique)`}
+                className="p-1 rounded hover:bg-gray-100 text-gray-400 hover:text-primary-600"
+                aria-label="Copy for review"
+              >
+                <Copy className="h-3.5 w-3.5" />
+              </button>
+            )}
             <button
               onClick={() => onRate(msg.id, 1)}
               className={`p-1 rounded hover:bg-gray-100 ${msg.rating === 1 ? 'text-green-600' : 'text-gray-400'}`}

@@ -392,6 +392,18 @@ router.post('/conversations/:id/chat', async (req, res) => {
   const conversationId = req.params.id;
   const message = String(req.body?.message || '').trim().slice(0, MAX_USER_MESSAGE_CHARS);
   const attachments = Array.isArray(req.body?.attachments) ? req.body.attachments : [];
+  // Which providers to fan out to. Default is both (preserves prior
+  // behaviour). Anything unrecognized is dropped; empty → 400.
+  const requestedTargets = Array.isArray(req.body?.targets) && req.body.targets.length > 0
+    ? req.body.targets
+    : ['openai', 'claude'];
+  const targets = Array.from(new Set(requestedTargets.filter(t => t === 'openai' || t === 'claude')));
+  if (targets.length === 0) {
+    return res.status(400).json({ error: 'targets must include at least one of "openai" or "claude"' });
+  }
+  const wantOpenai = targets.includes('openai');
+  const wantClaude = targets.includes('claude');
+
   if (!message && attachments.length === 0) {
     return res.status(400).json({ error: 'message or attachment required' });
   }
@@ -459,30 +471,34 @@ router.post('/conversations/:id/chat', async (req, res) => {
       .eq('id', conversationId);
   }
 
-  // Insert placeholder assistant rows in 'streaming' status so the UI can
-  // link streamed deltas to their eventual DB row via messageId. We PATCH
-  // these rows on completion.
+  // Insert placeholder assistant rows in 'streaming' status ONLY for the
+  // requested targets — sending to just one provider shouldn't leave an
+  // empty row for the other.
   const now = new Date().toISOString();
+  const placeholderRows = [];
+  if (wantOpenai) {
+    placeholderRows.push({
+      conversation_id: conversationId, turn_index: nextTurn,
+      role: 'assistant', provider: 'openai', content: '', status: 'streaming', created_at: now,
+    });
+  }
+  if (wantClaude) {
+    placeholderRows.push({
+      conversation_id: conversationId, turn_index: nextTurn,
+      role: 'assistant', provider: 'claude', content: '', status: 'streaming',
+      // +1ms so the (turn_index, created_at) sort is stable.
+      created_at: new Date(Date.now() + 1).toISOString(),
+    });
+  }
   const { data: placeholders, error: phErr } = await supabase
     .from('campaign_assistant_messages')
-    .insert([
-      {
-        conversation_id: conversationId, turn_index: nextTurn,
-        role: 'assistant', provider: 'openai', content: '', status: 'streaming', created_at: now,
-      },
-      {
-        conversation_id: conversationId, turn_index: nextTurn,
-        role: 'assistant', provider: 'claude', content: '', status: 'streaming',
-        // +1ms so the (turn_index, created_at) sort is stable.
-        created_at: new Date(Date.now() + 1).toISOString(),
-      },
-    ])
+    .insert(placeholderRows)
     .select();
   if (phErr) {
     return res.status(500).json({ error: phErr.message });
   }
-  const openaiRow = placeholders.find(r => r.provider === 'openai');
-  const claudeRow = placeholders.find(r => r.provider === 'claude');
+  const openaiRow = placeholders.find(r => r.provider === 'openai') || null;
+  const claudeRow = placeholders.find(r => r.provider === 'claude') || null;
 
   // Build message history per provider. Then append the just-inserted user message.
   const openaiMessages = [
@@ -504,17 +520,25 @@ router.post('/conversations/:id/chat', async (req, res) => {
   const write = obj => {
     try { res.write(`data: ${JSON.stringify(obj)}\n\n`); } catch (_) { /* client gone */ }
   };
-  write({ type: 'start', turnIndex: nextTurn, userMessageId: userRow.id, openaiMessageId: openaiRow.id, claudeMessageId: claudeRow.id });
+  write({
+    type: 'start',
+    turnIndex: nextTurn,
+    userMessageId: userRow.id,
+    openaiMessageId: openaiRow?.id || null,
+    claudeMessageId: claudeRow?.id || null,
+    targets,
+  });
 
   // Heartbeat every 25s so proxies don't close idle connection.
   const heartbeat = setInterval(() => {
     try { res.write(': ping\n\n'); } catch (_) { /* ignore */ }
   }, 25_000);
 
+  const expectedFinishes = targets.length;
   let done = 0;
   const finish = () => {
     done += 1;
-    if (done >= 2) {
+    if (done >= expectedFinishes) {
       clearInterval(heartbeat);
       write({ type: 'done' });
       res.end();
@@ -548,66 +572,70 @@ router.post('/conversations/:id/chat', async (req, res) => {
       .eq('id', row.id);
   };
 
-  // Kick off both providers concurrently.
-  campaignAssistant.streamOpenAI({
-    report: conv.report_snapshot,
-    messages: openaiMessages,
-    attachments,
-    onDelta: text => write({ type: 'delta', provider: 'openai', text }),
-    onComplete: async result => {
-      await persistCompletion(openaiRow, result);
-      write({
-        type: 'complete',
-        provider: 'openai',
-        messageId: openaiRow.id,
-        model: result.model,
-        costUsd: result.costUsd,
-        promptTokens: result.promptTokens,
-        completionTokens: result.completionTokens,
-        cacheReadTokens: result.cacheReadTokens,
-        cacheWriteTokens: result.cacheWriteTokens,
-      });
-      finish();
-    },
-    onError: async err => {
-      logger.warn('campaignAssistant.openai_stream_error', {
-        userId, conversationId, error: err.message,
-      });
-      await persistFailure(openaiRow, err);
-      write({ type: 'error', provider: 'openai', error: err.message });
-      finish();
-    },
-  });
+  // Kick off requested providers concurrently.
+  if (wantOpenai) {
+    campaignAssistant.streamOpenAI({
+      report: conv.report_snapshot,
+      messages: openaiMessages,
+      attachments,
+      onDelta: text => write({ type: 'delta', provider: 'openai', text }),
+      onComplete: async result => {
+        await persistCompletion(openaiRow, result);
+        write({
+          type: 'complete',
+          provider: 'openai',
+          messageId: openaiRow.id,
+          model: result.model,
+          costUsd: result.costUsd,
+          promptTokens: result.promptTokens,
+          completionTokens: result.completionTokens,
+          cacheReadTokens: result.cacheReadTokens,
+          cacheWriteTokens: result.cacheWriteTokens,
+        });
+        finish();
+      },
+      onError: async err => {
+        logger.warn('campaignAssistant.openai_stream_error', {
+          userId, conversationId, error: err.message,
+        });
+        await persistFailure(openaiRow, err);
+        write({ type: 'error', provider: 'openai', error: err.message });
+        finish();
+      },
+    });
+  }
 
-  campaignAssistant.streamClaude({
-    report: conv.report_snapshot,
-    messages: claudeMessages,
-    attachments,
-    onDelta: text => write({ type: 'delta', provider: 'claude', text }),
-    onComplete: async result => {
-      await persistCompletion(claudeRow, result);
-      write({
-        type: 'complete',
-        provider: 'claude',
-        messageId: claudeRow.id,
-        model: result.model,
-        costUsd: result.costUsd,
-        promptTokens: result.promptTokens,
-        completionTokens: result.completionTokens,
-        cacheReadTokens: result.cacheReadTokens,
-        cacheWriteTokens: result.cacheWriteTokens,
-      });
-      finish();
-    },
-    onError: async err => {
-      logger.warn('campaignAssistant.claude_stream_error', {
-        userId, conversationId, error: err.message,
-      });
-      await persistFailure(claudeRow, err);
-      write({ type: 'error', provider: 'claude', error: err.message });
-      finish();
-    },
-  });
+  if (wantClaude) {
+    campaignAssistant.streamClaude({
+      report: conv.report_snapshot,
+      messages: claudeMessages,
+      attachments,
+      onDelta: text => write({ type: 'delta', provider: 'claude', text }),
+      onComplete: async result => {
+        await persistCompletion(claudeRow, result);
+        write({
+          type: 'complete',
+          provider: 'claude',
+          messageId: claudeRow.id,
+          model: result.model,
+          costUsd: result.costUsd,
+          promptTokens: result.promptTokens,
+          completionTokens: result.completionTokens,
+          cacheReadTokens: result.cacheReadTokens,
+          cacheWriteTokens: result.cacheWriteTokens,
+        });
+        finish();
+      },
+      onError: async err => {
+        logger.warn('campaignAssistant.claude_stream_error', {
+          userId, conversationId, error: err.message,
+        });
+        await persistFailure(claudeRow, err);
+        write({ type: 'error', provider: 'claude', error: err.message });
+        finish();
+      },
+    });
+  }
 });
 
 // ---------------------------------------------------------------------------
