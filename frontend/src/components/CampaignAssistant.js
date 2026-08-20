@@ -619,6 +619,30 @@ const CampaignAssistant = () => {
     }
   }, []);
 
+  // Push back on a plan step: mark it skipped + persist the feedback as
+  // a note, then fire a targeted chat message to Both models asking for
+  // reconsideration. Both the note and the chat message flow into future
+  // context (via plan-progress block + transcript persistence).
+  // (Declared AFTER sendMessage to avoid TDZ crash — this useCallback
+  // lists sendMessage in its deps array so sendMessage's const binding
+  // must exist by the time this line evaluates.)
+  const pushBackPlanStep = useCallback(async (stepId, feedback) => {
+    try {
+      const res = await campaignAssistantService.pushBackPlanStep(stepId, feedback);
+      setLatestPlan(prev => prev && ({
+        ...prev,
+        steps: prev.steps.map(s => s.id === stepId ? { ...s, ...res.step } : s),
+      }));
+      if (res.chatPrompt) {
+        sendMessage(res.chatPrompt, undefined, [], ['openai', 'claude']);
+      }
+      return { ok: true };
+    } catch (err) {
+      const msg = err.response?.data?.error || err.message || 'Failed to push back';
+      return { ok: false, error: msg };
+    }
+  }, [sendMessage]);
+
   const handleRate = useCallback(async (messageId, rating) => {
     // Optimistic toggle: click same rating twice to clear.
     setMessages(prev => prev.map(m => {
@@ -715,6 +739,7 @@ const CampaignAssistant = () => {
             onUpdateStepNotes={updateStepNotes}
             onDeletePlan={deletePlan}
             onApplyStep={applyPlanStep}
+            onPushBackStep={pushBackPlanStep}
             snapshotGeneratedAt={activeConversation.report_generated_at}
           />
         )}
@@ -1162,7 +1187,7 @@ const PRIORITY_META = {
 
 const ActionPlanPanel = ({
   plan, loading, error, open, onToggle,
-  onGenerate, onToggleStepStatus, onUpdateStepNotes, onDeletePlan, onApplyStep,
+  onGenerate, onToggleStepStatus, onUpdateStepNotes, onDeletePlan, onApplyStep, onPushBackStep,
   snapshotGeneratedAt,
 }) => {
   // Stale if the report snapshot was refreshed AFTER this plan was generated.
@@ -1219,6 +1244,7 @@ const ActionPlanPanel = ({
                 onDeletePlan={onDeletePlan}
                 onRegenerate={onGenerate}
                 onApplyStep={onApplyStep}
+                onPushBackStep={onPushBackStep}
                 error={error}
               />
             </>
@@ -1313,7 +1339,7 @@ const PlanLoadingState = () => {
   );
 };
 
-const PlanContent = ({ plan, steps, onToggleStepStatus, onUpdateStepNotes, onDeletePlan, onRegenerate, onApplyStep, error }) => {
+const PlanContent = ({ plan, steps, onToggleStepStatus, onUpdateStepNotes, onDeletePlan, onRegenerate, onApplyStep, onPushBackStep, error }) => {
   const [notesOpen, setNotesOpen] = useState(false);
   const generatedBy = plan.plan.generated_by;
   const isJoint = generatedBy === 'dialogue' || generatedBy === 'consensus';
@@ -1401,6 +1427,7 @@ const PlanContent = ({ plan, steps, onToggleStepStatus, onUpdateStepNotes, onDel
               onToggleStatus={() => onToggleStepStatus(step.id, step.status)}
               onUpdateNotes={(notes) => onUpdateStepNotes(step.id, notes)}
               onApplyStep={() => onApplyStep(step.id)}
+              onPushBack={(feedback) => onPushBackStep(step.id, feedback)}
             />
           ))}
         </ol>
@@ -1435,13 +1462,17 @@ function reversibilityHint(actionType) {
   }
 }
 
-const PlanStepRow = ({ step, index, onToggleStatus, onUpdateNotes, onApplyStep }) => {
+const PlanStepRow = ({ step, index, onToggleStatus, onUpdateNotes, onApplyStep, onPushBack }) => {
   const [notesOpen, setNotesOpen] = useState(false);
   const [notesDraft, setNotesDraft] = useState(step.notes || '');
   const [previewOpen, setPreviewOpen] = useState(false);
   const [applying, setApplying] = useState(false);
   const [applyResult, setApplyResult] = useState(null);   // {ok, executed?, error?}
   const [devTaskOpen, setDevTaskOpen] = useState(false);
+  const [pushBackOpen, setPushBackOpen] = useState(false);
+  const [pushBackDraft, setPushBackDraft] = useState('');
+  const [pushingBack, setPushingBack] = useState(false);
+  const [pushBackResult, setPushBackResult] = useState(null); // {ok, error?}
 
   const typeMeta = STEP_TYPE_META[step.type] || STEP_TYPE_META.other;
   const priorityMeta = PRIORITY_META[step.priority] || PRIORITY_META.medium;
@@ -1459,6 +1490,20 @@ const PlanStepRow = ({ step, index, onToggleStatus, onUpdateNotes, onApplyStep }
     setApplying(false);
     setApplyResult(res);
     if (res.ok) setPreviewOpen(false);
+  };
+
+  const handleSubmitPushBack = async () => {
+    const feedback = pushBackDraft.trim();
+    if (!feedback) return;
+    setPushingBack(true);
+    setPushBackResult(null);
+    const res = await onPushBack(feedback);
+    setPushingBack(false);
+    setPushBackResult(res);
+    if (res.ok) {
+      setPushBackDraft('');
+      setPushBackOpen(false);
+    }
   };
 
   return (
@@ -1552,6 +1597,15 @@ const PlanStepRow = ({ step, index, onToggleStatus, onUpdateNotes, onApplyStep }
                 Create dev task
               </button>
             )}
+            {onPushBack && step.status !== 'applied' && (
+              <button
+                onClick={() => setPushBackOpen(v => !v)}
+                title="Reject this step with a reason. Marks it as skipped, saves your reason as a note, and asks both AI models to reconsider in the chat."
+                className="text-[11px] font-medium text-red-700 hover:text-red-900 inline-flex items-center gap-1"
+              >
+                ⤴ Push back
+              </button>
+            )}
           </div>
 
           {step.notes && !notesOpen && (
@@ -1594,6 +1648,59 @@ const PlanStepRow = ({ step, index, onToggleStatus, onUpdateNotes, onApplyStep }
           {/* Dev-task modal (inline panel, not a real modal) */}
           {devTaskOpen && isDevTask && (
             <DevTaskPanel step={step} onClose={() => setDevTaskOpen(false)} />
+          )}
+
+          {/* Push-back inline panel */}
+          {pushBackOpen && onPushBack && (
+            <div className="mt-2 border border-red-200 bg-red-50 rounded p-2 text-xs">
+              <div className="flex items-center justify-between mb-1.5">
+                <div className="font-semibold text-red-800 flex items-center gap-1">
+                  ⤴ Push back on this step
+                </div>
+                <button
+                  onClick={() => { setPushBackOpen(false); setPushBackResult(null); }}
+                  className="text-[11px] text-red-700 hover:text-red-900"
+                >
+                  Close
+                </button>
+              </div>
+              <p className="text-[11px] text-red-800 mb-1.5">
+                Marks this step as skipped, saves your feedback as a note, and asks both AI models to
+                reconsider in the main chat. The rejection reason will show up as context on every
+                future chat turn and next plan regeneration.
+              </p>
+              <textarea
+                value={pushBackDraft}
+                onChange={(e) => setPushBackDraft(e.target.value)}
+                rows={4}
+                disabled={pushingBack}
+                placeholder="Why this step is wrong (paste your coding agent's feedback, explain what's actually needed, etc.)…"
+                className="w-full text-xs border border-red-300 rounded px-2 py-1 bg-white focus:outline-none focus:ring-1 focus:ring-red-400 disabled:opacity-60"
+              />
+              {pushBackResult && !pushBackResult.ok && (
+                <div className="mt-1.5 text-[11px] text-red-800 flex items-start gap-1.5">
+                  <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
+                  <span>{pushBackResult.error || 'Push-back failed.'}</span>
+                </div>
+              )}
+              <div className="mt-1.5 flex items-center gap-2">
+                <button
+                  onClick={handleSubmitPushBack}
+                  disabled={pushingBack || !pushBackDraft.trim()}
+                  className="px-2.5 py-1 bg-red-600 text-white text-[11px] font-medium rounded hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
+                >
+                  {pushingBack ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+                  {pushingBack ? 'Sending…' : 'Skip step + ask AIs to reconsider'}
+                </button>
+                <button
+                  onClick={() => { setPushBackOpen(false); setPushBackResult(null); }}
+                  disabled={pushingBack}
+                  className="px-2.5 py-1 border border-gray-300 text-gray-700 text-[11px] font-medium rounded hover:bg-gray-50 disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
           )}
         </div>
       </div>

@@ -66,7 +66,7 @@ async function loadPlanProgressBlock(conversationId) {
     const plan = plans[0];
     const { data: steps } = await supabase
       .from('campaign_assistant_action_plan_steps')
-      .select('title, status')
+      .select('title, status, notes')
       .eq('plan_id', plan.id)
       .order('position', { ascending: true });
     return campaignAssistant.buildPlanProgressBlock(plan, steps || []);
@@ -1277,11 +1277,89 @@ router.patch('/plan-steps/:stepId', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// POST /plan-steps/:stepId/push-back — user rejects a step with a reason.
+// Marks the step as 'skipped', stores the reason in notes (prepended so
+// subsequent notes edits don't overwrite it), and returns a composed
+// chat prompt the client fires through the normal /chat endpoint so both
+// models see the pushback and can respond in the visible chat thread.
+//
+// The rejection reason also flows into all future chat/one-shot turns
+// via the plan-progress block (buildPlanProgressBlock now includes notes).
+// So the AI reconsiders across the whole conversation, not just the one
+// chat turn.
+// ---------------------------------------------------------------------------
+router.post('/plan-steps/:stepId/push-back', async (req, res) => {
+  const userId = req.user.userId;
+  const stepId = req.params.stepId;
+  const feedback = String(req.body?.feedback || '').trim().slice(0, 8000);
+  if (!feedback) return res.status(400).json({ error: 'feedback required' });
+
+  try {
+    // Load step + plan for ownership + composed-prompt context.
+    const { data: step, error: stepErr } = await supabase
+      .from('campaign_assistant_action_plan_steps')
+      .select('id, plan_id, title, description, type, action_type, notes')
+      .eq('id', stepId)
+      .single();
+    if (stepErr || !step) return res.status(404).json({ error: 'Step not found' });
+
+    const { data: plan, error: planErr } = await supabase
+      .from('campaign_assistant_action_plans')
+      .select('id, user_id, conversation_id')
+      .eq('id', step.plan_id)
+      .single();
+    if (planErr || !plan || plan.user_id !== userId) {
+      return res.status(404).json({ error: 'Step not found' });
+    }
+
+    // Store the pushback prominently in notes. Preserve any prior notes
+    // (append with a divider) so we don't lose earlier context.
+    const nowIso = new Date().toISOString();
+    const pushbackBlock = `[PUSHED BACK ${nowIso}]\n${feedback}`;
+    const combinedNotes = step.notes
+      ? `${pushbackBlock}\n\n---\n\n${step.notes}`
+      : pushbackBlock;
+
+    const { data: updated, error: updErr } = await supabase
+      .from('campaign_assistant_action_plan_steps')
+      .update({
+        status: 'skipped',
+        notes: combinedNotes,
+      })
+      .eq('id', stepId)
+      .select()
+      .single();
+    if (updErr) throw updErr;
+
+    // Compose the chat prompt the client will fire. The AI sees this AND
+    // the plan-progress block that already reflects the skip + note, so
+    // the reconsideration is well-grounded.
+    const chatPrompt = `I'm pushing back on this plan step and marking it as skipped. Please reconsider:
+
+STEP: ${step.title}
+${step.description ? `ORIGINAL DESCRIPTION: ${step.description}\n` : ''}
+MY FEEDBACK / REASON FOR REJECTING:
+${feedback}
+
+Please respond with: (a) do you agree the original step was wrong, (b) is there a modified version worth adding to the plan, or (c) should this whole line of thinking be dropped? Be concise — one paragraph is fine.`;
+
+    logger.info('campaignAssistant.plan_step_pushed_back', {
+      userId, stepId, actionType: step.action_type || null,
+      feedbackLength: feedback.length,
+    });
+
+    res.json({ step: updated, chatPrompt });
+  } catch (err) {
+    logger.error('campaignAssistant.plan_step_pushback_failed', {
+      userId, stepId, error: err.message,
+    });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // POST /plan-steps/:stepId/apply — dispatch a plan step's action to the
-// right Google Ads mutation. Tier 1 supported action_types:
-//   - add_negative_keywords  (campaign-level, reversible)
-// Other action_types return 400 "not implemented" for now. Extend by
-// adding cases to the switch below.
+// right Google Ads mutation.
 // ---------------------------------------------------------------------------
 
 const googleAdsSvc = require('../services/googleAdsService');

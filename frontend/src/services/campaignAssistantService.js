@@ -221,6 +221,14 @@ const deletePlan = async (planId) => {
   return res.data;
 };
 
+const pushBackPlanStep = async (stepId, feedback) => {
+  const res = await axios.post(
+    `/api/campaign-assistant/plan-steps/${stepId}/push-back`,
+    { feedback }
+  );
+  return res.data;   // { step, chatPrompt }
+};
+
 const applyPlanStep = async (stepId) => {
   const res = await axios.post(
     `/api/campaign-assistant/plan-steps/${stepId}/apply`,
@@ -254,6 +262,7 @@ const campaignAssistantService = {
   updatePlanStep,
   deletePlan,
   applyPlanStep,
+  pushBackPlanStep,
   refreshSnapshot,
 };
 

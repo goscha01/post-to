@@ -115,15 +115,22 @@ function buildPlanProgressBlock(plan, steps) {
     if (s === 'skipped') return '−';
     return '☐';
   };
-  const lines = steps.map((s, i) => {
+  const lines = [];
+  steps.forEach((s, i) => {
     const num = String(i + 1).padStart(2, ' ');
     const sym = symbol(s.status);
     const status = s.status || 'pending';
-    return `${sym} ${num}. ${s.title} — ${status}`;
+    lines.push(`${sym} ${num}. ${s.title} — ${status}`);
+    // Include user notes (esp. "push-back" reasons on skipped steps) so
+    // the AI sees WHY something was rejected, not just that it was.
+    if (s.notes && String(s.notes).trim()) {
+      const noteText = String(s.notes).trim().replace(/\n+/g, ' ').slice(0, 800);
+      lines.push(`     Note: "${noteText}"`);
+    }
   });
-  return `--- PLAN PROGRESS (current step statuses — respect these; do NOT re-recommend things already done or applied) ---
+  return `--- PLAN PROGRESS (current step statuses + user notes/rejections — respect these; do NOT re-recommend things already done, applied, or explicitly rejected by the user) ---
 Plan: ${plan.title || '(untitled)'}
-Legend: ✓ done/applied · ☐ pending · − skipped · ✗ failed
+Legend: ✓ done/applied · ☐ pending · − skipped (user rejected) · ✗ failed
 
 ${lines.join('\n')}
 --- END PLAN PROGRESS ---`;
