@@ -249,6 +249,79 @@ const CampaignAssistant = () => {
     selectedFirebasePropertyId, selectedOpenAiAdsConnectionId, selectedCampaign, days,
   ]);
 
+  // -- Action plan handlers (declared BEFORE openConversation because
+  // openConversation's dep array references loadLatestPlan) --
+  const loadLatestPlan = useCallback(async (convId) => {
+    if (!convId) return;
+    try {
+      const plans = await campaignAssistantService.listPlans(convId);
+      if (!plans || plans.length === 0) {
+        setLatestPlan(null);
+        return;
+      }
+      const full = await campaignAssistantService.getPlan(plans[0].id);
+      setLatestPlan(full);
+    } catch (err) {
+      console.warn('loadLatestPlan failed', err);
+    }
+  }, []);
+
+  const generatePlan = useCallback(async () => {
+    if (!activeConversation) return;
+    setPlanLoading(true);
+    setPlanError(null);
+    try {
+      const res = await campaignAssistantService.generatePlan(activeConversation.id, planProvider);
+      setLatestPlan(res);
+      setPlanPanelOpen(true);
+    } catch (err) {
+      setPlanError(err.response?.data?.error || err.message || 'Failed to generate plan');
+    } finally {
+      setPlanLoading(false);
+    }
+  }, [activeConversation, planProvider]);
+
+  const toggleStepStatus = useCallback(async (stepId, currentStatus) => {
+    const nextStatus = currentStatus === 'done' ? 'pending' : 'done';
+    // Optimistic update.
+    setLatestPlan(prev => prev && ({
+      ...prev,
+      steps: prev.steps.map(s => s.id === stepId ? { ...s, status: nextStatus } : s),
+    }));
+    try {
+      await campaignAssistantService.updatePlanStep(stepId, { status: nextStatus });
+    } catch (err) {
+      // Rollback on failure.
+      setLatestPlan(prev => prev && ({
+        ...prev,
+        steps: prev.steps.map(s => s.id === stepId ? { ...s, status: currentStatus } : s),
+      }));
+    }
+  }, []);
+
+  const updateStepNotes = useCallback(async (stepId, notes) => {
+    setLatestPlan(prev => prev && ({
+      ...prev,
+      steps: prev.steps.map(s => s.id === stepId ? { ...s, notes } : s),
+    }));
+    try {
+      await campaignAssistantService.updatePlanStep(stepId, { notes });
+    } catch (err) {
+      console.warn('updateStepNotes failed', err);
+    }
+  }, []);
+
+  const deletePlan = useCallback(async () => {
+    if (!latestPlan?.plan?.id) return;
+    if (!window.confirm('Discard this plan? You can generate a fresh one anytime.')) return;
+    try {
+      await campaignAssistantService.deletePlan(latestPlan.plan.id);
+      setLatestPlan(null);
+    } catch (err) {
+      console.warn('deletePlan failed', err);
+    }
+  }, [latestPlan]);
+
   const openConversation = useCallback(async (id) => {
     if (streaming) return;
     setLoadingConversation(true);
@@ -502,78 +575,6 @@ const CampaignAssistant = () => {
       console.warn('refetchActiveConversation failed', err);
     }
   }, []);
-
-  // -- Action plan handlers --
-  const loadLatestPlan = useCallback(async (convId) => {
-    if (!convId) return;
-    try {
-      const plans = await campaignAssistantService.listPlans(convId);
-      if (!plans || plans.length === 0) {
-        setLatestPlan(null);
-        return;
-      }
-      const full = await campaignAssistantService.getPlan(plans[0].id);
-      setLatestPlan(full);
-    } catch (err) {
-      console.warn('loadLatestPlan failed', err);
-    }
-  }, []);
-
-  const generatePlan = useCallback(async () => {
-    if (!activeConversation) return;
-    setPlanLoading(true);
-    setPlanError(null);
-    try {
-      const res = await campaignAssistantService.generatePlan(activeConversation.id, planProvider);
-      setLatestPlan(res);
-      setPlanPanelOpen(true);
-    } catch (err) {
-      setPlanError(err.response?.data?.error || err.message || 'Failed to generate plan');
-    } finally {
-      setPlanLoading(false);
-    }
-  }, [activeConversation, planProvider]);
-
-  const toggleStepStatus = useCallback(async (stepId, currentStatus) => {
-    const nextStatus = currentStatus === 'done' ? 'pending' : 'done';
-    // Optimistic update.
-    setLatestPlan(prev => prev && ({
-      ...prev,
-      steps: prev.steps.map(s => s.id === stepId ? { ...s, status: nextStatus } : s),
-    }));
-    try {
-      await campaignAssistantService.updatePlanStep(stepId, { status: nextStatus });
-    } catch (err) {
-      // Rollback on failure.
-      setLatestPlan(prev => prev && ({
-        ...prev,
-        steps: prev.steps.map(s => s.id === stepId ? { ...s, status: currentStatus } : s),
-      }));
-    }
-  }, []);
-
-  const updateStepNotes = useCallback(async (stepId, notes) => {
-    setLatestPlan(prev => prev && ({
-      ...prev,
-      steps: prev.steps.map(s => s.id === stepId ? { ...s, notes } : s),
-    }));
-    try {
-      await campaignAssistantService.updatePlanStep(stepId, { notes });
-    } catch (err) {
-      console.warn('updateStepNotes failed', err);
-    }
-  }, []);
-
-  const deletePlan = useCallback(async () => {
-    if (!latestPlan?.plan?.id) return;
-    if (!window.confirm('Discard this plan? You can generate a fresh one anytime.')) return;
-    try {
-      await campaignAssistantService.deletePlan(latestPlan.plan.id);
-      setLatestPlan(null);
-    } catch (err) {
-      console.warn('deletePlan failed', err);
-    }
-  }, [latestPlan]);
 
   const handleRate = useCallback(async (messageId, rating) => {
     // Optimistic toggle: click same rating twice to clear.
