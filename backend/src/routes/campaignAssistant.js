@@ -1414,6 +1414,18 @@ Rules:
 - For "refactor": newTitle must be 5-12 words, imperative. newDescription must be 2-4 sentences with concrete next actions.
 - Be decisive. Do not hedge.
 
+REJECTION-WITH-ALTERNATIVES PATTERN — very common, choose REFACTOR
+
+When the user's report is a coding agent (or human) explaining that the task PREMISE is wrong AND offering one or more concrete alternatives (patterns like "I can't do X, but I could do A / B / C" or "The task assumes Y but Y doesn't exist; would you like me to build Z instead?"), the correct action is REFACTOR, not close and not delete.
+
+Reason: the underlying problem the plan was trying to solve is usually still real (a metric issue, a diagnostic that led here). The alternatives the agent offered are the actual work that should replace the misframed task.
+
+For these cases:
+- newTitle: pick the most concrete alternative from the agent's list (or synthesize one if they offered several equally good options). Do NOT leave the choice open — the plan should be actionable.
+- newDescription: 2-3 sentences (a) acknowledging what the agent found (why the original task was wrong), (b) stating the refined action clearly, (c) noting any alternatives the user might prefer as a suffix ("If you'd rather D instead of C, edit this step and re-run Results.").
+
+Only choose CLOSE for this pattern if the agent's report shows the underlying problem itself was already addressed by other work (not just that the specific task is unactionable).
+
 Output valid JSON only, no code fences, matching:
 {
   "action": "close" | "refactor" | "postpone" | "delete",
