@@ -334,26 +334,6 @@ const CampaignAssistant = () => {
     }
   }, [latestPlan]);
 
-  // Refresh the report snapshot from live Google Ads + GA4 data. Used
-  // after applying steps (to see the effect) or before applying a stale
-  // plan (to check current state hasn't already been fixed manually).
-  const [refreshingSnapshot, setRefreshingSnapshot] = useState(false);
-  const [snapshotError, setSnapshotError] = useState(null);
-  const refreshSnapshot = useCallback(async () => {
-    if (!activeConversation) return;
-    setRefreshingSnapshot(true);
-    setSnapshotError(null);
-    try {
-      const res = await campaignAssistantService.refreshSnapshot(activeConversation.id);
-      setSnapshotMeta(res.snapshotMeta);
-      setActiveConversation(prev => prev && { ...prev, report_generated_at: res.report_generated_at });
-    } catch (err) {
-      setSnapshotError(err.response?.data?.error || err.message || 'Failed to refresh snapshot');
-    } finally {
-      setRefreshingSnapshot(false);
-    }
-  }, [activeConversation]);
-
   // Execute a plan step against the Google Ads API and merge the updated
   // step row back into local state. Returns the executed-result summary so
   // the row's preview panel can display it inline.
@@ -757,9 +737,6 @@ const CampaignAssistant = () => {
             open={showSnapshot}
             onToggle={() => setShowSnapshot(v => !v)}
             generatedAt={activeConversation.report_generated_at}
-            onRefresh={refreshSnapshot}
-            refreshing={refreshingSnapshot}
-            refreshError={snapshotError}
           />
         )}
 
@@ -1116,7 +1093,7 @@ const ConversationsCard = ({ conversations, activeId, onOpen, onDelete }) => (
 // ---------------------------------------------------------------------------
 // Snapshot summary banner
 // ---------------------------------------------------------------------------
-const SnapshotBanner = ({ snapshotMeta, open, onToggle, generatedAt, onRefresh, refreshing, refreshError }) => {
+const SnapshotBanner = ({ snapshotMeta, open, onToggle, generatedAt }) => {
   const s = snapshotMeta.summary || {};
   const alerts = snapshotMeta.alerts || {};
   const alertCount =
@@ -1136,40 +1113,21 @@ const SnapshotBanner = ({ snapshotMeta, open, onToggle, generatedAt, onRefresh, 
 
   return (
     <div className="border-b border-gray-200 bg-gray-50">
-      <div className="w-full flex items-center gap-2 px-4 py-2">
-        <button
-          onClick={onToggle}
-          className="flex-1 flex items-center gap-2 text-xs font-medium text-gray-700 hover:text-gray-900 min-w-0"
-        >
-          {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-          Report snapshot
-          <span className="text-gray-400">·</span>
-          <span className="text-gray-500 truncate">
-            {fmtMoney(s.cost)} spend · {fmtInt(s.clicks)} clicks · {fmtInt(s.conversions)} conv · {alertCount} alerts
-          </span>
-          {snapshotMeta.hasFirebase && <span className="ml-2 px-1.5 py-0.5 bg-orange-100 text-orange-800 rounded text-[10px] flex-shrink-0">Firebase</span>}
-          {snapshotMeta.hasOpenAiAds && <span className="ml-1 px-1.5 py-0.5 bg-purple-100 text-purple-800 rounded text-[10px] flex-shrink-0">OpenAI Ads</span>}
-          {errs.length > 0 && <span className="ml-1 px-1.5 py-0.5 bg-yellow-100 text-yellow-800 rounded text-[10px] flex-shrink-0">{errs.length} partial errors</span>}
-          {isStale && <span className="ml-1 px-1.5 py-0.5 bg-amber-100 text-amber-800 rounded text-[10px] flex-shrink-0" title={`Snapshot is ${Math.round(ageHours)}h old`}>Stale</span>}
-        </button>
-        {onRefresh && (
-          <button
-            onClick={onRefresh}
-            disabled={refreshing}
-            title={generatedAtLabel ? `Last refreshed: ${generatedAtLabel}. Click to re-pull live data from Google Ads + GA4.` : 'Re-pull live data from Google Ads + GA4.'}
-            className="flex-shrink-0 flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-gray-600 border border-gray-300 rounded hover:bg-white disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {refreshing ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
-            {refreshing ? 'Refreshing…' : 'Refresh'}
-          </button>
-        )}
-      </div>
-      {refreshError && (
-        <div className="px-4 pb-2 text-[11px] text-red-700 flex items-start gap-1.5">
-          <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
-          <span>{refreshError}</span>
-        </div>
-      )}
+      <button
+        onClick={onToggle}
+        className="w-full flex items-center gap-2 px-4 py-2 text-xs font-medium text-gray-700 hover:bg-gray-100"
+      >
+        {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+        Report snapshot
+        <span className="text-gray-400">·</span>
+        <span className="text-gray-500 truncate">
+          {fmtMoney(s.cost)} spend · {fmtInt(s.clicks)} clicks · {fmtInt(s.conversions)} conv · {alertCount} alerts
+        </span>
+        {snapshotMeta.hasFirebase && <span className="ml-2 px-1.5 py-0.5 bg-orange-100 text-orange-800 rounded text-[10px] flex-shrink-0">Firebase</span>}
+        {snapshotMeta.hasOpenAiAds && <span className="ml-1 px-1.5 py-0.5 bg-purple-100 text-purple-800 rounded text-[10px] flex-shrink-0">OpenAI Ads</span>}
+        {errs.length > 0 && <span className="ml-1 px-1.5 py-0.5 bg-yellow-100 text-yellow-800 rounded text-[10px] flex-shrink-0">{errs.length} partial errors</span>}
+        {isStale && <span className="ml-1 px-1.5 py-0.5 bg-amber-100 text-amber-800 rounded text-[10px] flex-shrink-0" title={`Snapshot is ${Math.round(ageHours)}h old — click ⟳ on the Plan panel to refresh + regenerate`}>Stale</span>}
+      </button>
       {open && (
         <>
           <div className="px-4 pb-3 grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
