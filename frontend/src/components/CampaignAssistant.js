@@ -1626,14 +1626,31 @@ Do not make unrelated cleanups — keep the diff scoped to this task.`;
 
   const humanTask = `## ${step.title}
 
-**Priority:** ${step.priority || 'medium'} · **Effort:** ${step.effort || 'unspecified'}
+**Priority:** ${step.priority || 'medium'}  ·  **Effort:** ${step.effort || 'unspecified'}
 
-${step.description || ''}
+### What this achieves
+${step.description || '(no additional context)'}
 
-### Acceptance criteria
-- The change addresses the specific problem described above.
-- No unrelated refactors introduced.
-- Affected code paths still build and tests still pass.`;
+### Sub-steps
+Break the work into concrete, sequential actions. Fill in the [brackets] as you scope it out.
+
+1. [First concrete action — what file / setting / UI screen to touch]
+   Verify: [How you'll know this sub-step is done — a log line, a checkbox in a console, a query result]
+2. [Second action]
+   Verify: [...]
+3. [Third action]
+   Verify: [...]
+4. [Continue as needed — 4-8 sub-steps is typical for a step this size]
+   Verify: [...]
+
+### Acceptance criteria (whole task)
+- The change addresses the specific problem in "What this achieves" above.
+- No unrelated refactors or side-effects introduced.
+- Affected code paths still build; existing tests still pass.
+- A fresh QA pass on the intended surface shows the new behaviour.
+
+### Rollback plan
+- [How to revert if this ships and metrics regress — usually: revert the commit, or flip the Remote Config flag back, or delete the created resource. Fill in when scoping.]`;
 
   const copy = async (text, which) => {
     try {

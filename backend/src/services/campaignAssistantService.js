@@ -410,8 +410,8 @@ OUTPUT REQUIREMENTS
       "title": string,                        // short imperative, 5-12 words
       "description": string,                  // 2-4 sentences; cite specific numbers from the discussion when available
       "type": "google_ads_action" | "app_code_change" | "product_change" | "observation" | "schedule" | "other",
-      "action_type": string | null,           // for google_ads_action, name the specific mutation, e.g. "set_primary_conversion_action", "add_negative_keywords", "pause_ad_group", "pause_campaign", "set_campaign_budget", "add_excluded_locations". Null otherwise.
-      "action_params": object | null,         // parameters for the mutation, e.g. {"campaignId":"123","keywords":["cheap","free"],"matchType":"BROAD"}. Null when not applicable.
+      "action_type": string | null,           // see AUTOMATION CATALOG below
+      "action_params": object | null,         // params matching the action_type's schema
       "priority": "high" | "medium" | "low",
       "effort": string                        // rough estimate: "5min", "30min", "1h", "developer-1d", "product-1w"
     }
@@ -425,7 +425,42 @@ RULES
 - Drop meta advice ("iterate quickly", "monitor carefully"). Only concrete actions.
 - If a recommendation was rejected or superseded later in the discussion, drop it entirely.
 - For each step, cite specific numbers from the discussion when possible ("Add negatives with combined spend of $47", not "Add some negatives").
-- \`action_type\` and \`action_params\` should only be populated for type="google_ads_action". Leave them null for everything else — even if you know the mutation name.`;
+
+AUTOMATION CATALOG — one-click apply
+
+When a fix maps to one of the automations below, populate BOTH \`action_type\` and \`action_params\` with the exact schema shown. This flips the step to "one-click applyable" in the user's UI. When no automation applies, leave both fields null.
+
+WIRED (user can apply immediately with our infrastructure):
+- type: "google_ads_action", action_type: "add_negative_keywords"
+    action_params: { "campaignId": "<numeric>", "keywords": ["cheap","free","tutorial"], "matchType": "BROAD" | "PHRASE" | "EXACT" }
+    Notes: adds negatives at CAMPAIGN scope. Fully reversible in Google Ads UI → Keywords → Negatives.
+
+PLANNED (recognised — use these action_type names so the plan is future-ready even though the button is currently disabled):
+- type: "google_ads_action", action_type: "pause_campaign"
+    action_params: { "campaignId": "<numeric>" }
+- type: "google_ads_action", action_type: "pause_ad_group"
+    action_params: { "adGroupId": "<numeric>" }
+- type: "google_ads_action", action_type: "set_campaign_budget"
+    action_params: { "campaignId": "<numeric>", "dailyBudgetUsd": <number> }
+- type: "google_ads_action", action_type: "set_primary_conversion_action"
+    action_params: { "campaignId": "<numeric>", "conversionActionResourceName": "customers/<cid>/conversionActions/<actionId>" }
+- type: "google_ads_action", action_type: "add_excluded_locations"
+    action_params: { "campaignId": "<numeric>", "locationIds": ["<geo_target_constant_id>", ...] }
+
+CONFIG CHANGES (Firebase / GA4 — planned, use these names when suggesting):
+- type: "app_code_change", action_type: "mark_ga4_conversion_event"
+    action_params: { "propertyId": "<numeric>", "eventName": "subscription_started" }
+    Note: this is CONFIG not code (mark existing event as a key event / conversion). Use "app_code_change" type because it changes analytics behaviour, even though no code is edited.
+- type: "app_code_change", action_type: "set_remote_config_parameter"
+    action_params: { "projectId": "<firebase project id>", "parameterKey": "<string>", "defaultValue": "<string>", "description": "<string>" }
+
+GUIDANCE ON TYPES
+- "google_ads_action": something we can execute against the Google Ads API.
+- "app_code_change": code changes to the mobile/web app (React Native, Swift, Kotlin, web). Also covers Firebase/GA4 CONFIG that changes measurement behaviour even without code edits (mark_ga4_conversion_event, set_remote_config_parameter).
+- "product_change": design/UX decisions requiring human judgment (paywall copy, pricing, onboarding flow structure).
+- "observation": check-in tasks ("watch DebugView for 48h after change X").
+- "schedule": something to do at a future date ("re-analyse in 7 days").
+- "other": anything else.`;
 
 async function synthesizePlan({ provider, report, transcript }) {
   const providerKey = provider === 'openai' ? 'openai' : 'claude';
