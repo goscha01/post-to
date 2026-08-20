@@ -73,7 +73,7 @@ function jaccardSimilarity(aTokens, bTokens) {
 }
 
 const CARRY_FORWARD_TERMINAL_STATUSES = new Set(['done', 'applied', 'skipped', 'failed']);
-const CARRY_FORWARD_MIN_SCORE = 0.6;
+const CARRY_FORWARD_MIN_SCORE = 0.5;
 
 async function carryForwardStatuses(prevPlanId, newPlanId) {
   const { data: prevSteps } = await supabase
@@ -1208,31 +1208,37 @@ router.post('/conversations/:id/plans', async (req, res) => {
       steps = insertedSteps || [];
     }
 
-    // Carry forward statuses from the previous plan in this conversation so
-    // regenerate doesn't wipe out applied/done/skipped work. Fuzzy title
-    // match (Jaccard ≥ 0.6) is tolerant enough for AI paraphrasing without
-    // being aggressive enough to false-match unrelated steps.
+    // Carry forward statuses from prior plans in this conversation so
+    // regenerate doesn't wipe out applied/done/skipped work. Walks back
+    // through the last few plans (not just the immediately-previous one)
+    // to handle the "user regenerated once, all statuses got orphaned"
+    // case — we find the most recent plan that has ANY completed work
+    // and pull from there.
     let carriedForward = 0;
+    let carriedFromPlanId = null;
     if (steps.length > 0) {
       const { data: prevPlans } = await supabase
         .from('campaign_assistant_action_plans')
-        .select('id')
+        .select('id, created_at')
         .eq('conversation_id', conversationId)
         .neq('id', planRow.id)
         .order('created_at', { ascending: false })
-        .limit(1);
-      if (prevPlans && prevPlans.length > 0) {
-        const cf = await carryForwardStatuses(prevPlans[0].id, planRow.id);
-        carriedForward = cf.matched || 0;
-        // Re-fetch steps to return the carried-forward statuses to the client.
-        if (carriedForward > 0) {
-          const { data: freshSteps } = await supabase
-            .from('campaign_assistant_action_plan_steps')
-            .select('*')
-            .eq('plan_id', planRow.id)
-            .order('position', { ascending: true });
-          if (freshSteps) steps = freshSteps;
+        .limit(10);   // safety cap; walk back at most 10 plans
+      for (const prev of (prevPlans || [])) {
+        const cf = await carryForwardStatuses(prev.id, planRow.id);
+        if (cf.matched > 0) {
+          carriedForward = cf.matched;
+          carriedFromPlanId = prev.id;
+          break;   // stop at the first plan we successfully pulled from
         }
+      }
+      if (carriedForward > 0) {
+        const { data: freshSteps } = await supabase
+          .from('campaign_assistant_action_plan_steps')
+          .select('*')
+          .eq('plan_id', planRow.id)
+          .order('position', { ascending: true });
+        if (freshSteps) steps = freshSteps;
       }
     }
 
@@ -1244,6 +1250,7 @@ router.post('/conversations/:id/plans', async (req, res) => {
       model: result.model,
       stepCount: steps.length,
       carriedForward,
+      carriedFromPlanId,
       costUsd: result.usage.costUsd,
       degraded: !!result.degraded,
       duration_ms: Date.now() - t0,
