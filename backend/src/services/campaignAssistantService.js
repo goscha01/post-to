@@ -60,19 +60,25 @@ Rules:
 
 For follow-up questions (not the initial analysis), if the user asks something conversational ("why is CTR dropping?", "explain X"), you may respond as plain markdown without the ## Fix format. The ## Fix format is for issue lists only.`;
 
-function buildOpenAiSystemContent(report) {
+function buildOpenAiSystemContent(report, planProgress) {
   const preamble = SYSTEM_PREAMBLE_TEMPLATE({
     campaignName: report?.account?.descriptiveName || null,
     days: report?.meta?.dateRangeDays,
   });
-  return `${preamble}
-
---- BEGIN CAMPAIGN DATA (JSON) ---
-${JSON.stringify(report)}
---- END CAMPAIGN DATA ---`;
+  const parts = [
+    preamble,
+    `--- BEGIN CAMPAIGN DATA (JSON) ---\n${JSON.stringify(report)}\n--- END CAMPAIGN DATA ---`,
+  ];
+  // Plan-progress block goes at the END so it doesn't invalidate the
+  // OpenAI auto-cache on the (unchanging) report prefix. Changes every
+  // time the user checks off a step, so it MUST be outside cached region.
+  if (planProgress) {
+    parts.push(planProgress);
+  }
+  return parts.join('\n\n');
 }
 
-function buildClaudeSystemArray(report) {
+function buildClaudeSystemArray(report, planProgress) {
   const preamble = SYSTEM_PREAMBLE_TEMPLATE({
     campaignName: report?.account?.descriptiveName || null,
     days: report?.meta?.dateRangeDays,
@@ -80,7 +86,7 @@ function buildClaudeSystemArray(report) {
   // Two-part system so the (large, stable) report JSON gets its own cache
   // breakpoint. Follow-up turns re-send the same prefix → cache hit → ~10%
   // of full input cost.
-  return [
+  const parts = [
     { type: 'text', text: preamble },
     {
       type: 'text',
@@ -88,6 +94,39 @@ function buildClaudeSystemArray(report) {
       cache_control: { type: 'ephemeral' },
     },
   ];
+  // Plan-progress block appended AFTER the cache breakpoint. Anthropic's
+  // ephemeral cache only covers the marked block and everything before it,
+  // so parts after can change every turn without invalidating cache.
+  if (planProgress) {
+    parts.push({ type: 'text', text: planProgress });
+  }
+  return parts;
+}
+
+// Format a compact "plan progress" system-prompt block so the AI knows
+// which steps the user has already checked off, applied, or skipped.
+// Prevents suggestions for things already done in follow-up chat turns.
+// Returns null when there's no plan or no steps to report.
+function buildPlanProgressBlock(plan, steps) {
+  if (!plan || !Array.isArray(steps) || steps.length === 0) return null;
+  const symbol = (s) => {
+    if (s === 'done' || s === 'applied') return '✓';
+    if (s === 'failed') return '✗';
+    if (s === 'skipped') return '−';
+    return '☐';
+  };
+  const lines = steps.map((s, i) => {
+    const num = String(i + 1).padStart(2, ' ');
+    const sym = symbol(s.status);
+    const status = s.status || 'pending';
+    return `${sym} ${num}. ${s.title} — ${status}`;
+  });
+  return `--- PLAN PROGRESS (current step statuses — respect these; do NOT re-recommend things already done or applied) ---
+Plan: ${plan.title || '(untitled)'}
+Legend: ✓ done/applied · ☐ pending · − skipped · ✗ failed
+
+${lines.join('\n')}
+--- END PLAN PROGRESS ---`;
 }
 
 // Attachment schema (both providers):
@@ -144,7 +183,7 @@ function withAttachmentsClaude(messages, attachments) {
 // ---------------------------------------------------------------------------
 // OpenAI streaming
 // ---------------------------------------------------------------------------
-async function streamOpenAI({ report, messages, attachments, onDelta, onComplete, onError }) {
+async function streamOpenAI({ report, messages, attachments, planProgress, onDelta, onComplete, onError }) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
     onError(new Error('OPENAI_API_KEY is not configured'));
@@ -159,7 +198,7 @@ async function streamOpenAI({ report, messages, attachments, onDelta, onComplete
     stream: true,
     stream_options: { include_usage: true },
     messages: [
-      { role: 'system', content: buildOpenAiSystemContent(report) },
+      { role: 'system', content: buildOpenAiSystemContent(report, planProgress) },
       ...withAttach,
     ],
     temperature: 0.5,
@@ -242,7 +281,7 @@ async function streamOpenAI({ report, messages, attachments, onDelta, onComplete
 // ---------------------------------------------------------------------------
 // Claude (Anthropic) streaming
 // ---------------------------------------------------------------------------
-async function streamClaude({ report, messages, attachments, onDelta, onComplete, onError }) {
+async function streamClaude({ report, messages, attachments, planProgress, onDelta, onComplete, onError }) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     onError(new Error('ANTHROPIC_API_KEY is not configured'));
@@ -256,7 +295,7 @@ async function streamClaude({ report, messages, attachments, onDelta, onComplete
     model: CLAUDE_MODEL,
     max_tokens: 4000,
     stream: true,
-    system: buildClaudeSystemArray(report),
+    system: buildClaudeSystemArray(report, planProgress),
     messages: withAttach,
     temperature: 0.5,
   };
@@ -1055,6 +1094,7 @@ module.exports = {
   synthesizePlan,
   synthesizeConsensusPlan,
   synthesizeDialoguePlan,
+  buildPlanProgressBlock,
   OPENAI_MODEL,
   CLAUDE_MODEL,
   INITIAL_ANALYSIS_PROMPT,

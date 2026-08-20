@@ -48,6 +48,36 @@ function digitsOnly(s) {
   return String(s || '').replace(/[^0-9]/g, '');
 }
 
+// Load the latest action plan for a conversation + its steps, format as a
+// compact "plan progress" system-prompt block. Returns null when there's
+// no plan (or no steps) so the AI's system prompt isn't polluted with an
+// empty section. Called from every /chat and /one-shot request so the AI
+// naturally respects step statuses the user has been checking off between
+// turns, without the user having to say "I already did X" every time.
+async function loadPlanProgressBlock(conversationId) {
+  try {
+    const { data: plans } = await supabase
+      .from('campaign_assistant_action_plans')
+      .select('id, title')
+      .eq('conversation_id', conversationId)
+      .order('created_at', { ascending: false })
+      .limit(1);
+    if (!plans || plans.length === 0) return null;
+    const plan = plans[0];
+    const { data: steps } = await supabase
+      .from('campaign_assistant_action_plan_steps')
+      .select('title, status')
+      .eq('plan_id', plan.id)
+      .order('position', { ascending: true });
+    return campaignAssistant.buildPlanProgressBlock(plan, steps || []);
+  } catch (err) {
+    logger.warn('campaignAssistant.plan_progress_load_failed', {
+      conversationId, error: err.message,
+    });
+    return null;
+  }
+}
+
 // Find every conversation the user owns for the same Ads customer + campaign.
 // Used to widen per-card history so a user re-analyzing the same campaign
 // weeks later still sees (and the model still remembers) the prior threads.
@@ -674,12 +704,19 @@ router.post('/conversations/:id/chat', async (req, res) => {
       .eq('id', row.id);
   };
 
+  // Fetch current plan-progress block ONCE per turn (both providers share
+  // the same view of "what's done so far"). Runs in parallel with SSE
+  // stream setup; if it fails or is missing, both providers just run
+  // without it (backward-compatible).
+  const planProgress = await loadPlanProgressBlock(conversationId);
+
   // Kick off requested providers concurrently.
   if (wantOpenai) {
     campaignAssistant.streamOpenAI({
       report: conv.report_snapshot,
       messages: openaiMessages,
       attachments,
+      planProgress,
       onDelta: text => write({ type: 'delta', provider: 'openai', text }),
       onComplete: async result => {
         await persistCompletion(openaiRow, result);
@@ -712,6 +749,7 @@ router.post('/conversations/:id/chat', async (req, res) => {
       report: conv.report_snapshot,
       messages: claudeMessages,
       attachments,
+      planProgress,
       onDelta: text => write({ type: 'delta', provider: 'claude', text }),
       onComplete: async result => {
         await persistCompletion(claudeRow, result);
@@ -848,10 +886,15 @@ router.post('/conversations/:id/one-shot', async (req, res) => {
     ? campaignAssistant.streamOpenAI
     : campaignAssistant.streamClaude;
 
+  // Same plan-progress injection as /chat so per-card Asks and Steps also
+  // respect what the user has been checking off in the plan panel.
+  const planProgress = await loadPlanProgressBlock(conversationId);
+
   streamFn({
     report: conv.report_snapshot,
     messages: [...priorCardMessages, { role: 'user', content: prompt }],
     attachments,
+    planProgress,
     onDelta: text => write({ type: 'delta', text }),
     onComplete: async result => {
       let assistantMessageId = null;
