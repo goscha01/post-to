@@ -1340,7 +1340,27 @@ const PlanContent = ({ plan, steps, onToggleStepStatus, onUpdateStepNotes, onDel
 // Steps with these types get a working "Apply" button; other automatable
 // types still show an "Automatable" chip but the Apply button stays
 // disabled with a clear "not implemented yet" message.
-const APPLYABLE_ACTION_TYPES = new Set(['add_negative_keywords', 'mark_ga4_conversion_event']);
+const APPLYABLE_ACTION_TYPES = new Set([
+  'add_negative_keywords',
+  'pause_campaign',
+  'set_primary_conversion_action',
+  'set_campaign_budget',
+  'mark_ga4_conversion_event',
+]);
+
+// Per-action-type one-liner shown next to the Apply/Cancel buttons in
+// ApplyPreviewPanel. Duplicated from the ActionParamsSummary hint text
+// so users see it before they open the preview details.
+function reversibilityHint(actionType) {
+  switch (actionType) {
+    case 'add_negative_keywords':          return 'Reversible in Google Ads UI · Campaigns → Keywords → Negatives';
+    case 'pause_campaign':                 return 'Reversible in Google Ads UI · Campaigns → toggle status back to Enabled';
+    case 'set_primary_conversion_action':  return 'Reversible in Google Ads UI · Tools → Conversions → uncheck Primary';
+    case 'set_campaign_budget':            return 'Reversible in Google Ads UI · Campaigns → Settings → Budget';
+    case 'mark_ga4_conversion_event':      return 'Reversible in GA4 · Admin → Conversions → toggle off';
+    default:                               return 'Check Google Ads / GA4 UI for undo';
+  }
+}
 
 const PlanStepRow = ({ step, index, onToggleStatus, onUpdateNotes, onApplyStep }) => {
   const [notesOpen, setNotesOpen] = useState(false);
@@ -1561,9 +1581,7 @@ const ApplyPreviewPanel = ({ step, applying, applyResult, onCancel, onApply }) =
             Cancel
           </button>
           <span className="text-[10px] text-gray-500">
-            {step.action_type === 'mark_ga4_conversion_event'
-              ? 'Reversible in GA4 · Admin → Conversions → toggle off'
-              : 'Reversible in Google Ads UI · Campaigns → Keywords → Negatives'}
+            {reversibilityHint(step.action_type)}
           </span>
         </div>
       )}
@@ -1605,6 +1623,48 @@ const ActionParamsSummary = ({ actionType, params }) => {
         </div>
         <div className="text-[11px] text-gray-500 mt-1 italic">
           Affects forward measurement only — historical data isn't recomputed. Reversible in GA4 UI: Admin → Conversions → toggle off.
+        </div>
+      </div>
+    );
+  }
+  if (actionType === 'pause_campaign') {
+    return (
+      <div className="text-gray-800 space-y-0.5">
+        <div><span className="text-gray-500">Campaign:</span> {params.campaignId || params.campaign_id || '(missing)'}</div>
+        <div className="text-[11px] text-gray-500 mt-1 italic">
+          Serving stops immediately. Reversible: Google Ads UI → Campaigns → click campaign → Enable.
+        </div>
+      </div>
+    );
+  }
+  if (actionType === 'set_primary_conversion_action') {
+    const rn = params.conversionActionResourceName || params.conversion_action_resource_name || '';
+    const actionId = rn.split('/').pop();
+    return (
+      <div className="text-gray-800 space-y-0.5">
+        <div><span className="text-gray-500">Conversion action:</span>{' '}
+          <span className="px-1.5 py-0.5 bg-white border border-blue-200 rounded text-blue-900 text-[11px]">
+            {actionId || '(missing)'}
+          </span>
+        </div>
+        <div className="text-[11px] text-gray-500 mt-1 italic">
+          Sets <code>primary_for_goal = true</code> at ACCOUNT level. Affects every campaign in the account not overriding via campaign_conversion_goal. Reversible: Google Ads UI → Tools → Conversions → this action → Primary → Off.
+        </div>
+      </div>
+    );
+  }
+  if (actionType === 'set_campaign_budget') {
+    const usd = params.dailyBudgetUsd ?? params.daily_budget_usd;
+    return (
+      <div className="text-gray-800 space-y-0.5">
+        <div><span className="text-gray-500">Campaign:</span> {params.campaignId || params.campaign_id || '(missing)'}</div>
+        <div><span className="text-gray-500">New daily budget:</span>{' '}
+          <span className="px-1.5 py-0.5 bg-white border border-blue-200 rounded text-blue-900 text-[11px]">
+            ${usd != null ? Number(usd).toFixed(2) : '(missing)'}
+          </span>
+        </div>
+        <div className="text-[11px] text-gray-500 mt-1 italic">
+          Refuses to apply if the campaign uses a SHARED budget (would affect other campaigns). Reversible: Google Ads UI → Campaigns → this campaign → Settings → Budget.
         </div>
       </div>
     );

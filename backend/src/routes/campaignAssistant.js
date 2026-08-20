@@ -1216,6 +1216,72 @@ router.post('/plan-steps/:stepId/apply', async (req, res) => {
           };
           break;
         }
+        case 'pause_campaign': {
+          const adsCustomer = await resolveAdsCustomer(userId, conv.google_ads_customer_id);
+          if (!adsCustomer.customerId) throw new Error('No connected Google Ads customer for this conversation');
+          const accessToken = await tokenForOwner(req, adsCustomer.ownerGoogleId);
+          if (!accessToken) throw new Error('No Google access token available; reconnect Google Business.');
+          const loginCustomerId = adsCustomer.loginCustomerId || conv.google_ads_login_customer_id || null;
+          const params = step.action_params || {};
+          const campaignId = params.campaignId || params.campaign_id || null;
+          if (!campaignId) throw new Error('action_params.campaignId is required');
+          const result = await googleAdsSvc.pauseCampaign({
+            accessToken,
+            customerId: adsCustomer.customerId,
+            loginCustomerId,
+            campaignId,
+          });
+          executed = {
+            summary: `Paused campaign ${campaignId}. Re-enable in Google Ads UI → Campaigns → toggle status.`,
+            result,
+          };
+          break;
+        }
+        case 'set_primary_conversion_action': {
+          const adsCustomer = await resolveAdsCustomer(userId, conv.google_ads_customer_id);
+          if (!adsCustomer.customerId) throw new Error('No connected Google Ads customer for this conversation');
+          const accessToken = await tokenForOwner(req, adsCustomer.ownerGoogleId);
+          if (!accessToken) throw new Error('No Google access token available; reconnect Google Business.');
+          const loginCustomerId = adsCustomer.loginCustomerId || conv.google_ads_login_customer_id || null;
+          const params = step.action_params || {};
+          const rn = params.conversionActionResourceName || params.conversion_action_resource_name || null;
+          if (!rn) throw new Error('action_params.conversionActionResourceName is required (format: customers/<cid>/conversionActions/<id>)');
+          const result = await googleAdsSvc.setConversionActionPrimary({
+            accessToken,
+            customerId: adsCustomer.customerId,
+            loginCustomerId,
+            conversionActionResourceName: rn,
+          });
+          executed = {
+            summary: `Marked ${rn} as primary conversion action (account-level — affects every campaign not overriding via campaign_conversion_goal).`,
+            result,
+          };
+          break;
+        }
+        case 'set_campaign_budget': {
+          const adsCustomer = await resolveAdsCustomer(userId, conv.google_ads_customer_id);
+          if (!adsCustomer.customerId) throw new Error('No connected Google Ads customer for this conversation');
+          const accessToken = await tokenForOwner(req, adsCustomer.ownerGoogleId);
+          if (!accessToken) throw new Error('No Google access token available; reconnect Google Business.');
+          const loginCustomerId = adsCustomer.loginCustomerId || conv.google_ads_login_customer_id || null;
+          const params = step.action_params || {};
+          const campaignId = params.campaignId || params.campaign_id || null;
+          const dailyBudgetUsd = Number(params.dailyBudgetUsd ?? params.daily_budget_usd);
+          if (!campaignId) throw new Error('action_params.campaignId is required');
+          if (!Number.isFinite(dailyBudgetUsd) || dailyBudgetUsd <= 0) throw new Error('action_params.dailyBudgetUsd must be a positive number');
+          const result = await googleAdsSvc.setCampaignDailyBudget({
+            accessToken,
+            customerId: adsCustomer.customerId,
+            loginCustomerId,
+            campaignId,
+            dailyBudgetUsd,
+          });
+          executed = {
+            summary: `Set campaign ${campaignId} daily budget: $${result.previousDailyBudgetUsd.toFixed(2)} → $${result.newDailyBudgetUsd.toFixed(2)}.`,
+            result,
+          };
+          break;
+        }
         case 'mark_ga4_conversion_event': {
           const params = step.action_params || {};
           // Prefer explicit propertyId in action_params; fall back to the
@@ -1251,7 +1317,7 @@ router.post('/plan-steps/:stepId/apply', async (req, res) => {
         }
         default:
           return res.status(400).json({
-            error: `Action type "${step.action_type}" is recognised in the plan schema but not yet wired to a live mutation. Implemented: add_negative_keywords, mark_ga4_conversion_event.`,
+            error: `Action type "${step.action_type}" is recognised in the plan schema but not yet wired to a live mutation. Implemented: add_negative_keywords, pause_campaign, set_primary_conversion_action, set_campaign_budget, mark_ga4_conversion_event.`,
           });
       }
     } catch (mutationErr) {

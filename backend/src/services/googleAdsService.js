@@ -1384,6 +1384,155 @@ async function addCampaignNegativeKeywords({
   return { created, skipped };
 }
 
+// Pause / enable a campaign. Trivial: campaigns:mutate with an update
+// operation + updateMask=status. Reversible via the reverse endpoint OR
+// in the Google Ads UI (Campaigns → toggle status).
+async function setCampaignStatus({
+  accessToken, customerId, loginCustomerId, campaignId, status,
+}) {
+  const cid = stripCid(customerId);
+  const camp = stripCid(campaignId);
+  if (!cid) throw new Error('customerId required');
+  if (!camp) throw new Error('campaignId required');
+  const normalizedStatus = String(status || '').toUpperCase();
+  if (!['ENABLED', 'PAUSED', 'REMOVED'].includes(normalizedStatus)) {
+    throw new Error(`Invalid status: ${status}`);
+  }
+
+  const url = `${BASE_URL}/customers/${cid}/campaigns:mutate`;
+  const body = {
+    operations: [{
+      update: {
+        resourceName: `customers/${cid}/campaigns/${camp}`,
+        status: normalizedStatus,
+      },
+      updateMask: 'status',
+    }],
+  };
+  const { data } = await axios.post(url, body, {
+    headers: headers(accessToken, loginCustomerId),
+    timeout: 30_000,
+  });
+  return {
+    resourceName: data?.results?.[0]?.resourceName || null,
+    campaignId: camp,
+    status: normalizedStatus,
+  };
+}
+
+async function pauseCampaign(args) {
+  return setCampaignStatus({ ...args, status: 'PAUSED' });
+}
+
+// Mark a conversion action as PRIMARY at ACCOUNT LEVEL (primary_for_goal=true).
+// Applies to every campaign in the account that isn't overriding via a
+// campaign-level conversion goal. This is the simpler of the two "make X
+// the primary conversion" surfaces; the campaign-level override
+// (campaign_conversion_goal) is more surgical but requires knowing the
+// action's goal category + source, which the plan payload doesn't carry.
+// Reversible by setting primary_for_goal=false in Google Ads UI:
+//   Tools → Conversions → click the action → Primary → Off.
+async function setConversionActionPrimary({
+  accessToken, customerId, loginCustomerId, conversionActionResourceName,
+}) {
+  const cid = stripCid(customerId);
+  if (!cid) throw new Error('customerId required');
+  const rn = String(conversionActionResourceName || '').trim();
+  if (!rn) throw new Error('conversionActionResourceName required');
+  // Sanity: rn should look like customers/<cid>/conversionActions/<id>.
+  if (!/^customers\/\d+\/conversionActions\/\d+$/.test(rn)) {
+    throw new Error(`Invalid conversion action resource name: "${rn}"`);
+  }
+
+  const url = `${BASE_URL}/customers/${cid}/conversionActions:mutate`;
+  const body = {
+    operations: [{
+      update: {
+        resourceName: rn,
+        primaryForGoal: true,
+      },
+      updateMask: 'primaryForGoal',
+    }],
+  };
+  const { data } = await axios.post(url, body, {
+    headers: headers(accessToken, loginCustomerId),
+    timeout: 30_000,
+  });
+  return {
+    resourceName: data?.results?.[0]?.resourceName || rn,
+  };
+}
+
+// Change the DAILY budget on a campaign. Two-step:
+//   1. Query the campaign to get its linked campaign_budget resource + its
+//      explicitly_shared flag (shared budgets affect multiple campaigns —
+//      we refuse to modify those to avoid surprising side-effects).
+//   2. Mutate the campaignBudget resource with new amount_micros.
+// Reversible by setting the previous amount in Google Ads UI:
+//   Campaigns → this campaign → Settings → Budget.
+async function setCampaignDailyBudget({
+  accessToken, customerId, loginCustomerId, campaignId, dailyBudgetUsd,
+}) {
+  const cid = stripCid(customerId);
+  const camp = stripCid(campaignId);
+  if (!cid) throw new Error('customerId required');
+  if (!camp) throw new Error('campaignId required');
+  const budget = Number(dailyBudgetUsd);
+  if (!Number.isFinite(budget) || budget <= 0) {
+    throw new Error('dailyBudgetUsd must be a positive number');
+  }
+  if (budget > 10000) {
+    throw new Error('dailyBudgetUsd sanity limit (10,000). Set higher in Google Ads UI if intentional.');
+  }
+
+  // Step 1: look up the linked budget.
+  const rows = await search(accessToken, cid, `
+    SELECT
+      campaign.id,
+      campaign.campaign_budget,
+      campaign_budget.id,
+      campaign_budget.explicitly_shared,
+      campaign_budget.amount_micros
+    FROM campaign
+    WHERE campaign.id = ${camp}
+    LIMIT 1
+  `, { loginCustomerId });
+  if (!rows.length) throw new Error(`Campaign ${camp} not found`);
+  const cb = rows[0].campaignBudget || {};
+  const budgetResourceName = rows[0].campaign?.campaignBudget;
+  const explicitlyShared = !!cb.explicitlyShared;
+  const oldAmountMicros = Number(cb.amountMicros) || 0;
+  const oldUsd = oldAmountMicros / 1_000_000;
+
+  if (!budgetResourceName) throw new Error('Campaign has no linked budget resource');
+  if (explicitlyShared) {
+    throw new Error(`Campaign uses a SHARED budget (${budgetResourceName}). Refusing to change — it would affect every campaign using this budget. Adjust in Google Ads UI instead.`);
+  }
+
+  // Step 2: mutate.
+  const newAmountMicros = Math.round(budget * 1_000_000);
+  const url = `${BASE_URL}/customers/${cid}/campaignBudgets:mutate`;
+  const body = {
+    operations: [{
+      update: {
+        resourceName: budgetResourceName,
+        amountMicros: newAmountMicros,
+      },
+      updateMask: 'amountMicros',
+    }],
+  };
+  const { data } = await axios.post(url, body, {
+    headers: headers(accessToken, loginCustomerId),
+    timeout: 30_000,
+  });
+  return {
+    resourceName: data?.results?.[0]?.resourceName || budgetResourceName,
+    campaignId: camp,
+    previousDailyBudgetUsd: Number(oldUsd.toFixed(2)),
+    newDailyBudgetUsd: budget,
+  };
+}
+
 module.exports = {
   listAccessibleCustomers,
   describeCustomers,
@@ -1405,6 +1554,10 @@ module.exports = {
   getChangeHistory,
   getDiagnostics,
   addCampaignNegativeKeywords,
+  setCampaignStatus,
+  pauseCampaign,
+  setConversionActionPrimary,
+  setCampaignDailyBudget,
   normalizeApiError,
   _internal: { search, dateRangeClause, fromMicros, stripCid, BASE_URL, API_VERSION },
 };
