@@ -101,12 +101,13 @@ const CampaignAssistant = () => {
 
   // Action plan state — latest plan for the active conversation, its steps,
   // and generation status. Plans persist in DB; user can regenerate to
-  // supersede the previous one after more discussion.
+  // supersede the previous one after more discussion. Generation always
+  // runs both providers in parallel + a reconciliation pass; user does
+  // NOT pick a provider — the plan is a joint consensus.
   const [planLoading, setPlanLoading] = useState(false);
   const [planError, setPlanError] = useState(null);
   const [latestPlan, setLatestPlan] = useState(null);       // { plan, steps }
   const [planPanelOpen, setPlanPanelOpen] = useState(true);
-  const [planProvider, setPlanProvider] = useState('claude');
 
   const streamCtrlRef = useRef(null);
   const chatScrollRef = useRef(null);
@@ -271,7 +272,7 @@ const CampaignAssistant = () => {
     setPlanLoading(true);
     setPlanError(null);
     try {
-      const res = await campaignAssistantService.generatePlan(activeConversation.id, planProvider);
+      const res = await campaignAssistantService.generatePlan(activeConversation.id);
       setLatestPlan(res);
       setPlanPanelOpen(true);
     } catch (err) {
@@ -279,7 +280,7 @@ const CampaignAssistant = () => {
     } finally {
       setPlanLoading(false);
     }
-  }, [activeConversation, planProvider]);
+  }, [activeConversation]);
 
   const toggleStepStatus = useCallback(async (stepId, currentStatus) => {
     const nextStatus = currentStatus === 'done' ? 'pending' : 'done';
@@ -667,8 +668,6 @@ const CampaignAssistant = () => {
             onToggleStepStatus={toggleStepStatus}
             onUpdateStepNotes={updateStepNotes}
             onDeletePlan={deletePlan}
-            provider={planProvider}
-            onSelectProvider={setPlanProvider}
           />
         )}
 
@@ -1085,7 +1084,6 @@ const PRIORITY_META = {
 const ActionPlanPanel = ({
   plan, loading, error, open, onToggle,
   onGenerate, onToggleStepStatus, onUpdateStepNotes, onDeletePlan,
-  provider, onSelectProvider,
 }) => {
   const hasPlan = !!plan?.plan;
   const steps = plan?.steps || [];
@@ -1114,14 +1112,9 @@ const ActionPlanPanel = ({
       {open && (
         <div className="px-4 pb-3">
           {!hasPlan && !loading && (
-            <PlanEmptyState
-              onGenerate={onGenerate}
-              provider={provider}
-              onSelectProvider={onSelectProvider}
-              error={error}
-            />
+            <PlanEmptyState onGenerate={onGenerate} error={error} />
           )}
-          {loading && <PlanLoadingState provider={provider} />}
+          {loading && <PlanLoadingState />}
           {hasPlan && !loading && (
             <PlanContent
               plan={plan}
@@ -1130,8 +1123,6 @@ const ActionPlanPanel = ({
               onUpdateStepNotes={onUpdateStepNotes}
               onDeletePlan={onDeletePlan}
               onRegenerate={onGenerate}
-              provider={provider}
-              onSelectProvider={onSelectProvider}
               error={error}
             />
           )}
@@ -1141,30 +1132,23 @@ const ActionPlanPanel = ({
   );
 };
 
-const PlanEmptyState = ({ onGenerate, provider, onSelectProvider, error }) => (
+const PlanEmptyState = ({ onGenerate, error }) => (
   <div className="text-center py-4 space-y-2">
     <p className="text-sm text-gray-700">
       Ready to turn the discussion into a concrete plan?
     </p>
-    <p className="text-xs text-gray-500 max-w-lg mx-auto">
-      Sends the whole conversation transcript (main chat + all card-level Asks &amp; Steps) to one model
-      for synthesis. You get back a deduped, dependency-ordered checklist tagged with what's automatable
-      via Google Ads API vs. what's a developer / product task.
+    <p className="text-xs text-gray-500 max-w-xl mx-auto">
+      Both OpenAI and Claude draft a plan independently, then Claude reconciles the two into a
+      single consensus plan — noting where they agreed and how any disagreements were resolved.
+      Takes ~60-120 seconds. Result is a deduped, dependency-ordered checklist tagged by what's
+      automatable via Google Ads API vs. what's a developer or product task.
     </p>
-    <div className="flex items-center justify-center gap-2 pt-1">
-      <select
-        value={provider}
-        onChange={(e) => onSelectProvider(e.target.value)}
-        className="text-xs border border-gray-300 rounded-md px-2 py-1 bg-white"
-      >
-        <option value="claude">Synthesize with Claude</option>
-        <option value="openai">Synthesize with OpenAI</option>
-      </select>
+    <div className="pt-1">
       <button
         onClick={onGenerate}
-        className="px-3 py-1.5 bg-emerald-600 text-white text-xs font-medium rounded-md hover:bg-emerald-700 flex items-center gap-1.5"
+        className="px-4 py-2 bg-emerald-600 text-white text-sm font-medium rounded-md hover:bg-emerald-700 inline-flex items-center gap-2"
       >
-        <Sparkles className="h-3 w-3" /> Generate action plan
+        <Sparkles className="h-4 w-4" /> Generate consensus plan
       </button>
     </div>
     {error && (
@@ -1175,77 +1159,143 @@ const PlanEmptyState = ({ onGenerate, provider, onSelectProvider, error }) => (
   </div>
 );
 
-const PlanLoadingState = ({ provider }) => (
-  <div className="text-center py-6 space-y-2">
-    <Loader2 className="h-5 w-5 animate-spin text-emerald-600 mx-auto" />
-    <p className="text-sm text-gray-700 font-medium">
-      {provider === 'openai' ? 'OpenAI' : 'Claude'} is synthesizing the discussion into a plan…
-    </p>
-    <p className="text-xs text-gray-500">Usually 15–45 seconds — larger discussions take longer.</p>
-  </div>
-);
-
-const PlanContent = ({ plan, steps, onToggleStepStatus, onUpdateStepNotes, onDeletePlan, onRegenerate, provider, onSelectProvider, error }) => (
-  <div className="space-y-3">
-    <div className="flex items-start justify-between gap-3">
-      <div className="min-w-0">
-        <div className="text-sm font-semibold text-gray-900">{plan.plan.title}</div>
-        {plan.plan.summary && (
-          <div className="text-xs text-gray-600 mt-0.5">{plan.plan.summary}</div>
-        )}
-        <div className="text-[10px] text-gray-400 mt-1">
-          Generated by {plan.plan.generated_by || 'model'} ({plan.plan.model}) ·
-          {plan.plan.cost_usd != null && ` $${Number(plan.plan.cost_usd).toFixed(4)} ·`}
-          {' '}{new Date(plan.plan.created_at).toLocaleString()}
-        </div>
+// Loading state that shows the multi-phase consensus flow. Progresses by
+// wall-clock time rather than real backend signals (would require SSE for
+// that) — timings tuned to typical run durations.
+const PlanLoadingState = () => {
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setElapsed(e => e + 1), 1000);
+    return () => clearInterval(t);
+  }, []);
+  const phases = [
+    { label: 'OpenAI drafting a plan…', done: elapsed > 45 },
+    { label: 'Claude drafting a plan…', done: elapsed > 45 },
+    { label: 'Claude reconciling both drafts into a consensus…', done: elapsed > 100 },
+  ];
+  const currentIdx = elapsed < 45 ? 0 : elapsed < 100 ? 2 : 2;
+  return (
+    <div className="py-4 space-y-3">
+      <div className="text-center">
+        <Loader2 className="h-5 w-5 animate-spin text-emerald-600 mx-auto" />
+        <p className="text-sm text-gray-700 font-medium mt-2">
+          Getting consensus from both models…
+        </p>
+        <p className="text-[11px] text-gray-500 mt-0.5">
+          {elapsed}s · typical run is 60-120s
+        </p>
       </div>
-      <div className="flex items-center gap-1 flex-shrink-0">
-        <select
-          value={provider}
-          onChange={(e) => onSelectProvider(e.target.value)}
-          className="text-[11px] border border-gray-300 rounded px-1.5 py-0.5 bg-white"
-        >
-          <option value="claude">Claude</option>
-          <option value="openai">OpenAI</option>
-        </select>
-        <button
-          onClick={onRegenerate}
-          title="Regenerate plan — creates a new plan from the current transcript, replacing this one in the header. Old plans stay in DB."
-          className="p-1 text-gray-500 hover:text-emerald-700 hover:bg-emerald-100 rounded"
-        >
-          <RefreshCw className="h-3.5 w-3.5" />
-        </button>
-        <button
-          onClick={onDeletePlan}
-          title="Discard this plan"
-          className="p-1 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded"
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-        </button>
-      </div>
-    </div>
-    {error && (
-      <div className="text-xs text-red-700 flex items-start gap-1.5">
-        <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" /> {error}
-      </div>
-    )}
-    {steps.length === 0 ? (
-      <div className="text-xs text-gray-500 py-3">Plan has no steps.</div>
-    ) : (
-      <ol className="space-y-1.5">
-        {steps.map((step, i) => (
-          <PlanStepRow
-            key={step.id}
-            step={step}
-            index={i}
-            onToggleStatus={() => onToggleStepStatus(step.id, step.status)}
-            onUpdateNotes={(notes) => onUpdateStepNotes(step.id, notes)}
-          />
+      <ol className="max-w-md mx-auto space-y-1">
+        {phases.map((p, i) => (
+          <li
+            key={i}
+            className={`flex items-center gap-2 text-xs ${
+              p.done ? 'text-gray-400' : i === currentIdx ? 'text-emerald-800 font-medium' : 'text-gray-500'
+            }`}
+          >
+            {p.done
+              ? <Check className="h-3.5 w-3.5 text-emerald-500" />
+              : i === currentIdx
+              ? <Loader2 className="h-3 w-3 animate-spin" />
+              : <Circle className="h-3 w-3" />}
+            {p.label}
+          </li>
         ))}
       </ol>
-    )}
-  </div>
-);
+    </div>
+  );
+};
+
+const PlanContent = ({ plan, steps, onToggleStepStatus, onUpdateStepNotes, onDeletePlan, onRegenerate, error }) => {
+  const [notesOpen, setNotesOpen] = useState(false);
+  const isConsensus = plan.plan.generated_by === 'consensus';
+  const isDegraded = plan.plan.degraded === true;
+  const convergenceNotes = plan.plan.convergence_notes;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="text-sm font-semibold text-gray-900">{plan.plan.title}</div>
+            {isConsensus && !isDegraded && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 uppercase font-semibold tracking-wide">
+                Consensus · OpenAI + Claude
+              </span>
+            )}
+            {isDegraded && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 uppercase font-semibold tracking-wide" title="Only one of the two models produced a draft; consensus fell back to that single draft.">
+                Single-provider fallback
+              </span>
+            )}
+          </div>
+          {plan.plan.summary && (
+            <div className="text-xs text-gray-600 mt-0.5">{plan.plan.summary}</div>
+          )}
+          <div className="text-[10px] text-gray-400 mt-1">
+            {plan.plan.model && `Model: ${plan.plan.model} · `}
+            {plan.plan.cost_usd != null && `$${Number(plan.plan.cost_usd).toFixed(4)} · `}
+            {new Date(plan.plan.created_at).toLocaleString()}
+          </div>
+        </div>
+        <div className="flex items-center gap-1 flex-shrink-0">
+          <button
+            onClick={onRegenerate}
+            title="Regenerate plan — creates a new consensus plan from the current transcript, replacing this one. Old plans stay in DB."
+            className="p-1 text-gray-500 hover:text-emerald-700 hover:bg-emerald-100 rounded"
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+          </button>
+          <button
+            onClick={onDeletePlan}
+            title="Discard this plan"
+            className="p-1 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      </div>
+
+      {convergenceNotes && (
+        <div className="rounded border border-emerald-200 bg-white">
+          <button
+            onClick={() => setNotesOpen(v => !v)}
+            className="w-full flex items-center gap-1 px-2 py-1.5 text-[11px] font-medium text-emerald-800 hover:bg-emerald-50"
+          >
+            {notesOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+            Convergence notes — how the two models agreed
+          </button>
+          {notesOpen && (
+            <div className="px-3 pb-2 text-xs text-gray-700 whitespace-pre-wrap">
+              {convergenceNotes}
+            </div>
+          )}
+        </div>
+      )}
+
+      {error && (
+        <div className="text-xs text-red-700 flex items-start gap-1.5">
+          <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" /> {error}
+        </div>
+      )}
+      {steps.length === 0 ? (
+        <div className="text-xs text-gray-500 py-3">Plan has no steps.</div>
+      ) : (
+        <ol className="space-y-1.5">
+          {steps.map((step, i) => (
+            <PlanStepRow
+              key={step.id}
+              step={step}
+              index={i}
+              onToggleStatus={() => onToggleStepStatus(step.id, step.status)}
+              onUpdateNotes={(notes) => onUpdateStepNotes(step.id, notes)}
+            />
+          ))}
+        </ol>
+      )}
+    </div>
+  );
+};
 
 const PlanStepRow = ({ step, index, onToggleStatus, onUpdateNotes }) => {
   const [notesOpen, setNotesOpen] = useState(false);

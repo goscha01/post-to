@@ -592,7 +592,128 @@ function validatePlanShape(obj) {
       priority: knownPriority.has(s.priority) ? s.priority : 'medium',
       effort: s.effort ? String(s.effort).slice(0, 32) : null,
     }));
+  // convergence_notes is optional and only appears on consensus plans.
+  if (obj.convergence_notes) obj.convergence_notes = String(obj.convergence_notes);
   return obj;
+}
+
+// ---------------------------------------------------------------------------
+// Consensus synthesis — both models propose in parallel, then one reconciles.
+//
+// Phase 1: Both models independently draft a plan from the transcript.
+// Phase 2: Claude receives both drafts + transcript, merges into ONE
+//          authoritative plan and emits a "convergence_notes" field
+//          summarising agreements + resolved disagreements.
+//
+// This gives the user a genuinely joint recommendation instead of forcing
+// them to pick a model. Cost is roughly 2.5x a single-provider synthesis
+// (parallel drafts + one merge call), latency ~60-120s total.
+// ---------------------------------------------------------------------------
+
+const RECONCILE_SYSTEM_ADDENDUM = `
+YOU ARE IN CONSENSUS MODE.
+
+You will be given TWO independently-drafted action plans (one from OpenAI, one from Claude) plus the original discussion transcript. Your job is to merge them into ONE authoritative plan the team will act on.
+
+Rules for the merge:
+- If both drafts contain the same recommendation (even worded differently), keep ONE entry and use the clearer wording.
+- If only one draft proposed a step, keep it IF it's clearly grounded in the transcript. Drop it if it looks speculative.
+- If the two drafts contradict each other on a specific point (e.g. one says "raise budget", the other says "hold budget"), pick the side better supported by numbers in the transcript, and note the disagreement in convergence_notes.
+- Order by dependency. Broken-tracking issues first.
+- 5-15 steps ideal.
+
+Output the SAME JSON schema as before, PLUS a top-level field:
+
+"convergence_notes": string (2-5 sentences: where the two drafts agreed, where they disagreed, and how you resolved the disagreements)
+
+Output JSON only.`;
+
+async function synthesizeConsensusPlan({ report, transcript }) {
+  const t0 = Date.now();
+
+  // Phase 1: parallel drafts from both providers.
+  const [openaiRes, claudeRes] = await Promise.all([
+    synthesizePlan({ provider: 'openai', report, transcript }).catch(err => ({ error: err })),
+    synthesizePlan({ provider: 'claude', report, transcript }).catch(err => ({ error: err })),
+  ]);
+
+  const openaiDraft = openaiRes.error ? null : openaiRes;
+  const claudeDraft = claudeRes.error ? null : claudeRes;
+
+  // If both failed, bubble up.
+  if (!openaiDraft && !claudeDraft) {
+    const err = openaiRes.error || claudeRes.error || new Error('Both draft syntheses failed');
+    throw err;
+  }
+
+  // If one failed, fall back to the other draft — no reconciliation needed.
+  if (!openaiDraft || !claudeDraft) {
+    const only = openaiDraft || claudeDraft;
+    return {
+      plan: only.plan,
+      rawResponse: only.rawResponse,
+      model: only.model,
+      provider: only.provider,
+      usage: only.usage,
+      drafts: {
+        openai: openaiDraft?.plan || null,
+        claude: claudeDraft?.plan || null,
+        openaiError: openaiRes.error?.message || null,
+        claudeError: claudeRes.error?.message || null,
+      },
+      degraded: true,   // signals to the caller only one draft succeeded
+      durationMs: Date.now() - t0,
+    };
+  }
+
+  // Phase 2: reconciliation call to Claude (chosen for stronger structured
+  // synthesis behaviour on this class of task).
+  const reconcilePrompt = `Two independent action plans were drafted for the same campaign discussion. Merge them into ONE authoritative plan.
+
+=== DRAFT A (from OpenAI) ===
+${JSON.stringify(openaiDraft.plan, null, 2)}
+=== END DRAFT A ===
+
+=== DRAFT B (from Claude) ===
+${JSON.stringify(claudeDraft.plan, null, 2)}
+=== END DRAFT B ===
+
+=== ORIGINAL DISCUSSION TRANSCRIPT ===
+${transcript}
+=== END TRANSCRIPT ===
+
+Produce the merged JSON plan now, including "convergence_notes".`;
+
+  const reconciled = await synthesizePlanClaude({
+    report,
+    systemPrompt: PLAN_SYSTEM_PROMPT + '\n\n' + RECONCILE_SYSTEM_ADDENDUM,
+    userPrompt: reconcilePrompt,
+    t0,
+  });
+
+  const combinedUsage = {
+    promptTokens: (openaiDraft.usage.promptTokens || 0) + (claudeDraft.usage.promptTokens || 0) + (reconciled.usage.promptTokens || 0),
+    completionTokens: (openaiDraft.usage.completionTokens || 0) + (claudeDraft.usage.completionTokens || 0) + (reconciled.usage.completionTokens || 0),
+    totalTokens: 0,
+    cacheReadTokens: (openaiDraft.usage.cacheReadTokens || 0) + (claudeDraft.usage.cacheReadTokens || 0) + (reconciled.usage.cacheReadTokens || 0),
+    cacheWriteTokens: (openaiDraft.usage.cacheWriteTokens || 0) + (claudeDraft.usage.cacheWriteTokens || 0) + (reconciled.usage.cacheWriteTokens || 0),
+    costUsd: Number(((openaiDraft.usage.costUsd || 0) + (claudeDraft.usage.costUsd || 0) + (reconciled.usage.costUsd || 0)).toFixed(6)),
+  };
+  combinedUsage.totalTokens = combinedUsage.promptTokens + combinedUsage.completionTokens;
+
+  return {
+    plan: reconciled.plan,
+    rawResponse: reconciled.rawResponse,
+    model: `openai:${openaiDraft.model} + claude:${claudeDraft.model} → claude:${reconciled.model}`,
+    provider: 'consensus',
+    usage: combinedUsage,
+    drafts: {
+      openai: openaiDraft.plan,
+      claude: claudeDraft.plan,
+    },
+    degraded: false,
+    durationMs: Date.now() - t0,
+  };
 }
 
 module.exports = {
@@ -600,6 +721,7 @@ module.exports = {
   streamClaude,
   messagesForProvider,
   synthesizePlan,
+  synthesizeConsensusPlan,
   OPENAI_MODEL,
   CLAUDE_MODEL,
   INITIAL_ANALYSIS_PROMPT,

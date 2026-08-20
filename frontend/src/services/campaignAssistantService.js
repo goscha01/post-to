@@ -202,11 +202,11 @@ const getPlan = async (planId) => {
   return res.data;
 };
 
-const generatePlan = async (conversationId, provider = 'claude') => {
+const generatePlan = async (conversationId) => {
   const res = await axios.post(
     `/api/campaign-assistant/conversations/${conversationId}/plans`,
-    { provider },
-    { timeout: 180_000 } // synthesis can take 30-90s
+    {},
+    { timeout: 240_000 } // consensus = 2 parallel drafts + 1 reconciliation, ~60-120s
   );
   return res.data;
 };

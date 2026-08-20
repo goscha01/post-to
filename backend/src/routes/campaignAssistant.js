@@ -905,11 +905,10 @@ async function buildFullTranscript(conversationId) {
   return lines.join('\n');
 }
 
-// POST /conversations/:id/plans — synthesize + persist a new plan
+// POST /conversations/:id/plans — synthesize + persist a new consensus plan
 router.post('/conversations/:id/plans', async (req, res) => {
   const userId = req.user.userId;
   const conversationId = req.params.id;
-  const provider = req.body?.provider === 'openai' ? 'openai' : 'claude';
   const t0 = Date.now();
 
   try {
@@ -927,10 +926,19 @@ router.post('/conversations/:id/plans', async (req, res) => {
       return res.status(400).json({ error: 'Nothing to synthesize — no completed messages yet' });
     }
 
-    const result = await campaignAssistant.synthesizePlan({
-      provider,
+    const result = await campaignAssistant.synthesizeConsensusPlan({
       report: conv.report_snapshot,
       transcript,
+    });
+
+    // Stash the drafts + reconciled raw response together as JSON in
+    // raw_response for audit. Older single-provider plans just have the
+    // model's text there directly.
+    const rawResponseAudit = JSON.stringify({
+      final: result.rawResponse,
+      drafts: result.drafts || null,
+      degraded: !!result.degraded,
+      convergence_notes: result.plan?.convergence_notes || null,
     });
 
     // Persist plan.
@@ -941,7 +949,7 @@ router.post('/conversations/:id/plans', async (req, res) => {
         conversation_id: conversationId,
         title: result.plan.title || `Plan for ${conv.title || 'campaign'}`,
         summary: result.plan.summary || null,
-        generated_by: result.provider,
+        generated_by: result.provider,           // 'consensus' | 'openai' | 'claude' (single-provider fallback)
         model: result.model,
         prompt_tokens: result.usage.promptTokens,
         completion_tokens: result.usage.completionTokens,
@@ -949,7 +957,7 @@ router.post('/conversations/:id/plans', async (req, res) => {
         cache_read_tokens: result.usage.cacheReadTokens,
         cache_write_tokens: result.usage.cacheWriteTokens,
         cost_usd: result.usage.costUsd,
-        raw_response: result.rawResponse,
+        raw_response: rawResponseAudit,
       })
       .select()
       .single();
@@ -985,10 +993,19 @@ router.post('/conversations/:id/plans', async (req, res) => {
       model: result.model,
       stepCount: steps.length,
       costUsd: result.usage.costUsd,
+      degraded: !!result.degraded,
       duration_ms: Date.now() - t0,
     });
 
-    res.json({ plan: planRow, steps });
+    // Extract audit fields onto the top-level response so the frontend can
+    // render "consensus" badges and convergence notes without re-parsing
+    // raw_response.
+    const planWithAudit = {
+      ...planRow,
+      convergence_notes: result.plan?.convergence_notes || null,
+      degraded: !!result.degraded,
+    };
+    res.json({ plan: planWithAudit, steps });
   } catch (err) {
     logger.error('campaignAssistant.plan_create_failed', {
       userId, conversationId, error: err.message, duration_ms: Date.now() - t0,
@@ -1042,9 +1059,23 @@ router.get('/plans/:planId', async (req, res) => {
       .order('position', { ascending: true });
     if (stepsErr) throw stepsErr;
 
-    // Don't ship the raw_response back — it's an audit artifact, potentially large.
+    // Don't ship the full raw_response back — it's an audit artifact,
+    // potentially large. But do peel off convergence_notes + degraded from
+    // it so the frontend can render the consensus surface.
     const { raw_response, ...planPublic } = plan;
-    res.json({ plan: planPublic, steps: steps || [] });
+    let convergenceNotes = null;
+    let degraded = false;
+    if (raw_response) {
+      try {
+        const parsed = JSON.parse(raw_response);
+        convergenceNotes = parsed?.convergence_notes || null;
+        degraded = !!parsed?.degraded;
+      } catch (_) { /* legacy single-provider plans stored plain text — ignore */ }
+    }
+    res.json({
+      plan: { ...planPublic, convergence_notes: convergenceNotes, degraded },
+      steps: steps || [],
+    });
   } catch (err) {
     logger.error('campaignAssistant.plan_get_failed', {
       userId: req.user.userId, planId: req.params.planId, error: err.message,
