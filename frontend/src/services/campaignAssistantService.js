@@ -229,6 +229,15 @@ const pushBackPlanStep = async (stepId, feedback) => {
   return res.data;   // { step, chatPrompt }
 };
 
+const reportPlanStepResults = async (stepId, results) => {
+  const res = await axios.post(
+    `/api/campaign-assistant/plan-steps/${stepId}/report-results`,
+    { results },
+    { timeout: 90_000 }   // AI decision call takes 5-15s
+  );
+  return res.data;   // { step | null, deleted, decision: {action, reasoning, newTitle?, newDescription?} }
+};
+
 const applyPlanStep = async (stepId) => {
   const res = await axios.post(
     `/api/campaign-assistant/plan-steps/${stepId}/apply`,
@@ -263,6 +272,7 @@ const campaignAssistantService = {
   deletePlan,
   applyPlanStep,
   pushBackPlanStep,
+  reportPlanStepResults,
   refreshSnapshot,
 };
 

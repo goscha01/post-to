@@ -272,6 +272,17 @@ const CampaignAssistant = () => {
     setPlanLoading(true);
     setPlanError(null);
     try {
+      // Auto-refresh the snapshot first so the AI sees CURRENT Google Ads
+      // + GA4 state (respecting whatever steps have been applied since
+      // last snapshot). Failures here are non-fatal — regen falls back
+      // to the existing snapshot.
+      try {
+        const refreshRes = await campaignAssistantService.refreshSnapshot(activeConversation.id);
+        setSnapshotMeta(refreshRes.snapshotMeta);
+        setActiveConversation(prev => prev && { ...prev, report_generated_at: refreshRes.report_generated_at });
+      } catch (refreshErr) {
+        console.warn('Pre-regen snapshot refresh failed; regenerating against existing snapshot', refreshErr);
+      }
       const res = await campaignAssistantService.generatePlan(activeConversation.id);
       setLatestPlan(res);
       setPlanPanelOpen(true);
@@ -619,6 +630,31 @@ const CampaignAssistant = () => {
     }
   }, []);
 
+  // Report results on a plan step (positive or negative). Backend runs
+  // an AI decision that picks close/refactor/postpone/delete and applies
+  // it to the step. Returns the AI's reasoning so the UI can show it.
+  const reportPlanStepResults = useCallback(async (stepId, results) => {
+    try {
+      const res = await campaignAssistantService.reportPlanStepResults(stepId, results);
+      if (res.deleted) {
+        // Remove from local state.
+        setLatestPlan(prev => prev && ({
+          ...prev,
+          steps: prev.steps.filter(s => s.id !== stepId),
+        }));
+      } else if (res.step) {
+        setLatestPlan(prev => prev && ({
+          ...prev,
+          steps: prev.steps.map(s => s.id === stepId ? { ...s, ...res.step } : s),
+        }));
+      }
+      return { ok: true, decision: res.decision, deleted: res.deleted };
+    } catch (err) {
+      const msg = err.response?.data?.error || err.message || 'Failed to report results';
+      return { ok: false, error: msg };
+    }
+  }, []);
+
   // Push back on a plan step: mark it skipped + persist the feedback as
   // a note, then fire a targeted chat message to Both models asking for
   // reconsideration. Both the note and the chat message flow into future
@@ -739,7 +775,7 @@ const CampaignAssistant = () => {
             onUpdateStepNotes={updateStepNotes}
             onDeletePlan={deletePlan}
             onApplyStep={applyPlanStep}
-            onPushBackStep={pushBackPlanStep}
+            onReportResults={reportPlanStepResults}
             snapshotGeneratedAt={activeConversation.report_generated_at}
           />
         )}
@@ -1187,7 +1223,7 @@ const PRIORITY_META = {
 
 const ActionPlanPanel = ({
   plan, loading, error, open, onToggle,
-  onGenerate, onToggleStepStatus, onUpdateStepNotes, onDeletePlan, onApplyStep, onPushBackStep,
+  onGenerate, onToggleStepStatus, onUpdateStepNotes, onDeletePlan, onApplyStep, onReportResults,
   snapshotGeneratedAt,
 }) => {
   // Stale if the report snapshot was refreshed AFTER this plan was generated.
@@ -1244,7 +1280,7 @@ const ActionPlanPanel = ({
                 onDeletePlan={onDeletePlan}
                 onRegenerate={onGenerate}
                 onApplyStep={onApplyStep}
-                onPushBackStep={onPushBackStep}
+                onReportResults={onReportResults}
                 error={error}
               />
             </>
@@ -1339,7 +1375,7 @@ const PlanLoadingState = () => {
   );
 };
 
-const PlanContent = ({ plan, steps, onToggleStepStatus, onUpdateStepNotes, onDeletePlan, onRegenerate, onApplyStep, onPushBackStep, error }) => {
+const PlanContent = ({ plan, steps, onToggleStepStatus, onUpdateStepNotes, onDeletePlan, onRegenerate, onApplyStep, onReportResults, error }) => {
   const [notesOpen, setNotesOpen] = useState(false);
   const generatedBy = plan.plan.generated_by;
   const isJoint = generatedBy === 'dialogue' || generatedBy === 'consensus';
@@ -1378,7 +1414,7 @@ const PlanContent = ({ plan, steps, onToggleStepStatus, onUpdateStepNotes, onDel
         <div className="flex items-center gap-1 flex-shrink-0">
           <button
             onClick={onRegenerate}
-            title="Regenerate plan — creates a new consensus plan from the current transcript, replacing this one. Old plans stay in DB."
+            title="Full re-analyze — refreshes the snapshot from live Google Ads + GA4 data, then regenerates the plan against the fresh data + all transcript context. Replaces this plan in the header; old plans stay in DB."
             className="p-1 text-gray-500 hover:text-emerald-700 hover:bg-emerald-100 rounded"
           >
             <RefreshCw className="h-3.5 w-3.5" />
@@ -1427,7 +1463,7 @@ const PlanContent = ({ plan, steps, onToggleStepStatus, onUpdateStepNotes, onDel
               onToggleStatus={() => onToggleStepStatus(step.id, step.status)}
               onUpdateNotes={(notes) => onUpdateStepNotes(step.id, notes)}
               onApplyStep={() => onApplyStep(step.id)}
-              onPushBack={(feedback) => onPushBackStep(step.id, feedback)}
+              onReportResults={(results) => onReportResults(step.id, results)}
             />
           ))}
         </ol>
@@ -1462,17 +1498,17 @@ function reversibilityHint(actionType) {
   }
 }
 
-const PlanStepRow = ({ step, index, onToggleStatus, onUpdateNotes, onApplyStep, onPushBack }) => {
+const PlanStepRow = ({ step, index, onToggleStatus, onUpdateNotes, onApplyStep, onReportResults }) => {
   const [notesOpen, setNotesOpen] = useState(false);
   const [notesDraft, setNotesDraft] = useState(step.notes || '');
   const [previewOpen, setPreviewOpen] = useState(false);
   const [applying, setApplying] = useState(false);
   const [applyResult, setApplyResult] = useState(null);   // {ok, executed?, error?}
   const [devTaskOpen, setDevTaskOpen] = useState(false);
-  const [pushBackOpen, setPushBackOpen] = useState(false);
-  const [pushBackDraft, setPushBackDraft] = useState('');
-  const [pushingBack, setPushingBack] = useState(false);
-  const [pushBackResult, setPushBackResult] = useState(null); // {ok, error?}
+  const [resultsOpen, setResultsOpen] = useState(false);
+  const [resultsDraft, setResultsDraft] = useState('');
+  const [reportingResults, setReportingResults] = useState(false);
+  const [resultsResponse, setResultsResponse] = useState(null); // {ok, decision?, deleted?, error?}
 
   const typeMeta = STEP_TYPE_META[step.type] || STEP_TYPE_META.other;
   const priorityMeta = PRIORITY_META[step.priority] || PRIORITY_META.medium;
@@ -1492,18 +1528,18 @@ const PlanStepRow = ({ step, index, onToggleStatus, onUpdateNotes, onApplyStep, 
     if (res.ok) setPreviewOpen(false);
   };
 
-  const handleSubmitPushBack = async () => {
-    const feedback = pushBackDraft.trim();
-    if (!feedback) return;
-    setPushingBack(true);
-    setPushBackResult(null);
-    const res = await onPushBack(feedback);
-    setPushingBack(false);
-    setPushBackResult(res);
-    if (res.ok) {
-      setPushBackDraft('');
-      setPushBackOpen(false);
-    }
+  const handleSubmitResults = async () => {
+    const results = resultsDraft.trim();
+    if (!results) return;
+    setReportingResults(true);
+    setResultsResponse(null);
+    const res = await onReportResults(results);
+    setReportingResults(false);
+    setResultsResponse(res);
+    // Keep the panel open on success so the user can read the AI's
+    // reasoning; they close manually. Clear the input so the read state
+    // is unambiguous.
+    if (res.ok) setResultsDraft('');
   };
 
   return (
@@ -1597,13 +1633,13 @@ const PlanStepRow = ({ step, index, onToggleStatus, onUpdateNotes, onApplyStep, 
                 Create dev task
               </button>
             )}
-            {onPushBack && step.status !== 'applied' && (
+            {onReportResults && (
               <button
-                onClick={() => setPushBackOpen(v => !v)}
-                title="Reject this step with a reason. Marks it as skipped, saves your reason as a note, and asks both AI models to reconsider in the chat."
-                className="text-[11px] font-medium text-red-700 hover:text-red-900 inline-flex items-center gap-1"
+                onClick={() => setResultsOpen(v => !v)}
+                title="Report what happened when you tried this step (positive or negative). AI reads the report and decides: close (task done), refactor (reshape it), postpone (skip for now), or delete (task was based on wrong assumption)."
+                className="text-[11px] font-medium text-teal-700 hover:text-teal-900 inline-flex items-center gap-1"
               >
-                ⤴ Push back
+                📋 Results
               </button>
             )}
           </div>
@@ -1650,56 +1686,60 @@ const PlanStepRow = ({ step, index, onToggleStatus, onUpdateNotes, onApplyStep, 
             <DevTaskPanel step={step} onClose={() => setDevTaskOpen(false)} />
           )}
 
-          {/* Push-back inline panel */}
-          {pushBackOpen && onPushBack && (
-            <div className="mt-2 border border-red-200 bg-red-50 rounded p-2 text-xs">
+          {/* Results — user reports outcome, AI decides fate */}
+          {resultsOpen && onReportResults && (
+            <div className="mt-2 border border-teal-200 bg-teal-50 rounded p-2 text-xs">
               <div className="flex items-center justify-between mb-1.5">
-                <div className="font-semibold text-red-800 flex items-center gap-1">
-                  ⤴ Push back on this step
+                <div className="font-semibold text-teal-800 flex items-center gap-1">
+                  📋 Report results
                 </div>
                 <button
-                  onClick={() => { setPushBackOpen(false); setPushBackResult(null); }}
-                  className="text-[11px] text-red-700 hover:text-red-900"
+                  onClick={() => { setResultsOpen(false); setResultsResponse(null); }}
+                  className="text-[11px] text-teal-700 hover:text-teal-900"
                 >
                   Close
                 </button>
               </div>
-              <p className="text-[11px] text-red-800 mb-1.5">
-                Marks this step as skipped, saves your feedback as a note, and asks both AI models to
-                reconsider in the main chat. The rejection reason will show up as context on every
-                future chat turn and next plan regeneration.
+              <p className="text-[11px] text-teal-800 mb-1.5">
+                Paste what happened when you tried this — positive or negative. AI reads the results
+                and decides: <b>close</b> (done), <b>refactor</b> (reshape it), <b>postpone</b> (skip
+                for now), or <b>delete</b> (was wrong assumption). Applies immediately; the reasoning
+                stays as a note.
               </p>
               <textarea
-                value={pushBackDraft}
-                onChange={(e) => setPushBackDraft(e.target.value)}
+                value={resultsDraft}
+                onChange={(e) => setResultsDraft(e.target.value)}
                 rows={4}
-                disabled={pushingBack}
-                placeholder="Why this step is wrong (paste your coding agent's feedback, explain what's actually needed, etc.)…"
-                className="w-full text-xs border border-red-300 rounded px-2 py-1 bg-white focus:outline-none focus:ring-1 focus:ring-red-400 disabled:opacity-60"
+                disabled={reportingResults}
+                placeholder="What happened when you tried this? (paste your coding agent's response, describe the QA outcome, note the metric change, etc.)"
+                className="w-full text-xs border border-teal-300 rounded px-2 py-1 bg-white focus:outline-none focus:ring-1 focus:ring-teal-400 disabled:opacity-60"
               />
-              {pushBackResult && !pushBackResult.ok && (
-                <div className="mt-1.5 text-[11px] text-red-800 flex items-start gap-1.5">
-                  <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
-                  <span>{pushBackResult.error || 'Push-back failed.'}</span>
-                </div>
-              )}
               <div className="mt-1.5 flex items-center gap-2">
                 <button
-                  onClick={handleSubmitPushBack}
-                  disabled={pushingBack || !pushBackDraft.trim()}
-                  className="px-2.5 py-1 bg-red-600 text-white text-[11px] font-medium rounded hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
+                  onClick={handleSubmitResults}
+                  disabled={reportingResults || !resultsDraft.trim()}
+                  className="px-2.5 py-1 bg-teal-600 text-white text-[11px] font-medium rounded hover:bg-teal-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
                 >
-                  {pushingBack ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
-                  {pushingBack ? 'Sending…' : 'Skip step + ask AIs to reconsider'}
+                  {reportingResults ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+                  {reportingResults ? 'AI deciding…' : 'Submit & let AI decide'}
                 </button>
                 <button
-                  onClick={() => { setPushBackOpen(false); setPushBackResult(null); }}
-                  disabled={pushingBack}
+                  onClick={() => { setResultsOpen(false); setResultsResponse(null); }}
+                  disabled={reportingResults}
                   className="px-2.5 py-1 border border-gray-300 text-gray-700 text-[11px] font-medium rounded hover:bg-gray-50 disabled:opacity-50"
                 >
                   Cancel
                 </button>
               </div>
+              {resultsResponse && !resultsResponse.ok && (
+                <div className="mt-2 text-[11px] text-red-800 flex items-start gap-1.5">
+                  <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
+                  <span>{resultsResponse.error || 'Failed to report results.'}</span>
+                </div>
+              )}
+              {resultsResponse?.ok && resultsResponse.decision && (
+                <ResultsDecisionBanner decision={resultsResponse.decision} deleted={resultsResponse.deleted} />
+              )}
             </div>
           )}
         </div>
@@ -1860,6 +1900,47 @@ const ActionParamsSummary = ({ actionType, params }) => {
     );
   }
   return <pre className="text-[10px] text-gray-700 whitespace-pre-wrap">{JSON.stringify(params, null, 2)}</pre>;
+};
+
+// ---------------------------------------------------------------------------
+// ResultsDecisionBanner — shows the AI's verdict after user reports results.
+// One of: close · refactor · postpone · delete. Each gets its own color +
+// icon + explanation. For refactor, the AI's new title/description are
+// already applied to the step (visible in the row above) so we just
+// summarize what changed.
+// ---------------------------------------------------------------------------
+const ResultsDecisionBanner = ({ decision, deleted }) => {
+  const { action, reasoning, newTitle, newDescription } = decision || {};
+  const styleMap = {
+    close:    { bg: 'bg-emerald-50 border-emerald-200 text-emerald-900', icon: '✓', label: 'Closed', hint: 'Step marked as done. It won\'t show up in future recommendations.' },
+    refactor: { bg: 'bg-amber-50 border-amber-200 text-amber-900',       icon: '↺', label: 'Refactored', hint: 'Step title + description have been rewritten based on your report. Still pending.' },
+    postpone: { bg: 'bg-blue-50 border-blue-200 text-blue-900',           icon: '⏸', label: 'Postponed', hint: 'Step marked as skipped for now. Can be revived by editing status on the checkbox.' },
+    delete:   { bg: 'bg-gray-100 border-gray-300 text-gray-800',          icon: '✗', label: 'Deleted', hint: 'Step removed from the plan entirely. Won\'t reappear on regeneration (AI knows the rejection reason).' },
+  };
+  const s = styleMap[action] || styleMap.close;
+  return (
+    <div className={`mt-2 border rounded p-2 ${s.bg}`}>
+      <div className="font-semibold flex items-center gap-1.5">
+        <span className="text-base">{s.icon}</span>
+        <span>AI decision: {s.label}</span>
+      </div>
+      {reasoning && (
+        <div className="mt-1 text-[11px] italic opacity-90">"{reasoning}"</div>
+      )}
+      {action === 'refactor' && (newTitle || newDescription) && (
+        <div className="mt-2 pt-2 border-t border-current opacity-90 text-[11px]">
+          {newTitle && <div><b>New title:</b> {newTitle}</div>}
+          {newDescription && <div className="mt-0.5"><b>New description:</b> {newDescription}</div>}
+        </div>
+      )}
+      {deleted && (
+        <div className="mt-1 text-[11px] opacity-80">
+          (This step is gone from the checklist. The rejection reason persists in the plan-progress context so the AI won't re-propose it.)
+        </div>
+      )}
+      <div className="mt-2 text-[10px] opacity-70">{s.hint}</div>
+    </div>
+  );
 };
 
 // ---------------------------------------------------------------------------

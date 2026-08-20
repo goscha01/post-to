@@ -1277,6 +1277,177 @@ router.patch('/plan-steps/:stepId', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// POST /plan-steps/:stepId/report-results — user reports what happened
+// after attempting the step (positive OR negative). A small Claude call
+// reads the report + step context and decides one of:
+//   close     — the task is done, mark it complete
+//   refactor  — the task needs reshaping; AI provides newTitle + newDescription
+//   postpone  — the task is valid but should wait; mark as skipped
+//   delete    — the task was based on a wrong assumption; remove entirely
+// Applied automatically; user sees the AI's reasoning + a chance to undo
+// via the existing checkbox / regenerate flow.
+// ---------------------------------------------------------------------------
+
+const RESULTS_DECISION_PROMPT = `You are the plan owner reviewing what happened after a user attempted an action plan step. Read the step context and the user's report of results, then decide the next fate of this step.
+
+Choose EXACTLY ONE action:
+- "close"    — the user's report shows the task was completed successfully. Mark it done.
+- "refactor" — the underlying goal is still valid but the task as written is wrong or needs reshaping. Provide a newTitle + newDescription that captures what should be done now.
+- "postpone" — the task is still valid but blocked (waiting on data, upstream fix, etc.). Skip for now.
+- "delete"   — the task was based on a wrong assumption (the thing doesn't exist, was misdiagnosed, or is not applicable). Remove it entirely.
+
+Rules:
+- Cite specifics from the user's report in your reasoning.
+- For "refactor": newTitle must be 5-12 words, imperative. newDescription must be 2-4 sentences with concrete next actions.
+- Be decisive. Do not hedge.
+
+Output valid JSON only, no code fences, matching:
+{
+  "action": "close" | "refactor" | "postpone" | "delete",
+  "reasoning": "1-3 sentences citing the user's report.",
+  "newTitle": "..." (only when action == "refactor"),
+  "newDescription": "..." (only when action == "refactor")
+}`;
+
+router.post('/plan-steps/:stepId/report-results', async (req, res) => {
+  const userId = req.user.userId;
+  const stepId = req.params.stepId;
+  const results = String(req.body?.results || '').trim().slice(0, 8000);
+  if (!results) return res.status(400).json({ error: 'results required' });
+
+  try {
+    // Load step + owning plan + owning conversation for context + auth.
+    const { data: step, error: stepErr } = await supabase
+      .from('campaign_assistant_action_plan_steps')
+      .select('id, plan_id, title, description, type, action_type, notes, position')
+      .eq('id', stepId)
+      .single();
+    if (stepErr || !step) return res.status(404).json({ error: 'Step not found' });
+
+    const { data: plan, error: planErr } = await supabase
+      .from('campaign_assistant_action_plans')
+      .select('id, user_id, conversation_id, title')
+      .eq('id', step.plan_id)
+      .single();
+    if (planErr || !plan || plan.user_id !== userId) {
+      return res.status(404).json({ error: 'Step not found' });
+    }
+
+    // Call Claude for the decision. Small non-streaming JSON call.
+    const anthropicKey = process.env.ANTHROPIC_API_KEY;
+    if (!anthropicKey) return res.status(500).json({ error: 'ANTHROPIC_API_KEY not configured' });
+    const body = {
+      model: campaignAssistant.CLAUDE_MODEL,
+      max_tokens: 800,
+      system: RESULTS_DECISION_PROMPT,
+      messages: [{
+        role: 'user',
+        content: `STEP TITLE: ${step.title}
+STEP DESCRIPTION: ${step.description || '(no description)'}
+STEP TYPE: ${step.type}${step.action_type ? ` (action_type: ${step.action_type})` : ''}
+CURRENT PLAN: ${plan.title || '(untitled)'}
+
+USER'S REPORT OF WHAT HAPPENED:
+${results}
+
+Decide now.`,
+      }],
+      temperature: 0.2,
+    };
+    const axios = require('axios');
+    let decision;
+    try {
+      const resp = await axios.post('https://api.anthropic.com/v1/messages', body, {
+        headers: {
+          'x-api-key': anthropicKey,
+          'anthropic-version': '2023-06-01',
+          'Content-Type': 'application/json',
+        },
+        timeout: 60_000,
+      });
+      const raw = resp.data?.content?.[0]?.text || '';
+      // Tolerant parse — the same helper the plan synthesizer uses would
+      // be nice but this is inline; strip fences, find first {..}, parse.
+      let trimmed = raw.trim();
+      const fence = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+      if (fence) trimmed = fence[1].trim();
+      let parsed;
+      try { parsed = JSON.parse(trimmed); }
+      catch (_) {
+        const start = trimmed.indexOf('{');
+        const end = trimmed.lastIndexOf('}');
+        if (start === -1 || end <= start) throw new Error('AI response was not valid JSON');
+        parsed = JSON.parse(trimmed.slice(start, end + 1));
+      }
+      decision = parsed;
+    } catch (err) {
+      logger.error('campaignAssistant.results_decision_failed', {
+        userId, stepId, error: err.message,
+      });
+      return res.status(500).json({ error: `AI could not decide: ${err.message}` });
+    }
+
+    const action = String(decision?.action || '').toLowerCase();
+    if (!['close', 'refactor', 'postpone', 'delete'].includes(action)) {
+      return res.status(500).json({ error: `AI returned invalid action: ${action}` });
+    }
+    const reasoning = String(decision.reasoning || '').slice(0, 4000);
+    const nowIso = new Date().toISOString();
+    const notePrefix = `[RESULTS ${nowIso} — AI action: ${action}]\nUser reported: ${results}\nAI reasoning: ${reasoning}`;
+    const combinedNotes = step.notes
+      ? `${notePrefix}\n\n---\n\n${step.notes}`
+      : notePrefix;
+
+    let updated = null;
+    if (action === 'delete') {
+      const { error: delErr } = await supabase
+        .from('campaign_assistant_action_plan_steps')
+        .delete()
+        .eq('id', stepId);
+      if (delErr) throw delErr;
+    } else {
+      const patch = { notes: combinedNotes };
+      if (action === 'close')     patch.status = 'done';
+      if (action === 'postpone')  patch.status = 'skipped';
+      if (action === 'refactor') {
+        patch.status = 'pending';
+        if (decision.newTitle)       patch.title = String(decision.newTitle).slice(0, 500);
+        if (decision.newDescription) patch.description = String(decision.newDescription);
+      }
+      const { data: upd, error: updErr } = await supabase
+        .from('campaign_assistant_action_plan_steps')
+        .update(patch)
+        .eq('id', stepId)
+        .select()
+        .single();
+      if (updErr) throw updErr;
+      updated = upd;
+    }
+
+    logger.info('campaignAssistant.plan_step_results_reported', {
+      userId, stepId, action,
+      hasRefactorTitle: action === 'refactor' && !!decision.newTitle,
+    });
+
+    res.json({
+      step: updated,   // null when deleted
+      deleted: action === 'delete',
+      decision: {
+        action,
+        reasoning,
+        newTitle: decision.newTitle || null,
+        newDescription: decision.newDescription || null,
+      },
+    });
+  } catch (err) {
+    logger.error('campaignAssistant.plan_step_results_failed', {
+      userId, stepId, error: err.message,
+    });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // POST /plan-steps/:stepId/push-back — user rejects a step with a reason.
 // Marks the step as 'skipped', stores the reason in notes (prepended so
 // subsequent notes edits don't overwrite it), and returns a composed
