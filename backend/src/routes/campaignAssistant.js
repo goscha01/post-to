@@ -48,6 +48,83 @@ function digitsOnly(s) {
   return String(s || '').replace(/[^0-9]/g, '');
 }
 
+// Carry forward step statuses when a plan is regenerated. Users lose
+// their applied/done/skipped/failed work otherwise, which is a UX
+// disaster — 30 minutes of clicking checkboxes and pushing Apply gets
+// erased. Match by fuzzy title similarity (Jaccard on normalized
+// tokens); threshold 0.6 catches AI paraphrasing without being
+// aggressive enough to false-match unrelated steps.
+function normalizeTitleTokens(t) {
+  return String(t || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+function jaccardSimilarity(aTokens, bTokens) {
+  const A = new Set(aTokens);
+  const B = new Set(bTokens);
+  if (A.size === 0 && B.size === 0) return 0;
+  let intersect = 0;
+  for (const x of A) if (B.has(x)) intersect += 1;
+  const union = A.size + B.size - intersect;
+  return union === 0 ? 0 : intersect / union;
+}
+
+const CARRY_FORWARD_TERMINAL_STATUSES = new Set(['done', 'applied', 'skipped', 'failed']);
+const CARRY_FORWARD_MIN_SCORE = 0.6;
+
+async function carryForwardStatuses(prevPlanId, newPlanId) {
+  const { data: prevSteps } = await supabase
+    .from('campaign_assistant_action_plan_steps')
+    .select('title, status, notes, applied_at, applied_error')
+    .eq('plan_id', prevPlanId);
+  const { data: newSteps } = await supabase
+    .from('campaign_assistant_action_plan_steps')
+    .select('id, title, notes')
+    .eq('plan_id', newPlanId);
+  if (!prevSteps?.length || !newSteps?.length) return { matched: 0 };
+
+  const prevTerminal = prevSteps.filter(p => CARRY_FORWARD_TERMINAL_STATUSES.has(p.status));
+  if (prevTerminal.length === 0) return { matched: 0 };
+
+  const usedPrev = new Set();
+  let matched = 0;
+  for (const newStep of newSteps) {
+    const newTokens = normalizeTitleTokens(newStep.title);
+    let bestPrev = null;
+    let bestScore = 0;
+    for (let i = 0; i < prevTerminal.length; i++) {
+      if (usedPrev.has(i)) continue;
+      const score = jaccardSimilarity(newTokens, normalizeTitleTokens(prevTerminal[i].title));
+      if (score > bestScore) {
+        bestScore = score;
+        bestPrev = { idx: i, step: prevTerminal[i] };
+      }
+    }
+    if (bestPrev && bestScore >= CARRY_FORWARD_MIN_SCORE) {
+      usedPrev.add(bestPrev.idx);
+      const p = bestPrev.step;
+      const stamp = p.applied_at || 'previous plan';
+      const carryHeader = `[Carried forward from previous plan — was "${p.status}" on ${stamp}]`;
+      const carryBody = p.notes ? `\n${p.notes}` : '';
+      const combinedNotes = newStep.notes
+        ? `${carryHeader}${carryBody}\n\n---\n\n${newStep.notes}`
+        : `${carryHeader}${carryBody}`;
+      const patch = { status: p.status, notes: combinedNotes };
+      if (p.status === 'applied' && p.applied_at) patch.applied_at = p.applied_at;
+      if (p.status === 'failed' && p.applied_error) patch.applied_error = p.applied_error;
+      await supabase
+        .from('campaign_assistant_action_plan_steps')
+        .update(patch)
+        .eq('id', newStep.id);
+      matched += 1;
+    }
+  }
+  return { matched };
+}
+
 // Load the latest action plan for a conversation + its steps, format as a
 // compact "plan progress" system-prompt block. Returns null when there's
 // no plan (or no steps) so the AI's system prompt isn't polluted with an
@@ -1131,6 +1208,34 @@ router.post('/conversations/:id/plans', async (req, res) => {
       steps = insertedSteps || [];
     }
 
+    // Carry forward statuses from the previous plan in this conversation so
+    // regenerate doesn't wipe out applied/done/skipped work. Fuzzy title
+    // match (Jaccard ≥ 0.6) is tolerant enough for AI paraphrasing without
+    // being aggressive enough to false-match unrelated steps.
+    let carriedForward = 0;
+    if (steps.length > 0) {
+      const { data: prevPlans } = await supabase
+        .from('campaign_assistant_action_plans')
+        .select('id')
+        .eq('conversation_id', conversationId)
+        .neq('id', planRow.id)
+        .order('created_at', { ascending: false })
+        .limit(1);
+      if (prevPlans && prevPlans.length > 0) {
+        const cf = await carryForwardStatuses(prevPlans[0].id, planRow.id);
+        carriedForward = cf.matched || 0;
+        // Re-fetch steps to return the carried-forward statuses to the client.
+        if (carriedForward > 0) {
+          const { data: freshSteps } = await supabase
+            .from('campaign_assistant_action_plan_steps')
+            .select('*')
+            .eq('plan_id', planRow.id)
+            .order('position', { ascending: true });
+          if (freshSteps) steps = freshSteps;
+        }
+      }
+    }
+
     logger.info('campaignAssistant.plan_created', {
       userId,
       conversationId,
@@ -1138,6 +1243,7 @@ router.post('/conversations/:id/plans', async (req, res) => {
       provider: result.provider,
       model: result.model,
       stepCount: steps.length,
+      carriedForward,
       costUsd: result.usage.costUsd,
       degraded: !!result.degraded,
       duration_ms: Date.now() - t0,
