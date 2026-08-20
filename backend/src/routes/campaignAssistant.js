@@ -1131,6 +1131,145 @@ router.patch('/plan-steps/:stepId', async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// POST /plan-steps/:stepId/apply — dispatch a plan step's action to the
+// right Google Ads mutation. Tier 1 supported action_types:
+//   - add_negative_keywords  (campaign-level, reversible)
+// Other action_types return 400 "not implemented" for now. Extend by
+// adding cases to the switch below.
+// ---------------------------------------------------------------------------
+
+const googleAdsSvc = require('../services/googleAdsService');
+
+router.post('/plan-steps/:stepId/apply', async (req, res) => {
+  const userId = req.user.userId;
+  const stepId = req.params.stepId;
+  const t0 = Date.now();
+
+  try {
+    // Load step + owning plan + owning conversation. Enforce user ownership
+    // through the conversation.
+    const { data: step, error: stepErr } = await supabase
+      .from('campaign_assistant_action_plan_steps')
+      .select('id, plan_id, title, type, action_type, action_params, status')
+      .eq('id', stepId)
+      .single();
+    if (stepErr || !step) return res.status(404).json({ error: 'Step not found' });
+
+    const { data: plan, error: planErr } = await supabase
+      .from('campaign_assistant_action_plans')
+      .select('id, conversation_id, user_id')
+      .eq('id', step.plan_id)
+      .single();
+    if (planErr || !plan || plan.user_id !== userId) {
+      return res.status(404).json({ error: 'Step not found' });
+    }
+
+    if (step.type !== 'google_ads_action') {
+      return res.status(400).json({ error: `Cannot apply step of type "${step.type}"` });
+    }
+    if (step.status === 'applied') {
+      return res.status(409).json({ error: 'Step already applied' });
+    }
+
+    // Resolve customer + token via the conversation this plan belongs to.
+    const { data: conv, error: convErr } = await supabase
+      .from('campaign_assistant_conversations')
+      .select('id, google_ads_customer_id, google_ads_login_customer_id')
+      .eq('id', plan.conversation_id)
+      .single();
+    if (convErr || !conv) return res.status(404).json({ error: 'Underlying conversation not found' });
+
+    const adsCustomer = await resolveAdsCustomer(userId, conv.google_ads_customer_id);
+    if (!adsCustomer.customerId) {
+      return res.status(400).json({ error: 'No connected Google Ads customer for this conversation' });
+    }
+    const accessToken = await tokenForOwner(req, adsCustomer.ownerGoogleId);
+    if (!accessToken) {
+      return res.status(401).json({ error: 'No Google access token available; reconnect Google Business.' });
+    }
+    const loginCustomerId = adsCustomer.loginCustomerId || conv.google_ads_login_customer_id || null;
+
+    // Dispatch on action_type. Each case: validate params, call service,
+    // shape the result for both the client and the audit log.
+    let executed;
+    try {
+      switch (step.action_type) {
+        case 'add_negative_keywords': {
+          const params = step.action_params || {};
+          const keywords = Array.isArray(params.keywords) ? params.keywords : [];
+          const matchType = params.matchType || params.match_type || 'BROAD';
+          const campaignId = params.campaignId || params.campaign_id || null;
+          if (!campaignId) throw new Error('action_params.campaignId is required');
+          if (keywords.length === 0) throw new Error('action_params.keywords must be a non-empty array');
+          const result = await googleAdsSvc.addCampaignNegativeKeywords({
+            accessToken,
+            customerId: adsCustomer.customerId,
+            loginCustomerId,
+            campaignId,
+            keywords,
+            matchType,
+          });
+          executed = {
+            summary: `Added ${result.created.length} negative keyword(s) to campaign ${campaignId} (${result.skipped.length} skipped).`,
+            result,
+          };
+          break;
+        }
+        default:
+          return res.status(400).json({
+            error: `Action type "${step.action_type}" is recognised in the plan schema but not yet wired to a live mutation. Only "add_negative_keywords" is implemented in this release.`,
+          });
+      }
+    } catch (mutationErr) {
+      // Persist failure onto the step so the UI can show it.
+      const errMsg = mutationErr?.response?.data?.error?.message || mutationErr?.message || 'unknown error';
+      await supabase
+        .from('campaign_assistant_action_plan_steps')
+        .update({
+          status: 'failed',
+          applied_error: String(errMsg).slice(0, 4000),
+        })
+        .eq('id', stepId);
+      logger.error('campaignAssistant.plan_step_apply_failed', {
+        userId, stepId, actionType: step.action_type, error: errMsg,
+      });
+      return res.status(mutationErr?.response?.status || 500).json({
+        error: errMsg,
+        actionType: step.action_type,
+      });
+    }
+
+    // Success — mark step applied, stash the execution result in notes so
+    // the user can see what actually happened (e.g. skipped keywords with
+    // reasons).
+    const applyNote = `[Applied ${new Date().toISOString()}] ${executed.summary}`;
+    const { data: updated } = await supabase
+      .from('campaign_assistant_action_plan_steps')
+      .update({
+        status: 'applied',
+        applied_at: new Date().toISOString(),
+        applied_error: null,
+        notes: applyNote,
+      })
+      .eq('id', stepId)
+      .select()
+      .single();
+
+    logger.info('campaignAssistant.plan_step_applied', {
+      userId, stepId, actionType: step.action_type,
+      duration_ms: Date.now() - t0,
+    });
+
+    res.json({ step: updated, executed });
+  } catch (err) {
+    logger.error('campaignAssistant.plan_step_apply_unhandled', {
+      userId, stepId, error: err.message,
+    });
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
 // DELETE /plans/:planId — cascade drops steps via ON DELETE CASCADE
 router.delete('/plans/:planId', async (req, res) => {
   try {

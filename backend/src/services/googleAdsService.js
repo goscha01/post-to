@@ -1296,6 +1296,94 @@ function normalizeApiError(err, context) {
   return out;
 }
 
+// ---------- Mutations (write) ----------
+//
+// Read functions above use POST /googleAds:search (a read op despite the
+// verb). Mutation functions use POST /{resource}:mutate — same auth /
+// header shape, different endpoint. Kept minimal on purpose: each function
+// wraps ONE well-scoped mutation type. The plan-step apply pipeline in
+// routes/campaignAssistant.js dispatches on step.action_type to the right
+// function.
+
+const VALID_KEYWORD_MATCH_TYPES = new Set(['BROAD', 'PHRASE', 'EXACT']);
+
+// Add negative keywords at CAMPAIGN scope.
+//
+// Google Ads API resource: campaignCriteria (negative=true, keyword.*).
+// Reversible: to remove, delete the returned resource_names via a follow-up
+// mutate with { remove: resource_name }. This function only creates; the
+// caller is expected to persist the returned resource_names in the audit
+// trail so an undo endpoint can find them.
+//
+// Args:
+//   accessToken, customerId, loginCustomerId — standard auth trio
+//   campaignId — string, the campaign to attach the negatives to
+//   keywords   — array of strings (each one gets its own criterion)
+//   matchType  — 'BROAD' (default), 'PHRASE', or 'EXACT'
+//
+// Returns { created: [{ resourceName, keyword, matchType }], skipped: [...] }.
+async function addCampaignNegativeKeywords({
+  accessToken, customerId, loginCustomerId,
+  campaignId, keywords, matchType = 'BROAD',
+}) {
+  const cid = stripCid(customerId);
+  const camp = stripCid(campaignId);
+  if (!cid) throw new Error('customerId required');
+  if (!camp) throw new Error('campaignId required');
+  const mt = String(matchType || 'BROAD').toUpperCase();
+  if (!VALID_KEYWORD_MATCH_TYPES.has(mt)) {
+    throw new Error(`Invalid match type: ${matchType}`);
+  }
+  const cleanKeywords = (keywords || [])
+    .map(k => String(k || '').trim())
+    .filter(Boolean)
+    // Google Ads keyword text max is 80 chars; over that is a hard reject.
+    .filter(k => k.length <= 80);
+  if (cleanKeywords.length === 0) {
+    return { created: [], skipped: (keywords || []).map(k => ({ keyword: k, reason: 'empty or too long' })) };
+  }
+
+  const operations = cleanKeywords.map(text => ({
+    create: {
+      campaign: `customers/${cid}/campaigns/${camp}`,
+      negative: true,
+      keyword: { text, matchType: mt },
+    },
+  }));
+
+  const url = `${BASE_URL}/customers/${cid}/campaignCriteria:mutate`;
+  const body = { operations, partialFailure: true };
+  const { data } = await axios.post(url, body, {
+    headers: headers(accessToken, loginCustomerId),
+    timeout: 30_000,
+  });
+
+  const created = (data?.results || []).map((r, i) => ({
+    resourceName: r?.resourceName || null,
+    keyword: cleanKeywords[i],
+    matchType: mt,
+  }));
+
+  // partialFailure returns per-op errors under partialFailureError.details.
+  const skipped = [];
+  const pfe = data?.partialFailureError;
+  if (pfe?.details) {
+    for (const detail of pfe.details) {
+      const failures = detail?.errors || [];
+      for (const f of failures) {
+        const opIdx = f?.location?.fieldPathElements?.find(p => p?.fieldName === 'operations')?.index;
+        skipped.push({
+          keyword: opIdx != null ? cleanKeywords[opIdx] : null,
+          reason: f?.message || 'unknown',
+          code: f?.errorCode ? Object.keys(f.errorCode)[0] : null,
+        });
+      }
+    }
+  }
+
+  return { created, skipped };
+}
+
 module.exports = {
   listAccessibleCustomers,
   describeCustomers,
@@ -1316,6 +1404,7 @@ module.exports = {
   getQuality,
   getChangeHistory,
   getDiagnostics,
+  addCampaignNegativeKeywords,
   normalizeApiError,
   _internal: { search, dateRangeClause, fromMicros, stripCid, BASE_URL, API_VERSION },
 };

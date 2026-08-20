@@ -323,6 +323,28 @@ const CampaignAssistant = () => {
     }
   }, [latestPlan]);
 
+  // Execute a plan step against the Google Ads API and merge the updated
+  // step row back into local state. Returns the executed-result summary so
+  // the row's preview panel can display it inline.
+  const applyPlanStep = useCallback(async (stepId) => {
+    try {
+      const res = await campaignAssistantService.applyPlanStep(stepId);
+      setLatestPlan(prev => prev && ({
+        ...prev,
+        steps: prev.steps.map(s => s.id === stepId ? { ...s, ...res.step } : s),
+      }));
+      return { ok: true, executed: res.executed };
+    } catch (err) {
+      const msg = err.response?.data?.error || err.message || 'Failed to apply step';
+      // Reflect the failure in the step row for visibility.
+      setLatestPlan(prev => prev && ({
+        ...prev,
+        steps: prev.steps.map(s => s.id === stepId ? { ...s, status: 'failed', applied_error: msg } : s),
+      }));
+      return { ok: false, error: msg };
+    }
+  }, []);
+
   const openConversation = useCallback(async (id) => {
     if (streaming) return;
     setLoadingConversation(true);
@@ -668,6 +690,7 @@ const CampaignAssistant = () => {
             onToggleStepStatus={toggleStepStatus}
             onUpdateStepNotes={updateStepNotes}
             onDeletePlan={deletePlan}
+            onApplyStep={applyPlanStep}
           />
         )}
 
@@ -1083,7 +1106,7 @@ const PRIORITY_META = {
 
 const ActionPlanPanel = ({
   plan, loading, error, open, onToggle,
-  onGenerate, onToggleStepStatus, onUpdateStepNotes, onDeletePlan,
+  onGenerate, onToggleStepStatus, onUpdateStepNotes, onDeletePlan, onApplyStep,
 }) => {
   const hasPlan = !!plan?.plan;
   const steps = plan?.steps || [];
@@ -1123,6 +1146,7 @@ const ActionPlanPanel = ({
               onUpdateStepNotes={onUpdateStepNotes}
               onDeletePlan={onDeletePlan}
               onRegenerate={onGenerate}
+              onApplyStep={onApplyStep}
               error={error}
             />
           )}
@@ -1216,7 +1240,7 @@ const PlanLoadingState = () => {
   );
 };
 
-const PlanContent = ({ plan, steps, onToggleStepStatus, onUpdateStepNotes, onDeletePlan, onRegenerate, error }) => {
+const PlanContent = ({ plan, steps, onToggleStepStatus, onUpdateStepNotes, onDeletePlan, onRegenerate, onApplyStep, error }) => {
   const [notesOpen, setNotesOpen] = useState(false);
   const generatedBy = plan.plan.generated_by;
   const isJoint = generatedBy === 'dialogue' || generatedBy === 'consensus';
@@ -1303,6 +1327,7 @@ const PlanContent = ({ plan, steps, onToggleStepStatus, onUpdateStepNotes, onDel
               index={i}
               onToggleStatus={() => onToggleStepStatus(step.id, step.status)}
               onUpdateNotes={(notes) => onUpdateStepNotes(step.id, notes)}
+              onApplyStep={() => onApplyStep(step.id)}
             />
           ))}
         </ol>
@@ -1311,13 +1336,37 @@ const PlanContent = ({ plan, steps, onToggleStepStatus, onUpdateStepNotes, onDel
   );
 };
 
-const PlanStepRow = ({ step, index, onToggleStatus, onUpdateNotes }) => {
+// Whitelist of action_types the backend currently knows how to execute.
+// Steps with these types get a working "Apply" button; other automatable
+// types still show an "Automatable" chip but the Apply button stays
+// disabled with a clear "not implemented yet" message.
+const APPLYABLE_ACTION_TYPES = new Set(['add_negative_keywords']);
+
+const PlanStepRow = ({ step, index, onToggleStatus, onUpdateNotes, onApplyStep }) => {
   const [notesOpen, setNotesOpen] = useState(false);
   const [notesDraft, setNotesDraft] = useState(step.notes || '');
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [applying, setApplying] = useState(false);
+  const [applyResult, setApplyResult] = useState(null);   // {ok, executed?, error?}
+  const [devTaskOpen, setDevTaskOpen] = useState(false);
+
   const typeMeta = STEP_TYPE_META[step.type] || STEP_TYPE_META.other;
   const priorityMeta = PRIORITY_META[step.priority] || PRIORITY_META.medium;
   const isDone = step.status === 'done' || step.status === 'applied';
+  const isApplied = step.status === 'applied';
+  const isFailed = step.status === 'failed';
   const isAutomatable = step.type === 'google_ads_action' && step.action_type;
+  const isReadyToApply = isAutomatable && APPLYABLE_ACTION_TYPES.has(step.action_type);
+  const isDevTask = step.type === 'app_code_change';
+
+  const handleApply = async () => {
+    setApplying(true);
+    setApplyResult(null);
+    const res = await onApplyStep();
+    setApplying(false);
+    setApplyResult(res);
+    if (res.ok) setPreviewOpen(false);
+  };
 
   return (
     <li className="border border-gray-200 rounded-md bg-white">
@@ -1348,9 +1397,24 @@ const PlanStepRow = ({ step, index, onToggleStatus, onUpdateNotes }) => {
             {step.effort && (
               <span className="text-[10px] text-gray-500">· {step.effort}</span>
             )}
-            {isAutomatable && (
-              <span className="text-[10px] text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded" title="This step is a known Google Ads mutation. Apply-button coming in a follow-up.">
-                Automatable
+            {isAutomatable && !isReadyToApply && (
+              <span className="text-[10px] text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded" title={`Google Ads mutation "${step.action_type}" recognised in the plan schema but not yet wired to a live API call.`}>
+                Automatable (not wired)
+              </span>
+            )}
+            {isReadyToApply && !isApplied && (
+              <span className="text-[10px] text-blue-700 bg-blue-100 px-1.5 py-0.5 rounded uppercase font-semibold tracking-wide">
+                Ready to apply
+              </span>
+            )}
+            {isApplied && (
+              <span className="text-[10px] text-emerald-700 bg-emerald-100 px-1.5 py-0.5 rounded uppercase font-semibold tracking-wide">
+                Applied
+              </span>
+            )}
+            {isFailed && (
+              <span className="text-[10px] text-red-700 bg-red-100 px-1.5 py-0.5 rounded uppercase font-semibold tracking-wide">
+                Apply failed
               </span>
             )}
           </div>
@@ -1359,25 +1423,49 @@ const PlanStepRow = ({ step, index, onToggleStatus, onUpdateNotes }) => {
               {step.description}
             </div>
           )}
-          <div className="mt-1.5 flex items-center gap-2">
+
+          {/* Action buttons row */}
+          <div className="mt-1.5 flex items-center flex-wrap gap-x-3 gap-y-1">
             <button
               onClick={() => setNotesOpen(v => !v)}
               className="text-[11px] text-gray-500 hover:text-gray-800"
             >
               {notesOpen ? 'Close notes' : (step.notes ? 'Edit notes' : 'Add notes')}
-              {step.notes && !notesOpen && <span className="ml-1 text-gray-400">·</span>}
-              {step.notes && !notesOpen && <span className="ml-1 text-gray-500 italic">"{step.notes.slice(0, 60)}{step.notes.length > 60 ? '…' : ''}"</span>}
             </button>
-            {isAutomatable && (
+            {isReadyToApply && !isApplied && (
+              <button
+                onClick={() => setPreviewOpen(v => !v)}
+                className="text-[11px] font-medium text-blue-700 hover:text-blue-900 inline-flex items-center gap-1"
+              >
+                <Sparkles className="h-3 w-3" />
+                {previewOpen ? 'Cancel' : 'Preview & apply'}
+              </button>
+            )}
+            {isAutomatable && !isReadyToApply && (
               <button
                 disabled
-                title="Apply-button ships in a follow-up commit. For now, use the description above as a checklist."
+                title={`Action type "${step.action_type}" isn't wired to the Google Ads API yet. Only "add_negative_keywords" is live in this release.`}
                 className="text-[11px] text-blue-500 opacity-60 cursor-not-allowed"
               >
-                Apply to Google Ads (coming soon)
+                Apply (not wired)
+              </button>
+            )}
+            {isDevTask && (
+              <button
+                onClick={() => setDevTaskOpen(v => !v)}
+                className="text-[11px] font-medium text-purple-700 hover:text-purple-900 inline-flex items-center gap-1"
+              >
+                <Copy className="h-3 w-3" />
+                Create dev task
               </button>
             )}
           </div>
+
+          {step.notes && !notesOpen && (
+            <div className="mt-1 text-[11px] text-gray-500 italic">
+              Notes: "{step.notes.slice(0, 200)}{step.notes.length > 200 ? '…' : ''}"
+            </div>
+          )}
           {notesOpen && (
             <div className="mt-1.5">
               <textarea
@@ -1390,9 +1478,213 @@ const PlanStepRow = ({ step, index, onToggleStatus, onUpdateNotes }) => {
               />
             </div>
           )}
+
+          {/* Apply-error banner (shown even when preview is closed) */}
+          {isFailed && step.applied_error && !previewOpen && (
+            <div className="mt-1.5 text-[11px] text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1 flex items-start gap-1.5">
+              <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
+              <span>Last apply failed: {step.applied_error}</span>
+            </div>
+          )}
+
+          {/* Preview + apply panel */}
+          {previewOpen && isReadyToApply && (
+            <ApplyPreviewPanel
+              step={step}
+              applying={applying}
+              applyResult={applyResult}
+              onCancel={() => { setPreviewOpen(false); setApplyResult(null); }}
+              onApply={handleApply}
+            />
+          )}
+
+          {/* Dev-task modal (inline panel, not a real modal) */}
+          {devTaskOpen && isDevTask && (
+            <DevTaskPanel step={step} onClose={() => setDevTaskOpen(false)} />
+          )}
         </div>
       </div>
     </li>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// ApplyPreviewPanel — inline preview + confirm for a Google Ads mutation.
+// Shows the exact params that will be sent, an explicit "Apply now" button,
+// and the executed result (or error) after the API call completes.
+// ---------------------------------------------------------------------------
+const ApplyPreviewPanel = ({ step, applying, applyResult, onCancel, onApply }) => {
+  const params = step.action_params || {};
+  return (
+    <div className="mt-2 border border-blue-200 bg-blue-50 rounded p-2 text-xs">
+      <div className="font-semibold text-blue-900 mb-1">
+        Preview: {step.action_type}
+      </div>
+      <ActionParamsSummary actionType={step.action_type} params={params} />
+      {applyResult?.ok && applyResult.executed && (
+        <div className="mt-2 p-2 bg-emerald-50 border border-emerald-200 rounded text-emerald-800">
+          <div className="font-medium flex items-center gap-1"><Check className="h-3.5 w-3.5" /> Applied</div>
+          <div className="mt-1">{applyResult.executed.summary}</div>
+          {applyResult.executed.result?.skipped?.length > 0 && (
+            <details className="mt-1">
+              <summary className="cursor-pointer text-emerald-700">Skipped items ({applyResult.executed.result.skipped.length})</summary>
+              <ul className="pl-4 mt-1 list-disc">
+                {applyResult.executed.result.skipped.map((s, i) => (
+                  <li key={i}>{s.keyword}: {s.reason}</li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </div>
+      )}
+      {applyResult && !applyResult.ok && (
+        <div className="mt-2 p-2 bg-red-50 border border-red-200 rounded text-red-800 flex items-start gap-1.5">
+          <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
+          <span>{applyResult.error}</span>
+        </div>
+      )}
+      {!applyResult?.ok && (
+        <div className="mt-2 flex items-center gap-2">
+          <button
+            onClick={onApply}
+            disabled={applying}
+            className="px-2.5 py-1 bg-blue-600 text-white text-[11px] font-medium rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
+          >
+            {applying ? <Loader2 className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3" />}
+            {applying ? 'Applying…' : 'Apply now'}
+          </button>
+          <button
+            onClick={onCancel}
+            disabled={applying}
+            className="px-2.5 py-1 border border-gray-300 text-gray-700 text-[11px] font-medium rounded hover:bg-gray-50 disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <span className="text-[10px] text-gray-500">
+            Reversible in Google Ads UI · Campaigns → Keywords → Negatives
+          </span>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const ActionParamsSummary = ({ actionType, params }) => {
+  if (actionType === 'add_negative_keywords') {
+    const kws = Array.isArray(params.keywords) ? params.keywords : [];
+    return (
+      <div className="text-gray-800">
+        <div><span className="text-gray-500">Campaign:</span> {params.campaignId || params.campaign_id || '(missing)'}</div>
+        <div><span className="text-gray-500">Match type:</span> {params.matchType || params.match_type || 'BROAD'}</div>
+        <div className="mt-1">
+          <span className="text-gray-500">Keywords ({kws.length}):</span>
+          <div className="mt-1 flex flex-wrap gap-1">
+            {kws.length === 0
+              ? <span className="italic text-gray-400">(none — the plan didn't include specific keywords; apply will fail)</span>
+              : kws.map((k, i) => (
+                <span key={i} className="px-1.5 py-0.5 bg-white border border-blue-200 rounded text-blue-900 text-[11px]">
+                  {k}
+                </span>
+              ))
+            }
+          </div>
+        </div>
+      </div>
+    );
+  }
+  return <pre className="text-[10px] text-gray-700 whitespace-pre-wrap">{JSON.stringify(params, null, 2)}</pre>;
+};
+
+// ---------------------------------------------------------------------------
+// DevTaskPanel — formats a step for either an AI coding agent (Claude Code,
+// Cursor, etc.) or a human developer. Two copy buttons; user picks the
+// format they need. No backend call — the task text is derived from the
+// step fields already loaded in the client.
+// ---------------------------------------------------------------------------
+const DevTaskPanel = ({ step, onClose }) => {
+  const [copied, setCopied] = useState(null); // 'agent' | 'human' | null
+
+  const agentTask = `# Task: ${step.title}
+
+## Context
+${step.description || '(no additional context)'}
+
+## Priority
+${step.priority || 'medium'}
+
+## Estimated effort
+${step.effort || 'unspecified'}
+
+## Please do the following
+1. Read the context above.
+2. Locate the relevant files (paths may be hinted in the context).
+3. Implement the change.
+4. Verify the code compiles / lints / tests pass for the affected paths.
+5. Report back: what you changed, what you decided against, and any files you couldn't find.
+
+Do not make unrelated cleanups — keep the diff scoped to this task.`;
+
+  const humanTask = `## ${step.title}
+
+**Priority:** ${step.priority || 'medium'} · **Effort:** ${step.effort || 'unspecified'}
+
+${step.description || ''}
+
+### Acceptance criteria
+- The change addresses the specific problem described above.
+- No unrelated refactors introduced.
+- Affected code paths still build and tests still pass.`;
+
+  const copy = async (text, which) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(which);
+      setTimeout(() => setCopied(null), 2000);
+    } catch (_) { /* clipboard unavailable */ }
+  };
+
+  return (
+    <div className="mt-2 border border-purple-200 bg-purple-50 rounded p-2 text-xs">
+      <div className="flex items-center justify-between mb-1.5">
+        <div className="font-semibold text-purple-900 flex items-center gap-1">
+          <Copy className="h-3 w-3" /> Dev task
+        </div>
+        <button onClick={onClose} className="text-[11px] text-purple-700 hover:text-purple-900">Close</button>
+      </div>
+      <p className="text-[11px] text-purple-800 mb-2">
+        Pick a format and copy the task. Paste into your AI coding agent (Claude Code, Cursor, etc.) or a
+        ticket in whatever tool your team uses.
+      </p>
+      <div className="flex flex-wrap gap-1.5 mb-2">
+        <button
+          onClick={() => copy(agentTask, 'agent')}
+          className="px-2.5 py-1 bg-purple-600 text-white text-[11px] font-medium rounded hover:bg-purple-700 flex items-center gap-1"
+        >
+          <Copy className="h-3 w-3" />
+          {copied === 'agent' ? 'Copied!' : 'Copy for AI agent'}
+        </button>
+        <button
+          onClick={() => copy(humanTask, 'human')}
+          className="px-2.5 py-1 border border-purple-300 text-purple-800 bg-white text-[11px] font-medium rounded hover:bg-purple-100 flex items-center gap-1"
+        >
+          <Copy className="h-3 w-3" />
+          {copied === 'human' ? 'Copied!' : 'Copy for human dev'}
+        </button>
+      </div>
+      <details className="text-[11px] text-purple-900">
+        <summary className="cursor-pointer hover:text-purple-700">Preview task text</summary>
+        <div className="mt-2 space-y-2">
+          <div>
+            <div className="font-semibold mb-1">AI-agent format:</div>
+            <pre className="bg-white border border-purple-200 rounded p-2 text-[10px] whitespace-pre-wrap max-h-40 overflow-y-auto">{agentTask}</pre>
+          </div>
+          <div>
+            <div className="font-semibold mb-1">Human-dev format:</div>
+            <pre className="bg-white border border-purple-200 rounded p-2 text-[10px] whitespace-pre-wrap max-h-40 overflow-y-auto">{humanTask}</pre>
+          </div>
+        </div>
+      </details>
+    </div>
   );
 };
 

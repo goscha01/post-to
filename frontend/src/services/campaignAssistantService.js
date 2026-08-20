@@ -221,6 +221,15 @@ const deletePlan = async (planId) => {
   return res.data;
 };
 
+const applyPlanStep = async (stepId) => {
+  const res = await axios.post(
+    `/api/campaign-assistant/plan-steps/${stepId}/apply`,
+    {},
+    { timeout: 60_000 }
+  );
+  return res.data;   // { step, executed }
+};
+
 const campaignAssistantService = {
   listConversations,
   getConversation,
@@ -235,6 +244,7 @@ const campaignAssistantService = {
   generatePlan,
   updatePlanStep,
   deletePlan,
+  applyPlanStep,
 };
 
 export default campaignAssistantService;
