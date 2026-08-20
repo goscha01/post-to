@@ -1685,6 +1685,30 @@ router.post('/plan-steps/:stepId/apply', async (req, res) => {
           };
           break;
         }
+        case 'enable_campaign': {
+          const adsCustomer = await resolveAdsCustomer(userId, conv.google_ads_customer_id);
+          if (!adsCustomer.customerId) throw new Error('No connected Google Ads customer for this conversation');
+          const accessToken = await tokenForOwner(req, adsCustomer.ownerGoogleId);
+          if (!accessToken) throw new Error('No Google access token available; reconnect Google Business.');
+          const loginCustomerId = adsCustomer.loginCustomerId || conv.google_ads_login_customer_id || null;
+          const params = step.action_params || {};
+          const campaignId = params.campaignId || params.campaign_id || null;
+          if (!campaignId) throw new Error('action_params.campaignId is required');
+          const result = await googleAdsSvc.enableCampaign({
+            accessToken,
+            customerId: adsCustomer.customerId,
+            loginCustomerId,
+            campaignId,
+          });
+          executed = {
+            summary: result.noop
+              ? `No-op — ${result.reason}. Nothing to do.`
+              : `Unpaused campaign ${campaignId} (was ${result.previousStatus}). Serving resumes immediately.`,
+            result,
+            noop: !!result.noop,
+          };
+          break;
+        }
         case 'set_geo_target_type': {
           const adsCustomer = await resolveAdsCustomer(userId, conv.google_ads_customer_id);
           if (!adsCustomer.customerId) throw new Error('No connected Google Ads customer for this conversation');
@@ -1774,7 +1798,7 @@ router.post('/plan-steps/:stepId/apply', async (req, res) => {
         }
         default:
           return res.status(400).json({
-            error: `Action type "${step.action_type}" is recognised in the plan schema but not yet wired to a live mutation. Implemented: add_negative_keywords, pause_campaign, set_primary_conversion_action, set_campaign_budget, set_geo_target_type, add_excluded_locations, mark_ga4_conversion_event.`,
+            error: `Action type "${step.action_type}" is recognised in the plan schema but not yet wired to a live mutation. Implemented: add_negative_keywords, pause_campaign, enable_campaign, set_primary_conversion_action, set_campaign_budget, set_geo_target_type, add_excluded_locations, mark_ga4_conversion_event.`,
           });
       }
     } catch (mutationErr) {

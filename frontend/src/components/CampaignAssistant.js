@@ -1437,6 +1437,7 @@ const PlanContent = ({ plan, steps, onToggleStepStatus, onUpdateStepNotes, onDel
 const APPLYABLE_ACTION_TYPES = new Set([
   'add_negative_keywords',
   'pause_campaign',
+  'enable_campaign',
   'set_primary_conversion_action',
   'set_campaign_budget',
   'set_geo_target_type',
@@ -1451,6 +1452,7 @@ function reversibilityHint(actionType) {
   switch (actionType) {
     case 'add_negative_keywords':          return 'Reversible in Google Ads UI · Campaigns → Keywords → Negatives';
     case 'pause_campaign':                 return 'Reversible in Google Ads UI · Campaigns → toggle status back to Enabled';
+    case 'enable_campaign':                return 'Reversible in Google Ads UI · Campaigns → toggle status back to Paused';
     case 'set_primary_conversion_action':  return 'Reversible in Google Ads UI · Tools → Conversions → uncheck Primary';
     case 'set_campaign_budget':            return 'Reversible in Google Ads UI · Campaigns → Settings → Budget';
     case 'set_geo_target_type':            return 'Reversible in Google Ads UI · Campaigns → Settings → Locations → Location options';
@@ -1825,6 +1827,16 @@ const ActionParamsSummary = ({ actionType, params }) => {
         <div><span className="text-gray-500">Campaign:</span> {params.campaignId || params.campaign_id || '(missing)'}</div>
         <div className="text-[11px] text-gray-500 mt-1 italic">
           Serving stops immediately. Reversible: Google Ads UI → Campaigns → click campaign → Enable.
+        </div>
+      </div>
+    );
+  }
+  if (actionType === 'enable_campaign') {
+    return (
+      <div className="text-gray-800 space-y-0.5">
+        <div><span className="text-gray-500">Campaign:</span> {params.campaignId || params.campaign_id || '(missing)'}</div>
+        <div className="text-[11px] text-gray-500 mt-1 italic">
+          Serving resumes immediately. Make sure any tracking / bidding fixes are done first. Reversible: Google Ads UI → Campaigns → click campaign → Pause.
         </div>
       </div>
     );

@@ -503,6 +503,9 @@ WIRED (user can apply immediately with our infrastructure):
     Notes: adds negatives at CAMPAIGN scope. Fully reversible in Google Ads UI → Keywords → Negatives.
 - type: "google_ads_action", action_type: "pause_campaign"
     action_params: { "campaignId": "<numeric>" }
+- type: "google_ads_action", action_type: "enable_campaign"
+    action_params: { "campaignId": "<numeric>" }
+    Notes: for "unpause" / "resume campaign" recommendations. Only use when campaign.status is PAUSED and you're recommending it should be ENABLED.
 - type: "google_ads_action", action_type: "set_campaign_budget"
     action_params: { "campaignId": "<numeric>", "dailyBudgetUsd": <number> }
     Notes: refuses to change SHARED budgets (would affect other campaigns).

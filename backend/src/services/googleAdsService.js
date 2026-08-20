@@ -1444,6 +1444,10 @@ async function pauseCampaign(args) {
   return setCampaignStatus({ ...args, status: 'PAUSED' });
 }
 
+async function enableCampaign(args) {
+  return setCampaignStatus({ ...args, status: 'ENABLED' });
+}
+
 // Mark a conversion action as PRIMARY at ACCOUNT LEVEL (primary_for_goal=true).
 // Applies to every campaign in the account that isn't overriding via a
 // campaign-level conversion goal. This is the simpler of the two "make X
@@ -1741,6 +1745,7 @@ module.exports = {
   addCampaignNegativeKeywords,
   setCampaignStatus,
   pauseCampaign,
+  enableCampaign,
   setConversionActionPrimary,
   setCampaignDailyBudget,
   setCampaignGeoTargetType,
