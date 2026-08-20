@@ -501,18 +501,24 @@ WIRED (user can apply immediately with our infrastructure):
 - type: "google_ads_action", action_type: "add_negative_keywords"
     action_params: { "campaignId": "<numeric>", "keywords": ["cheap","free","tutorial"], "matchType": "BROAD" | "PHRASE" | "EXACT" }
     Notes: adds negatives at CAMPAIGN scope. Fully reversible in Google Ads UI → Keywords → Negatives.
-
-PLANNED (recognised — use these action_type names so the plan is future-ready even though the button is currently disabled):
 - type: "google_ads_action", action_type: "pause_campaign"
     action_params: { "campaignId": "<numeric>" }
-- type: "google_ads_action", action_type: "pause_ad_group"
-    action_params: { "adGroupId": "<numeric>" }
 - type: "google_ads_action", action_type: "set_campaign_budget"
     action_params: { "campaignId": "<numeric>", "dailyBudgetUsd": <number> }
+    Notes: refuses to change SHARED budgets (would affect other campaigns).
 - type: "google_ads_action", action_type: "set_primary_conversion_action"
     action_params: { "campaignId": "<numeric>", "conversionActionResourceName": "customers/<cid>/conversionActions/<actionId>" }
+    Notes: applies at ACCOUNT level (affects every campaign not overriding via campaign_conversion_goal).
+- type: "google_ads_action", action_type: "set_geo_target_type"
+    action_params: { "campaignId": "<numeric>", "positiveType": "PRESENCE" | "PRESENCE_OR_INTEREST" | "SEARCH_INTEREST" | "DONT_CARE" }
+    Notes: recommend PRESENCE when GA4 shows traffic from cities outside the campaign target country (indicates PRESENCE_OR_INTEREST leak).
 - type: "google_ads_action", action_type: "add_excluded_locations"
     action_params: { "campaignId": "<numeric>", "locationIds": ["<geo_target_constant_id>", ...] }
+    Notes: locationIds are numeric geo_target_constant IDs. Duplicates are rejected but non-fatal.
+
+PLANNED (recognised — use these action_type names so the plan is future-ready even though the button is currently disabled):
+- type: "google_ads_action", action_type: "pause_ad_group"
+    action_params: { "adGroupId": "<numeric>" }
 
 CONFIG CHANGES (Firebase / GA4 — planned, use these names when suggesting):
 - type: "app_code_change", action_type: "mark_ga4_conversion_event"

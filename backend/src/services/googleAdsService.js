@@ -1587,6 +1587,137 @@ async function setCampaignDailyBudget({
   };
 }
 
+// Set a campaign's positive geo-targeting mode (PRESENCE / PRESENCE_OR_INTEREST
+// / SEARCH_INTEREST / DONT_CARE). PRESENCE means "people physically in the
+// targeted locations"; PRESENCE_OR_INTEREST additionally targets people who
+// show interest in those locations (which frequently leaks budget to users
+// outside your target country). AI often recommends switching to PRESENCE
+// after seeing GA4 traffic dominated by cities outside the campaign's target.
+//
+// Reversible by re-running with the previous value, or in Google Ads UI:
+//   Campaigns → this campaign → Settings → Locations → Location options.
+const VALID_POSITIVE_GEO_TYPES = new Set(['PRESENCE', 'SEARCH_INTEREST', 'PRESENCE_OR_INTEREST', 'DONT_CARE']);
+
+async function setCampaignGeoTargetType({
+  accessToken, customerId, loginCustomerId, campaignId, positiveType,
+}) {
+  const cid = stripCid(customerId);
+  const camp = stripCid(campaignId);
+  if (!cid) throw new Error('customerId required');
+  if (!camp) throw new Error('campaignId required');
+  const t = String(positiveType || '').toUpperCase();
+  if (!VALID_POSITIVE_GEO_TYPES.has(t)) {
+    throw new Error(`Invalid positiveType: ${positiveType}. Valid: ${Array.from(VALID_POSITIVE_GEO_TYPES).join(', ')}`);
+  }
+
+  // Pre-flight: check current setting.
+  const currentRows = await search(accessToken, cid, `
+    SELECT campaign.geo_target_type_setting.positive_geo_target_type
+    FROM campaign
+    WHERE campaign.id = ${camp}
+    LIMIT 1
+  `, { loginCustomerId });
+  const current = currentRows[0]?.campaign?.geoTargetTypeSetting?.positiveGeoTargetType || null;
+  if (current === t) {
+    return {
+      noop: true,
+      reason: `Positive geo-target already ${t}`,
+      resourceName: `customers/${cid}/campaigns/${camp}`,
+      campaignId: camp,
+      previousType: current,
+      newType: t,
+    };
+  }
+
+  const url = `${BASE_URL}/customers/${cid}/campaigns:mutate`;
+  const body = {
+    operations: [{
+      update: {
+        resourceName: `customers/${cid}/campaigns/${camp}`,
+        geoTargetTypeSetting: {
+          positiveGeoTargetType: t,
+        },
+      },
+      updateMask: 'geoTargetTypeSetting.positiveGeoTargetType',
+    }],
+  };
+  const { data } = await axios.post(url, body, {
+    headers: headers(accessToken, loginCustomerId),
+    timeout: 30_000,
+  });
+  return {
+    noop: false,
+    resourceName: data?.results?.[0]?.resourceName || null,
+    campaignId: camp,
+    previousType: current,
+    newType: t,
+  };
+}
+
+// Add location EXCLUSIONS to a campaign (negative location criteria).
+// Complements add_negative_keywords for the geo dimension. Google Ads
+// rejects duplicates; with partialFailure:true they land in skipped[]
+// with a "duplicate" reason.
+//
+// locationIds are numeric geo_target_constant IDs (e.g. "1023191" for
+// "New York City"). The AI usually knows these; if not, they can be
+// looked up via GAQL: SELECT geo_target_constant.id, geo_target_constant.name
+// FROM geo_target_constant WHERE geo_target_constant.name = 'Toronto'.
+//
+// Reversible via campaignCriteria:mutate with { remove: resourceName }
+// on the created rows, OR in Google Ads UI: Campaigns → Locations →
+// Location options → Exclude.
+async function addCampaignExcludedLocations({
+  accessToken, customerId, loginCustomerId, campaignId, locationIds,
+}) {
+  const cid = stripCid(customerId);
+  const camp = stripCid(campaignId);
+  if (!cid) throw new Error('customerId required');
+  if (!camp) throw new Error('campaignId required');
+  const ids = (locationIds || [])
+    .map(x => stripCid(x))
+    .filter(Boolean);
+  if (ids.length === 0) {
+    return { created: [], skipped: (locationIds || []).map(id => ({ locationId: id, reason: 'invalid or empty' })) };
+  }
+
+  const operations = ids.map(id => ({
+    create: {
+      campaign: `customers/${cid}/campaigns/${camp}`,
+      negative: true,
+      location: { geoTargetConstant: `geoTargetConstants/${id}` },
+    },
+  }));
+
+  const url = `${BASE_URL}/customers/${cid}/campaignCriteria:mutate`;
+  const body = { operations, partialFailure: true };
+  const { data } = await axios.post(url, body, {
+    headers: headers(accessToken, loginCustomerId),
+    timeout: 30_000,
+  });
+
+  const created = (data?.results || []).map((r, i) => ({
+    resourceName: r?.resourceName || null,
+    locationId: ids[i],
+  }));
+  const skipped = [];
+  const pfe = data?.partialFailureError;
+  if (pfe?.details) {
+    for (const detail of pfe.details) {
+      const failures = detail?.errors || [];
+      for (const f of failures) {
+        const opIdx = f?.location?.fieldPathElements?.find(p => p?.fieldName === 'operations')?.index;
+        skipped.push({
+          locationId: opIdx != null ? ids[opIdx] : null,
+          reason: f?.message || 'unknown',
+          code: f?.errorCode ? Object.keys(f.errorCode)[0] : null,
+        });
+      }
+    }
+  }
+  return { created, skipped };
+}
+
 module.exports = {
   listAccessibleCustomers,
   describeCustomers,
@@ -1612,6 +1743,8 @@ module.exports = {
   pauseCampaign,
   setConversionActionPrimary,
   setCampaignDailyBudget,
+  setCampaignGeoTargetType,
+  addCampaignExcludedLocations,
   normalizeApiError,
   _internal: { search, dateRangeClause, fromMicros, stripCid, BASE_URL, API_VERSION },
 };

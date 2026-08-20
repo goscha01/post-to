@@ -1685,6 +1685,57 @@ router.post('/plan-steps/:stepId/apply', async (req, res) => {
           };
           break;
         }
+        case 'set_geo_target_type': {
+          const adsCustomer = await resolveAdsCustomer(userId, conv.google_ads_customer_id);
+          if (!adsCustomer.customerId) throw new Error('No connected Google Ads customer for this conversation');
+          const accessToken = await tokenForOwner(req, adsCustomer.ownerGoogleId);
+          if (!accessToken) throw new Error('No Google access token available; reconnect Google Business.');
+          const loginCustomerId = adsCustomer.loginCustomerId || conv.google_ads_login_customer_id || null;
+          const params = step.action_params || {};
+          const campaignId = params.campaignId || params.campaign_id || null;
+          const positiveType = String(params.positiveType || params.positive_type || 'PRESENCE').toUpperCase();
+          if (!campaignId) throw new Error('action_params.campaignId is required');
+          const result = await googleAdsSvc.setCampaignGeoTargetType({
+            accessToken,
+            customerId: adsCustomer.customerId,
+            loginCustomerId,
+            campaignId,
+            positiveType,
+          });
+          executed = {
+            summary: result.noop
+              ? `No-op — ${result.reason}. Nothing to do.`
+              : `Changed campaign ${campaignId} positive geo-target: ${result.previousType || '(unset)'} → ${result.newType}.`,
+            result,
+            noop: !!result.noop,
+          };
+          break;
+        }
+        case 'add_excluded_locations': {
+          const adsCustomer = await resolveAdsCustomer(userId, conv.google_ads_customer_id);
+          if (!adsCustomer.customerId) throw new Error('No connected Google Ads customer for this conversation');
+          const accessToken = await tokenForOwner(req, adsCustomer.ownerGoogleId);
+          if (!accessToken) throw new Error('No Google access token available; reconnect Google Business.');
+          const loginCustomerId = adsCustomer.loginCustomerId || conv.google_ads_login_customer_id || null;
+          const params = step.action_params || {};
+          const campaignId = params.campaignId || params.campaign_id || null;
+          const locationIds = Array.isArray(params.locationIds) ? params.locationIds
+            : Array.isArray(params.location_ids) ? params.location_ids : [];
+          if (!campaignId) throw new Error('action_params.campaignId is required');
+          if (locationIds.length === 0) throw new Error('action_params.locationIds must be a non-empty array of numeric geo_target_constant IDs');
+          const result = await googleAdsSvc.addCampaignExcludedLocations({
+            accessToken,
+            customerId: adsCustomer.customerId,
+            loginCustomerId,
+            campaignId,
+            locationIds,
+          });
+          executed = {
+            summary: `Added ${result.created.length} location exclusion(s) to campaign ${campaignId} (${result.skipped.length} skipped).`,
+            result,
+          };
+          break;
+        }
         case 'mark_ga4_conversion_event': {
           const params = step.action_params || {};
           // Prefer explicit propertyId in action_params; fall back to the
@@ -1723,7 +1774,7 @@ router.post('/plan-steps/:stepId/apply', async (req, res) => {
         }
         default:
           return res.status(400).json({
-            error: `Action type "${step.action_type}" is recognised in the plan schema but not yet wired to a live mutation. Implemented: add_negative_keywords, pause_campaign, set_primary_conversion_action, set_campaign_budget, mark_ga4_conversion_event.`,
+            error: `Action type "${step.action_type}" is recognised in the plan schema but not yet wired to a live mutation. Implemented: add_negative_keywords, pause_campaign, set_primary_conversion_action, set_campaign_budget, set_geo_target_type, add_excluded_locations, mark_ga4_conversion_event.`,
           });
       }
     } catch (mutationErr) {

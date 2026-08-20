@@ -1439,6 +1439,8 @@ const APPLYABLE_ACTION_TYPES = new Set([
   'pause_campaign',
   'set_primary_conversion_action',
   'set_campaign_budget',
+  'set_geo_target_type',
+  'add_excluded_locations',
   'mark_ga4_conversion_event',
 ]);
 
@@ -1451,6 +1453,8 @@ function reversibilityHint(actionType) {
     case 'pause_campaign':                 return 'Reversible in Google Ads UI · Campaigns → toggle status back to Enabled';
     case 'set_primary_conversion_action':  return 'Reversible in Google Ads UI · Tools → Conversions → uncheck Primary';
     case 'set_campaign_budget':            return 'Reversible in Google Ads UI · Campaigns → Settings → Budget';
+    case 'set_geo_target_type':            return 'Reversible in Google Ads UI · Campaigns → Settings → Locations → Location options';
+    case 'add_excluded_locations':         return 'Reversible in Google Ads UI · Campaigns → Locations → remove exclusion';
     case 'mark_ga4_conversion_event':      return 'Reversible in GA4 · Admin → Conversions → toggle off';
     default:                               return 'Check Google Ads / GA4 UI for undo';
   }
@@ -1837,6 +1841,47 @@ const ActionParamsSummary = ({ actionType, params }) => {
         </div>
         <div className="text-[11px] text-gray-500 mt-1 italic">
           Sets <code>primary_for_goal = true</code> at ACCOUNT level. Affects every campaign in the account not overriding via campaign_conversion_goal. Reversible: Google Ads UI → Tools → Conversions → this action → Primary → Off.
+        </div>
+      </div>
+    );
+  }
+  if (actionType === 'set_geo_target_type') {
+    const t = String(params.positiveType || params.positive_type || 'PRESENCE').toUpperCase();
+    return (
+      <div className="text-gray-800 space-y-0.5">
+        <div><span className="text-gray-500">Campaign:</span> {params.campaignId || params.campaign_id || '(missing)'}</div>
+        <div><span className="text-gray-500">New positive geo-target mode:</span>{' '}
+          <span className="px-1.5 py-0.5 bg-white border border-blue-200 rounded text-blue-900 text-[11px]">
+            {t}
+          </span>
+        </div>
+        <div className="text-[11px] text-gray-500 mt-1 italic">
+          PRESENCE = people physically in target locations only. PRESENCE_OR_INTEREST additionally targets people who show interest (frequently leaks budget outside target country).
+        </div>
+      </div>
+    );
+  }
+  if (actionType === 'add_excluded_locations') {
+    const ids = Array.isArray(params.locationIds) ? params.locationIds
+      : Array.isArray(params.location_ids) ? params.location_ids : [];
+    return (
+      <div className="text-gray-800 space-y-0.5">
+        <div><span className="text-gray-500">Campaign:</span> {params.campaignId || params.campaign_id || '(missing)'}</div>
+        <div className="mt-1">
+          <span className="text-gray-500">Location IDs to exclude ({ids.length}):</span>
+          <div className="mt-1 flex flex-wrap gap-1">
+            {ids.length === 0
+              ? <span className="italic text-gray-400">(none — action_params.locationIds missing; apply will fail)</span>
+              : ids.map((id, i) => (
+                <span key={i} className="px-1.5 py-0.5 bg-white border border-blue-200 rounded text-blue-900 text-[11px]">
+                  {id}
+                </span>
+              ))
+            }
+          </div>
+        </div>
+        <div className="text-[11px] text-gray-500 mt-1 italic">
+          Numeric geo_target_constant IDs. Duplicates are rejected but don't fail the batch.
         </div>
       </div>
     );
