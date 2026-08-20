@@ -426,6 +426,17 @@ RULES
 - If a recommendation was rejected or superseded later in the discussion, drop it entirely.
 - For each step, cite specific numbers from the discussion when possible ("Add negatives with combined spend of $47", not "Add some negatives").
 
+RESPECT CURRENT STATE — CRITICAL
+Before recommending a state change, check the CURRENT state in the campaign snapshot data. If the target state is already met, DO NOT include that recommendation as a step. The user is planning what to do NEXT, not re-doing what's already been done. Specifically:
+
+- If campaign.status == "PAUSED" in the snapshot → DO NOT recommend pause_campaign. If your underlying concern is still valid (e.g. broken conversion tracking), keep the fix step but drop the "pause" step; the campaign is already paused.
+- If campaign.status == "ENABLED" but you'd otherwise recommend pausing, that's fine — the pause hasn't happened yet.
+- If the primary conversion action in the snapshot already matches what you'd recommend as primary → DO NOT recommend set_primary_conversion_action.
+- If the daily budget in the snapshot already matches (within 5%) what you'd recommend → DO NOT recommend set_campaign_budget.
+- If a conversion event in GA4 is already marked as a key event (has "isConversion": true in snapshot.ga4.events) → DO NOT recommend mark_ga4_conversion_event for it.
+
+You may still MENTION the current state in your summary or in another step's description as context ("the campaign is currently paused, so before unpausing, fix these tracking issues first"). What you must NOT do is create a step whose entire purpose is to make the state be what it already is.
+
 AUTOMATION CATALOG — one-click apply
 
 When a fix maps to one of the automations below, populate BOTH \`action_type\` and \`action_params\` with the exact schema shown. This flips the step to "one-click applyable" in the user's UI. When no automation applies, leave both fields null.
