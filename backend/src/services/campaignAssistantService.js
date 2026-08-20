@@ -384,12 +384,224 @@ function messagesForProvider(dbMessages, provider) {
 const INITIAL_ANALYSIS_PROMPT =
   'Please analyse this campaign in full. Give me a ranked list of the top opportunities and problems, with a specific recommended action for each. Start with anything that looks broken (missing tracking, weak Quality Score, tagging gaps).';
 
+// ---------------------------------------------------------------------------
+// Plan synthesis — non-streaming, structured JSON output
+//
+// Consumes the full conversation transcript + all card-scoped side-threads,
+// asks one model to consolidate into a deduped dependency-ordered action
+// plan. Returns { plan: {...}, usage: {...}, rawResponse: string, model }.
+// Each step is tagged with a `type` so the UI can offer the right
+// affordance (Apply for google_ads_action, Copy for app_code_change, etc).
+// ---------------------------------------------------------------------------
+
+const PLAN_SYSTEM_PROMPT = `You are consolidating a discussion between a marketing team and one or more AI advisors into a single actionable plan for a Google Ads / mobile-app campaign.
+
+Your job: read the discussion transcript, merge overlapping recommendations, drop rejected or superseded ideas, order remaining actions by dependency, and output a JSON action plan.
+
+OUTPUT REQUIREMENTS
+- Output valid JSON only. No prose before or after. No code fences.
+- The JSON must match this exact schema:
+
+{
+  "title": string,                            // short plan title, ≤ 80 chars
+  "summary": string,                          // 2-3 sentence overview of what the plan achieves
+  "steps": [
+    {
+      "title": string,                        // short imperative, 5-12 words
+      "description": string,                  // 2-4 sentences; cite specific numbers from the discussion when available
+      "type": "google_ads_action" | "app_code_change" | "product_change" | "observation" | "schedule" | "other",
+      "action_type": string | null,           // for google_ads_action, name the specific mutation, e.g. "set_primary_conversion_action", "add_negative_keywords", "pause_ad_group", "pause_campaign", "set_campaign_budget", "add_excluded_locations". Null otherwise.
+      "action_params": object | null,         // parameters for the mutation, e.g. {"campaignId":"123","keywords":["cheap","free"],"matchType":"BROAD"}. Null when not applicable.
+      "priority": "high" | "medium" | "low",
+      "effort": string                        // rough estimate: "5min", "30min", "1h", "developer-1d", "product-1w"
+    }
+  ]
+}
+
+RULES
+- Order by DEPENDENCY: fixes that unblock other work go first (e.g. broken conversion tracking must be fixed before optimizing bids on it).
+- 5–15 steps is ideal; more than that is checklist fatigue.
+- Merge overlapping recommendations. If both providers suggested "raise budget", make it ONE step.
+- Drop meta advice ("iterate quickly", "monitor carefully"). Only concrete actions.
+- If a recommendation was rejected or superseded later in the discussion, drop it entirely.
+- For each step, cite specific numbers from the discussion when possible ("Add negatives with combined spend of $47", not "Add some negatives").
+- \`action_type\` and \`action_params\` should only be populated for type="google_ads_action". Leave them null for everything else — even if you know the mutation name.`;
+
+async function synthesizePlan({ provider, report, transcript }) {
+  const providerKey = provider === 'openai' ? 'openai' : 'claude';
+  const t0 = Date.now();
+
+  const userPrompt = `DISCUSSION TRANSCRIPT (chronological):
+${transcript}
+
+Produce the JSON action plan now.`;
+
+  if (providerKey === 'openai') {
+    return await synthesizePlanOpenAI({ report, systemPrompt: PLAN_SYSTEM_PROMPT, userPrompt, t0 });
+  }
+  return await synthesizePlanClaude({ report, systemPrompt: PLAN_SYSTEM_PROMPT, userPrompt, t0 });
+}
+
+async function synthesizePlanOpenAI({ report, systemPrompt, userPrompt, t0 }) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) throw new Error('OPENAI_API_KEY is not configured');
+
+  // Include the report as a system-prompt suffix so the model can reference
+  // specific numbers if the transcript alludes to them without stating.
+  const fullSystem = `${systemPrompt}\n\n--- CAMPAIGN DATA (for numeric citations) ---\n${JSON.stringify(report)}\n--- END CAMPAIGN DATA ---`;
+
+  const body = {
+    model: OPENAI_MODEL,
+    messages: [
+      { role: 'system', content: fullSystem },
+      { role: 'user', content: userPrompt },
+    ],
+    response_format: { type: 'json_object' },
+    temperature: 0.3,
+    max_tokens: 4000,
+  };
+
+  const resp = await axios.post(OPENAI_URL, body, {
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    timeout: 180_000,
+  });
+
+  const raw = resp.data?.choices?.[0]?.message?.content || '';
+  const usage = resp.data?.usage || {};
+  const modelUsed = resp.data?.model || OPENAI_MODEL;
+  const cachedPromptTokens = usage.prompt_tokens_details?.cached_tokens || 0;
+  const costUsd = costOpenAI(modelUsed, {
+    promptTokens: usage.prompt_tokens || 0,
+    completionTokens: usage.completion_tokens || 0,
+    cachedPromptTokens,
+  });
+
+  return {
+    plan: safeParsePlan(raw),
+    rawResponse: raw,
+    model: modelUsed,
+    provider: 'openai',
+    usage: {
+      promptTokens: usage.prompt_tokens || 0,
+      completionTokens: usage.completion_tokens || 0,
+      totalTokens: (usage.prompt_tokens || 0) + (usage.completion_tokens || 0),
+      cacheReadTokens: cachedPromptTokens,
+      cacheWriteTokens: 0,
+      costUsd,
+    },
+    durationMs: Date.now() - t0,
+  };
+}
+
+async function synthesizePlanClaude({ report, systemPrompt, userPrompt, t0 }) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not configured');
+
+  // Two-part system: instructions + cached campaign data block.
+  const system = [
+    { type: 'text', text: systemPrompt },
+    {
+      type: 'text',
+      text: `--- CAMPAIGN DATA (for numeric citations) ---\n${JSON.stringify(report)}\n--- END CAMPAIGN DATA ---`,
+      cache_control: { type: 'ephemeral' },
+    },
+  ];
+
+  const body = {
+    model: CLAUDE_MODEL,
+    max_tokens: 4000,
+    system,
+    messages: [{ role: 'user', content: userPrompt }],
+    temperature: 0.3,
+  };
+
+  const resp = await axios.post(ANTHROPIC_URL, body, {
+    headers: {
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'Content-Type': 'application/json',
+    },
+    timeout: 180_000,
+  });
+
+  const raw = resp.data?.content?.[0]?.text || '';
+  const modelUsed = resp.data?.model || CLAUDE_MODEL;
+  const inputTokens = resp.data?.usage?.input_tokens || 0;
+  const outputTokens = resp.data?.usage?.output_tokens || 0;
+  const cacheRead = resp.data?.usage?.cache_read_input_tokens || 0;
+  const cacheWrite = resp.data?.usage?.cache_creation_input_tokens || 0;
+  const costUsd = costClaude(modelUsed, {
+    promptTokens: inputTokens,
+    completionTokens: outputTokens,
+    cacheRead,
+    cacheWrite,
+  });
+
+  return {
+    plan: safeParsePlan(raw),
+    rawResponse: raw,
+    model: modelUsed,
+    provider: 'claude',
+    usage: {
+      promptTokens: inputTokens,
+      completionTokens: outputTokens,
+      totalTokens: inputTokens + outputTokens,
+      cacheReadTokens: cacheRead,
+      cacheWriteTokens: cacheWrite,
+      costUsd,
+    },
+    durationMs: Date.now() - t0,
+  };
+}
+
+// Tolerant JSON parse — models occasionally wrap in code fences or leading
+// prose despite instructions. Extracts first {...} block and parses.
+function safeParsePlan(text) {
+  if (!text) throw new Error('Empty plan response');
+  let trimmed = String(text).trim();
+  const fence = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  if (fence) trimmed = fence[1].trim();
+  try {
+    const parsed = JSON.parse(trimmed);
+    return validatePlanShape(parsed);
+  } catch (_) { /* fall through */ }
+  const start = trimmed.indexOf('{');
+  const end = trimmed.lastIndexOf('}');
+  if (start !== -1 && end > start) {
+    const slice = trimmed.slice(start, end + 1);
+    return validatePlanShape(JSON.parse(slice));
+  }
+  throw new Error('Could not parse plan JSON from model response');
+}
+
+function validatePlanShape(obj) {
+  if (!obj || typeof obj !== 'object') throw new Error('Plan JSON is not an object');
+  if (!Array.isArray(obj.steps)) throw new Error('Plan JSON is missing "steps" array');
+  const knownTypes = new Set(['google_ads_action', 'app_code_change', 'product_change', 'observation', 'schedule', 'other']);
+  const knownPriority = new Set(['high', 'medium', 'low']);
+  obj.title = String(obj.title || '').slice(0, 255);
+  obj.summary = String(obj.summary || '');
+  obj.steps = obj.steps
+    .filter(s => s && typeof s === 'object' && s.title)
+    .map(s => ({
+      title: String(s.title).slice(0, 500),
+      description: String(s.description || ''),
+      type: knownTypes.has(s.type) ? s.type : 'other',
+      action_type: s.action_type ? String(s.action_type).slice(0, 64) : null,
+      action_params: s.action_params && typeof s.action_params === 'object' ? s.action_params : null,
+      priority: knownPriority.has(s.priority) ? s.priority : 'medium',
+      effort: s.effort ? String(s.effort).slice(0, 32) : null,
+    }));
+  return obj;
+}
+
 module.exports = {
   streamOpenAI,
   streamClaude,
   messagesForProvider,
+  synthesizePlan,
   OPENAI_MODEL,
   CLAUDE_MODEL,
   INITIAL_ANALYSIS_PROMPT,
-  _internal: { costOpenAI, costClaude, buildOpenAiSystemContent, buildClaudeSystemArray },
+  _internal: { costOpenAI, costClaude, buildOpenAiSystemContent, buildClaudeSystemArray, safeParsePlan },
 };

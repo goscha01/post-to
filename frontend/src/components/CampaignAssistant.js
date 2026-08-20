@@ -2,7 +2,8 @@ import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import {
   Send, Bot, Sparkles, ThumbsUp, ThumbsDown, Trash2, Plus,
   Loader2, MessageSquare, AlertCircle, ChevronDown, ChevronRight, ListOrdered,
-  Paperclip, X, HelpCircle, Image as ImageIcon, Copy
+  Paperclip, X, HelpCircle, Image as ImageIcon, Copy, Check,
+  ClipboardList, RefreshCw, Circle
 } from 'lucide-react';
 import googleAdsService from '../services/googleAdsService';
 import analyticsService from '../services/analyticsService';
@@ -97,6 +98,15 @@ const CampaignAssistant = () => {
   const [composerAttachments, setComposerAttachments] = useState([]);
   const [composerError, setComposerError] = useState(null);
   const [showSnapshot, setShowSnapshot] = useState(true);
+
+  // Action plan state — latest plan for the active conversation, its steps,
+  // and generation status. Plans persist in DB; user can regenerate to
+  // supersede the previous one after more discussion.
+  const [planLoading, setPlanLoading] = useState(false);
+  const [planError, setPlanError] = useState(null);
+  const [latestPlan, setLatestPlan] = useState(null);       // { plan, steps }
+  const [planPanelOpen, setPlanPanelOpen] = useState(true);
+  const [planProvider, setPlanProvider] = useState('claude');
 
   const streamCtrlRef = useRef(null);
   const chatScrollRef = useRef(null);
@@ -242,17 +252,21 @@ const CampaignAssistant = () => {
   const openConversation = useCallback(async (id) => {
     if (streaming) return;
     setLoadingConversation(true);
+    setLatestPlan(null);
+    setPlanError(null);
     try {
       const res = await campaignAssistantService.getConversation(id);
       setActiveConversation(res.conversation);
       setSnapshotMeta(res.snapshotMeta);
       setMessages(res.messages || []);
+      // Load the latest plan (if any) in parallel; don't block conversation open.
+      loadLatestPlan(id);
     } catch (err) {
       console.error(err);
     } finally {
       setLoadingConversation(false);
     }
-  }, [streaming]);
+  }, [streaming, loadLatestPlan]);
 
   const deleteConversation = useCallback(async (id) => {
     if (!window.confirm('Delete this conversation?')) return;
@@ -263,6 +277,7 @@ const CampaignAssistant = () => {
         setActiveConversation(null);
         setMessages([]);
         setSnapshotMeta(null);
+        setLatestPlan(null);
       }
     } catch (err) {
       console.error(err);
@@ -488,6 +503,78 @@ const CampaignAssistant = () => {
     }
   }, []);
 
+  // -- Action plan handlers --
+  const loadLatestPlan = useCallback(async (convId) => {
+    if (!convId) return;
+    try {
+      const plans = await campaignAssistantService.listPlans(convId);
+      if (!plans || plans.length === 0) {
+        setLatestPlan(null);
+        return;
+      }
+      const full = await campaignAssistantService.getPlan(plans[0].id);
+      setLatestPlan(full);
+    } catch (err) {
+      console.warn('loadLatestPlan failed', err);
+    }
+  }, []);
+
+  const generatePlan = useCallback(async () => {
+    if (!activeConversation) return;
+    setPlanLoading(true);
+    setPlanError(null);
+    try {
+      const res = await campaignAssistantService.generatePlan(activeConversation.id, planProvider);
+      setLatestPlan(res);
+      setPlanPanelOpen(true);
+    } catch (err) {
+      setPlanError(err.response?.data?.error || err.message || 'Failed to generate plan');
+    } finally {
+      setPlanLoading(false);
+    }
+  }, [activeConversation, planProvider]);
+
+  const toggleStepStatus = useCallback(async (stepId, currentStatus) => {
+    const nextStatus = currentStatus === 'done' ? 'pending' : 'done';
+    // Optimistic update.
+    setLatestPlan(prev => prev && ({
+      ...prev,
+      steps: prev.steps.map(s => s.id === stepId ? { ...s, status: nextStatus } : s),
+    }));
+    try {
+      await campaignAssistantService.updatePlanStep(stepId, { status: nextStatus });
+    } catch (err) {
+      // Rollback on failure.
+      setLatestPlan(prev => prev && ({
+        ...prev,
+        steps: prev.steps.map(s => s.id === stepId ? { ...s, status: currentStatus } : s),
+      }));
+    }
+  }, []);
+
+  const updateStepNotes = useCallback(async (stepId, notes) => {
+    setLatestPlan(prev => prev && ({
+      ...prev,
+      steps: prev.steps.map(s => s.id === stepId ? { ...s, notes } : s),
+    }));
+    try {
+      await campaignAssistantService.updatePlanStep(stepId, { notes });
+    } catch (err) {
+      console.warn('updateStepNotes failed', err);
+    }
+  }, []);
+
+  const deletePlan = useCallback(async () => {
+    if (!latestPlan?.plan?.id) return;
+    if (!window.confirm('Discard this plan? You can generate a fresh one anytime.')) return;
+    try {
+      await campaignAssistantService.deletePlan(latestPlan.plan.id);
+      setLatestPlan(null);
+    } catch (err) {
+      console.warn('deletePlan failed', err);
+    }
+  }, [latestPlan]);
+
   const handleRate = useCallback(async (messageId, rating) => {
     // Optimistic toggle: click same rating twice to clear.
     setMessages(prev => prev.map(m => {
@@ -565,6 +652,22 @@ const CampaignAssistant = () => {
             snapshotMeta={snapshotMeta}
             open={showSnapshot}
             onToggle={() => setShowSnapshot(v => !v)}
+          />
+        )}
+
+        {activeConversation && (
+          <ActionPlanPanel
+            plan={latestPlan}
+            loading={planLoading}
+            error={planError}
+            open={planPanelOpen}
+            onToggle={() => setPlanPanelOpen(v => !v)}
+            onGenerate={generatePlan}
+            onToggleStepStatus={toggleStepStatus}
+            onUpdateStepNotes={updateStepNotes}
+            onDeletePlan={deletePlan}
+            provider={planProvider}
+            onSelectProvider={setPlanProvider}
           />
         )}
 
@@ -956,6 +1059,277 @@ const Stat = ({ label, value }) => (
     <div className="font-semibold text-gray-900">{value}</div>
   </div>
 );
+
+// ---------------------------------------------------------------------------
+// ActionPlanPanel — collapsible checklist rendered above the chat.
+// Owns per-step interactions (toggle status, notes) but delegates all
+// mutation calls to props (state lives in the parent CampaignAssistant).
+// ---------------------------------------------------------------------------
+
+const STEP_TYPE_META = {
+  google_ads_action: { label: 'Google Ads', dot: 'bg-blue-500', chip: 'bg-blue-100 text-blue-800' },
+  app_code_change:   { label: 'App code',   dot: 'bg-purple-500', chip: 'bg-purple-100 text-purple-800' },
+  product_change:    { label: 'Product',    dot: 'bg-pink-500', chip: 'bg-pink-100 text-pink-800' },
+  observation:       { label: 'Observe',    dot: 'bg-yellow-500', chip: 'bg-yellow-100 text-yellow-800' },
+  schedule:          { label: 'Schedule',   dot: 'bg-teal-500', chip: 'bg-teal-100 text-teal-800' },
+  other:             { label: 'Other',      dot: 'bg-gray-400', chip: 'bg-gray-100 text-gray-700' },
+};
+
+const PRIORITY_META = {
+  high:   { label: 'High',   chip: 'bg-red-50 text-red-700 border-red-200' },
+  medium: { label: 'Med',    chip: 'bg-amber-50 text-amber-700 border-amber-200' },
+  low:    { label: 'Low',    chip: 'bg-gray-50 text-gray-600 border-gray-200' },
+};
+
+const ActionPlanPanel = ({
+  plan, loading, error, open, onToggle,
+  onGenerate, onToggleStepStatus, onUpdateStepNotes, onDeletePlan,
+  provider, onSelectProvider,
+}) => {
+  const hasPlan = !!plan?.plan;
+  const steps = plan?.steps || [];
+  const doneCount = steps.filter(s => s.status === 'done' || s.status === 'applied').length;
+  const autoCount = steps.filter(s => s.type === 'google_ads_action').length;
+
+  return (
+    <div className="border-b border-gray-200 bg-emerald-50/40">
+      <button
+        onClick={onToggle}
+        className="w-full flex items-center gap-2 px-4 py-2 text-xs font-medium text-emerald-900 hover:bg-emerald-100/40"
+      >
+        {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+        <ClipboardList className="h-3.5 w-3.5" />
+        Action plan
+        <span className="text-gray-400">·</span>
+        {hasPlan ? (
+          <span className="text-gray-600 font-normal">
+            {doneCount}/{steps.length} done · {autoCount} automatable
+          </span>
+        ) : (
+          <span className="text-gray-600 font-normal">Not generated yet</span>
+        )}
+      </button>
+
+      {open && (
+        <div className="px-4 pb-3">
+          {!hasPlan && !loading && (
+            <PlanEmptyState
+              onGenerate={onGenerate}
+              provider={provider}
+              onSelectProvider={onSelectProvider}
+              error={error}
+            />
+          )}
+          {loading && <PlanLoadingState provider={provider} />}
+          {hasPlan && !loading && (
+            <PlanContent
+              plan={plan}
+              steps={steps}
+              onToggleStepStatus={onToggleStepStatus}
+              onUpdateStepNotes={onUpdateStepNotes}
+              onDeletePlan={onDeletePlan}
+              onRegenerate={onGenerate}
+              provider={provider}
+              onSelectProvider={onSelectProvider}
+              error={error}
+            />
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const PlanEmptyState = ({ onGenerate, provider, onSelectProvider, error }) => (
+  <div className="text-center py-4 space-y-2">
+    <p className="text-sm text-gray-700">
+      Ready to turn the discussion into a concrete plan?
+    </p>
+    <p className="text-xs text-gray-500 max-w-lg mx-auto">
+      Sends the whole conversation transcript (main chat + all card-level Asks &amp; Steps) to one model
+      for synthesis. You get back a deduped, dependency-ordered checklist tagged with what's automatable
+      via Google Ads API vs. what's a developer / product task.
+    </p>
+    <div className="flex items-center justify-center gap-2 pt-1">
+      <select
+        value={provider}
+        onChange={(e) => onSelectProvider(e.target.value)}
+        className="text-xs border border-gray-300 rounded-md px-2 py-1 bg-white"
+      >
+        <option value="claude">Synthesize with Claude</option>
+        <option value="openai">Synthesize with OpenAI</option>
+      </select>
+      <button
+        onClick={onGenerate}
+        className="px-3 py-1.5 bg-emerald-600 text-white text-xs font-medium rounded-md hover:bg-emerald-700 flex items-center gap-1.5"
+      >
+        <Sparkles className="h-3 w-3" /> Generate action plan
+      </button>
+    </div>
+    {error && (
+      <div className="text-xs text-red-700 flex items-center justify-center gap-1.5">
+        <AlertCircle className="h-3.5 w-3.5" /> {error}
+      </div>
+    )}
+  </div>
+);
+
+const PlanLoadingState = ({ provider }) => (
+  <div className="text-center py-6 space-y-2">
+    <Loader2 className="h-5 w-5 animate-spin text-emerald-600 mx-auto" />
+    <p className="text-sm text-gray-700 font-medium">
+      {provider === 'openai' ? 'OpenAI' : 'Claude'} is synthesizing the discussion into a plan…
+    </p>
+    <p className="text-xs text-gray-500">Usually 15–45 seconds — larger discussions take longer.</p>
+  </div>
+);
+
+const PlanContent = ({ plan, steps, onToggleStepStatus, onUpdateStepNotes, onDeletePlan, onRegenerate, provider, onSelectProvider, error }) => (
+  <div className="space-y-3">
+    <div className="flex items-start justify-between gap-3">
+      <div className="min-w-0">
+        <div className="text-sm font-semibold text-gray-900">{plan.plan.title}</div>
+        {plan.plan.summary && (
+          <div className="text-xs text-gray-600 mt-0.5">{plan.plan.summary}</div>
+        )}
+        <div className="text-[10px] text-gray-400 mt-1">
+          Generated by {plan.plan.generated_by || 'model'} ({plan.plan.model}) ·
+          {plan.plan.cost_usd != null && ` $${Number(plan.plan.cost_usd).toFixed(4)} ·`}
+          {' '}{new Date(plan.plan.created_at).toLocaleString()}
+        </div>
+      </div>
+      <div className="flex items-center gap-1 flex-shrink-0">
+        <select
+          value={provider}
+          onChange={(e) => onSelectProvider(e.target.value)}
+          className="text-[11px] border border-gray-300 rounded px-1.5 py-0.5 bg-white"
+        >
+          <option value="claude">Claude</option>
+          <option value="openai">OpenAI</option>
+        </select>
+        <button
+          onClick={onRegenerate}
+          title="Regenerate plan — creates a new plan from the current transcript, replacing this one in the header. Old plans stay in DB."
+          className="p-1 text-gray-500 hover:text-emerald-700 hover:bg-emerald-100 rounded"
+        >
+          <RefreshCw className="h-3.5 w-3.5" />
+        </button>
+        <button
+          onClick={onDeletePlan}
+          title="Discard this plan"
+          className="p-1 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded"
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </button>
+      </div>
+    </div>
+    {error && (
+      <div className="text-xs text-red-700 flex items-start gap-1.5">
+        <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" /> {error}
+      </div>
+    )}
+    {steps.length === 0 ? (
+      <div className="text-xs text-gray-500 py-3">Plan has no steps.</div>
+    ) : (
+      <ol className="space-y-1.5">
+        {steps.map((step, i) => (
+          <PlanStepRow
+            key={step.id}
+            step={step}
+            index={i}
+            onToggleStatus={() => onToggleStepStatus(step.id, step.status)}
+            onUpdateNotes={(notes) => onUpdateStepNotes(step.id, notes)}
+          />
+        ))}
+      </ol>
+    )}
+  </div>
+);
+
+const PlanStepRow = ({ step, index, onToggleStatus, onUpdateNotes }) => {
+  const [notesOpen, setNotesOpen] = useState(false);
+  const [notesDraft, setNotesDraft] = useState(step.notes || '');
+  const typeMeta = STEP_TYPE_META[step.type] || STEP_TYPE_META.other;
+  const priorityMeta = PRIORITY_META[step.priority] || PRIORITY_META.medium;
+  const isDone = step.status === 'done' || step.status === 'applied';
+  const isAutomatable = step.type === 'google_ads_action' && step.action_type;
+
+  return (
+    <li className="border border-gray-200 rounded-md bg-white">
+      <div className="flex items-start gap-2 p-2">
+        <button
+          onClick={onToggleStatus}
+          className={`flex-shrink-0 mt-0.5 w-4 h-4 border rounded flex items-center justify-center ${
+            isDone
+              ? 'bg-emerald-600 border-emerald-600 text-white'
+              : 'border-gray-300 hover:border-emerald-500 text-transparent hover:text-emerald-500 bg-white'
+          }`}
+          aria-label={isDone ? 'Mark not done' : 'Mark done'}
+        >
+          <Check className="h-3 w-3" />
+        </button>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-baseline gap-1.5 flex-wrap">
+            <span className={`text-[11px] font-mono text-gray-400`}>{String(index + 1).padStart(2, ' ')}.</span>
+            <span className={`text-sm font-medium ${isDone ? 'line-through text-gray-400' : 'text-gray-900'}`}>
+              {step.title}
+            </span>
+            <span className={`text-[10px] px-1.5 py-0.5 rounded uppercase font-semibold tracking-wide ${typeMeta.chip}`}>
+              {typeMeta.label}
+            </span>
+            <span className={`text-[10px] px-1.5 py-0.5 rounded border uppercase font-semibold tracking-wide ${priorityMeta.chip}`}>
+              {priorityMeta.label}
+            </span>
+            {step.effort && (
+              <span className="text-[10px] text-gray-500">· {step.effort}</span>
+            )}
+            {isAutomatable && (
+              <span className="text-[10px] text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded" title="This step is a known Google Ads mutation. Apply-button coming in a follow-up.">
+                Automatable
+              </span>
+            )}
+          </div>
+          {step.description && (
+            <div className={`text-xs text-gray-600 mt-1 whitespace-pre-wrap ${isDone ? 'text-gray-400' : ''}`}>
+              {step.description}
+            </div>
+          )}
+          <div className="mt-1.5 flex items-center gap-2">
+            <button
+              onClick={() => setNotesOpen(v => !v)}
+              className="text-[11px] text-gray-500 hover:text-gray-800"
+            >
+              {notesOpen ? 'Close notes' : (step.notes ? 'Edit notes' : 'Add notes')}
+              {step.notes && !notesOpen && <span className="ml-1 text-gray-400">·</span>}
+              {step.notes && !notesOpen && <span className="ml-1 text-gray-500 italic">"{step.notes.slice(0, 60)}{step.notes.length > 60 ? '…' : ''}"</span>}
+            </button>
+            {isAutomatable && (
+              <button
+                disabled
+                title="Apply-button ships in a follow-up commit. For now, use the description above as a checklist."
+                className="text-[11px] text-blue-500 opacity-60 cursor-not-allowed"
+              >
+                Apply to Google Ads (coming soon)
+              </button>
+            )}
+          </div>
+          {notesOpen && (
+            <div className="mt-1.5">
+              <textarea
+                value={notesDraft}
+                onChange={(e) => setNotesDraft(e.target.value)}
+                onBlur={() => onUpdateNotes(notesDraft)}
+                rows={2}
+                placeholder="Personal notes on this step…"
+                className="w-full text-xs border border-gray-300 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-emerald-400"
+              />
+            </div>
+          )}
+        </div>
+      </div>
+    </li>
+  );
+};
 
 // ---------------------------------------------------------------------------
 // One conversational turn: user prompt + two side-by-side assistant columns

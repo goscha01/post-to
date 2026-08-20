@@ -190,6 +190,37 @@ const streamOneShot = ({ conversationId, prompt, provider, attachments, cardKey,
   return controller;
 };
 
+// ---- Action Plans ----
+
+const listPlans = async (conversationId) => {
+  const res = await axios.get(`/api/campaign-assistant/conversations/${conversationId}/plans`);
+  return res.data?.plans || [];
+};
+
+const getPlan = async (planId) => {
+  const res = await axios.get(`/api/campaign-assistant/plans/${planId}`);
+  return res.data;
+};
+
+const generatePlan = async (conversationId, provider = 'claude') => {
+  const res = await axios.post(
+    `/api/campaign-assistant/conversations/${conversationId}/plans`,
+    { provider },
+    { timeout: 180_000 } // synthesis can take 30-90s
+  );
+  return res.data;
+};
+
+const updatePlanStep = async (stepId, patch) => {
+  const res = await axios.patch(`/api/campaign-assistant/plan-steps/${stepId}`, patch);
+  return res.data?.step;
+};
+
+const deletePlan = async (planId) => {
+  const res = await axios.delete(`/api/campaign-assistant/plans/${planId}`);
+  return res.data;
+};
+
 const campaignAssistantService = {
   listConversations,
   getConversation,
@@ -199,6 +230,11 @@ const campaignAssistantService = {
   streamChat,
   streamOneShot,
   getCardMessages,
+  listPlans,
+  getPlan,
+  generatePlan,
+  updatePlanStep,
+  deletePlan,
 };
 
 export default campaignAssistantService;

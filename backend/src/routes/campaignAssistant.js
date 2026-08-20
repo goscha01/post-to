@@ -875,4 +875,246 @@ router.post('/messages/:id/rate', async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Action Plans
+// ---------------------------------------------------------------------------
+
+// Build a plain-text chronological transcript of the whole conversation
+// (main-chat linear turns + all card-scoped Ask/Steps threads) to feed the
+// synthesis model. Message ordering follows created_at.
+async function buildFullTranscript(conversationId) {
+  const { data: allMessages, error } = await supabase
+    .from('campaign_assistant_messages')
+    .select('role, provider, content, card_key, turn_index, created_at')
+    .eq('conversation_id', conversationId)
+    .eq('status', 'complete')
+    .order('created_at', { ascending: true });
+  if (error) throw new Error(`Failed to load messages: ${error.message}`);
+  const rows = allMessages || [];
+
+  const lines = [];
+  for (const m of rows) {
+    const who = m.role === 'user'
+      ? 'USER'
+      : `ASSISTANT (${m.provider || 'unknown'})`;
+    const scope = m.card_key ? ` [card: ${m.card_key}]` : '';
+    lines.push(`--- ${who}${scope} @ ${m.created_at} ---`);
+    lines.push(m.content || '');
+    lines.push('');
+  }
+  return lines.join('\n');
+}
+
+// POST /conversations/:id/plans — synthesize + persist a new plan
+router.post('/conversations/:id/plans', async (req, res) => {
+  const userId = req.user.userId;
+  const conversationId = req.params.id;
+  const provider = req.body?.provider === 'openai' ? 'openai' : 'claude';
+  const t0 = Date.now();
+
+  try {
+    const { data: conv, error: convErr } = await supabase
+      .from('campaign_assistant_conversations')
+      .select('id, report_snapshot, title')
+      .eq('user_id', userId)
+      .eq('id', conversationId)
+      .single();
+    if (convErr || !conv) return res.status(404).json({ error: 'Conversation not found' });
+    if (!conv.report_snapshot) return res.status(400).json({ error: 'Conversation is missing a report snapshot' });
+
+    const transcript = await buildFullTranscript(conversationId);
+    if (!transcript.trim()) {
+      return res.status(400).json({ error: 'Nothing to synthesize — no completed messages yet' });
+    }
+
+    const result = await campaignAssistant.synthesizePlan({
+      provider,
+      report: conv.report_snapshot,
+      transcript,
+    });
+
+    // Persist plan.
+    const { data: planRow, error: planErr } = await supabase
+      .from('campaign_assistant_action_plans')
+      .insert({
+        user_id: userId,
+        conversation_id: conversationId,
+        title: result.plan.title || `Plan for ${conv.title || 'campaign'}`,
+        summary: result.plan.summary || null,
+        generated_by: result.provider,
+        model: result.model,
+        prompt_tokens: result.usage.promptTokens,
+        completion_tokens: result.usage.completionTokens,
+        total_tokens: result.usage.totalTokens,
+        cache_read_tokens: result.usage.cacheReadTokens,
+        cache_write_tokens: result.usage.cacheWriteTokens,
+        cost_usd: result.usage.costUsd,
+        raw_response: result.rawResponse,
+      })
+      .select()
+      .single();
+    if (planErr) throw new Error(`Failed to persist plan: ${planErr.message}`);
+
+    // Persist steps.
+    const stepRows = (result.plan.steps || []).map((s, i) => ({
+      plan_id: planRow.id,
+      position: i,
+      title: s.title,
+      description: s.description,
+      type: s.type,
+      action_type: s.action_type,
+      action_params: s.action_params,
+      priority: s.priority,
+      effort: s.effort,
+    }));
+    let steps = [];
+    if (stepRows.length > 0) {
+      const { data: insertedSteps, error: stepsErr } = await supabase
+        .from('campaign_assistant_action_plan_steps')
+        .insert(stepRows)
+        .select();
+      if (stepsErr) throw new Error(`Failed to persist plan steps: ${stepsErr.message}`);
+      steps = insertedSteps || [];
+    }
+
+    logger.info('campaignAssistant.plan_created', {
+      userId,
+      conversationId,
+      planId: planRow.id,
+      provider: result.provider,
+      model: result.model,
+      stepCount: steps.length,
+      costUsd: result.usage.costUsd,
+      duration_ms: Date.now() - t0,
+    });
+
+    res.json({ plan: planRow, steps });
+  } catch (err) {
+    logger.error('campaignAssistant.plan_create_failed', {
+      userId, conversationId, error: err.message, duration_ms: Date.now() - t0,
+    });
+    res.status(err.status || 500).json({ error: err.message || 'Failed to generate plan' });
+  }
+});
+
+// GET /conversations/:id/plans — list plans for a conversation
+router.get('/conversations/:id/plans', async (req, res) => {
+  try {
+    // Ownership check.
+    const { data: conv, error: convErr } = await supabase
+      .from('campaign_assistant_conversations')
+      .select('id')
+      .eq('user_id', req.user.userId)
+      .eq('id', req.params.id)
+      .single();
+    if (convErr || !conv) return res.status(404).json({ error: 'Not found' });
+
+    const { data: plans, error } = await supabase
+      .from('campaign_assistant_action_plans')
+      .select('id, title, summary, generated_by, model, cost_usd, status, created_at, updated_at')
+      .eq('conversation_id', conv.id)
+      .order('created_at', { ascending: false });
+    if (error) throw error;
+    res.json({ plans: plans || [] });
+  } catch (err) {
+    logger.error('campaignAssistant.plans_list_failed', {
+      userId: req.user.userId, conversationId: req.params.id, error: err.message,
+    });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /plans/:planId — plan + its steps
+router.get('/plans/:planId', async (req, res) => {
+  try {
+    const { data: plan, error: planErr } = await supabase
+      .from('campaign_assistant_action_plans')
+      .select('*')
+      .eq('user_id', req.user.userId)
+      .eq('id', req.params.planId)
+      .single();
+    if (planErr || !plan) return res.status(404).json({ error: 'Plan not found' });
+
+    const { data: steps, error: stepsErr } = await supabase
+      .from('campaign_assistant_action_plan_steps')
+      .select('*')
+      .eq('plan_id', plan.id)
+      .order('position', { ascending: true });
+    if (stepsErr) throw stepsErr;
+
+    // Don't ship the raw_response back — it's an audit artifact, potentially large.
+    const { raw_response, ...planPublic } = plan;
+    res.json({ plan: planPublic, steps: steps || [] });
+  } catch (err) {
+    logger.error('campaignAssistant.plan_get_failed', {
+      userId: req.user.userId, planId: req.params.planId, error: err.message,
+    });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PATCH /plan-steps/:stepId — update status or notes
+router.patch('/plan-steps/:stepId', async (req, res) => {
+  const allowedStatuses = new Set(['pending', 'done', 'skipped', 'applied', 'failed']);
+  const patch = {};
+  if (req.body?.status !== undefined) {
+    if (!allowedStatuses.has(req.body.status)) {
+      return res.status(400).json({ error: 'invalid status' });
+    }
+    patch.status = req.body.status;
+    if (req.body.status === 'applied') patch.applied_at = new Date().toISOString();
+  }
+  if (req.body?.notes !== undefined) {
+    patch.notes = String(req.body.notes).slice(0, 8000);
+  }
+  if (Object.keys(patch).length === 0) {
+    return res.status(400).json({ error: 'no fields to update' });
+  }
+
+  try {
+    // Ownership check: step → plan → conversation.user_id
+    const { data: step, error: stepErr } = await supabase
+      .from('campaign_assistant_action_plan_steps')
+      .select('id, plan_id, campaign_assistant_action_plans!inner(user_id)')
+      .eq('id', req.params.stepId)
+      .single();
+    if (stepErr || !step) return res.status(404).json({ error: 'Step not found' });
+    if (step.campaign_assistant_action_plans?.user_id !== req.user.userId) {
+      return res.status(404).json({ error: 'Step not found' });
+    }
+
+    const { data: updated, error: updErr } = await supabase
+      .from('campaign_assistant_action_plan_steps')
+      .update(patch)
+      .eq('id', req.params.stepId)
+      .select()
+      .single();
+    if (updErr) throw updErr;
+    res.json({ step: updated });
+  } catch (err) {
+    logger.error('campaignAssistant.plan_step_update_failed', {
+      userId: req.user.userId, stepId: req.params.stepId, error: err.message,
+    });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /plans/:planId — cascade drops steps via ON DELETE CASCADE
+router.delete('/plans/:planId', async (req, res) => {
+  try {
+    const { error } = await supabase
+      .from('campaign_assistant_action_plans')
+      .delete()
+      .eq('user_id', req.user.userId)
+      .eq('id', req.params.planId);
+    if (error) throw error;
+    res.json({ ok: true });
+  } catch (err) {
+    logger.error('campaignAssistant.plan_delete_failed', {
+      userId: req.user.userId, planId: req.params.planId, error: err.message,
+    });
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;
