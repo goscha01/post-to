@@ -43,6 +43,12 @@ const BUSINESS_SCOPES = [
   'https://www.googleapis.com/auth/business.manage',
   'https://www.googleapis.com/auth/plus.business.manage', // Add this missing scope
   'https://www.googleapis.com/auth/analytics.readonly',
+  // analytics.edit lets the Campaign Assistant "Apply" pipeline mark GA4
+  // events as key events (conversions) via the Admin API. Superset of
+  // analytics.readonly. Existing users need to reconnect Google to pick up
+  // this new scope — the plan-step apply endpoint returns SCOPE_MISSING
+  // with a clear reconnect prompt when it's not granted.
+  'https://www.googleapis.com/auth/analytics.edit',
   'https://www.googleapis.com/auth/adwords',
   'https://www.googleapis.com/auth/webmasters.readonly',
   // drive.readonly: powers the "Pick from Google Drive" image browser in the

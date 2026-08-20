@@ -1140,6 +1140,7 @@ router.patch('/plan-steps/:stepId', async (req, res) => {
 // ---------------------------------------------------------------------------
 
 const googleAdsSvc = require('../services/googleAdsService');
+const analyticsSvc = require('../services/analyticsService');
 
 router.post('/plan-steps/:stepId/apply', async (req, res) => {
   const userId = req.user.userId;
@@ -1165,37 +1166,36 @@ router.post('/plan-steps/:stepId/apply', async (req, res) => {
       return res.status(404).json({ error: 'Step not found' });
     }
 
-    if (step.type !== 'google_ads_action') {
+    if (step.type !== 'google_ads_action' && step.type !== 'app_code_change') {
       return res.status(400).json({ error: `Cannot apply step of type "${step.type}"` });
     }
     if (step.status === 'applied') {
       return res.status(409).json({ error: 'Step already applied' });
     }
 
-    // Resolve customer + token via the conversation this plan belongs to.
+    // Resolve customer + property + tokens via the conversation this plan
+    // belongs to. Which of these we actually need depends on step.action_type;
+    // we resolve all up-front to keep the switch simple.
     const { data: conv, error: convErr } = await supabase
       .from('campaign_assistant_conversations')
-      .select('id, google_ads_customer_id, google_ads_login_customer_id')
+      .select('id, google_ads_customer_id, google_ads_login_customer_id, ga4_property_id, ga4_app_property_id')
       .eq('id', plan.conversation_id)
       .single();
     if (convErr || !conv) return res.status(404).json({ error: 'Underlying conversation not found' });
 
-    const adsCustomer = await resolveAdsCustomer(userId, conv.google_ads_customer_id);
-    if (!adsCustomer.customerId) {
-      return res.status(400).json({ error: 'No connected Google Ads customer for this conversation' });
-    }
-    const accessToken = await tokenForOwner(req, adsCustomer.ownerGoogleId);
-    if (!accessToken) {
-      return res.status(401).json({ error: 'No Google access token available; reconnect Google Business.' });
-    }
-    const loginCustomerId = adsCustomer.loginCustomerId || conv.google_ads_login_customer_id || null;
-
     // Dispatch on action_type. Each case: validate params, call service,
-    // shape the result for both the client and the audit log.
+    // shape the result for both the client and the audit log. Different
+    // action types need different tokens (Ads owner vs GA4 owner), so
+    // resolution happens inside each case.
     let executed;
     try {
       switch (step.action_type) {
         case 'add_negative_keywords': {
+          const adsCustomer = await resolveAdsCustomer(userId, conv.google_ads_customer_id);
+          if (!adsCustomer.customerId) throw new Error('No connected Google Ads customer for this conversation');
+          const accessToken = await tokenForOwner(req, adsCustomer.ownerGoogleId);
+          if (!accessToken) throw new Error('No Google access token available; reconnect Google Business.');
+          const loginCustomerId = adsCustomer.loginCustomerId || conv.google_ads_login_customer_id || null;
           const params = step.action_params || {};
           const keywords = Array.isArray(params.keywords) ? params.keywords : [];
           const matchType = params.matchType || params.match_type || 'BROAD';
@@ -1216,9 +1216,42 @@ router.post('/plan-steps/:stepId/apply', async (req, res) => {
           };
           break;
         }
+        case 'mark_ga4_conversion_event': {
+          const params = step.action_params || {};
+          // Prefer explicit propertyId in action_params; fall back to the
+          // conversation's linked GA4 property (web) then Firebase-linked.
+          const propertyIdRaw = params.propertyId || params.property_id
+            || conv.ga4_property_id || conv.ga4_app_property_id || null;
+          const eventName = params.eventName || params.event_name || null;
+          if (!propertyIdRaw) throw new Error('action_params.propertyId is required (or the conversation must have a linked GA4 property)');
+          if (!eventName) throw new Error('action_params.eventName is required');
+          // Resolve the GA4 property row to get the owning Google identity.
+          const ga4Prop = await resolveGa4Property(userId, propertyIdRaw);
+          if (!ga4Prop.propertyId) throw new Error(`GA4 property ${propertyIdRaw} is not connected to this account`);
+          const accessToken = await tokenForOwner(req, ga4Prop.ownerGoogleId);
+          if (!accessToken) throw new Error('No Google access token available; reconnect Google Business.');
+          try {
+            const result = await analyticsSvc.markConversionEvent(accessToken, ga4Prop.propertyId, eventName);
+            executed = {
+              summary: `Marked "${eventName}" as a conversion event on GA4 property ${ga4Prop.propertyId}.`,
+              result,
+            };
+          } catch (e) {
+            // Detect the "user hasn't granted analytics.edit yet" case and
+            // surface a friendly reconnect message.
+            const msg = e?.response?.data?.error?.message || e?.errors?.[0]?.message || e?.message || 'GA4 API error';
+            if (/insufficient|scope|forbidden|permission/i.test(msg) && /analytics\.edit|edit/i.test(msg + ' ' + JSON.stringify(e?.response?.data || {}))) {
+              const scopeErr = new Error('Google account does not have the analytics.edit scope. Reconnect Google Business to grant it.');
+              scopeErr.code = 'SCOPE_MISSING';
+              throw scopeErr;
+            }
+            throw new Error(msg);
+          }
+          break;
+        }
         default:
           return res.status(400).json({
-            error: `Action type "${step.action_type}" is recognised in the plan schema but not yet wired to a live mutation. Only "add_negative_keywords" is implemented in this release.`,
+            error: `Action type "${step.action_type}" is recognised in the plan schema but not yet wired to a live mutation. Implemented: add_negative_keywords, mark_ga4_conversion_event.`,
           });
       }
     } catch (mutationErr) {

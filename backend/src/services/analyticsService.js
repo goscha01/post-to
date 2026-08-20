@@ -352,6 +352,36 @@ function normalizeApiError(err, context) {
   return out;
 }
 
+// ---------- Mutations (write) ----------
+//
+// Mark a GA4 event as a "key event" (formerly "conversion event"). This is
+// the config change the AI keeps suggesting — e.g. "mark subscription_started
+// as a conversion so Smart Bidding can optimize toward it".
+//
+// GA4 Admin API resource: properties.conversionEvents (still the stable
+// name in v1beta as of 2026; v1alpha renamed it to keyEvents). Reversible
+// via `.delete` on the returned resource name.
+//
+// Requires OAuth scope `analytics.edit`. Errors mapped to code
+// SCOPE_MISSING when the caller's token doesn't have it.
+async function markConversionEvent(accessToken, propertyId, eventName) {
+  const pid = String(propertyId || '').replace(/^properties\//, '').trim();
+  const evt = String(eventName || '').trim();
+  if (!pid) throw new Error('propertyId required');
+  if (!evt) throw new Error('eventName required');
+  const auth = oauthClientFor(accessToken);
+  const admin = google.analyticsadmin({ version: 'v1beta', auth });
+  const { data } = await admin.properties.conversionEvents.create({
+    parent: `properties/${pid}`,
+    requestBody: { eventName: evt },
+  });
+  return {
+    resourceName: data?.name || null,
+    eventName: data?.eventName || evt,
+    propertyId: pid,
+  };
+}
+
 module.exports = {
   listProperties,
   getOverview,
@@ -361,6 +391,7 @@ module.exports = {
   getGeography,
   getEvents,
   getCampaigns,
+  markConversionEvent,
   normalizeApiError,
   // exposed for tests
   _internal: { runReport, shapeReport, dateRangeFromDays, HIGHLIGHTED_EVENTS },

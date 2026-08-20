@@ -1340,7 +1340,7 @@ const PlanContent = ({ plan, steps, onToggleStepStatus, onUpdateStepNotes, onDel
 // Steps with these types get a working "Apply" button; other automatable
 // types still show an "Automatable" chip but the Apply button stays
 // disabled with a clear "not implemented yet" message.
-const APPLYABLE_ACTION_TYPES = new Set(['add_negative_keywords']);
+const APPLYABLE_ACTION_TYPES = new Set(['add_negative_keywords', 'mark_ga4_conversion_event']);
 
 const PlanStepRow = ({ step, index, onToggleStatus, onUpdateNotes, onApplyStep }) => {
   const [notesOpen, setNotesOpen] = useState(false);
@@ -1561,7 +1561,9 @@ const ApplyPreviewPanel = ({ step, applying, applyResult, onCancel, onApply }) =
             Cancel
           </button>
           <span className="text-[10px] text-gray-500">
-            Reversible in Google Ads UI · Campaigns → Keywords → Negatives
+            {step.action_type === 'mark_ga4_conversion_event'
+              ? 'Reversible in GA4 · Admin → Conversions → toggle off'
+              : 'Reversible in Google Ads UI · Campaigns → Keywords → Negatives'}
           </span>
         </div>
       )}
@@ -1588,6 +1590,21 @@ const ActionParamsSummary = ({ actionType, params }) => {
               ))
             }
           </div>
+        </div>
+      </div>
+    );
+  }
+  if (actionType === 'mark_ga4_conversion_event') {
+    return (
+      <div className="text-gray-800 space-y-0.5">
+        <div><span className="text-gray-500">GA4 property:</span> {params.propertyId || params.property_id || '(use conversation default)'}</div>
+        <div><span className="text-gray-500">Event to mark as conversion:</span>{' '}
+          <span className="px-1.5 py-0.5 bg-white border border-blue-200 rounded text-blue-900 text-[11px]">
+            {params.eventName || params.event_name || '(missing)'}
+          </span>
+        </div>
+        <div className="text-[11px] text-gray-500 mt-1 italic">
+          Affects forward measurement only — historical data isn't recomputed. Reversible in GA4 UI: Admin → Conversions → toggle off.
         </div>
       </div>
     );
