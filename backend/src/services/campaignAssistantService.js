@@ -427,15 +427,25 @@ RULES
 - For each step, cite specific numbers from the discussion when possible ("Add negatives with combined spend of $47", not "Add some negatives").
 
 RESPECT CURRENT STATE — CRITICAL
-Before recommending a state change, check the CURRENT state in the campaign snapshot data. If the target state is already met, DO NOT include that recommendation as a step. The user is planning what to do NEXT, not re-doing what's already been done. Specifically:
 
-- If campaign.status == "PAUSED" in the snapshot → DO NOT recommend pause_campaign. If your underlying concern is still valid (e.g. broken conversion tracking), keep the fix step but drop the "pause" step; the campaign is already paused.
+Before recommending ANY change to ANY setting or statistic, check the current value in the campaign snapshot. If the change you'd recommend is already in effect (or effectively so), DO NOT include that as a step. The user is planning what to do NEXT, not re-doing what's already been done. This applies to EVERY recommendation — not just campaign status. Concretely:
+
+- Look up the current value in the snapshot before proposing a change. If it already matches your target (within a sensible tolerance where the field is numeric), drop the step.
+- If the state has been fixed but the underlying diagnosis is still valid (e.g. campaign is paused BUT the tracking issue that caused you to want it paused is still present), keep the fix step, drop the state-change step.
+- Applies to: campaign status (PAUSED/ENABLED), primary conversion action, campaign budget, bidding strategy, geo targeting, ad schedule, negative keywords (skip keywords already in the negative list), GA4 conversion event marking, Remote Config parameter values, and anything else the snapshot exposes.
+
+Specific examples (not exhaustive):
+- If campaign.status == "PAUSED" in the snapshot → DO NOT recommend pause_campaign. The user has already paused it. If your concern is still valid (e.g. tracking is still broken), keep the tracking fix, drop the pause step.
 - If campaign.status == "ENABLED" but you'd otherwise recommend pausing, that's fine — the pause hasn't happened yet.
-- If the primary conversion action in the snapshot already matches what you'd recommend as primary → DO NOT recommend set_primary_conversion_action.
-- If the daily budget in the snapshot already matches (within 5%) what you'd recommend → DO NOT recommend set_campaign_budget.
-- If a conversion event in GA4 is already marked as a key event (has "isConversion": true in snapshot.ga4.events) → DO NOT recommend mark_ga4_conversion_event for it.
+- If a conversion action's primary_for_goal == true and matches your recommended primary → DO NOT recommend set_primary_conversion_action for it.
+- If daily budget matches (within 5%) your recommendation → DO NOT recommend set_campaign_budget.
+- If a keyword you'd add as a negative is already in the negatives list → drop it from the keywords array (or drop the whole step if none remain).
+- If a GA4 event already has isConversion == true → DO NOT recommend mark_ga4_conversion_event for it.
+- If Remote Config parameter is already at your recommended value → DO NOT recommend set_remote_config_parameter.
 
-You may still MENTION the current state in your summary or in another step's description as context ("the campaign is currently paused, so before unpausing, fix these tracking issues first"). What you must NOT do is create a step whose entire purpose is to make the state be what it already is.
+You may still MENTION the current state in your summary or in another step's description as context ("the campaign is currently paused, so before unpausing, fix these tracking issues first"). What you must NOT do is create a step whose entire purpose is to make state or a value be what it already is.
+
+If checking the current value is not possible from the snapshot data provided (rare — the snapshot is comprehensive), you MAY still include the recommendation but flag the uncertainty in the description ("verify current setting before applying").
 
 AUTOMATION CATALOG — one-click apply
 
