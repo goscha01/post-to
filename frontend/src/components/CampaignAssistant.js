@@ -323,6 +323,26 @@ const CampaignAssistant = () => {
     }
   }, [latestPlan]);
 
+  // Refresh the report snapshot from live Google Ads + GA4 data. Used
+  // after applying steps (to see the effect) or before applying a stale
+  // plan (to check current state hasn't already been fixed manually).
+  const [refreshingSnapshot, setRefreshingSnapshot] = useState(false);
+  const [snapshotError, setSnapshotError] = useState(null);
+  const refreshSnapshot = useCallback(async () => {
+    if (!activeConversation) return;
+    setRefreshingSnapshot(true);
+    setSnapshotError(null);
+    try {
+      const res = await campaignAssistantService.refreshSnapshot(activeConversation.id);
+      setSnapshotMeta(res.snapshotMeta);
+      setActiveConversation(prev => prev && { ...prev, report_generated_at: res.report_generated_at });
+    } catch (err) {
+      setSnapshotError(err.response?.data?.error || err.message || 'Failed to refresh snapshot');
+    } finally {
+      setRefreshingSnapshot(false);
+    }
+  }, [activeConversation]);
+
   // Execute a plan step against the Google Ads API and merge the updated
   // step row back into local state. Returns the executed-result summary so
   // the row's preview panel can display it inline.
@@ -676,6 +696,10 @@ const CampaignAssistant = () => {
             snapshotMeta={snapshotMeta}
             open={showSnapshot}
             onToggle={() => setShowSnapshot(v => !v)}
+            generatedAt={activeConversation.report_generated_at}
+            onRefresh={refreshSnapshot}
+            refreshing={refreshingSnapshot}
+            refreshError={snapshotError}
           />
         )}
 
@@ -691,6 +715,7 @@ const CampaignAssistant = () => {
             onUpdateStepNotes={updateStepNotes}
             onDeletePlan={deletePlan}
             onApplyStep={applyPlanStep}
+            snapshotGeneratedAt={activeConversation.report_generated_at}
           />
         )}
 
@@ -1030,7 +1055,7 @@ const ConversationsCard = ({ conversations, activeId, onOpen, onDelete }) => (
 // ---------------------------------------------------------------------------
 // Snapshot summary banner
 // ---------------------------------------------------------------------------
-const SnapshotBanner = ({ snapshotMeta, open, onToggle }) => {
+const SnapshotBanner = ({ snapshotMeta, open, onToggle, generatedAt, onRefresh, refreshing, refreshError }) => {
   const s = snapshotMeta.summary || {};
   const alerts = snapshotMeta.alerts || {};
   const alertCount =
@@ -1044,33 +1069,64 @@ const SnapshotBanner = ({ snapshotMeta, open, onToggle }) => {
   const fmtPct = (v) => v == null ? '—' : `${(Number(v) * 100).toFixed(1)}%`;
   const fmtInt = (v) => v == null ? '—' : Math.round(Number(v)).toLocaleString();
 
+  const generatedAtLabel = generatedAt ? new Date(generatedAt).toLocaleString() : null;
+  const ageHours = generatedAt ? (Date.now() - new Date(generatedAt).getTime()) / 3_600_000 : null;
+  const isStale = ageHours != null && ageHours > 24;
+
   return (
     <div className="border-b border-gray-200 bg-gray-50">
-      <button
-        onClick={onToggle}
-        className="w-full flex items-center gap-2 px-4 py-2 text-xs font-medium text-gray-700 hover:bg-gray-100"
-      >
-        {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-        Report snapshot
-        <span className="text-gray-400">·</span>
-        <span className="text-gray-500">
-          {fmtMoney(s.cost)} spend · {fmtInt(s.clicks)} clicks · {fmtInt(s.conversions)} conv · {alertCount} alerts
-        </span>
-        {snapshotMeta.hasFirebase && <span className="ml-2 px-1.5 py-0.5 bg-orange-100 text-orange-800 rounded text-[10px]">Firebase</span>}
-        {snapshotMeta.hasOpenAiAds && <span className="ml-1 px-1.5 py-0.5 bg-purple-100 text-purple-800 rounded text-[10px]">OpenAI Ads</span>}
-        {errs.length > 0 && <span className="ml-1 px-1.5 py-0.5 bg-yellow-100 text-yellow-800 rounded text-[10px]">{errs.length} partial errors</span>}
-      </button>
-      {open && (
-        <div className="px-4 pb-3 grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
-          <Stat label="Cost" value={fmtMoney(s.cost)} />
-          <Stat label="Clicks" value={fmtInt(s.clicks)} />
-          <Stat label="Impressions" value={fmtInt(s.impressions)} />
-          <Stat label="CTR" value={fmtPct(s.ctr)} />
-          <Stat label="Conversions" value={fmtInt(s.conversions)} />
-          <Stat label="Conv. rate" value={fmtPct(s.conversionRate)} />
-          <Stat label="CPA" value={fmtMoney(s.costPerConversion)} />
-          <Stat label="ROAS" value={s.roas == null ? '—' : `${Number(s.roas).toFixed(2)}x`} />
+      <div className="w-full flex items-center gap-2 px-4 py-2">
+        <button
+          onClick={onToggle}
+          className="flex-1 flex items-center gap-2 text-xs font-medium text-gray-700 hover:text-gray-900 min-w-0"
+        >
+          {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+          Report snapshot
+          <span className="text-gray-400">·</span>
+          <span className="text-gray-500 truncate">
+            {fmtMoney(s.cost)} spend · {fmtInt(s.clicks)} clicks · {fmtInt(s.conversions)} conv · {alertCount} alerts
+          </span>
+          {snapshotMeta.hasFirebase && <span className="ml-2 px-1.5 py-0.5 bg-orange-100 text-orange-800 rounded text-[10px] flex-shrink-0">Firebase</span>}
+          {snapshotMeta.hasOpenAiAds && <span className="ml-1 px-1.5 py-0.5 bg-purple-100 text-purple-800 rounded text-[10px] flex-shrink-0">OpenAI Ads</span>}
+          {errs.length > 0 && <span className="ml-1 px-1.5 py-0.5 bg-yellow-100 text-yellow-800 rounded text-[10px] flex-shrink-0">{errs.length} partial errors</span>}
+          {isStale && <span className="ml-1 px-1.5 py-0.5 bg-amber-100 text-amber-800 rounded text-[10px] flex-shrink-0" title={`Snapshot is ${Math.round(ageHours)}h old`}>Stale</span>}
+        </button>
+        {onRefresh && (
+          <button
+            onClick={onRefresh}
+            disabled={refreshing}
+            title={generatedAtLabel ? `Last refreshed: ${generatedAtLabel}. Click to re-pull live data from Google Ads + GA4.` : 'Re-pull live data from Google Ads + GA4.'}
+            className="flex-shrink-0 flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-gray-600 border border-gray-300 rounded hover:bg-white disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {refreshing ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+            {refreshing ? 'Refreshing…' : 'Refresh'}
+          </button>
+        )}
+      </div>
+      {refreshError && (
+        <div className="px-4 pb-2 text-[11px] text-red-700 flex items-start gap-1.5">
+          <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
+          <span>{refreshError}</span>
         </div>
+      )}
+      {open && (
+        <>
+          <div className="px-4 pb-3 grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+            <Stat label="Cost" value={fmtMoney(s.cost)} />
+            <Stat label="Clicks" value={fmtInt(s.clicks)} />
+            <Stat label="Impressions" value={fmtInt(s.impressions)} />
+            <Stat label="CTR" value={fmtPct(s.ctr)} />
+            <Stat label="Conversions" value={fmtInt(s.conversions)} />
+            <Stat label="Conv. rate" value={fmtPct(s.conversionRate)} />
+            <Stat label="CPA" value={fmtMoney(s.costPerConversion)} />
+            <Stat label="ROAS" value={s.roas == null ? '—' : `${Number(s.roas).toFixed(2)}x`} />
+          </div>
+          {generatedAtLabel && (
+            <div className="px-4 pb-2 text-[10px] text-gray-500">
+              Snapshot from {generatedAtLabel}{isStale && ` · ${Math.round(ageHours)}h old`}
+            </div>
+          )}
+        </>
       )}
     </div>
   );
@@ -1107,7 +1163,12 @@ const PRIORITY_META = {
 const ActionPlanPanel = ({
   plan, loading, error, open, onToggle,
   onGenerate, onToggleStepStatus, onUpdateStepNotes, onDeletePlan, onApplyStep,
+  snapshotGeneratedAt,
 }) => {
+  // Stale if the report snapshot was refreshed AFTER this plan was generated.
+  // Suggests the plan's recommendations may reflect out-of-date state.
+  const planIsStale = plan?.plan?.created_at && snapshotGeneratedAt
+    && new Date(snapshotGeneratedAt).getTime() > new Date(plan.plan.created_at).getTime() + 60_000;
   const hasPlan = !!plan?.plan;
   const steps = plan?.steps || [];
   const doneCount = steps.filter(s => s.status === 'done' || s.status === 'applied').length;
@@ -1139,16 +1200,28 @@ const ActionPlanPanel = ({
           )}
           {loading && <PlanLoadingState />}
           {hasPlan && !loading && (
-            <PlanContent
-              plan={plan}
-              steps={steps}
-              onToggleStepStatus={onToggleStepStatus}
-              onUpdateStepNotes={onUpdateStepNotes}
-              onDeletePlan={onDeletePlan}
-              onRegenerate={onGenerate}
-              onApplyStep={onApplyStep}
-              error={error}
-            />
+            <>
+              {planIsStale && (
+                <div className="mb-2 p-2 bg-amber-50 border border-amber-200 rounded text-[11px] text-amber-800 flex items-start gap-1.5">
+                  <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
+                  <span>
+                    Snapshot has been refreshed since this plan was generated. Some steps may already be resolved
+                    or based on stale numbers. Consider clicking regenerate (⟳) for a fresh plan against current data.
+                    Applying individual steps still runs a pre-flight check against live state, so no-ops are safe.
+                  </span>
+                </div>
+              )}
+              <PlanContent
+                plan={plan}
+                steps={steps}
+                onToggleStepStatus={onToggleStepStatus}
+                onUpdateStepNotes={onUpdateStepNotes}
+                onDeletePlan={onDeletePlan}
+                onRegenerate={onGenerate}
+                onApplyStep={onApplyStep}
+                error={error}
+              />
+            </>
           )}
         </div>
       )}
@@ -1542,20 +1615,30 @@ const ApplyPreviewPanel = ({ step, applying, applyResult, onCancel, onApply }) =
       </div>
       <ActionParamsSummary actionType={step.action_type} params={params} />
       {applyResult?.ok && applyResult.executed && (
-        <div className="mt-2 p-2 bg-emerald-50 border border-emerald-200 rounded text-emerald-800">
-          <div className="font-medium flex items-center gap-1"><Check className="h-3.5 w-3.5" /> Applied</div>
-          <div className="mt-1">{applyResult.executed.summary}</div>
-          {applyResult.executed.result?.skipped?.length > 0 && (
-            <details className="mt-1">
-              <summary className="cursor-pointer text-emerald-700">Skipped items ({applyResult.executed.result.skipped.length})</summary>
-              <ul className="pl-4 mt-1 list-disc">
-                {applyResult.executed.result.skipped.map((s, i) => (
-                  <li key={i}>{s.keyword}: {s.reason}</li>
-                ))}
-              </ul>
-            </details>
-          )}
-        </div>
+        (() => {
+          const isNoop = !!applyResult.executed.noop;
+          const bgCls = isNoop ? 'bg-amber-50 border-amber-200 text-amber-800' : 'bg-emerald-50 border-emerald-200 text-emerald-800';
+          const iconCls = isNoop ? 'text-amber-600' : '';
+          return (
+            <div className={`mt-2 p-2 border rounded ${bgCls}`}>
+              <div className={`font-medium flex items-center gap-1 ${iconCls}`}>
+                {isNoop ? <AlertCircle className="h-3.5 w-3.5" /> : <Check className="h-3.5 w-3.5" />}
+                {isNoop ? 'Already done' : 'Applied'}
+              </div>
+              <div className="mt-1">{applyResult.executed.summary}</div>
+              {applyResult.executed.result?.skipped?.length > 0 && (
+                <details className="mt-1">
+                  <summary className="cursor-pointer opacity-80">Skipped items ({applyResult.executed.result.skipped.length})</summary>
+                  <ul className="pl-4 mt-1 list-disc">
+                    {applyResult.executed.result.skipped.map((s, i) => (
+                      <li key={i}>{s.keyword}: {s.reason}</li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+            </div>
+          );
+        })()
       )}
       {applyResult && !applyResult.ok && (
         <div className="mt-2 p-2 bg-red-50 border border-red-200 rounded text-red-800 flex items-start gap-1.5">

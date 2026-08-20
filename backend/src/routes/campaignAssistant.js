@@ -385,6 +385,108 @@ router.post('/conversations', requireBusinessAuth, async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// POST /conversations/:id/refresh-snapshot — pull fresh Ads + GA4 data and
+// overwrite the conversation's report_snapshot in place. Same generation
+// logic as POST /conversations (creation), but scoped to an existing
+// conversation and its already-selected customer / property IDs. Used to
+// re-check current state before applying a stale plan step, or to see the
+// effect of applied changes after they've taken effect.
+// ---------------------------------------------------------------------------
+router.post('/conversations/:id/refresh-snapshot', requireBusinessAuth, async (req, res) => {
+  const userId = req.user.userId;
+  const conversationId = req.params.id;
+  const t0 = Date.now();
+  try {
+    const { data: conv, error: convErr } = await supabase
+      .from('campaign_assistant_conversations')
+      .select('id, google_ads_customer_id, google_ads_login_customer_id, campaign_id, campaign_name, ga4_property_id, ga4_app_property_id, openai_ads_connection_id, days, title')
+      .eq('user_id', userId)
+      .eq('id', conversationId)
+      .single();
+    if (convErr || !conv) return res.status(404).json({ error: 'Conversation not found' });
+    if (!conv.google_ads_customer_id || !conv.campaign_id) {
+      return res.status(400).json({ error: 'Conversation is missing customer/campaign IDs — cannot refresh' });
+    }
+
+    const [adsCustomer, ga4Prop, ga4AppProp] = await Promise.all([
+      resolveAdsCustomer(userId, conv.google_ads_customer_id),
+      resolveGa4Property(userId, conv.ga4_property_id),
+      resolveGa4Property(userId, conv.ga4_app_property_id),
+    ]);
+    if (!adsCustomer.customerId) {
+      return res.status(400).json({ error: 'Google Ads customer no longer connected — reconnect Google Business' });
+    }
+    const [adsToken, ga4Token, ga4AppToken] = await Promise.all([
+      tokenForOwner(req, adsCustomer.ownerGoogleId),
+      ga4Prop.propertyId ? tokenForOwner(req, ga4Prop.ownerGoogleId) : Promise.resolve(null),
+      ga4AppProp.propertyId ? tokenForOwner(req, ga4AppProp.ownerGoogleId) : Promise.resolve(null),
+    ]);
+    const openAiAdsHistory = await fetchOpenAiAdsHistory({
+      userId,
+      connectionId: conv.openai_ads_connection_id || null,
+      days: conv.days || 30,
+    });
+
+    const report = await optimizationReport.generateReport({
+      adsAccessToken: adsToken,
+      customerId: adsCustomer.customerId,
+      loginCustomerId: adsCustomer.loginCustomerId || conv.google_ads_login_customer_id,
+      campaignId: conv.campaign_id,
+      ga4AccessToken: ga4Token,
+      propertyId: ga4Prop.propertyId,
+      firebaseAccessToken: ga4AppToken,
+      firebasePropertyId: ga4AppProp.propertyId,
+      openAiAdsHistory,
+      days: conv.days || 30,
+      userId,
+    });
+    report.account = {
+      customerId: adsCustomer.customerId,
+      descriptiveName: conv.campaign_name || adsCustomer.descriptiveName || null,
+      loginCustomerId: adsCustomer.loginCustomerId || conv.google_ads_login_customer_id,
+      ga4PropertyId: ga4Prop.propertyId,
+      ga4PropertyName: ga4Prop.displayName,
+      firebasePropertyId: ga4AppProp.propertyId,
+      firebasePropertyName: ga4AppProp.displayName,
+    };
+
+    const now = new Date().toISOString();
+    const { data: updated, error: updErr } = await supabase
+      .from('campaign_assistant_conversations')
+      .update({
+        report_snapshot: report,
+        report_generated_at: now,
+      })
+      .eq('id', conversationId)
+      .select('id, report_generated_at')
+      .single();
+    if (updErr) throw new Error(`Failed to save refreshed snapshot: ${updErr.message}`);
+
+    logger.info('campaignAssistant.snapshot_refreshed', {
+      userId, conversationId, duration_ms: Date.now() - t0,
+      snapshotErrors: (report.errors || []).length,
+    });
+
+    res.json({
+      report_generated_at: updated.report_generated_at,
+      snapshotMeta: {
+        summary: report.summary,
+        alerts: report.alerts,
+        account: report.account,
+        hasFirebase: !!report.firebase,
+        hasOpenAiAds: !!report.openAiAds,
+        errors: report.errors || null,
+      },
+    });
+  } catch (err) {
+    logger.error('campaignAssistant.snapshot_refresh_failed', {
+      userId, conversationId, error: err.message, duration_ms: Date.now() - t0,
+    });
+    res.status(err.status || 500).json({ error: err.message || 'Failed to refresh snapshot' });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // POST /conversations/:id/chat — SSE, both providers in parallel
 // ---------------------------------------------------------------------------
 router.post('/conversations/:id/chat', async (req, res) => {
@@ -1232,8 +1334,11 @@ router.post('/plan-steps/:stepId/apply', async (req, res) => {
             campaignId,
           });
           executed = {
-            summary: `Paused campaign ${campaignId}. Re-enable in Google Ads UI → Campaigns → toggle status.`,
+            summary: result.noop
+              ? `No-op — ${result.reason}. Nothing to do.`
+              : `Paused campaign ${campaignId} (was ${result.previousStatus}). Re-enable in Google Ads UI → Campaigns → toggle status.`,
             result,
+            noop: !!result.noop,
           };
           break;
         }
@@ -1253,8 +1358,11 @@ router.post('/plan-steps/:stepId/apply', async (req, res) => {
             conversionActionResourceName: rn,
           });
           executed = {
-            summary: `Marked ${rn} as primary conversion action (account-level — affects every campaign not overriding via campaign_conversion_goal).`,
+            summary: result.noop
+              ? `No-op — ${result.reason}. Nothing to do.`
+              : `Marked ${result.name || rn} as primary conversion action (account-level — affects every campaign not overriding via campaign_conversion_goal).`,
             result,
+            noop: !!result.noop,
           };
           break;
         }
@@ -1277,8 +1385,11 @@ router.post('/plan-steps/:stepId/apply', async (req, res) => {
             dailyBudgetUsd,
           });
           executed = {
-            summary: `Set campaign ${campaignId} daily budget: $${result.previousDailyBudgetUsd.toFixed(2)} → $${result.newDailyBudgetUsd.toFixed(2)}.`,
+            summary: result.noop
+              ? `No-op — ${result.reason}. Nothing to do.`
+              : `Set campaign ${campaignId} daily budget: $${result.previousDailyBudgetUsd.toFixed(2)} → $${result.newDailyBudgetUsd.toFixed(2)}.`,
             result,
+            noop: !!result.noop,
           };
           break;
         }
@@ -1299,8 +1410,11 @@ router.post('/plan-steps/:stepId/apply', async (req, res) => {
           try {
             const result = await analyticsSvc.markConversionEvent(accessToken, ga4Prop.propertyId, eventName);
             executed = {
-              summary: `Marked "${eventName}" as a conversion event on GA4 property ${ga4Prop.propertyId}.`,
+              summary: result.noop
+                ? `No-op — ${result.reason}. Nothing to do.`
+                : `Marked "${eventName}" as a conversion event on GA4 property ${ga4Prop.propertyId}.`,
               result,
+              noop: !!result.noop,
             };
           } catch (e) {
             // Detect the "user hasn't granted analytics.edit yet" case and

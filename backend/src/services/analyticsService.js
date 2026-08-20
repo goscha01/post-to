@@ -371,15 +371,34 @@ async function markConversionEvent(accessToken, propertyId, eventName) {
   if (!evt) throw new Error('eventName required');
   const auth = oauthClientFor(accessToken);
   const admin = google.analyticsadmin({ version: 'v1beta', auth });
-  const { data } = await admin.properties.conversionEvents.create({
-    parent: `properties/${pid}`,
-    requestBody: { eventName: evt },
-  });
-  return {
-    resourceName: data?.name || null,
-    eventName: data?.eventName || evt,
-    propertyId: pid,
-  };
+  try {
+    const { data } = await admin.properties.conversionEvents.create({
+      parent: `properties/${pid}`,
+      requestBody: { eventName: evt },
+    });
+    return {
+      noop: false,
+      resourceName: data?.name || null,
+      eventName: data?.eventName || evt,
+      propertyId: pid,
+    };
+  } catch (err) {
+    // GA4 Admin API returns 409 ALREADY_EXISTS when the event is already a
+    // conversion. Treat as a no-op — the target state is already met.
+    const code = err?.code || err?.response?.status;
+    const msg = err?.errors?.[0]?.message || err?.message || '';
+    const isAlreadyExists = code === 409
+      || /already exists|ALREADY_EXISTS/i.test(msg + ' ' + JSON.stringify(err?.response?.data || {}));
+    if (isAlreadyExists) {
+      return {
+        noop: true,
+        reason: `Event "${evt}" is already marked as a conversion on this property`,
+        eventName: evt,
+        propertyId: pid,
+      };
+    }
+    throw err;
+  }
 }
 
 module.exports = {

@@ -1399,6 +1399,24 @@ async function setCampaignStatus({
     throw new Error(`Invalid status: ${status}`);
   }
 
+  // Pre-flight: check current status. If already in the target state, skip
+  // the mutation and return {noop:true} so the caller can mark the step
+  // applied without pointless API traffic.
+  const currentRows = await search(accessToken, cid, `
+    SELECT campaign.status FROM campaign WHERE campaign.id = ${camp} LIMIT 1
+  `, { loginCustomerId });
+  const currentStatus = currentRows[0]?.campaign?.status || null;
+  if (currentStatus === normalizedStatus) {
+    return {
+      noop: true,
+      reason: `Campaign already ${normalizedStatus}`,
+      resourceName: `customers/${cid}/campaigns/${camp}`,
+      campaignId: camp,
+      status: normalizedStatus,
+      previousStatus: currentStatus,
+    };
+  }
+
   const url = `${BASE_URL}/customers/${cid}/campaigns:mutate`;
   const body = {
     operations: [{
@@ -1414,9 +1432,11 @@ async function setCampaignStatus({
     timeout: 30_000,
   });
   return {
+    noop: false,
     resourceName: data?.results?.[0]?.resourceName || null,
     campaignId: camp,
     status: normalizedStatus,
+    previousStatus: currentStatus,
   };
 }
 
@@ -1443,6 +1463,25 @@ async function setConversionActionPrimary({
   if (!/^customers\/\d+\/conversionActions\/\d+$/.test(rn)) {
     throw new Error(`Invalid conversion action resource name: "${rn}"`);
   }
+  const actionId = rn.split('/').pop();
+
+  // Pre-flight: is it already primary?
+  const currentRows = await search(accessToken, cid, `
+    SELECT conversion_action.id, conversion_action.name, conversion_action.primary_for_goal
+    FROM conversion_action
+    WHERE conversion_action.id = ${actionId}
+    LIMIT 1
+  `, { loginCustomerId });
+  const currentPrimary = currentRows[0]?.conversionAction?.primaryForGoal;
+  const actionName = currentRows[0]?.conversionAction?.name || null;
+  if (currentPrimary === true) {
+    return {
+      noop: true,
+      reason: `Conversion action "${actionName || actionId}" is already primary`,
+      resourceName: rn,
+      name: actionName,
+    };
+  }
 
   const url = `${BASE_URL}/customers/${cid}/conversionActions:mutate`;
   const body = {
@@ -1459,7 +1498,9 @@ async function setConversionActionPrimary({
     timeout: 30_000,
   });
   return {
+    noop: false,
     resourceName: data?.results?.[0]?.resourceName || rn,
+    name: actionName,
   };
 }
 
@@ -1509,8 +1550,20 @@ async function setCampaignDailyBudget({
     throw new Error(`Campaign uses a SHARED budget (${budgetResourceName}). Refusing to change — it would affect every campaign using this budget. Adjust in Google Ads UI instead.`);
   }
 
-  // Step 2: mutate.
+  // Pre-flight: if new equals current (within a cent), no-op.
   const newAmountMicros = Math.round(budget * 1_000_000);
+  if (Math.abs(newAmountMicros - oldAmountMicros) < 10_000) {   // < 1 cent
+    return {
+      noop: true,
+      reason: `Budget already $${oldUsd.toFixed(2)}/day`,
+      resourceName: budgetResourceName,
+      campaignId: camp,
+      previousDailyBudgetUsd: Number(oldUsd.toFixed(2)),
+      newDailyBudgetUsd: budget,
+    };
+  }
+
+  // Step 2: mutate.
   const url = `${BASE_URL}/customers/${cid}/campaignBudgets:mutate`;
   const body = {
     operations: [{
@@ -1526,6 +1579,7 @@ async function setCampaignDailyBudget({
     timeout: 30_000,
   });
   return {
+    noop: false,
     resourceName: data?.results?.[0]?.resourceName || budgetResourceName,
     campaignId: camp,
     previousDailyBudgetUsd: Number(oldUsd.toFixed(2)),

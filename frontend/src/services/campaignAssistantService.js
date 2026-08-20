@@ -227,7 +227,16 @@ const applyPlanStep = async (stepId) => {
     {},
     { timeout: 60_000 }
   );
-  return res.data;   // { step, executed }
+  return res.data;   // { step, executed: { summary, result, noop? } }
+};
+
+const refreshSnapshot = async (conversationId) => {
+  const res = await axios.post(
+    `/api/campaign-assistant/conversations/${conversationId}/refresh-snapshot`,
+    {},
+    { timeout: 90_000 }
+  );
+  return res.data;   // { report_generated_at, snapshotMeta }
 };
 
 const campaignAssistantService = {
@@ -245,6 +254,7 @@ const campaignAssistantService = {
   updatePlanStep,
   deletePlan,
   applyPlanStep,
+  refreshSnapshot,
 };
 
 export default campaignAssistantService;
