@@ -926,17 +926,18 @@ router.post('/conversations/:id/plans', async (req, res) => {
       return res.status(400).json({ error: 'Nothing to synthesize — no completed messages yet' });
     }
 
-    const result = await campaignAssistant.synthesizeConsensusPlan({
+    const result = await campaignAssistant.synthesizeDialoguePlan({
       report: conv.report_snapshot,
       transcript,
     });
 
-    // Stash the drafts + reconciled raw response together as JSON in
-    // raw_response for audit. Older single-provider plans just have the
-    // model's text there directly.
+    // Stash the whole dialogue (openaiDraft → claudeCritique → openaiRevision
+    // → final) as JSON in raw_response for audit. Old plans stored plain
+    // text; the GET handler tolerates both.
     const rawResponseAudit = JSON.stringify({
       final: result.rawResponse,
-      drafts: result.drafts || null,
+      dialogue: result.dialogue || null,
+      failures: result.failures || null,
       degraded: !!result.degraded,
       convergence_notes: result.plan?.convergence_notes || null,
     });

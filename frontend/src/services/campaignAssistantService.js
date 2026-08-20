@@ -206,7 +206,7 @@ const generatePlan = async (conversationId) => {
   const res = await axios.post(
     `/api/campaign-assistant/conversations/${conversationId}/plans`,
     {},
-    { timeout: 240_000 } // consensus = 2 parallel drafts + 1 reconciliation, ~60-120s
+    { timeout: 360_000 } // dialogue = 4 sequential rounds, ~2-4 min end-to-end
   );
   return res.data;
 };

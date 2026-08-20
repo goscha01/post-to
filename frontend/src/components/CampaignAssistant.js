@@ -1138,10 +1138,10 @@ const PlanEmptyState = ({ onGenerate, error }) => (
       Ready to turn the discussion into a concrete plan?
     </p>
     <p className="text-xs text-gray-500 max-w-xl mx-auto">
-      Both OpenAI and Claude draft a plan independently, then Claude reconciles the two into a
-      single consensus plan — noting where they agreed and how any disagreements were resolved.
-      Takes ~60-120 seconds. Result is a deduped, dependency-ordered checklist tagged by what's
-      automatable via Google Ads API vs. what's a developer or product task.
+      The two models have a real 4-round dialogue: OpenAI drafts a plan, Claude critiques it, OpenAI
+      revises in response to the critique, Claude finalizes with convergence notes summarizing the
+      exchange. Takes ~2-4 minutes. Result is a deduped, dependency-ordered checklist tagged by
+      what's automatable via Google Ads API vs. developer / product tasks.
     </p>
     <div className="pt-1">
       <button
@@ -1159,30 +1159,39 @@ const PlanEmptyState = ({ onGenerate, error }) => (
   </div>
 );
 
-// Loading state that shows the multi-phase consensus flow. Progresses by
-// wall-clock time rather than real backend signals (would require SSE for
-// that) — timings tuned to typical run durations.
+// Loading state that walks through the 4 dialogue rounds. Progresses by
+// wall-clock time (real progress would require SSE) — timings tuned to
+// typical run durations (~40s per round + reconciliation slower).
 const PlanLoadingState = () => {
   const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
     const t = setInterval(() => setElapsed(e => e + 1), 1000);
     return () => clearInterval(t);
   }, []);
-  const phases = [
-    { label: 'OpenAI drafting a plan…', done: elapsed > 45 },
-    { label: 'Claude drafting a plan…', done: elapsed > 45 },
-    { label: 'Claude reconciling both drafts into a consensus…', done: elapsed > 100 },
+  // Round boundaries in seconds — cumulative. Adjust if real runs diverge.
+  const boundaries = [40, 75, 130, 200];
+  const labels = [
+    'OpenAI drafts an initial plan',
+    'Claude critiques the draft',
+    'OpenAI revises in response to the critique',
+    'Claude finalises with convergence notes',
   ];
-  const currentIdx = elapsed < 45 ? 0 : elapsed < 100 ? 2 : 2;
+  const currentIdx = boundaries.findIndex(b => elapsed < b);
+  const activeIdx = currentIdx === -1 ? labels.length - 1 : currentIdx;
+  const phases = labels.map((label, i) => ({
+    label,
+    done: elapsed >= boundaries[i],
+    active: i === activeIdx,
+  }));
   return (
     <div className="py-4 space-y-3">
       <div className="text-center">
         <Loader2 className="h-5 w-5 animate-spin text-emerald-600 mx-auto" />
         <p className="text-sm text-gray-700 font-medium mt-2">
-          Getting consensus from both models…
+          Running a 4-round dialogue between OpenAI and Claude…
         </p>
         <p className="text-[11px] text-gray-500 mt-0.5">
-          {elapsed}s · typical run is 60-120s
+          {elapsed}s · typical run is 2-4 min
         </p>
       </div>
       <ol className="max-w-md mx-auto space-y-1">
@@ -1190,14 +1199,15 @@ const PlanLoadingState = () => {
           <li
             key={i}
             className={`flex items-center gap-2 text-xs ${
-              p.done ? 'text-gray-400' : i === currentIdx ? 'text-emerald-800 font-medium' : 'text-gray-500'
+              p.done ? 'text-gray-400' : p.active ? 'text-emerald-800 font-medium' : 'text-gray-500'
             }`}
           >
             {p.done
               ? <Check className="h-3.5 w-3.5 text-emerald-500" />
-              : i === currentIdx
+              : p.active
               ? <Loader2 className="h-3 w-3 animate-spin" />
               : <Circle className="h-3 w-3" />}
+            <span className="text-[10px] font-mono text-gray-400 mr-1">R{i + 1}</span>
             {p.label}
           </li>
         ))}
@@ -1208,9 +1218,13 @@ const PlanLoadingState = () => {
 
 const PlanContent = ({ plan, steps, onToggleStepStatus, onUpdateStepNotes, onDeletePlan, onRegenerate, error }) => {
   const [notesOpen, setNotesOpen] = useState(false);
-  const isConsensus = plan.plan.generated_by === 'consensus';
+  const generatedBy = plan.plan.generated_by;
+  const isJoint = generatedBy === 'dialogue' || generatedBy === 'consensus';
   const isDegraded = plan.plan.degraded === true;
   const convergenceNotes = plan.plan.convergence_notes;
+  const jointChipLabel = generatedBy === 'dialogue'
+    ? 'Consensus · OpenAI ↔ Claude (4-round dialogue)'
+    : 'Consensus · OpenAI + Claude';
 
   return (
     <div className="space-y-3">
@@ -1218,14 +1232,14 @@ const PlanContent = ({ plan, steps, onToggleStepStatus, onUpdateStepNotes, onDel
         <div className="min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <div className="text-sm font-semibold text-gray-900">{plan.plan.title}</div>
-            {isConsensus && !isDegraded && (
+            {isJoint && !isDegraded && (
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 uppercase font-semibold tracking-wide">
-                Consensus · OpenAI + Claude
+                {jointChipLabel}
               </span>
             )}
             {isDegraded && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 uppercase font-semibold tracking-wide" title="Only one of the two models produced a draft; consensus fell back to that single draft.">
-                Single-provider fallback
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 uppercase font-semibold tracking-wide" title="One or more dialogue rounds failed. Plan reflects the last successful state.">
+                Partial dialogue
               </span>
             )}
           </div>

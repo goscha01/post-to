@@ -598,6 +598,282 @@ function validatePlanShape(obj) {
 }
 
 // ---------------------------------------------------------------------------
+// Plain-prose helpers for the dialogue flow. Same providers as the plan
+// synthesis calls but no JSON schema — Claude/OpenAI critique each other in
+// prose during rounds 2 of the dialogue. Cheaper + faster (short outputs)
+// and cache-hits the report block if included.
+// ---------------------------------------------------------------------------
+
+async function promptOpenAI({ system, user, maxTokens = 1800, temperature = 0.4 }) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) throw new Error('OPENAI_API_KEY is not configured');
+  const body = {
+    model: OPENAI_MODEL,
+    messages: [
+      { role: 'system', content: system },
+      { role: 'user', content: user },
+    ],
+    temperature,
+    max_tokens: maxTokens,
+  };
+  const resp = await axios.post(OPENAI_URL, body, {
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    timeout: 180_000,
+  });
+  const usage = resp.data?.usage || {};
+  const modelUsed = resp.data?.model || OPENAI_MODEL;
+  const cachedPromptTokens = usage.prompt_tokens_details?.cached_tokens || 0;
+  return {
+    text: resp.data?.choices?.[0]?.message?.content || '',
+    model: modelUsed,
+    usage: {
+      promptTokens: usage.prompt_tokens || 0,
+      completionTokens: usage.completion_tokens || 0,
+      totalTokens: (usage.prompt_tokens || 0) + (usage.completion_tokens || 0),
+      cacheReadTokens: cachedPromptTokens,
+      cacheWriteTokens: 0,
+      costUsd: costOpenAI(modelUsed, {
+        promptTokens: usage.prompt_tokens || 0,
+        completionTokens: usage.completion_tokens || 0,
+        cachedPromptTokens,
+      }),
+    },
+  };
+}
+
+async function promptClaude({ systemParts, user, maxTokens = 1800, temperature = 0.4 }) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not configured');
+  const body = {
+    model: CLAUDE_MODEL,
+    max_tokens: maxTokens,
+    system: systemParts,
+    messages: [{ role: 'user', content: user }],
+    temperature,
+  };
+  const resp = await axios.post(ANTHROPIC_URL, body, {
+    headers: {
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'Content-Type': 'application/json',
+    },
+    timeout: 180_000,
+  });
+  const modelUsed = resp.data?.model || CLAUDE_MODEL;
+  const inputTokens = resp.data?.usage?.input_tokens || 0;
+  const outputTokens = resp.data?.usage?.output_tokens || 0;
+  const cacheRead = resp.data?.usage?.cache_read_input_tokens || 0;
+  const cacheWrite = resp.data?.usage?.cache_creation_input_tokens || 0;
+  return {
+    text: resp.data?.content?.[0]?.text || '',
+    model: modelUsed,
+    usage: {
+      promptTokens: inputTokens,
+      completionTokens: outputTokens,
+      totalTokens: inputTokens + outputTokens,
+      cacheReadTokens: cacheRead,
+      cacheWriteTokens: cacheWrite,
+      costUsd: costClaude(modelUsed, {
+        promptTokens: inputTokens, completionTokens: outputTokens,
+        cacheRead, cacheWrite,
+      }),
+    },
+  };
+}
+
+function sumUsage(...usages) {
+  const out = { promptTokens: 0, completionTokens: 0, totalTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 };
+  for (const u of usages) {
+    if (!u) continue;
+    out.promptTokens += u.promptTokens || 0;
+    out.completionTokens += u.completionTokens || 0;
+    out.totalTokens += u.totalTokens || 0;
+    out.cacheReadTokens += u.cacheReadTokens || 0;
+    out.cacheWriteTokens += u.cacheWriteTokens || 0;
+    out.costUsd += u.costUsd || 0;
+  }
+  out.costUsd = Number(out.costUsd.toFixed(6));
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Dialogue synthesis — real back-and-forth between the two providers.
+//
+// Round 1: OpenAI drafts an initial plan (JSON).
+// Round 2: Claude critiques the draft in prose — what to keep, change, drop,
+//          add. Grounded in the transcript.
+// Round 3: OpenAI reads the critique and revises the draft (JSON).
+// Round 4: Claude reads the whole exchange, produces the FINAL plan JSON
+//          with convergence_notes describing the dialogue.
+//
+// Each round genuinely sees the prior turns. If any round errors, we fall
+// back to the last successful state so the user gets a plan either way.
+// ---------------------------------------------------------------------------
+
+const CRITIQUE_SYSTEM_PROMPT = `You are a senior paid-search and paid-social strategist reviewing another AI advisor's proposed action plan for a Google Ads / mobile app campaign. Be direct, specific, and grounded in the numbers.
+
+Respond in prose (not JSON). Structure your critique as:
+- WHAT I AGREE WITH: which steps are solid and why.
+- WHAT I'D CHANGE: which steps are wrong, weak, or misprioritised, and specifically how you'd revise them. Cite numbers from the transcript.
+- WHAT'S MISSING: important actions the plan omits.
+- WHAT I'D DROP: anything speculative or not supported by the transcript.
+
+Be concise. 400-800 words is ideal. Direct disagreement is better than hedging.`;
+
+async function synthesizeDialoguePlan({ report, transcript }) {
+  const t0 = Date.now();
+  const reportStr = JSON.stringify(report);
+  const reportBlock = `--- CAMPAIGN DATA ---\n${reportStr}\n--- END CAMPAIGN DATA ---`;
+  const transcriptBlock = `--- DISCUSSION TRANSCRIPT ---\n${transcript}\n--- END TRANSCRIPT ---`;
+
+  // Track state so we can fall back to the last successful plan if a later
+  // round errors.
+  let lastGoodPlan = null;
+  let lastGoodRaw = null;
+  let lastGoodModel = null;
+  const usages = [];
+  const dialogue = {
+    openaiDraft: null,
+    claudeCritique: null,
+    openaiRevision: null,
+  };
+  const failures = [];
+
+  // ------- Round 1: OpenAI drafts -------
+  try {
+    const r1 = await synthesizePlan({ provider: 'openai', report, transcript });
+    dialogue.openaiDraft = r1.plan;
+    lastGoodPlan = r1.plan;
+    lastGoodRaw = r1.rawResponse;
+    lastGoodModel = r1.model;
+    usages.push(r1.usage);
+  } catch (err) {
+    failures.push({ round: 1, error: err.message });
+  }
+
+  // ------- Round 2: Claude critiques -------
+  if (dialogue.openaiDraft) {
+    try {
+      const r2 = await promptClaude({
+        systemParts: [
+          { type: 'text', text: CRITIQUE_SYSTEM_PROMPT },
+          { type: 'text', text: reportBlock, cache_control: { type: 'ephemeral' } },
+          { type: 'text', text: transcriptBlock },
+        ],
+        user: `OpenAI proposed the following action plan after the campaign discussion:
+
+${JSON.stringify(dialogue.openaiDraft, null, 2)}
+
+Give your critique.`,
+        maxTokens: 2000,
+      });
+      dialogue.claudeCritique = r2.text;
+      usages.push(r2.usage);
+    } catch (err) {
+      failures.push({ round: 2, error: err.message });
+    }
+  }
+
+  // ------- Round 3: OpenAI revises -------
+  if (dialogue.openaiDraft && dialogue.claudeCritique) {
+    try {
+      const r3 = await synthesizePlanOpenAI({
+        report,
+        systemPrompt: PLAN_SYSTEM_PROMPT + `
+
+You will receive:
+- Your own initial draft plan
+- Claude's critique of that draft
+
+Revise your plan in response to the critique. You may accept, partially accept, or reject each point of critique — use your judgment. Output the revised JSON plan in the SAME schema as before (no critique text, just the plan).`,
+        userPrompt: `=== YOUR INITIAL DRAFT ===
+${JSON.stringify(dialogue.openaiDraft, null, 2)}
+
+=== CLAUDE'S CRITIQUE ===
+${dialogue.claudeCritique}
+
+=== YOUR REVISED PLAN (output JSON only) ===`,
+        t0: Date.now(),
+      });
+      dialogue.openaiRevision = r3.plan;
+      lastGoodPlan = r3.plan;
+      lastGoodRaw = r3.rawResponse;
+      lastGoodModel = r3.model;
+      usages.push(r3.usage);
+    } catch (err) {
+      failures.push({ round: 3, error: err.message });
+    }
+  }
+
+  // ------- Round 4: Claude finalizes with convergence_notes -------
+  if (dialogue.openaiDraft && dialogue.claudeCritique && dialogue.openaiRevision) {
+    try {
+      const r4 = await synthesizePlanClaude({
+        report,
+        systemPrompt: PLAN_SYSTEM_PROMPT + `
+
+CONSENSUS-FINALIZATION MODE
+
+You are producing the FINAL action plan after a 4-round dialogue with OpenAI. You will see:
+- OpenAI's initial draft
+- Your prior critique of that draft
+- OpenAI's revised draft (which responded to your critique)
+
+Your task: output the final plan JSON. Rules:
+- If OpenAI's revision addressed your critique well, adopt it largely as-is.
+- If OpenAI dismissed valid critique points, adjust the plan yourself to reflect your position — you have the last word.
+- Add or reorder steps as needed based on the exchange.
+- MUST include a top-level "convergence_notes" field (3-6 sentences): what both models agreed on from the start, what you critiqued, how OpenAI responded, and what your final position is on any remaining disagreements.
+
+Output JSON only.`,
+        userPrompt: `=== ROUND 1 — OpenAI's initial draft ===
+${JSON.stringify(dialogue.openaiDraft, null, 2)}
+
+=== ROUND 2 — Your critique ===
+${dialogue.claudeCritique}
+
+=== ROUND 3 — OpenAI's revised draft (responding to your critique) ===
+${JSON.stringify(dialogue.openaiRevision, null, 2)}
+
+=== ROUND 4 — Your final plan (output JSON only, must include "convergence_notes") ===`,
+        t0: Date.now(),
+      });
+      lastGoodPlan = r4.plan;
+      lastGoodRaw = r4.rawResponse;
+      lastGoodModel = r4.model;
+      usages.push(r4.usage);
+    } catch (err) {
+      failures.push({ round: 4, error: err.message });
+    }
+  }
+
+  // If ALL rounds failed, error out.
+  if (!lastGoodPlan) {
+    const msg = failures.length
+      ? `All dialogue rounds failed: ${failures.map(f => `R${f.round}=${f.error}`).join('; ')}`
+      : 'Dialogue produced no plan';
+    throw new Error(msg);
+  }
+
+  const degraded = failures.length > 0;
+  const modelDesc = degraded
+    ? `${lastGoodModel} (dialogue partial: rounds ${[1, 2, 3, 4].filter(r => !failures.find(f => f.round === r)).join(',')} completed)`
+    : `openai→claude→openai→claude dialogue (final: ${lastGoodModel})`;
+
+  return {
+    plan: lastGoodPlan,
+    rawResponse: lastGoodRaw,
+    model: modelDesc,
+    provider: 'dialogue',
+    usage: sumUsage(...usages),
+    dialogue,
+    failures,
+    degraded,
+    durationMs: Date.now() - t0,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Consensus synthesis — both models propose in parallel, then one reconciles.
 //
 // Phase 1: Both models independently draft a plan from the transcript.
@@ -722,6 +998,7 @@ module.exports = {
   messagesForProvider,
   synthesizePlan,
   synthesizeConsensusPlan,
+  synthesizeDialoguePlan,
   OPENAI_MODEL,
   CLAUDE_MODEL,
   INITIAL_ANALYSIS_PROMPT,
