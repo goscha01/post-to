@@ -1144,7 +1144,9 @@ async function buildPriorPlanOutcomes(conversationId, currentPlanIdToExclude = n
     .select('id, title, created_at')
     .eq('conversation_id', conversationId)
     .order('created_at', { ascending: false })
-    .limit(3);   // last 3 plans is enough historical context
+    .limit(10);   // match carry-forward's walk-back range so we don't miss
+                  // a task that was completed 4+ plans ago but got orphaned
+                  // through intermediate regenerations
   if (!prevPlans || prevPlans.length === 0) return '';
 
   const planBlocks = [];
