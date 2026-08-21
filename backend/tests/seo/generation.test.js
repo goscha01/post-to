@@ -36,6 +36,12 @@ test('enhanced article prompt asks for SEO + structured JSON envelope', () => {
   assert.match(user, /Never emit an H1/i);
   // Mandatory intro rule (added to fix "no intro" cases seen in prod).
   assert.match(user, /MANDATORY first block/i);
+  // Enforced length floor (added after prod articles shipped ~500 words).
+  assert.match(user, /at least 1,500 words|MUST be at least 1,500/i);
+  // Explicit external-links requirement so `external_links_present` doesn't
+  // warn on every fresh article.
+  assert.match(user, /External links/);
+  assert.match(user, /authoritative/i);
   // Keyword rule.
   assert.match(user, /house cleaning tampa/);
   // Internal links whitelist appears.
@@ -135,7 +141,7 @@ function fakeLLMOutput(overrides = {}) {
   };
 }
 
-test('pipeline: strong initial output → no repair pass fires', async () => {
+test('pipeline: strong initial output → analyzer reports high score', async () => {
   const calls = { generate: 0, repair: 0 };
   const restore = stubLLM({
     generate: async () => { calls.generate++; return fakeLLMOutput(); },
@@ -149,8 +155,10 @@ test('pipeline: strong initial output → no repair pass fires', async () => {
       internalHostnames: ['spotless.homes'],
     });
     assert.equal(calls.generate, 1);
-    assert.equal(calls.repair, 0, 'strong article should not trigger repair');
-    assert.equal(result.repairApplied, false);
+    // Repair may fire on a single warning like external_links_present or
+    // meta_description_length under the (deliberately) aggressive
+    // 1+-fixable-warning trigger. Either way, at most ONE repair pass.
+    assert.ok(calls.repair <= 1, 'at most one repair pass');
     // Hero image is attached in the editor (post-generation), so the analyzer
     // legitimately reports it failed at this point — that's fine and the
     // banner shows red as a nudge to the user. What matters here is the
@@ -312,23 +320,41 @@ test('needsRepair: repair-fixable critical failures trigger; hero and warnings d
   });
   assert.equal(metaFail, true, 'critical failure the LLM can fix must trigger');
 
-  // Mostly-passing article with a couple of subjective warnings → no trigger.
-  const warningsOnly = seoPipeline.needsRepair({
+  // Only truly subjective warnings (not in AUTO_REPAIR_WARNING_IDS) →
+  // no trigger. `tags_configured` and `anchor_diversity` are user-judgment
+  // items that shouldn't force a rewrite.
+  const subjectiveWarningsOnly = seoPipeline.needsRepair({
     checks: [
       { id: 'title_present', status: 'passed', weight: 3 },
       { id: 'meta_description_present', status: 'passed', weight: 3 },
       { id: 'slug_present', status: 'passed', weight: 3 },
       { id: 'clean_markdown', status: 'passed', weight: 3 },
       { id: 'keyword_in_title', status: 'passed', weight: 3 },
+      { id: 'meta_description_length', status: 'passed', weight: 2 },
       { id: 'word_count', status: 'passed', weight: 2 },
       { id: 'heading_hierarchy', status: 'passed', weight: 2 },
-      { id: 'meta_description_length', status: 'warning', weight: 2 },
       { id: 'tags_configured', status: 'warning', weight: 1 },
+      { id: 'anchor_diversity', status: 'warning', weight: 1 },
     ],
     criticalFailures: 0,
     score: 88,
   });
-  assert.equal(warningsOnly, false, 'warnings alone must not trigger repair');
+  assert.equal(subjectiveWarningsOnly, false, 'subjective warnings alone must not trigger repair');
+
+  // An auto-fixable warning (meta_description_length) SHOULD trigger, even
+  // alone — that's the improvement over the previous 2+ threshold.
+  const autoFixableSingle = seoPipeline.needsRepair({
+    checks: [
+      { id: 'title_present', status: 'passed', weight: 3 },
+      { id: 'meta_description_present', status: 'passed', weight: 3 },
+      { id: 'clean_markdown', status: 'passed', weight: 3 },
+      { id: 'meta_description_length', status: 'warning', weight: 2 },
+      { id: 'word_count', status: 'passed', weight: 2 },
+    ],
+    criticalFailures: 0,
+    score: 92,
+  });
+  assert.equal(autoFixableSingle, true, 'a single auto-fixable warning must trigger repair');
 });
 
 test('analyzeExistingArticle works on a legacy DB row (snake_case, no new fields)', () => {

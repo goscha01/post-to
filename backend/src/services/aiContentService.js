@@ -205,12 +205,16 @@ Choose the combination that best answers the search intent. Do NOT include an FA
 
 # Length
 
-Target 1500–2500 words. Longer is allowed IF the extra content is genuinely useful. Do NOT pad to hit a word count.
+**MUST be at least 1,500 words**. Target 1,800–2,500. Do NOT ship anything under 1,500. Longer is allowed IF the extra content is genuinely useful — but do NOT pad with filler. If the topic is genuinely narrow, cover it in more depth (concrete examples, step-by-step, tables, FAQs) rather than shipping short.
 
 # Keyword usage
 
 - Use the target keyword in: the title, the introduction, at least one H2 or H3, and the conclusion.
 - Density should be natural — a handful of exact uses plus close variants. Do NOT stuff the keyword.
+
+# External links
+
+Include **1–2 external links to authoritative, non-competitor sources** that genuinely help the reader (e.g. Wikipedia, CDC, EPA, government agencies, well-known research bodies). Never link to competitors. Use descriptive anchor text. Skip external links only when the topic truly has no relevant authoritative source.
 
 # Trust and quality
 

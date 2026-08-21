@@ -60,8 +60,8 @@ function buildAnalyzerInput({ generation, input }) {
 // Warnings the LLM can objectively fix in a targeted revision — no
 // subjective judgment required. When any of these fires, the bounded repair
 // pass is worth spending on even though the analyzer marked them as warnings
-// rather than failures. Kept small so we don't turn every subjective warning
-// into an automatic rewrite.
+// rather than failures. Kept focused so we don't turn every subjective
+// warning into an automatic rewrite.
 const AUTO_REPAIR_WARNING_IDS = new Set([
   'intro_present',              // no intro at all
   'keyword_in_intro',           // intro exists but keyword missing
@@ -71,6 +71,9 @@ const AUTO_REPAIR_WARNING_IDS = new Set([
   'title_length',               // too short or too long
   'heading_hierarchy',          // level-skip
   'no_broken_markdown_links',
+  'word_count',                 // article too short — expand relevant sections
+  'external_links_present',     // no authoritative external references
+  'keyword_density',            // keyword under-used (warning form only)
 ]);
 
 function needsRepair(analysis) {
@@ -86,13 +89,16 @@ function needsRepair(analysis) {
   if (repairableCritical >= REPAIR_TRIGGER.criticalFailures) return true;
 
   // Objectively-fixable warnings (missing intro, meta too short, keyword
-  // missing from intro/headings, etc.) also trigger the repair. These are
-  // not judgment calls — a targeted revision reliably passes them without
-  // padding or spam. Cap at 1 pass; the pipeline never loops.
+  // missing from intro/headings, article too short, etc.) trigger the
+  // repair. These are not judgment calls — a targeted revision reliably
+  // passes them without padding or spam. Cap at 1 pass; the pipeline never
+  // loops. Threshold is 1+ (previously 2+) because for a single-warning
+  // article the user experience of "already 93 green but still one warning
+  // left" is worse than eating one extra LLM call on the initial write.
   const autoFixableWarnings = (analysis.checks || []).filter(
     (c) => c.status === 'warning' && AUTO_REPAIR_WARNING_IDS.has(c.id),
   ).length;
-  if (autoFixableWarnings >= 2) return true;
+  if (autoFixableWarnings >= 1) return true;
 
   // Score-based trigger uses the ratio without the hero checks so a
   // pre-hero article isn't repaired purely for missing media.

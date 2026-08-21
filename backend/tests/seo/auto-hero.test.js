@@ -120,7 +120,9 @@ test('attaches on happy path, persists hero_alt + source_id, recomputes SEO', as
 
   assert.equal(result.attached, true);
   assert.ok(result.blog.hero_image, 'blog carries the uploaded hero_image path');
-  assert.equal(result.blog.hero_alt, 'A tidy Tampa home');
+  // Alt now includes the keyword suffix so the keyword_in_image_alt check
+  // passes automatically. Format: "<pexels alt> — <keyword>".
+  assert.equal(result.blog.hero_alt, 'A tidy Tampa home — routine house cleaning services');
   assert.ok(result.seo, 'fresh analysis attached');
   assert.equal(typeof result.seo.score, 'number');
 

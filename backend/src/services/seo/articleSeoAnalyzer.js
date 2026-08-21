@@ -154,12 +154,16 @@ const evaluators = {
   // ============ Links ============
   internal_links_present({ links, internalHostnames, knownInternalUrls }) {
     const internal = links.filter((l) => classifyLink(l, internalHostnames) === 'internal');
-    // If the caller passed no site context at all, mark N/A rather than
-    // penalising an article for an infra gap.
-    const hasContext = (internalHostnames && internalHostnames.length)
-      || (knownInternalUrls && knownInternalUrls.length);
-    if (!hasContext && internal.length === 0) {
-      return na('Internal links present', 'no known internal URLs for this site');
+    // If we have no LIST of known internal URLs (not just a hostname), the
+    // LLM correctly refused to invent any and there's nothing the user can
+    // "fix" without wiring up their sitemap. Mark N/A rather than warn on
+    // an infra gap the writer can't fix.
+    //
+    // `internalHostnames` alone (derived from the connection URL) is only
+    // used to CLASSIFY existing links — it isn't a list to link TO.
+    const hasKnownUrls = Array.isArray(knownInternalUrls) && knownInternalUrls.length > 0;
+    if (!hasKnownUrls && internal.length === 0) {
+      return na('Internal links present', 'no known internal URLs configured for this site');
     }
     const t = THRESHOLDS.links;
     if (internal.length === 0) return warn('Internal links present', '0 internal links', 'Add 2–6 relevant internal links.');

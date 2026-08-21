@@ -83,10 +83,20 @@ async function attachAutoHeroToArticle({ userId, blog, connectionContext = {} })
     return skip(`upload_failed:${e.message}`);
   }
 
-  // Set hero_alt (prefer Pexels-supplied alt) + hero_image_source_id for
-  // future dedup on suggestion. Also clear seo_metadata so the next read
-  // recomputes with the hero in place.
-  const heroAlt = (chosen.alt || query || blog.title || '').slice(0, 300);
+  // Set hero_alt (prefer a keyword-augmented version so the
+  // `keyword_in_image_alt` check passes without extra work). The Pexels-
+  // supplied alt is often generic ("Latex gloves and spray detergent");
+  // combining it with the target keyword produces a natural, informative
+  // alt like "Latex gloves and spray detergent for apartment cleaning
+  // in tampa." Truncated to 300 chars.
+  const pexelsAlt = (chosen.alt || query || '').trim();
+  const kw = (blog.keyword || '').trim();
+  let heroAlt;
+  if (pexelsAlt && kw && !new RegExp(kw.split(/\s+/).filter(Boolean).map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*'), 'i').test(pexelsAlt)) {
+    heroAlt = `${pexelsAlt} — ${kw}`.slice(0, 300);
+  } else {
+    heroAlt = (pexelsAlt || kw || blog.title || '').slice(0, 300);
+  }
   try {
     const { data: withAlt, error } = await supabase
       .from('blog_articles')
