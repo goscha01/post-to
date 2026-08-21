@@ -1242,6 +1242,15 @@ async function applyEditOps(livingPlanId, operations) {
           patch.monitor_spec = op.newMonitorSpec;
           patch.check_after = op.newCheckAfter;
           patch.check_until = op.newCheckUntil;
+          // Self-heal: if the step's current status is 'applied' or 'failed'
+          // (leftover from a prior fuzzy-carry-forward that mismatched this
+          // observation to a google_ads_action), reset to 'pending' so the
+          // auto-monitor can actually run. 'done' stays as-is (user confirmed).
+          if (['applied', 'failed'].includes(step.status)) {
+            patch.status = 'pending';
+            patch.applied_at = null;
+            patch.applied_error = null;
+          }
         }
         // Append refactor reason to notes as an audit trail.
         const noteAddition = `[Refactored by AI regen ${nowIso}]${op.reason ? ' ' + op.reason : ''}`;
