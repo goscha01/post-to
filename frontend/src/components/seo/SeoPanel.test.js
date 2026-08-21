@@ -20,6 +20,7 @@ jest.mock('../../services/blogsService', () => ({
   default: {
     analyzeSeo: jest.fn(),
     fixSeo: jest.fn(),
+    fixSeoAll: jest.fn(),
   },
 }));
 
@@ -128,6 +129,30 @@ describe('SeoChecklistDrawer', () => {
     // Meta is expanded by default — the meta_description_length warning has a Fix button.
     const fixButtons = screen.getAllByRole('button', { name: /Fix with AI/ });
     expect(fixButtons.length).toBeGreaterThan(0);
+  });
+
+  it('shows a "Fix all (N)" button when N repairable checks exist', () => {
+    render(
+      <SeoChecklistDrawer open={true} onClose={() => {}} analysis={strongAnalysis} blogId="blog-1" />
+    );
+    // Fixture has 1 fixable warning (meta_description_length).
+    expect(screen.getByRole('button', { name: /Fix all \(1\)/ })).toBeInTheDocument();
+  });
+
+  it('invokes fixSeoAll and calls onFixed with the batch response', async () => {
+    const blogsService = require('../../services/blogsService').default;
+    blogsService.fixSeoAll.mockResolvedValueOnce({
+      blog: { id: 'blog-1', title: 'Better' },
+      seo: { ...strongAnalysis, warnings: 0, failed: 0 },
+      applied: [{ checkId: 'meta_description_length', changedFields: ['meta_description'] }],
+    });
+    const onFixed = jest.fn();
+    render(
+      <SeoChecklistDrawer open={true} onClose={() => {}} analysis={strongAnalysis} blogId="blog-1" onFixed={onFixed} />
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Fix all/ }));
+    await waitFor(() => expect(blogsService.fixSeoAll).toHaveBeenCalledWith('blog-1'));
+    await waitFor(() => expect(onFixed).toHaveBeenCalled());
   });
 
   it('invokes fixSeo and calls onFixed with the server response', async () => {

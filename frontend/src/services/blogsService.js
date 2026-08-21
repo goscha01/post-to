@@ -116,12 +116,20 @@ const fixSeo = async (id, checkId) => {
   return res.data; // { blog, seo, changed, previous }
 };
 
+// Batch "Fix all" — loops through every failing/warning check (up to 8) on
+// the server and applies targeted fixes sequentially. Longer timeout since
+// each internal call is its own LLM round-trip.
+const fixSeoAll = async (id) => {
+  const res = await axios.post(`/api/blogs/${id}/seo-fix-all`, {}, { timeout: 5 * 60 * 1000 });
+  return res.data; // { blog, seo, applied: [{ checkId, changedFields }] }
+};
+
 const blogsService = {
   list, get, update, remove, generate,
   publish, unpublish,
   listDomains, createDomain, verifyDomain, deleteDomain,
   refreshDomainTheme, updateDomainTheme,
   uploadHeroImage, removeHeroImage, suggestHeroImages, setHeroImageFromUrl,
-  analyzeSeo, fixSeo,
+  analyzeSeo, fixSeo, fixSeoAll,
 };
 export default blogsService;

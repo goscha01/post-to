@@ -57,6 +57,22 @@ function buildAnalyzerInput({ generation, input }) {
   };
 }
 
+// Warnings the LLM can objectively fix in a targeted revision — no
+// subjective judgment required. When any of these fires, the bounded repair
+// pass is worth spending on even though the analyzer marked them as warnings
+// rather than failures. Kept small so we don't turn every subjective warning
+// into an automatic rewrite.
+const AUTO_REPAIR_WARNING_IDS = new Set([
+  'intro_present',              // no intro at all
+  'keyword_in_intro',           // intro exists but keyword missing
+  'keyword_in_heading',         // no heading contains the keyword
+  'keyword_placement_distribution',
+  'meta_description_length',    // too short or too long (mostly too short)
+  'title_length',               // too short or too long
+  'heading_hierarchy',          // level-skip
+  'no_broken_markdown_links',
+]);
+
 function needsRepair(analysis) {
   if (!analysis) return false;
   // Only count *repairable* critical failures — the LLM can't attach a hero
@@ -68,6 +84,16 @@ function needsRepair(analysis) {
     return (c.weight || 0) >= 3;
   }).length;
   if (repairableCritical >= REPAIR_TRIGGER.criticalFailures) return true;
+
+  // Objectively-fixable warnings (missing intro, meta too short, keyword
+  // missing from intro/headings, etc.) also trigger the repair. These are
+  // not judgment calls — a targeted revision reliably passes them without
+  // padding or spam. Cap at 1 pass; the pipeline never loops.
+  const autoFixableWarnings = (analysis.checks || []).filter(
+    (c) => c.status === 'warning' && AUTO_REPAIR_WARNING_IDS.has(c.id),
+  ).length;
+  if (autoFixableWarnings >= 2) return true;
+
   // Score-based trigger uses the ratio without the hero checks so a
   // pre-hero article isn't repaired purely for missing media.
   const repairableChecks = (analysis.checks || []).filter(

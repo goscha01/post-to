@@ -33,7 +33,9 @@ test('enhanced article prompt asks for SEO + structured JSON envelope', () => {
   // Adaptive-structure guidance.
   assert.match(user, /pick what fits/i);
   // No H1 in body rule (title is the H1).
-  assert.match(user, /start at H2/i);
+  assert.match(user, /Never emit an H1/i);
+  // Mandatory intro rule (added to fix "no intro" cases seen in prod).
+  assert.match(user, /MANDATORY first block/i);
   // Keyword rule.
   assert.match(user, /house cleaning tampa/);
   // Internal links whitelist appears.
@@ -264,6 +266,27 @@ test('pipeline: post-generation analysis is always attached', async () => {
     assert.ok(result.analysis.checks.length > 0);
     assert.ok(['green', 'yellow', 'red'].includes(result.analysis.status));
   } finally { restore(); }
+});
+
+test('needsRepair: 2+ auto-fixable warnings triggers repair (no intro + keyword-in-intro miss)', () => {
+  // These are the exact warnings we saw in prod on the apartment-cleaning
+  // article — no intro at all → keyword_in_intro and keyword_placement also
+  // warn. Repair should fire even though nothing is critical.
+  const trigger = seoPipeline.needsRepair({
+    checks: [
+      { id: 'title_present', status: 'passed', weight: 3 },
+      { id: 'meta_description_present', status: 'passed', weight: 3 },
+      { id: 'clean_markdown', status: 'passed', weight: 3 },
+      { id: 'keyword_in_title', status: 'passed', weight: 3 },
+      { id: 'intro_present', status: 'warning', weight: 2 },
+      { id: 'keyword_in_intro', status: 'warning', weight: 2 },
+      { id: 'keyword_placement_distribution', status: 'warning', weight: 1 },
+      { id: 'word_count', status: 'passed', weight: 2 },
+    ],
+    criticalFailures: 0,
+    score: 82,
+  });
+  assert.equal(trigger, true, 'objectively-fixable warning cluster must trigger repair');
 });
 
 test('needsRepair: repair-fixable critical failures trigger; hero and warnings do not', () => {

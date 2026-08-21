@@ -172,8 +172,22 @@ function groupChecks(checks = []) {
 export function SeoChecklistDrawer({ open, onClose, analysis, blogId, onFixed }) {
   const [expanded, setExpanded] = useState(() => new Set(['meta', 'keyword']));
   const [fixing, setFixing] = useState(null); // checkId currently being fixed
+  const [fixingAll, setFixingAll] = useState(false);
   const [fixError, setFixError] = useState('');
   const groups = useMemo(() => groupChecks(analysis?.checks), [analysis]);
+
+  // Count actionable checks so we can enable / label the "Fix all" button.
+  const fixableCount = useMemo(() => {
+    if (!analysis) return 0;
+    const excluded = new Set([
+      'hero_image_present', 'hero_alt_present', 'hero_alt_quality',
+      'image_alt_coverage', 'keyword_in_image_alt',
+      'tags_configured', 'slug_seo_friendly', 'slug_present',
+    ]);
+    return analysis.checks.filter(
+      (c) => (c.status === 'failed' || c.status === 'warning') && !excluded.has(c.id),
+    ).length;
+  }, [analysis]);
 
   useEffect(() => {
     if (!open) {
@@ -204,6 +218,20 @@ export function SeoChecklistDrawer({ open, onClose, analysis, blogId, onFixed })
     }
   };
 
+  const doFixAll = async () => {
+    if (!blogId || fixingAll) return;
+    setFixingAll(true);
+    setFixError('');
+    try {
+      const result = await blogsService.fixSeoAll(blogId);
+      if (onFixed) onFixed(result);
+    } catch (e) {
+      setFixError(e.response?.data?.message || e.message || 'Failed to run Fix all');
+    } finally {
+      setFixingAll(false);
+    }
+  };
+
   if (!open) return null;
 
   return (
@@ -222,9 +250,26 @@ export function SeoChecklistDrawer({ open, onClose, analysis, blogId, onFixed })
               </p>
             )}
           </div>
-          <button onClick={onClose} className="p-1 text-gray-400 hover:text-gray-600">
-            <X className="h-5 w-5" />
-          </button>
+          <div className="flex items-center gap-2">
+            {fixableCount > 0 && (
+              <button
+                type="button"
+                onClick={doFixAll}
+                disabled={fixingAll || !!fixing}
+                className="inline-flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-md bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-50"
+                title="Runs Fix with AI on every fixable warning / failure in one pass"
+              >
+                {fixingAll ? (
+                  <><Loader2 className="h-3.5 w-3.5 animate-spin" />Fixing…</>
+                ) : (
+                  <><Sparkles className="h-3.5 w-3.5" />Fix all ({fixableCount})</>
+                )}
+              </button>
+            )}
+            <button onClick={onClose} className="p-1 text-gray-400 hover:text-gray-600">
+              <X className="h-5 w-5" />
+            </button>
+          </div>
         </div>
         {fixError && (
           <div className="mx-4 mt-3 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-800">{fixError}</div>
@@ -266,7 +311,7 @@ export function SeoChecklistDrawer({ open, onClose, analysis, blogId, onFixed })
                           <button
                             type="button"
                             onClick={() => doFix(c.id)}
-                            disabled={!!fixing}
+                            disabled={!!fixing || fixingAll}
                             className="shrink-0 inline-flex items-center gap-1 text-xs px-2 py-1 rounded border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-50"
                             title="Ask the AI to fix this specific check"
                           >

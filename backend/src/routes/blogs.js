@@ -428,6 +428,105 @@ router.post('/:id/seo-analyze', [param('id').isUUID()], async (req, res) => {
 // SEO analysis. Non-destructive: title/meta/etc. get overwritten only if
 // the model returns a different value; the previous value is left in the
 // `previous` field in the response so the UI can offer undo.
+// Batch SEO fix — user pressed "Fix all" in the drawer. Iterates every
+// failing/warning check that has a repair-fixable evaluator and runs the
+// same targeted seo-fix logic sequentially. Bounded: at most one repair per
+// check, at most `MAX_BATCH_FIXES` total, so the whole call finishes in
+// bounded time + cost. Persists per-check fixes so a mid-batch failure
+// doesn't lose earlier progress.
+const MAX_BATCH_FIXES = 8;
+
+router.post('/:id/seo-fix-all', [param('id').isUUID()], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ error: 'Invalid id' });
+  try {
+    const { data: article, error: loadErr } = await supabase
+      .from('blog_articles')
+      .select(PUBLIC_FIELDS)
+      .eq('user_id', req.user.userId)
+      .eq('id', req.params.id)
+      .single();
+    if (loadErr) {
+      if (loadErr.code === 'PGRST116') return res.status(404).json({ error: 'Blog not found' });
+      throw loadErr;
+    }
+    const ctx = await loadConnectionContext(req.user.userId, article.connection_id);
+    let current = article;
+    let analysis = seoPipeline.analyzeExistingArticle({ article: current, ...ctx });
+    // Pick fixable checks: fails + warnings, excluding hero/image (can't fix
+    // via LLM) and slug/tags (structural user choice). Ordered by weight desc
+    // so critical items get the first fix budget.
+    const excluded = new Set([
+      'hero_image_present', 'hero_alt_present', 'hero_alt_quality',
+      'image_alt_coverage', 'keyword_in_image_alt',
+      'tags_configured', 'slug_seo_friendly', 'slug_present',
+    ]);
+    const targets = analysis.checks
+      .filter((c) => (c.status === 'failed' || c.status === 'warning') && !excluded.has(c.id))
+      .sort((a, b) => (b.weight || 0) - (a.weight || 0))
+      .slice(0, MAX_BATCH_FIXES);
+    const applied = [];
+    for (const check of targets) {
+      // Skip if the check is already passing after prior fix in this loop.
+      const now = analysis.checks.find((c) => c.id === check.id);
+      if (!now || now.status === 'passed') continue;
+      try {
+        const targeted = { ...analysis, checks: [now] };
+        const repair = await aiContent.repairArticle({
+          previousJson: {
+            title: current.title, slug: current.slug,
+            metaDescription: current.meta_description, markdown: current.markdown,
+            suggestedExcerpt: current.suggested_excerpt,
+            suggestedSocialPost: current.suggested_social_post,
+            tags: current.tags || [], searchIntent: current.search_intent || '',
+            faq: current.faq || [], imageSuggestions: current.image_suggestions || [],
+            suggestedInternalLinks: current.suggested_internal_links || [],
+          },
+          analysis: targeted,
+          keyword: current.keyword,
+          businessName: current.business_name,
+          knownInternalUrls: ctx.knownInternalUrls,
+        });
+        const changed = {};
+        for (const [k, dbKey] of Object.entries({
+          title: 'title', slug: 'slug', metaDescription: 'meta_description',
+          markdown: 'markdown', suggestedExcerpt: 'suggested_excerpt',
+          suggestedSocialPost: 'suggested_social_post', tags: 'tags',
+          searchIntent: 'search_intent', faq: 'faq',
+          imageSuggestions: 'image_suggestions',
+          suggestedInternalLinks: 'suggested_internal_links',
+        })) {
+          if (JSON.stringify(repair.data[k]) !== JSON.stringify(current[dbKey])) {
+            changed[dbKey] = repair.data[k];
+          }
+        }
+        if (Object.keys(changed).length > 0) {
+          changed.seo_metadata = null;
+          const { data: updated, error: updateErr } = await supabase
+            .from('blog_articles').update(changed)
+            .eq('user_id', req.user.userId).eq('id', req.params.id)
+            .select(PUBLIC_FIELDS).single();
+          if (updateErr) throw updateErr;
+          current = updated;
+          analysis = seoPipeline.analyzeExistingArticle({ article: current, ...ctx });
+          applied.push({ checkId: check.id, changedFields: Object.keys(changed).filter((k) => k !== 'seo_metadata') });
+        }
+      } catch (e) {
+        logger.warn('blogs.seo_fix_all.check_failed', { checkId: check.id, error: e.message });
+      }
+    }
+    // Persist the final analysis one more time so the row's cached
+    // seo_metadata reflects the end state.
+    await supabase.from('blog_articles').update({ seo_metadata: analysis })
+      .eq('user_id', req.user.userId).eq('id', req.params.id);
+    logger.info('blogs.seo_fix_all.done', { blogId: req.params.id, applied: applied.length, targets: targets.length });
+    res.json({ blog: await withPreview(req.user.userId, current), seo: analysis, applied });
+  } catch (err) {
+    logger.error('blogs.seo_fix_all_failed', { error: err.message, id: req.params.id });
+    res.status(500).json({ error: 'Failed to run batch SEO fix', message: err.message });
+  }
+});
+
 router.post(
   '/:id/seo-fix',
   [

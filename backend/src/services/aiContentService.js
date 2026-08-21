@@ -177,9 +177,10 @@ Before writing, silently decide the search intent behind "${keyword}" — inform
 
 # Structure — pick what fits, do not use everything
 
-Possible sections you may compose (in any order that reads naturally):
-- Strong intro that names the topic and previews the value (~80–150 words)
-- "Key Takeaways" callout at the top (3–6 crisp bullet points) — useful for long articles
+**MANDATORY first block**: 1–2 short opening paragraphs (60–120 words total) that name the topic, mention the target keyword naturally, and preview what the reader will get. This intro comes BEFORE any H2, BEFORE any "Key Takeaways" callout, BEFORE any list. Do NOT start the article with a heading — start with prose.
+
+After the intro, pick from these sections in any order that reads naturally:
+- "Key Takeaways" callout (3–6 crisp bullet points) — useful for long articles
 - Definition / background section
 - Step-by-step or how-to walkthrough
 - Comparison (best done as a table)
@@ -193,7 +194,8 @@ Choose the combination that best answers the search intent. Do NOT include an FA
 
 # Formatting rules
 
-- The article title is the H1 rendered by the site. Your markdown body MUST start at H2. Never emit an H1 (# ) in the body.
+- The article title is the H1 rendered by the site. The body MUST open with the intro paragraphs, then move to H2 for the first section. Never emit an H1 (# ) in the body.
+- Never start the body with a heading. Never start the body with a list. Never start the body with a "Key Takeaways" callout — the intro comes first.
 - Use H2 for major sections. Use H3 for sub-points inside a section. Do not skip heading levels.
 - Write short, scannable paragraphs (target 2–5 sentences, ~60–90 words). Avoid walls of text.
 - Use bullet or numbered lists where they improve scanning.
@@ -233,7 +235,7 @@ Target 1500–2500 words. Longer is allowed IF the extra content is genuinely us
 {
   "title": string,                          // 45–65 chars, includes keyword
   "slug": string,                           // lowercase, hyphens only, no leading/trailing hyphen
-  "metaDescription": string,                // 140–160 chars, includes keyword naturally
+  "metaDescription": string,                // MUST be 140–160 chars (aim for 145–158). Includes keyword naturally. Do NOT return anything shorter than 140 chars.
   "markdown": string,                       // article body starting at H2
   "suggestedExcerpt": string,               // 150–220 chars, standalone summary
   "suggestedSocialPost": string,            // 1–2 sentences for a GBP/Facebook post
