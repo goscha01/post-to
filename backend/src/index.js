@@ -206,11 +206,17 @@ app.listen(PORT, () => {
   // Opt-out via DISABLE_CAMPAIGN_MONITOR=1.
   if (process.env.DISABLE_CAMPAIGN_MONITOR !== '1') {
     const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
-    const kick = () => campaignMonitorService.runMonitorTick({}).catch(err => {
-      console.error('campaign_monitor.tick_error', err?.message);
-    });
-    // Fire once ~30s after boot so we don't race with app initialization,
-    // then every 6h thereafter.
+    const kick = async () => {
+      // Baseline sweep FIRST: catches observation steps with monitor_spec
+      // but no last_check_at (e.g. specs retrofitted before the baseline
+      // trigger shipped, or otherwise missed). Runs regardless of check_after.
+      try { await campaignMonitorService.runBaselineSweep(); }
+      catch (err) { console.error('campaign_monitor.baseline_sweep_error', err?.message); }
+      // Then the normal scheduled tick for steps due per check_after.
+      try { await campaignMonitorService.runMonitorTick({}); }
+      catch (err) { console.error('campaign_monitor.tick_error', err?.message); }
+    };
+    // Fire once ~30s after boot, then every 6h thereafter.
     setTimeout(kick, 30_000);
     setInterval(kick, SIX_HOURS_MS);
   }

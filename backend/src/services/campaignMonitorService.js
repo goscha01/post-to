@@ -272,8 +272,32 @@ function clampInt(v, min, max, def) {
   return Math.max(min, Math.min(max, n));
 }
 
+// Baseline sweep: finds every observation step that has a monitor_spec but
+// no last_check_at yet, and runs the evaluator on all of them (ignoring
+// check_after schedule). Called on server boot as a safety net so specs
+// retrofitted BEFORE the baseline-tick feature shipped still get their
+// initial reading. Also called as part of the 6h interval.
+async function runBaselineSweep() {
+  const { data: unbaselined, error } = await supabase
+    .from('campaign_assistant_action_plan_steps')
+    .select('id')
+    .eq('type', 'observation')
+    .eq('status', 'pending')
+    .not('monitor_spec', 'is', null)
+    .is('last_check_at', null)
+    .limit(500);
+  if (error) throw new Error(`baseline sweep fetch failed: ${error.message}`);
+  if (!unbaselined || unbaselined.length === 0) {
+    logger.info('campaignMonitor.baseline_sweep', { unbaselined_count: 0 });
+    return { evaluated: 0 };
+  }
+  logger.info('campaignMonitor.baseline_sweep', { unbaselined_count: unbaselined.length });
+  return runMonitorTick({ stepIds: unbaselined.map(s => s.id), ignoreSchedule: true });
+}
+
 module.exports = {
   runMonitorTick,
+  runBaselineSweep,
   safeParseMonitorSpec,
   SUPPORTED_SOURCES,
   SUPPORTED_OPS,
