@@ -294,12 +294,21 @@ const CampaignAssistant = () => {
         setLastEditOpsSummary(res.editOps);
         setTimeout(() => setLastEditOpsSummary(null), 15_000);
       }
+      // Baseline monitor ticks are fired async by the backend. Re-fetch the
+      // plan after ~8s so the just-populated last_check_at/value appears in
+      // the MonitorInfoBadge without the user having to refresh manually.
+      const hasObservationWithMonitor = (res.steps || []).some(
+        s => s.type === 'observation' && s.monitor_spec && !s.last_check_at
+      );
+      if (hasObservationWithMonitor) {
+        setTimeout(() => loadLatestPlan(activeConversation.id), 8_000);
+      }
     } catch (err) {
       setPlanError(err.response?.data?.error || err.message || 'Failed to generate plan');
     } finally {
       setPlanLoading(false);
     }
-  }, [activeConversation]);
+  }, [activeConversation, loadLatestPlan]);
 
   const toggleStepStatus = useCallback(async (stepId, currentStatus) => {
     const nextStatus = currentStatus === 'done' ? 'pending' : 'done';

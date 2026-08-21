@@ -21,6 +21,7 @@ const authMiddleware = require('../middleware/authMiddleware');
 const requireBusinessAuth = require('../middleware/businessAuth');
 const optimizationReport = require('../services/optimizationReportService');
 const campaignAssistant = require('../services/campaignAssistantService');
+const campaignMonitor = require('../services/campaignMonitorService');
 const openAiAds = require('../services/openAiAdsService');
 const connectionsService = require('../services/connectionsService');
 const { getAllBusinessTokens } = require('../utils/businessTokens');
@@ -1180,6 +1181,27 @@ async function buildPriorPlanOutcomes(conversationId, currentPlanIdToExclude = n
 // Guards against hallucinated step_ids by validating each op against the
 // current step set before dispatching. Returns { applied, skipped } counts
 // so the caller can log + tell the user what happened.
+// Runs an immediate baseline monitor tick on any observation step in the
+// given plan that has a monitor_spec but no last_check_at yet. Called from
+// both plan-creation paths (initial + edit-ops regen) so the user sees a
+// value immediately instead of waiting up to check_after for the first tick.
+// Ignores the check_after schedule for this call — the point is a baseline.
+async function triggerBaselineChecks(planId) {
+  const { data: unbaselined, error } = await supabase
+    .from('campaign_assistant_action_plan_steps')
+    .select('id')
+    .eq('plan_id', planId)
+    .eq('type', 'observation')
+    .not('monitor_spec', 'is', null)
+    .is('last_check_at', null);
+  if (error) throw new Error(`baseline fetch failed: ${error.message}`);
+  if (!unbaselined || unbaselined.length === 0) return { evaluated: 0 };
+  return campaignMonitor.runMonitorTick({
+    stepIds: unbaselined.map(s => s.id),
+    ignoreSchedule: true,
+  });
+}
+
 async function applyEditOps(livingPlanId, operations) {
   const { data: currentSteps } = await supabase
     .from('campaign_assistant_action_plan_steps')
@@ -1354,6 +1376,16 @@ async function handleEditOpsRegen({ req, res, userId, conversationId, conv, livi
       .from('campaign_assistant_action_plans')
       .update(patch)
       .eq('id', livingPlan.id);
+
+    // Baseline: run auto-monitor immediately on any observation step in
+    // this plan that has a monitor_spec but no last_check_at yet. Gives the
+    // user an instant "before" reading + confirms the wiring works instead
+    // of waiting up to check_after (potentially days) for the first tick.
+    // Fire-and-forget so the response returns fast — the frontend will show
+    // the baseline on the next plan re-fetch.
+    triggerBaselineChecks(livingPlan.id).catch(err => {
+      logger.error('campaignAssistant.baseline_tick_failed', { planId: livingPlan.id, error: err.message });
+    });
 
     // Re-fetch full plan + steps for the response.
     const { data: refreshedPlan } = await supabase
@@ -1546,6 +1578,12 @@ router.post('/conversations/:id/plans', async (req, res) => {
         if (freshSteps) steps = freshSteps;
       }
     }
+
+    // Baseline: fire an immediate monitor tick on any observation steps that
+    // got a monitor_spec but no last_check_at yet. See handleEditOpsRegen.
+    triggerBaselineChecks(planRow.id).catch(err => {
+      logger.error('campaignAssistant.baseline_tick_failed', { planId: planRow.id, error: err.message });
+    });
 
     logger.info('campaignAssistant.plan_created', {
       userId,

@@ -142,16 +142,24 @@ async function evaluateSpec({ spec, userId, conversation }) {
 
 // -- Tick: walk all due observation steps and evaluate ------------------------
 
-async function runMonitorTick({ limit = 100 } = {}) {
+async function runMonitorTick({ limit = 100, stepIds = null, ignoreSchedule = false } = {}) {
   const nowIso = new Date().toISOString();
-  const { data: dueSteps, error } = await supabase
+  let query = supabase
     .from('campaign_assistant_action_plan_steps')
     .select('id, plan_id, status, title, monitor_spec, check_after, check_until, last_check_at')
-    .not('monitor_spec', 'is', null)
-    .eq('status', 'pending')
-    .lte('check_after', nowIso)
-    .order('check_after', { ascending: true })
-    .limit(limit);
+    .not('monitor_spec', 'is', null);
+  if (stepIds && stepIds.length > 0) {
+    query = query.in('id', stepIds);
+    if (!ignoreSchedule) {
+      query = query.eq('status', 'pending').lte('check_after', nowIso);
+    }
+  } else {
+    query = query
+      .eq('status', 'pending')
+      .lte('check_after', nowIso)
+      .order('check_after', { ascending: true });
+  }
+  const { data: dueSteps, error } = await query.limit(limit);
   if (error) throw new Error(`monitor tick fetch failed: ${error.message}`);
 
   const results = { evaluated: 0, marked_done: 0, marked_failed: 0, still_pending: 0, errors: 0 };
