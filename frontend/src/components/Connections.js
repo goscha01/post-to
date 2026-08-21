@@ -466,6 +466,15 @@ const ConnectPickerModal = ({ onClose, onConnected }) => {
   const { loginForBusiness, loginForFacebook } = useAuth();
   const navigate = useNavigate();
 
+  // Lock <body> scroll while the modal is open so the background page can't
+  // scroll behind it. Restores the prior overflow value on unmount so we
+  // don't clobber a page that had a custom overflow set.
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = prev; };
+  }, []);
+
   const handleGoogle = async () => {
     try {
       await loginForBusiness();
@@ -531,20 +540,25 @@ const ConnectPickerModal = ({ onClose, onConnected }) => {
 
   // Compact modal for the simple flows (website + OpenAI Ads); wider modal
   // for the publishing-platform wizards that show step guides, code blocks
-  // and payload tables.
-  const isWide = step !== 'pick' && step !== 'website' && step !== 'openai_ads';
-  const widthClass = isWide ? 'max-w-3xl' : 'max-w-lg';
+  // and payload tables. Height is capped by the modal itself (see below).
+  const widthClass = step === 'pick' || step === 'website' || step === 'openai_ads' ? 'max-w-lg' : 'max-w-3xl';
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
-      <div className={`bg-white rounded-lg shadow-xl w-full ${widthClass}`} onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+      {/* Modal is a flex column with a hard height cap so long wizards
+          (WordPress, BigCommerce, Webhook payload spec, etc.) scroll inside
+          instead of pushing the modal past the viewport. */}
+      <div
+        className={`bg-white rounded-lg shadow-xl w-full ${widthClass} flex flex-col max-h-[90vh]`}
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 flex-shrink-0">
           <h2 className="text-lg font-semibold text-gray-900">{titles[step] || titles.pick}</h2>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
             <X className="h-5 w-5" />
           </button>
         </div>
-        <div className={`p-6 ${isWide ? 'max-h-[80vh] overflow-y-auto' : ''}`}>
+        <div className="p-6 flex-1 overflow-y-auto">
           {step === 'pick' && (
             <PickerTiles
               onPickWebsite={() => setStep('website')}
