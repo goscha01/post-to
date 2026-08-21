@@ -472,6 +472,16 @@ RULES
 - If a recommendation was rejected or superseded later in the discussion, drop it entirely.
 - For each step, cite specific numbers from the discussion when possible ("Add negatives with combined spend of $47", not "Add some negatives").
 
+RESPECT PRIOR PLAN OUTCOMES — CRITICAL
+
+If the transcript begins with a "=== PRIOR PLAN OUTCOMES ===" block, that block enumerates every step the user has already completed, applied, skipped, or failed across prior plans in this conversation, WITH the notes explaining what happened. You MUST respect it:
+
+- Steps marked "done" or "applied" — do NOT include them in the new plan. The user considers them finished. The only exception is if a prior "applied" step's downstream effect has visibly regressed (e.g. campaign was paused, then unpaused, and metrics have deteriorated again) — in which case briefly acknowledge this in the summary and include the re-do as a step.
+- Steps marked "skipped" — respect the note explaining why. If the reason was "user rejected: [reason]" (see the note field), DO NOT re-propose the same task under a different name. If the reason indicates a temporary block ("waiting on data"), you may include a follow-up step that assumes the block has cleared.
+- Steps marked "failed" — you MAY include a modified version if the failure reason (in the note) suggests a different approach could work.
+- If a step's note contains "[RESULTS ... AI action: close]" with a note like "User reported: [dev agent explaining the task was misframed, offering alternatives]", the ORIGINAL task is done AND you should consider whether the ALTERNATIVES the agent offered still need to be captured as new steps.
+- If a step's note contains "[Carried forward from previous plan]", treat its status as authoritative — the user's earlier work is preserved.
+
 RESPECT CURRENT STATE — CRITICAL
 
 Before recommending ANY change to ANY setting or statistic, check the current value in the campaign snapshot. If the change you'd recommend is already in effect (or effectively so), DO NOT include that as a step. The user is planning what to do NEXT, not re-doing what's already been done. This applies to EVERY recommendation — not just campaign status. Concretely:

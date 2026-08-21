@@ -1127,6 +1127,45 @@ async function buildFullTranscript(conversationId) {
   return lines.join('\n');
 }
 
+// Build a "PRIOR PLAN OUTCOMES" block summarising completed / applied /
+// skipped / failed steps across the last few plans for this conversation.
+// Fed into the plan-synthesis prompt so the AI DOESN'T re-propose work
+// that's already been done, regardless of whether the fuzzy carry-forward
+// would catch it later. Notes on each step (which include AI Results
+// decisions + user reports + rejection reasons) are included so the
+// synthesizer sees WHY each step ended up in its current state.
+async function buildPriorPlanOutcomes(conversationId, currentPlanIdToExclude = null) {
+  const { data: prevPlans } = await supabase
+    .from('campaign_assistant_action_plans')
+    .select('id, title, created_at')
+    .eq('conversation_id', conversationId)
+    .order('created_at', { ascending: false })
+    .limit(3);   // last 3 plans is enough historical context
+  if (!prevPlans || prevPlans.length === 0) return '';
+
+  const planBlocks = [];
+  for (const pp of prevPlans) {
+    if (currentPlanIdToExclude && pp.id === currentPlanIdToExclude) continue;
+    const { data: steps } = await supabase
+      .from('campaign_assistant_action_plan_steps')
+      .select('title, status, notes, position')
+      .eq('plan_id', pp.id)
+      .in('status', ['done', 'applied', 'skipped', 'failed'])
+      .order('position', { ascending: true });
+    if (!steps || steps.length === 0) continue;
+    const stepLines = steps.map(s => {
+      const noteExcerpt = s.notes
+        ? ` — Note: "${String(s.notes).slice(0, 400).replace(/\s+/g, ' ')}"`
+        : '';
+      return `  [${s.status}] ${s.title}${noteExcerpt}`;
+    });
+    planBlocks.push(`From plan "${pp.title}" (${pp.created_at.slice(0, 10)}):\n${stepLines.join('\n')}`);
+  }
+  if (planBlocks.length === 0) return '';
+
+  return `\n=== PRIOR PLAN OUTCOMES (respect these — do NOT re-propose completed work) ===\n${planBlocks.join('\n\n')}\n=== END PRIOR PLAN OUTCOMES ===\n\n`;
+}
+
 // POST /conversations/:id/plans — synthesize + persist a new consensus plan
 router.post('/conversations/:id/plans', async (req, res) => {
   const userId = req.user.userId;
@@ -1148,9 +1187,15 @@ router.post('/conversations/:id/plans', async (req, res) => {
       return res.status(400).json({ error: 'Nothing to synthesize — no completed messages yet' });
     }
 
+    // Prepend prior-plan outcomes so the AI knows what's already done
+    // (or explicitly skipped/rejected) and doesn't re-propose it. Empty
+    // string on the first ever plan for this conversation.
+    const priorOutcomes = await buildPriorPlanOutcomes(conversationId);
+    const enrichedTranscript = priorOutcomes + transcript;
+
     const result = await campaignAssistant.synthesizeDialoguePlan({
       report: conv.report_snapshot,
-      transcript,
+      transcript: enrichedTranscript,
     });
 
     // Stash the whole dialogue (openaiDraft → claudeCritique → openaiRevision
