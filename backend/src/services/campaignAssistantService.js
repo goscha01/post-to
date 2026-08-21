@@ -1127,6 +1127,198 @@ Produce the merged JSON plan now, including "convergence_notes".`;
   };
 }
 
+// ---------------------------------------------------------------------------
+// Edit-ops synthesis — for regenerating a LIVING plan in place.
+//
+// Old flow: regenerate produced a fresh plan JSON. Continuity was
+// reconstructed after the fact via fuzzy title matching. Broke every time
+// the AI paraphrased a step.
+//
+// New flow: regenerate produces EDIT OPERATIONS against the existing plan.
+// Each op references a step_id (UUID) so identity is stable. AI outputs
+// only what changed — no ops means "the plan is fine as-is". Kills the
+// entire "my done tasks come back as pending" class of bug.
+//
+// Single-shot (not 4-round dialogue) — editing is a review pass, not a
+// creative synthesis. If quality regresses we can add a second-pass
+// review from the other provider.
+// ---------------------------------------------------------------------------
+
+const EDIT_OPS_SYSTEM_PROMPT = `You are updating a LIVING plan for a Google Ads campaign — not generating a new one from scratch.
+
+The user has been working through this plan across multiple sessions. Every existing step has a stable ID and a current status (pending / done / applied / skipped / failed). Your job: review the current plan + the campaign snapshot + the discussion transcript, and output a MINIMAL set of edit operations. Do NOT re-emit steps that don't need changing.
+
+OUTPUT SCHEMA — valid JSON only, no prose, no code fences:
+
+{
+  "summary": string (1-2 sentences describing what changed and why — shown to the user post-regen),
+  "operations": [
+    // Add a NEW step that doesn't exist in the current plan
+    {"op":"add","position":<0-based insertion index in the current step list>,"step":{"title","description","type","action_type"|null,"action_params"|null,"priority","effort"},"reason":"why this is new work"},
+
+    // Refactor an existing step's title/description because new information changed the framing
+    {"op":"refactor","step_id":"<uuid>","newTitle":"...","newDescription":"...","reason":"why the reshape"},
+
+    // Mark a step's status transition (usually because of new data or user report)
+    {"op":"mark","step_id":"<uuid>","status":"done"|"applied"|"skipped"|"failed","reason":"why the transition"},
+
+    // Drop a step that's obsolete (based on a since-disproven assumption or superseded by other work)
+    {"op":"drop","step_id":"<uuid>","reason":"why to drop"}
+  ]
+}
+
+HARD RULES:
+- NEVER add a new step that substantively duplicates any existing step (even if paraphrased). If you catch yourself doing this, use "refactor" on the existing step instead.
+- NEVER drop a step that is already "done" or "applied" — that's the user's completed work; it stays as historical record. Only drop "pending" steps that have become obsolete.
+- If a step is "pending" and the campaign snapshot / transcript shows the underlying work has been completed (e.g. user reported it, the metric moved, the change history confirms it), use "mark" with status="done".
+- If a step is "failed" and the discussion suggests a different approach might work, use "refactor" — don't add a new step for the retry.
+- For "refactor" and "mark" and "drop": step_id MUST match an existing step's UUID from the CURRENT PLAN block. If uncertain, prefer no-op over guessing.
+- Empty operations array is a valid, correct output — it means the plan is fine as-is and nothing new needs to happen.
+
+AIM FOR MINIMAL EDITS. If the discussion contains one new piece of info, expect 1-2 ops. Only when the whole strategy has shifted should you have >5 ops.
+
+CURRENT PLAN STATE will be given in the user message. Use the step_id values shown there.`;
+
+async function synthesizeEditOps({ report, transcript, currentPlan, currentSteps }) {
+  const t0 = Date.now();
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not configured');
+
+  // Format the current plan state for the AI to reference.
+  const stepLines = (currentSteps || []).map((s, i) =>
+    `  [step_id: ${s.id}] [position: ${i}] [status: ${s.status || 'pending'}] ${s.title}` +
+    (s.description ? `\n     desc: ${s.description.replace(/\s+/g, ' ').slice(0, 400)}` : '') +
+    (s.notes ? `\n     notes: ${s.notes.replace(/\s+/g, ' ').slice(0, 400)}` : '')
+  ).join('\n');
+  const planStateBlock = `=== CURRENT PLAN ===
+Title: ${currentPlan.title || '(untitled)'}
+Summary: ${currentPlan.summary || '(none)'}
+
+Steps (${(currentSteps || []).length} total):
+${stepLines || '  (no steps yet)'}
+=== END CURRENT PLAN ===`;
+
+  const userPrompt = `${planStateBlock}
+
+=== DISCUSSION TRANSCRIPT (may begin with PRIOR PLAN OUTCOMES) ===
+${transcript}
+=== END TRANSCRIPT ===
+
+Output the edit operations JSON now. Empty operations is fine.`;
+
+  // Two-part system so the (big) report gets its own cache breakpoint.
+  const system = [
+    { type: 'text', text: EDIT_OPS_SYSTEM_PROMPT },
+    {
+      type: 'text',
+      text: `--- CAMPAIGN DATA (for numeric citations) ---\n${JSON.stringify(report)}\n--- END CAMPAIGN DATA ---`,
+      cache_control: { type: 'ephemeral' },
+    },
+  ];
+
+  const body = {
+    model: CLAUDE_MODEL,
+    max_tokens: 3000,
+    system,
+    messages: [{ role: 'user', content: userPrompt }],
+    temperature: 0.3,
+  };
+
+  const resp = await axios.post(ANTHROPIC_URL, body, {
+    headers: {
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'Content-Type': 'application/json',
+    },
+    timeout: 180_000,
+  });
+
+  const raw = resp.data?.content?.[0]?.text || '';
+  const modelUsed = resp.data?.model || CLAUDE_MODEL;
+  const inputTokens = resp.data?.usage?.input_tokens || 0;
+  const outputTokens = resp.data?.usage?.output_tokens || 0;
+  const cacheRead = resp.data?.usage?.cache_read_input_tokens || 0;
+  const cacheWrite = resp.data?.usage?.cache_creation_input_tokens || 0;
+
+  const parsed = safeParseEditOps(raw);
+
+  return {
+    summary: parsed.summary || '',
+    operations: parsed.operations || [],
+    rawResponse: raw,
+    model: modelUsed,
+    provider: 'claude',
+    usage: {
+      promptTokens: inputTokens,
+      completionTokens: outputTokens,
+      totalTokens: inputTokens + outputTokens,
+      cacheReadTokens: cacheRead,
+      cacheWriteTokens: cacheWrite,
+      costUsd: costClaude(modelUsed, {
+        promptTokens: inputTokens, completionTokens: outputTokens,
+        cacheRead, cacheWrite,
+      }),
+    },
+    durationMs: Date.now() - t0,
+  };
+}
+
+const VALID_EDIT_OP_TYPES = new Set(['add', 'refactor', 'mark', 'drop']);
+const VALID_EDIT_STATUS = new Set(['done', 'applied', 'skipped', 'failed', 'pending']);
+
+function safeParseEditOps(text) {
+  if (!text) throw new Error('Empty edit-ops response');
+  let trimmed = String(text).trim();
+  const fence = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  if (fence) trimmed = fence[1].trim();
+  let parsed;
+  try { parsed = JSON.parse(trimmed); }
+  catch (_) {
+    const start = trimmed.indexOf('{');
+    const end = trimmed.lastIndexOf('}');
+    if (start === -1 || end <= start) throw new Error('Edit-ops response was not valid JSON');
+    parsed = JSON.parse(trimmed.slice(start, end + 1));
+  }
+  if (!parsed || typeof parsed !== 'object') throw new Error('Edit-ops JSON is not an object');
+  const summary = String(parsed.summary || '');
+  const rawOps = Array.isArray(parsed.operations) ? parsed.operations : [];
+  const operations = [];
+  for (const op of rawOps) {
+    if (!op || typeof op !== 'object' || !VALID_EDIT_OP_TYPES.has(op.op)) continue;
+    const clean = { op: op.op, reason: op.reason ? String(op.reason).slice(0, 2000) : null };
+    if (op.op === 'add') {
+      if (!op.step || typeof op.step !== 'object' || !op.step.title) continue;
+      clean.position = Number.isInteger(op.position) ? op.position : null;
+      const knownTypes = new Set(['google_ads_action', 'app_code_change', 'product_change', 'observation', 'schedule', 'other']);
+      const knownPriority = new Set(['high', 'medium', 'low']);
+      clean.step = {
+        title: String(op.step.title).slice(0, 500),
+        description: String(op.step.description || ''),
+        type: knownTypes.has(op.step.type) ? op.step.type : 'other',
+        action_type: op.step.action_type ? String(op.step.action_type).slice(0, 64) : null,
+        action_params: op.step.action_params && typeof op.step.action_params === 'object' ? op.step.action_params : null,
+        priority: knownPriority.has(op.step.priority) ? op.step.priority : 'medium',
+        effort: op.step.effort ? String(op.step.effort).slice(0, 32) : null,
+      };
+    } else if (op.op === 'refactor') {
+      if (!op.step_id) continue;
+      clean.step_id = String(op.step_id);
+      if (op.newTitle) clean.newTitle = String(op.newTitle).slice(0, 500);
+      if (op.newDescription) clean.newDescription = String(op.newDescription);
+      if (!clean.newTitle && !clean.newDescription) continue;
+    } else if (op.op === 'mark') {
+      if (!op.step_id || !VALID_EDIT_STATUS.has(op.status)) continue;
+      clean.step_id = String(op.step_id);
+      clean.status = op.status;
+    } else if (op.op === 'drop') {
+      if (!op.step_id) continue;
+      clean.step_id = String(op.step_id);
+    }
+    operations.push(clean);
+  }
+  return { summary, operations };
+}
+
 module.exports = {
   streamOpenAI,
   streamClaude,
@@ -1134,9 +1326,10 @@ module.exports = {
   synthesizePlan,
   synthesizeConsensusPlan,
   synthesizeDialoguePlan,
+  synthesizeEditOps,
   buildPlanProgressBlock,
   OPENAI_MODEL,
   CLAUDE_MODEL,
   INITIAL_ANALYSIS_PROMPT,
-  _internal: { costOpenAI, costClaude, buildOpenAiSystemContent, buildClaudeSystemArray, safeParsePlan },
+  _internal: { costOpenAI, costClaude, buildOpenAiSystemContent, buildClaudeSystemArray, safeParsePlan, safeParseEditOps },
 };

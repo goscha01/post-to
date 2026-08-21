@@ -1172,7 +1172,215 @@ async function buildPriorPlanOutcomes(conversationId, currentPlanIdToExclude = n
   return `\n=== PRIOR PLAN OUTCOMES (respect these — do NOT re-propose completed work) ===\n${planBlocks.join('\n\n')}\n=== END PRIOR PLAN OUTCOMES ===\n\n`;
 }
 
-// POST /conversations/:id/plans — synthesize + persist a new consensus plan
+// Apply an edit-ops payload to the living plan. Handles:
+//   - add: insert new step at requested position (or append)
+//   - refactor: update title/description on existing step
+//   - mark: change status on existing step
+//   - drop: delete step (ignored if status is done/applied — safety)
+// Guards against hallucinated step_ids by validating each op against the
+// current step set before dispatching. Returns { applied, skipped } counts
+// so the caller can log + tell the user what happened.
+async function applyEditOps(livingPlanId, operations) {
+  const { data: currentSteps } = await supabase
+    .from('campaign_assistant_action_plan_steps')
+    .select('id, position, status, title')
+    .eq('plan_id', livingPlanId)
+    .order('position', { ascending: true });
+  const stepById = new Map((currentSteps || []).map(s => [s.id, s]));
+  const applied = { add: 0, refactor: 0, mark: 0, drop: 0 };
+  const skipped = [];
+  const nowIso = new Date().toISOString();
+
+  // Track max position for appends.
+  let maxPos = (currentSteps || []).reduce((m, s) => Math.max(m, s.position ?? 0), -1);
+
+  for (const op of operations || []) {
+    try {
+      if (op.op === 'add') {
+        const position = Number.isInteger(op.position) ? op.position : (maxPos + 1);
+        // If inserting NOT at the end, shift downstream positions to make room.
+        if (Number.isInteger(op.position) && position <= maxPos) {
+          const toShift = (currentSteps || []).filter(s => (s.position ?? 0) >= position);
+          for (const s of toShift) {
+            await supabase
+              .from('campaign_assistant_action_plan_steps')
+              .update({ position: (s.position ?? 0) + 1 })
+              .eq('id', s.id);
+            s.position = (s.position ?? 0) + 1;
+          }
+        }
+        const noteHeader = op.reason ? `[Added by AI regen ${nowIso}] ${op.reason}` : `[Added by AI regen ${nowIso}]`;
+        const { error } = await supabase
+          .from('campaign_assistant_action_plan_steps')
+          .insert({
+            plan_id: livingPlanId,
+            position,
+            title: op.step.title,
+            description: op.step.description,
+            type: op.step.type,
+            action_type: op.step.action_type,
+            action_params: op.step.action_params,
+            priority: op.step.priority,
+            effort: op.step.effort,
+            notes: noteHeader,
+          });
+        if (error) { skipped.push({ op: 'add', reason: error.message }); continue; }
+        applied.add += 1;
+        maxPos = Math.max(maxPos, position);
+      } else if (op.op === 'refactor') {
+        const step = stepById.get(op.step_id);
+        if (!step) { skipped.push({ op: 'refactor', step_id: op.step_id, reason: 'unknown step_id (hallucination?)' }); continue; }
+        const patch = {};
+        if (op.newTitle) patch.title = op.newTitle;
+        if (op.newDescription) patch.description = op.newDescription;
+        // Append refactor reason to notes as an audit trail.
+        const noteAddition = `[Refactored by AI regen ${nowIso}]${op.reason ? ' ' + op.reason : ''}`;
+        const { data: latest } = await supabase
+          .from('campaign_assistant_action_plan_steps')
+          .select('notes')
+          .eq('id', op.step_id)
+          .single();
+        patch.notes = latest?.notes ? `${noteAddition}\n\n---\n\n${latest.notes}` : noteAddition;
+        const { error } = await supabase
+          .from('campaign_assistant_action_plan_steps')
+          .update(patch)
+          .eq('id', op.step_id);
+        if (error) { skipped.push({ op: 'refactor', step_id: op.step_id, reason: error.message }); continue; }
+        applied.refactor += 1;
+      } else if (op.op === 'mark') {
+        const step = stepById.get(op.step_id);
+        if (!step) { skipped.push({ op: 'mark', step_id: op.step_id, reason: 'unknown step_id' }); continue; }
+        const patch = { status: op.status };
+        const noteAddition = `[AI marked ${op.status} on ${nowIso}]${op.reason ? ' ' + op.reason : ''}`;
+        const { data: latest } = await supabase
+          .from('campaign_assistant_action_plan_steps')
+          .select('notes')
+          .eq('id', op.step_id)
+          .single();
+        patch.notes = latest?.notes ? `${noteAddition}\n\n---\n\n${latest.notes}` : noteAddition;
+        if (op.status === 'applied' && !step.applied_at) patch.applied_at = nowIso;
+        const { error } = await supabase
+          .from('campaign_assistant_action_plan_steps')
+          .update(patch)
+          .eq('id', op.step_id);
+        if (error) { skipped.push({ op: 'mark', step_id: op.step_id, reason: error.message }); continue; }
+        applied.mark += 1;
+      } else if (op.op === 'drop') {
+        const step = stepById.get(op.step_id);
+        if (!step) { skipped.push({ op: 'drop', step_id: op.step_id, reason: 'unknown step_id' }); continue; }
+        // Safety: never drop already-done/applied work — that's historical record.
+        if (['done', 'applied'].includes(step.status)) {
+          skipped.push({ op: 'drop', step_id: op.step_id, reason: `refused to drop step in status ${step.status}` });
+          continue;
+        }
+        const { error } = await supabase
+          .from('campaign_assistant_action_plan_steps')
+          .delete()
+          .eq('id', op.step_id);
+        if (error) { skipped.push({ op: 'drop', step_id: op.step_id, reason: error.message }); continue; }
+        applied.drop += 1;
+      }
+    } catch (err) {
+      skipped.push({ op: op.op, reason: err.message });
+    }
+  }
+
+  return { applied, skipped };
+}
+
+// Handler for regenerating a living plan via edit-ops. Extracted so the main
+// POST /plans route stays readable.
+async function handleEditOpsRegen({ req, res, userId, conversationId, conv, livingPlan, transcript, t0 }) {
+  try {
+    const { data: currentSteps } = await supabase
+      .from('campaign_assistant_action_plan_steps')
+      .select('*')
+      .eq('plan_id', livingPlan.id)
+      .order('position', { ascending: true });
+
+    const editResult = await campaignAssistant.synthesizeEditOps({
+      report: conv.report_snapshot,
+      transcript,
+      currentPlan: livingPlan,
+      currentSteps: currentSteps || [],
+    });
+
+    const { applied, skipped } = await applyEditOps(livingPlan.id, editResult.operations);
+
+    // Persist token/cost accumulation onto the living plan. Also update
+    // the summary if the AI provided a new one and any op actually applied.
+    const patch = {
+      // Sum with prior totals so lifetime cost is trackable.
+      prompt_tokens: (livingPlan.prompt_tokens || 0) + (editResult.usage.promptTokens || 0),
+      completion_tokens: (livingPlan.completion_tokens || 0) + (editResult.usage.completionTokens || 0),
+      total_tokens: (livingPlan.total_tokens || 0) + (editResult.usage.totalTokens || 0),
+      cache_read_tokens: (livingPlan.cache_read_tokens || 0) + (editResult.usage.cacheReadTokens || 0),
+      cache_write_tokens: (livingPlan.cache_write_tokens || 0) + (editResult.usage.cacheWriteTokens || 0),
+      cost_usd: Number(((Number(livingPlan.cost_usd) || 0) + (editResult.usage.costUsd || 0)).toFixed(6)),
+      model: editResult.model,
+      updated_at: new Date().toISOString(),
+    };
+    const opsAppliedCount = applied.add + applied.refactor + applied.mark + applied.drop;
+    if (editResult.summary && opsAppliedCount > 0) patch.summary = editResult.summary;
+    await supabase
+      .from('campaign_assistant_action_plans')
+      .update(patch)
+      .eq('id', livingPlan.id);
+
+    // Re-fetch full plan + steps for the response.
+    const { data: refreshedPlan } = await supabase
+      .from('campaign_assistant_action_plans')
+      .select('*')
+      .eq('id', livingPlan.id)
+      .single();
+    const { data: refreshedSteps } = await supabase
+      .from('campaign_assistant_action_plan_steps')
+      .select('*')
+      .eq('plan_id', livingPlan.id)
+      .order('position', { ascending: true });
+
+    logger.info('campaignAssistant.plan_regen_edit_ops', {
+      userId, conversationId, planId: livingPlan.id,
+      opsApplied: applied,
+      opsSkipped: skipped.length,
+      opCountRequested: (editResult.operations || []).length,
+      costUsd: editResult.usage.costUsd,
+      duration_ms: Date.now() - t0,
+    });
+
+    const { raw_response, ...planPublic } = refreshedPlan;
+    res.json({
+      plan: {
+        ...planPublic,
+        // Reuse the same audit surfaces the first-time flow exposes so the
+        // frontend renderer doesn't need a new code path.
+        convergence_notes: null,
+        degraded: false,
+      },
+      steps: refreshedSteps || [],
+      editOps: {
+        summary: editResult.summary,
+        applied,
+        skipped,
+        operationCount: (editResult.operations || []).length,
+      },
+    });
+  } catch (err) {
+    logger.error('campaignAssistant.plan_regen_edit_ops_failed', {
+      userId, conversationId, planId: livingPlan.id, error: err.message,
+    });
+    res.status(err.status || 500).json({ error: err.message || 'Failed to regenerate plan' });
+  }
+}
+
+// POST /conversations/:id/plans — regenerate the living plan.
+//
+// Two paths:
+//   1. First-time (no living plan for this conversation yet):
+//      run the 4-round consensus dialogue → produce the initial plan.
+//   2. Subsequent regeneration (living plan exists):
+//      run the edit-ops synthesis → mutate the living plan in place.
+//      Step IDs stay stable so applied/done statuses persist.
 router.post('/conversations/:id/plans', async (req, res) => {
   const userId = req.user.userId;
   const conversationId = req.params.id;
@@ -1193,9 +1401,21 @@ router.post('/conversations/:id/plans', async (req, res) => {
       return res.status(400).json({ error: 'Nothing to synthesize — no completed messages yet' });
     }
 
-    // Prepend prior-plan outcomes so the AI knows what's already done
-    // (or explicitly skipped/rejected) and doesn't re-propose it. Empty
-    // string on the first ever plan for this conversation.
+    // Check for existing living plan.
+    const { data: livingPlans } = await supabase
+      .from('campaign_assistant_action_plans')
+      .select('*')
+      .eq('conversation_id', conversationId)
+      .eq('is_living', true)
+      .limit(1);
+    const livingPlan = livingPlans && livingPlans[0] ? livingPlans[0] : null;
+
+    if (livingPlan) {
+      // Path 2: EDIT-OPS FLOW — mutate the living plan in place.
+      return await handleEditOpsRegen({ req, res, userId, conversationId, conv, livingPlan, transcript, t0 });
+    }
+
+    // Path 1: FIRST-TIME PLAN — full 4-round dialogue.
     const priorOutcomes = await buildPriorPlanOutcomes(conversationId);
     const enrichedTranscript = priorOutcomes + transcript;
 
@@ -1215,7 +1435,7 @@ router.post('/conversations/:id/plans', async (req, res) => {
       convergence_notes: result.plan?.convergence_notes || null,
     });
 
-    // Persist plan.
+    // Persist plan as the LIVING plan for this conversation.
     const { data: planRow, error: planErr } = await supabase
       .from('campaign_assistant_action_plans')
       .insert({
@@ -1232,6 +1452,7 @@ router.post('/conversations/:id/plans', async (req, res) => {
         cache_write_tokens: result.usage.cacheWriteTokens,
         cost_usd: result.usage.costUsd,
         raw_response: rawResponseAudit,
+        is_living: true,
       })
       .select()
       .single();
@@ -1338,11 +1559,26 @@ router.get('/conversations/:id/plans', async (req, res) => {
       .single();
     if (convErr || !conv) return res.status(404).json({ error: 'Not found' });
 
+    // Prefer the living plan. Fall back to newest historical plan if no
+    // living plan exists (which shouldn't happen after the backfill, but
+    // handled gracefully).
+    const { data: livingPlans, error: livingErr } = await supabase
+      .from('campaign_assistant_action_plans')
+      .select('id, title, summary, generated_by, model, cost_usd, status, created_at, updated_at, is_living')
+      .eq('conversation_id', conv.id)
+      .eq('is_living', true)
+      .limit(1);
+    if (livingErr) throw livingErr;
+    if (livingPlans && livingPlans.length > 0) {
+      return res.json({ plans: livingPlans });
+    }
+    // No living plan — fall back to the newest historical for backward compat.
     const { data: plans, error } = await supabase
       .from('campaign_assistant_action_plans')
       .select('id, title, summary, generated_by, model, cost_usd, status, created_at, updated_at')
       .eq('conversation_id', conv.id)
-      .order('created_at', { ascending: false });
+      .order('created_at', { ascending: false })
+      .limit(1);
     if (error) throw error;
     res.json({ plans: plans || [] });
   } catch (err) {

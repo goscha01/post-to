@@ -267,10 +267,12 @@ const CampaignAssistant = () => {
     }
   }, []);
 
+  const [lastEditOpsSummary, setLastEditOpsSummary] = useState(null);
   const generatePlan = useCallback(async () => {
     if (!activeConversation) return;
     setPlanLoading(true);
     setPlanError(null);
+    setLastEditOpsSummary(null);
     try {
       // Auto-refresh the snapshot first so the AI sees CURRENT Google Ads
       // + GA4 state (respecting whatever steps have been applied since
@@ -286,6 +288,12 @@ const CampaignAssistant = () => {
       const res = await campaignAssistantService.generatePlan(activeConversation.id);
       setLatestPlan(res);
       setPlanPanelOpen(true);
+      // Edit-ops regens include a summary of what changed. First-time
+      // plans don't (whole plan is new). Show for a few seconds after.
+      if (res.editOps) {
+        setLastEditOpsSummary(res.editOps);
+        setTimeout(() => setLastEditOpsSummary(null), 15_000);
+      }
     } catch (err) {
       setPlanError(err.response?.data?.error || err.message || 'Failed to generate plan');
     } finally {
@@ -754,6 +762,8 @@ const CampaignAssistant = () => {
             onApplyStep={applyPlanStep}
             onReportResults={reportPlanStepResults}
             snapshotGeneratedAt={activeConversation.report_generated_at}
+            editOpsSummary={lastEditOpsSummary}
+            onDismissEditOpsSummary={() => setLastEditOpsSummary(null)}
           />
         )}
 
@@ -1179,10 +1189,48 @@ const PRIORITY_META = {
   low:    { label: 'Low',    chip: 'bg-gray-50 text-gray-600 border-gray-200' },
 };
 
+// Shown briefly after an edit-ops regen so the user can see what the AI
+// changed vs. re-reading the whole checklist. Counts by op type, plus the
+// AI's own one-line summary. Auto-dismisses after 15s (parent-controlled),
+// but user can close early via the X.
+const EditOpsSummaryBanner = ({ summary, onDismiss }) => {
+  if (!summary) return null;
+  const counts = summary.applied && typeof summary.applied === 'object' ? summary.applied : {};
+  const skipped = Array.isArray(summary.skipped) ? summary.skipped : [];
+  const parts = [];
+  if (counts.add) parts.push(`+${counts.add} new`);
+  if (counts.refactor) parts.push(`↺${counts.refactor} refactored`);
+  if (counts.mark) parts.push(`✓${counts.mark} marked`);
+  if (counts.drop) parts.push(`−${counts.drop} dropped`);
+  const countLine = parts.length ? parts.join(' · ') : 'No changes';
+  return (
+    <div className="mb-2 p-2 bg-emerald-50 border border-emerald-200 rounded text-[11px] text-emerald-900 flex items-start gap-2">
+      <Sparkles className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
+      <div className="flex-1 min-w-0">
+        <div className="font-medium">Plan updated in place · {countLine}</div>
+        {summary.summary && (
+          <div className="mt-0.5 text-emerald-800">{summary.summary}</div>
+        )}
+        {skipped.length > 0 && (
+          <div className="mt-0.5 text-amber-800">
+            {skipped.length} op{skipped.length === 1 ? '' : 's'} skipped (invalid step_id or refused)
+          </div>
+        )}
+      </div>
+      {onDismiss && (
+        <button onClick={onDismiss} className="text-emerald-700 hover:text-emerald-900 flex-shrink-0">
+          <X className="h-3.5 w-3.5" />
+        </button>
+      )}
+    </div>
+  );
+};
+
 const ActionPlanPanel = ({
   plan, loading, error, open, onToggle,
   onGenerate, onToggleStepStatus, onUpdateStepNotes, onDeletePlan, onApplyStep, onReportResults,
   snapshotGeneratedAt,
+  editOpsSummary, onDismissEditOpsSummary,
 }) => {
   // Stale if the report snapshot was refreshed AFTER this plan was generated.
   // Suggests the plan's recommendations may reflect out-of-date state.
@@ -1220,6 +1268,9 @@ const ActionPlanPanel = ({
           {loading && <PlanLoadingState />}
           {hasPlan && !loading && (
             <>
+              {editOpsSummary && (
+                <EditOpsSummaryBanner summary={editOpsSummary} onDismiss={onDismissEditOpsSummary} />
+              )}
               {planIsStale && (
                 <div className="mb-2 p-2 bg-amber-50 border border-amber-200 rounded text-[11px] text-amber-800 flex items-start gap-1.5">
                   <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
