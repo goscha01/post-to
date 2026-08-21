@@ -82,7 +82,7 @@ async function carryForwardStatuses(prevPlanId, newPlanId) {
     .eq('plan_id', prevPlanId);
   const { data: newSteps } = await supabase
     .from('campaign_assistant_action_plan_steps')
-    .select('id, title, notes')
+    .select('id, title, notes, status')     // include status so we skip already-carried steps
     .eq('plan_id', newPlanId);
   if (!prevSteps?.length || !newSteps?.length) return { matched: 0 };
 
@@ -92,6 +92,10 @@ async function carryForwardStatuses(prevPlanId, newPlanId) {
   const usedPrev = new Set();
   let matched = 0;
   for (const newStep of newSteps) {
+    // Skip if this step already got a terminal status from a NEWER prior
+    // plan (walk-back iterates newest→oldest, so a newer plan already
+    // provided the truth for this step and we shouldn't overwrite it).
+    if (CARRY_FORWARD_TERMINAL_STATUSES.has(newStep.status)) continue;
     const newTokens = normalizeTitleTokens(newStep.title);
     let bestPrev = null;
     let bestScore = 0;
@@ -1254,13 +1258,16 @@ router.post('/conversations/:id/plans', async (req, res) => {
     }
 
     // Carry forward statuses from prior plans in this conversation so
-    // regenerate doesn't wipe out applied/done/skipped work. Walks back
-    // through the last few plans (not just the immediately-previous one)
-    // to handle the "user regenerated once, all statuses got orphaned"
-    // case — we find the most recent plan that has ANY completed work
-    // and pull from there.
+    // regenerate doesn't wipe out applied/done/skipped work. Iterates
+    // through the last 10 prior plans (newest first) and calls
+    // carryForwardStatuses for EACH — a step that doesn't match the
+    // immediate previous plan may still match an older one (e.g. the
+    // AI dropped the task from plan N-1 but you had marked it done in
+    // plan N-2). carryForwardStatuses is idempotent per new step: if a
+    // step already has a terminal status from a newer prior plan, it
+    // won't be overwritten by an older one (see the check in the fn).
     let carriedForward = 0;
-    let carriedFromPlanId = null;
+    const carriedFromPlanIds = [];
     if (steps.length > 0) {
       const { data: prevPlans } = await supabase
         .from('campaign_assistant_action_plans')
@@ -1268,13 +1275,12 @@ router.post('/conversations/:id/plans', async (req, res) => {
         .eq('conversation_id', conversationId)
         .neq('id', planRow.id)
         .order('created_at', { ascending: false })
-        .limit(10);   // safety cap; walk back at most 10 plans
+        .limit(10);
       for (const prev of (prevPlans || [])) {
         const cf = await carryForwardStatuses(prev.id, planRow.id);
         if (cf.matched > 0) {
-          carriedForward = cf.matched;
-          carriedFromPlanId = prev.id;
-          break;   // stop at the first plan we successfully pulled from
+          carriedForward += cf.matched;
+          carriedFromPlanIds.push(prev.id);
         }
       }
       if (carriedForward > 0) {
