@@ -1222,6 +1222,9 @@ async function applyEditOps(livingPlanId, operations) {
             action_params: op.step.action_params,
             priority: op.step.priority,
             effort: op.step.effort,
+            monitor_spec: op.step.monitor_spec || null,
+            check_after: op.step.check_after || null,
+            check_until: op.step.check_until || null,
             notes: noteHeader,
           });
         if (error) { skipped.push({ op: 'add', reason: error.message }); continue; }
@@ -1478,6 +1481,9 @@ router.post('/conversations/:id/plans', async (req, res) => {
       action_params: s.action_params,
       priority: s.priority,
       effort: s.effort,
+      monitor_spec: s.monitor_spec || null,
+      check_after: s.check_after || null,
+      check_until: s.check_until || null,
     }));
     let steps = [];
     if (stepRows.length > 0) {

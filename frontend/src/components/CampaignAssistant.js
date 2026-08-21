@@ -1189,6 +1189,78 @@ const PRIORITY_META = {
   low:    { label: 'Low',    chip: 'bg-gray-50 text-gray-600 border-gray-200' },
 };
 
+// Compact status badge for observation steps with an auto-monitor spec.
+// Shows the target, when the next check will run (or when the last one ran),
+// and the last observed value. This lets the user see "I don't have to check
+// this manually — the system is watching it for me."
+const MonitorInfoBadge = ({ step }) => {
+  const spec = step.monitor_spec || {};
+  const target = spec.target_description || describeThreshold(spec);
+  const nowMs = Date.now();
+  const checkAfterMs = step.check_after ? new Date(step.check_after).getTime() : null;
+  const checkUntilMs = step.check_until ? new Date(step.check_until).getTime() : null;
+  const lastAt = step.last_check_at ? new Date(step.last_check_at) : null;
+  const lastVal = step.last_check_value || null;
+  const windowClosed = checkUntilMs && nowMs >= checkUntilMs;
+  const waitingForFirstCheck = !lastAt && checkAfterMs && nowMs < checkAfterMs;
+
+  let statusLine;
+  let toneClass = 'bg-indigo-50 border-indigo-200 text-indigo-900';
+  if (lastVal?.error) {
+    toneClass = 'bg-amber-50 border-amber-200 text-amber-900';
+    statusLine = `Check error: ${lastVal.error}`;
+  } else if (windowClosed && !lastAt) {
+    toneClass = 'bg-gray-50 border-gray-200 text-gray-700';
+    statusLine = 'Window closed — no check ran';
+  } else if (lastAt) {
+    statusLine = `Last check ${relTime(lastAt)}: ${lastVal?.summary || '(no summary)'}`;
+  } else if (waitingForFirstCheck) {
+    statusLine = `Next check ${relFuture(new Date(checkAfterMs))} · target: ${target}`;
+  } else {
+    statusLine = `Awaiting first check · target: ${target}`;
+  }
+
+  return (
+    <div className={`mt-1.5 text-[11px] border rounded px-2 py-1 flex items-start gap-1.5 ${toneClass}`}>
+      <RefreshCw className="h-3 w-3 flex-shrink-0 mt-0.5" />
+      <div className="min-w-0">
+        <div className="font-medium">Auto-monitor · {target}</div>
+        <div className="opacity-90">{statusLine}</div>
+      </div>
+    </div>
+  );
+};
+
+function describeThreshold(spec) {
+  if (!spec?.threshold) return '(no threshold)';
+  const { op, value } = spec.threshold;
+  const src = spec.source === 'ga4_event_rate' ? 'rate' : spec.source === 'ga4_event_count' ? 'count' : spec.source === 'google_ads_geo_share' ? 'share' : 'metric';
+  const display = spec.source === 'ga4_event_count' ? value : `${(value * 100).toFixed(0)}%`;
+  return `${src} ${op} ${display}`;
+}
+
+function relTime(date) {
+  const diffMs = Date.now() - date.getTime();
+  const mins = Math.round(diffMs / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.round(hrs / 24);
+  return `${days}d ago`;
+}
+
+function relFuture(date) {
+  const diffMs = date.getTime() - Date.now();
+  if (diffMs <= 0) return 'shortly';
+  const mins = Math.round(diffMs / 60000);
+  if (mins < 60) return `in ${mins}m`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `in ${hrs}h`;
+  const days = Math.round(hrs / 24);
+  return `in ${days}d`;
+}
+
 // Shown briefly after an edit-ops regen so the user can see what the AI
 // changed vs. re-reading the whole checklist. Counts by op type, plus the
 // AI's own one-line summary. Auto-dismisses after 15s (parent-controlled),
@@ -1612,6 +1684,8 @@ const PlanStepRow = ({ step, index, onToggleStatus, onUpdateNotes, onApplyStep, 
               {step.description}
             </div>
           )}
+
+          {step.monitor_spec && <MonitorInfoBadge step={step} />}
 
           {/* Action buttons row */}
           <div className="mt-1.5 flex items-center flex-wrap gap-x-3 gap-y-1">

@@ -19,6 +19,7 @@
 
 const axios = require('axios');
 const logger = require('../utils/logger');
+const { safeParseMonitorSpec } = require('./campaignMonitorService');
 
 const OPENAI_URL = 'https://api.openai.com/v1/chat/completions';
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
@@ -459,7 +460,10 @@ OUTPUT REQUIREMENTS
       "action_type": string | null,           // see AUTOMATION CATALOG below
       "action_params": object | null,         // params matching the action_type's schema
       "priority": "high" | "medium" | "low",
-      "effort": string                        // rough estimate: "5min", "30min", "1h", "developer-1d", "product-1w"
+      "effort": string,                       // rough estimate: "5min", "30min", "1h", "developer-1d", "product-1w"
+      "monitor_spec": object | null,          // ONLY for type="observation" — see AUTO-MONITOR CATALOG below
+      "check_after": string | null,           // ISO 8601 timestamp; only for observation steps with monitor_spec
+      "check_until": string | null            // ISO 8601 timestamp; only for observation steps with monitor_spec
     }
   ]
 }
@@ -554,11 +558,42 @@ CONFIG CHANGES (Firebase / GA4 — planned, use these names when suggesting):
 - type: "app_code_change", action_type: "set_remote_config_parameter"
     action_params: { "projectId": "<firebase project id>", "parameterKey": "<string>", "defaultValue": "<string>", "description": "<string>" }
 
+AUTO-MONITOR CATALOG — background metric watching for observation steps
+
+For type="observation" steps, populate \`monitor_spec\` + \`check_after\` + \`check_until\` when the step is "wait N days then check if metric M hit target T." A background job will pull the metric on schedule and auto-mark the step "done" when the target is met, or "failed" when the window closes without a hit. This eliminates the manual re-check burden.
+
+\`check_after\`: earliest ISO timestamp at which checking makes sense. Compute this from the campaign's change history date + expected data-lag (typically 24-48h for GA4 events, 24h for Ads reports). Example: if a config change went live at 2026-08-20T14:00Z and the observation window is "14 days after change", \`check_after\` should be 2026-08-21T14:00Z (first look 24h in).
+
+\`check_until\`: latest ISO timestamp — the deadline. If the target isn't hit by then, the step is marked failed with the last observed value in a note. Compute from change date + full window. Example above: 2026-09-03T14:00Z.
+
+WIRED SOURCES:
+
+- source: "ga4_event_rate" — ratio between two GA4 event counts over a lookback
+    params: { "numerator_event": "<event_name>", "denominator_event": "<event_name>", "days": <1-90> }
+    threshold: { "op": "<" | "<=" | ">" | ">=" | "==", "value": <number 0..1 for a rate> }
+    Example (cancellation rate below 30%): { source: "ga4_event_rate", params: { numerator_event: "purchase_cancelled", denominator_event: "purchase_started", days: 14 }, threshold: { op: "<", value: 0.30 }, target_description: "Cancellation rate drops below 30%" }
+
+- source: "ga4_event_count" — raw event count for a single event over a lookback
+    params: { "event_name": "<event_name>", "days": <1-90> }
+    threshold: { "op": ">=" | ">" | "<=" | "<" | "==", "value": <integer count> }
+    Example (trial_started starts appearing): { source: "ga4_event_count", params: { event_name: "trial_started", days: 2 }, threshold: { op: ">=", value: 5 }, target_description: "trial_started events climbing" }
+
+- source: "google_ads_geo_share" — % of impressions coming from a specific country criterion
+    params: { "country_criterion_id": "<numeric ID from geographic_view.country_criterion_id>", "days": <1-90> }
+    threshold: { "op": "<" | "<=", "value": <fraction 0..1> }
+    Example (Seoul/South Korea traffic drops after geo change): { source: "google_ads_geo_share", params: { country_criterion_id: "2410", days: 7 }, threshold: { op: "<", value: 0.05 }, target_description: "South Korea impression share drops below 5% after PRESENCE-only change" }
+
+RULES for monitor_spec:
+- ONLY populate for type="observation". For other types, leave null.
+- If the observation isn't measurable via one of the wired sources (e.g. "read the DebugView console qualitatively"), leave monitor_spec null. Manual observation stays manual — don't fake a spec.
+- The threshold + target_description MUST match the intent stated in the step description. If the description says "watch for cancellation rate to drop below 30%", the threshold is \`{op: "<", value: 0.30}\` and target_description is "Cancellation rate drops below 30%".
+- Compute check_after and check_until from CONCRETE DATES in the snapshot's change history when the observation is contingent on a change (e.g. "after the PRESENCE-only change on 2026-08-20"). Do NOT use relative times like "24h from now".
+
 GUIDANCE ON TYPES
 - "google_ads_action": something we can execute against the Google Ads API.
 - "app_code_change": code changes to the mobile/web app (React Native, Swift, Kotlin, web). Also covers Firebase/GA4 CONFIG that changes measurement behaviour even without code edits (mark_ga4_conversion_event, set_remote_config_parameter).
 - "product_change": design/UX decisions requiring human judgment (paywall copy, pricing, onboarding flow structure).
-- "observation": check-in tasks ("watch DebugView for 48h after change X").
+- "observation": check-in tasks ("watch DebugView for 48h after change X"). If measurable, populate monitor_spec so the check is automated.
 - "schedule": something to do at a future date ("re-analyse in 7 days").
 - "other": anything else.`;
 
@@ -709,6 +744,20 @@ function safeParsePlan(text) {
   throw new Error('Could not parse plan JSON from model response');
 }
 
+// Extract the auto-monitor fields from an AI-emitted step, validating each
+// piece. Returns nulls if anything is malformed — a bad spec means manual
+// observation, not a crash. Called only for type="observation" steps.
+function sanitizeMonitorFields(s) {
+  const spec = safeParseMonitorSpec(s.monitor_spec);
+  const isIso = (v) => typeof v === 'string' && !Number.isNaN(Date.parse(v));
+  const check_after = isIso(s.check_after) ? new Date(s.check_after).toISOString() : null;
+  const check_until = isIso(s.check_until) ? new Date(s.check_until).toISOString() : null;
+  // Auto-monitor only makes sense if we have BOTH a spec and a start time.
+  // If either is missing, treat the whole step as manual observation.
+  if (!spec || !check_after) return { monitor_spec: null, check_after: null, check_until: null };
+  return { monitor_spec: spec, check_after, check_until };
+}
+
 function validatePlanShape(obj) {
   if (!obj || typeof obj !== 'object') throw new Error('Plan JSON is not an object');
   if (!Array.isArray(obj.steps)) throw new Error('Plan JSON is missing "steps" array');
@@ -718,15 +767,23 @@ function validatePlanShape(obj) {
   obj.summary = String(obj.summary || '');
   obj.steps = obj.steps
     .filter(s => s && typeof s === 'object' && s.title)
-    .map(s => ({
-      title: String(s.title).slice(0, 500),
-      description: String(s.description || ''),
-      type: knownTypes.has(s.type) ? s.type : 'other',
-      action_type: s.action_type ? String(s.action_type).slice(0, 64) : null,
-      action_params: s.action_params && typeof s.action_params === 'object' ? s.action_params : null,
-      priority: knownPriority.has(s.priority) ? s.priority : 'medium',
-      effort: s.effort ? String(s.effort).slice(0, 32) : null,
-    }));
+    .map(s => {
+      const type = knownTypes.has(s.type) ? s.type : 'other';
+      // monitor_spec/check_after/check_until only meaningful on observation steps.
+      const monitor = type === 'observation' ? sanitizeMonitorFields(s) : { monitor_spec: null, check_after: null, check_until: null };
+      return {
+        title: String(s.title).slice(0, 500),
+        description: String(s.description || ''),
+        type,
+        action_type: s.action_type ? String(s.action_type).slice(0, 64) : null,
+        action_params: s.action_params && typeof s.action_params === 'object' ? s.action_params : null,
+        priority: knownPriority.has(s.priority) ? s.priority : 'medium',
+        effort: s.effort ? String(s.effort).slice(0, 32) : null,
+        monitor_spec: monitor.monitor_spec,
+        check_after: monitor.check_after,
+        check_until: monitor.check_until,
+      };
+    });
   // convergence_notes is optional and only appears on consensus plans.
   if (obj.convergence_notes) obj.convergence_notes = String(obj.convergence_notes);
   return obj;
@@ -1153,8 +1210,8 @@ OUTPUT SCHEMA — valid JSON only, no prose, no code fences:
 {
   "summary": string (1-2 sentences describing what changed and why — shown to the user post-regen),
   "operations": [
-    // Add a NEW step that doesn't exist in the current plan
-    {"op":"add","position":<0-based insertion index in the current step list>,"step":{"title","description","type","action_type"|null,"action_params"|null,"priority","effort"},"reason":"why this is new work"},
+    // Add a NEW step that doesn't exist in the current plan. For type="observation" that maps to a wired monitor source, populate monitor_spec + check_after + check_until (see the AUTO-MONITOR CATALOG that was in the initial-plan prompt: sources = ga4_event_rate | ga4_event_count | google_ads_geo_share, threshold = {op, value}, dates as ISO 8601).
+    {"op":"add","position":<0-based insertion index in the current step list>,"step":{"title","description","type","action_type"|null,"action_params"|null,"priority","effort","monitor_spec"|null,"check_after"|null,"check_until"|null},"reason":"why this is new work"},
 
     // Refactor an existing step's title/description because new information changed the framing
     {"op":"refactor","step_id":"<uuid>","newTitle":"...","newDescription":"...","reason":"why the reshape"},
@@ -1295,14 +1352,19 @@ function safeParseEditOps(text) {
       clean.position = Number.isInteger(op.position) ? op.position : null;
       const knownTypes = new Set(['google_ads_action', 'app_code_change', 'product_change', 'observation', 'schedule', 'other']);
       const knownPriority = new Set(['high', 'medium', 'low']);
+      const type = knownTypes.has(op.step.type) ? op.step.type : 'other';
+      const monitor = type === 'observation' ? sanitizeMonitorFields(op.step) : { monitor_spec: null, check_after: null, check_until: null };
       clean.step = {
         title: String(op.step.title).slice(0, 500),
         description: String(op.step.description || ''),
-        type: knownTypes.has(op.step.type) ? op.step.type : 'other',
+        type,
         action_type: op.step.action_type ? String(op.step.action_type).slice(0, 64) : null,
         action_params: op.step.action_params && typeof op.step.action_params === 'object' ? op.step.action_params : null,
         priority: knownPriority.has(op.step.priority) ? op.step.priority : 'medium',
         effort: op.step.effort ? String(op.step.effort).slice(0, 32) : null,
+        monitor_spec: monitor.monitor_spec,
+        check_after: monitor.check_after,
+        check_until: monitor.check_until,
       };
     } else if (op.op === 'refactor') {
       if (!op.step_id) continue;

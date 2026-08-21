@@ -27,6 +27,7 @@ const socialRoutes = require('./routes/social');
 const automationsRoutes = require('./routes/automations');
 const scheduledPublisher = require('./workers/scheduledPublisher');
 const automationScheduler = require('./workers/automationScheduler');
+const campaignMonitorService = require('./services/campaignMonitorService');
 const apiLogger = require('./middleware/apiLogger');
 
 const app = express();
@@ -137,6 +138,22 @@ app.get('/health', (req, res) => {
   res.json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
+// Campaign Assistant monitor tick — unauthed, gated by shared secret so an
+// external cron (Railway cron / GH Actions) can trigger it in addition to
+// the in-process interval. Also usable via curl for on-demand testing.
+app.post('/internal/campaign-monitor/tick', async (req, res) => {
+  const secret = process.env.CAMPAIGN_MONITOR_SECRET;
+  if (!secret || req.get('x-monitor-secret') !== secret) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  try {
+    const result = await campaignMonitorService.runMonitorTick({});
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // Error handling middleware
 app.use((err, req, res, next) => {
   res.status(500).json({ 
@@ -183,5 +200,18 @@ app.listen(PORT, () => {
     } catch (err) {
       console.error('automation_scheduler.start_error', err?.message);
     }
+  }
+  // Campaign Assistant auto-monitor tick — every 6h, evaluates due observation
+  // steps and marks them done / failed based on live GA4 + Google Ads data.
+  // Opt-out via DISABLE_CAMPAIGN_MONITOR=1.
+  if (process.env.DISABLE_CAMPAIGN_MONITOR !== '1') {
+    const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
+    const kick = () => campaignMonitorService.runMonitorTick({}).catch(err => {
+      console.error('campaign_monitor.tick_error', err?.message);
+    });
+    // Fire once ~30s after boot so we don't race with app initialization,
+    // then every 6h thereafter.
+    setTimeout(kick, 30_000);
+    setInterval(kick, SIX_HOURS_MS);
   }
 });
