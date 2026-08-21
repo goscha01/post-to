@@ -18,14 +18,25 @@
 const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 const logger = require('../utils/logger');
 
-// Turn a JS object into YAML frontmatter, quoting all values so weird
-// characters (colons, quotes, hashes) don't break parsers. Preserves insertion
-// order of keys so the frontmatter reads like the source file the customer
-// hand-writes for their site.
+// Turn a JS object into YAML frontmatter, quoting scalars so weird
+// characters (colons, quotes, hashes) don't break parsers, and rendering
+// arrays as YAML flow sequences (e.g. `tags: ["a", "b"]`) so downstream
+// site templates can consume them without a schema change.
+//
+// Preserves insertion order of keys so the frontmatter reads like a file
+// the customer would hand-write for their site.
 function toFrontmatter(fields) {
   const lines = ['---'];
   for (const [key, value] of Object.entries(fields)) {
     if (value === undefined || value === null || value === '') continue;
+    if (Array.isArray(value)) {
+      const cleaned = value
+        .filter((v) => v !== undefined && v !== null && v !== '')
+        .map((v) => `"${String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`);
+      if (cleaned.length === 0) continue;
+      lines.push(`${key}: [${cleaned.join(', ')}]`);
+      continue;
+    }
     const escaped = String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
     lines.push(`${key}: "${escaped}"`);
   }
@@ -73,11 +84,34 @@ function injectHeroInBody({ markdown, heroUrl, title }) {
   return `${before}\n${imgMd}\n${after}`;
 }
 
+// Sanity-check the markdown we're about to publish. Catches issues that would
+// render broken on the customer site — unclosed code fences, malformed
+// headings, unbalanced pipe tables. Non-throwing: returns a list of
+// warnings the publisher logs but does not fail on (SEO analyzer already
+// enforces most of these; this is a last-line-of-defense).
+function validatePublishedMarkdown(markdown) {
+  const warnings = [];
+  const src = String(markdown || '');
+  const fenceCount = (src.match(/^```/gm) || []).length;
+  if (fenceCount % 2 !== 0) warnings.push('unbalanced code fence');
+  if (/^#{1,6}[^#\s]/m.test(src)) warnings.push('heading missing space after #');
+  // Truncated table row (only pipes, no cells).
+  if (/^\s*\|\s*\|\s*$/m.test(src)) warnings.push('empty table row');
+  return warnings;
+}
+
 // Build the markdown body the customer's site expects. Field mapping is
 // currently hardcoded to Spotless's schema (title/slug/date/updated/author/
-// description/heroImage/wixOriginal). Future: read a mapping from
+// description/heroImage/heroAlt/tags/keyword). Future: read a mapping from
 // domain.metadata.frontmatter_schema so different customers can have
 // different field names without a code change.
+//
+// NOTE on meta keywords: we emit `keyword` (the primary target search
+// phrase) so site templates can display "Filed under" or include it in
+// their own metadata schema. We do NOT emit `<meta name="keywords">` in
+// the rendered HTML because Google has explicitly ignored that tag as a
+// ranking signal for over a decade. The frontmatter field is for
+// site-template use, not for SEO.
 function buildMarkdown({ blog, domain }) {
   const publishedAt = blog.published_at || new Date().toISOString();
   const updatedAt = blog.updated_at || publishedAt;
@@ -85,6 +119,7 @@ function buildMarkdown({ blog, domain }) {
   const updated = updatedAt.slice(0, 10);
   const author = domain.metadata?.author_name || domain.metadata?.site_name || 'Editorial Team';
   const description = blog.meta_description || blog.suggested_excerpt || '';
+  const tags = Array.isArray(blog.tags) ? blog.tags.filter(Boolean) : [];
 
   const frontmatter = toFrontmatter({
     title: blog.title,
@@ -94,18 +129,36 @@ function buildMarkdown({ blog, domain }) {
     author,
     description,
     heroImage: blog.hero_image || '',
+    heroAlt: blog.hero_alt || '',
+    tags,
+    // Primary search term. Site templates may use it for a "Topic:" badge or
+    // internal indexing. Not a Google ranking factor — see note above.
+    keyword: blog.keyword || '',
   });
 
   // Body: strip nothing (site templates like Spotless's already strip the
   // duplicated H1 in cleanerflow/src/lib/blog.js). Inject hero image after
   // the first paragraph so the article body has the same visual rhythm as
   // the customer's legacy posts.
+  //
+  // Tables, FAQ H3s, bullet/numbered lists, callouts, and images survive
+  // unchanged — this function only prepends frontmatter and injects the
+  // hero image. Anything else in the body is passed through as-is.
   const body = injectHeroInBody({
     markdown: blog.markdown || '',
     heroUrl: blog.hero_image,
     title: blog.title,
   });
-  return `${frontmatter}\n\n${body}\n`;
+  const md = `${frontmatter}\n\n${body}\n`;
+
+  const warnings = validatePublishedMarkdown(md);
+  if (warnings.length) {
+    logger.warn('blog_publisher.s3.markdown_warnings', {
+      slug: blog.slug,
+      warnings,
+    });
+  }
+  return md;
 }
 
 function s3ClientFromDomain(domain) {
@@ -188,4 +241,11 @@ async function unpublish({ blog, domain }) {
   return { ok: true };
 }
 
-module.exports = { publish, unpublish, buildMarkdown, objectKey };
+module.exports = {
+  publish,
+  unpublish,
+  buildMarkdown,
+  objectKey,
+  // exported for tests
+  _internal: { toFrontmatter, injectHeroInBody, validatePublishedMarkdown },
+};
