@@ -1,53 +1,56 @@
 {
-  "startedAt": "2026-08-21T17:15:25.837Z",
+  "startedAt": "2026-08-21T19:04:40.017Z",
   "backend": "http://localhost:3099",
   "steps": [],
   "errors": [],
   "generation": {
-    "ms": 34606,
-    "id": "300029f9-bfa8-4e25-aa5f-23ff342d332b",
-    "title": "Post to SEO E2E Engineering Test: Understanding Its Importance",
-    "slug": "seo-e2e-engineering-test",
-    "metaLength": 170,
+    "ms": 12310,
+    "id": "0b5c2833-8364-4632-ae81-962b20272cd0",
+    "title": "Post to SEO E2E Engineering Test: A Comprehensive Guide",
+    "slug": "post-to-seo-e2e-engineering-test",
+    "metaLength": 128,
     "tags": [
       "seo",
       "engineering",
-      "testing",
+      "cleaning",
       "tampa",
-      "digital marketing"
+      "homeowners",
+      "renters"
     ],
     "searchIntent": "informational",
-    "repairApplied": true,
-    "seoScore": 77,
-    "seoStatus": "red",
+    "repairApplied": false,
+    "heroImage": "/assets/blog/post-to-seo-e2e-engineering-test-hero.jpg",
+    "heroAlt": "A clean Florida living room",
+    "seoScore": 85,
+    "seoStatus": "green",
     "checks": {
-      "passed": 17,
+      "passed": 20,
       "warnings": 8,
-      "failed": 2
+      "failed": 1
     },
     "model": "gpt-4o-mini-2024-07-18",
     "tokens": {
-      "prompt": 2491,
-      "completion": 1989,
-      "total": 4480
+      "prompt": 1096,
+      "completion": 924,
+      "total": 2020
     },
-    "costUsd": "0.000000"
+    "costUsd": "0.000719"
   },
   "brokenState": {
-    "score": 67,
-    "status": "red",
-    "failed": 4,
-    "criticalFailures": 3
-  },
-  "fixedState": {
-    "score": 73,
+    "score": 74,
     "status": "red",
     "failed": 3,
     "criticalFailures": 2
   },
+  "fixedState": {
+    "score": 77,
+    "status": "red",
+    "failed": 2,
+    "criticalFailures": 1
+  },
   "publish": {
     "urls": [
-      "https://www.spotless.homes/blog/post-to-seo-e2e-2026-08-21"
+      "https://www.spotless.homes/blog/post-to-seo-e2e-mt3bjgi8"
     ],
     "deployHints": [
       {
@@ -58,22 +61,24 @@
     ]
   },
   "published": {
-    "url": "https://www.spotless.homes/blog/post-to-seo-e2e-2026-08-21",
-    "waitedMs": 267830,
+    "url": "https://www.spotless.homes/blog/post-to-seo-e2e-mt3bjgi8",
+    "waitedMs": 304684,
     "ok": true
   },
   "rendered": {
     "titleTag": "Post-To SEO E2E Engineering Test (2026-08-21) — DO NOT INDEX | Spotless Homes",
-    "metaDesc": "Discover the importance of post to SEO E2E engineering tests for homeowners and renters in Tampa, and learn how they can enhance your online presence.",
-    "canonical": "https://www.spotless.homes/blog/post-to-seo-e2e-2026-08-21/",
+    "metaDesc": "Learn how to effectively post to SEO E2E engineering tests to enhance your online visibility and improve your website",
+    "canonical": "https://www.spotless.homes/blog/post-to-seo-e2e-mt3bjgi8/",
     "h1": "Post-To SEO E2E Engineering Test (2026-08-21) — DO NOT INDEX",
-    "h2Count": 7,
-    "h3Count": 15,
-    "imgWithAlt": 3
+    "h2Count": 9,
+    "h3Count": 6,
+    "imgWithAlt": 3,
+    "heroImgUrl": null,
+    "heroImgAlt": null
   },
   "cleanup": {
     "unpublishOk": true,
     "deleteOk": true
   },
-  "completedAt": "2026-08-21T17:20:49.415Z"
+  "completedAt": "2026-08-21T19:10:14.511Z"
 }

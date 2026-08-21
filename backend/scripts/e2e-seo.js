@@ -136,6 +136,8 @@ async function main() {
     ms: genMs, id: articleId, title: gen.title, slug: gen.slug,
     metaLength: (gen.metaDescription || '').length,
     tags: gen.tags, searchIntent: gen.searchIntent, repairApplied: gen.repairApplied,
+    heroImage: gen.heroImage || null,
+    heroAlt: gen.heroAlt || null,
     seoScore: gen.seo.score, seoStatus: gen.seo.status,
     checks: { passed: gen.seo.passed, warnings: gen.seo.warnings, failed: gen.seo.failed },
   };
@@ -241,14 +243,20 @@ async function main() {
     const h2Count = (liveHtml.match(/<h2[^>]*>/gi) || []).length;
     const h3Count = (liveHtml.match(/<h3[^>]*>/gi) || []).length;
     const imgWithAlt = (liveHtml.match(/<img[^>]+alt=["'][^"']+["']/gi) || []).length;
-    const imgNoAlt = (liveHtml.match(/<img[^>]+(?!alt=)/gi) || []).length; // approximate
+    // Look for the hero specifically (the site inserts it as an <img> tag
+    // whose src references the slug-hero path we uploaded to S3).
+    const heroImgMatch = liveHtml.match(new RegExp(`<img[^>]+src=["']([^"']*${gen.slug ? gen.slug.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&') : 'hero'}[^"']*)["'][^>]*alt=["']([^"']*)["']`, 'i'));
+    const heroImgUrl = heroImgMatch ? heroImgMatch[1] : null;
+    const heroImgAlt = heroImgMatch ? heroImgMatch[2] : null;
     info(`<title>: ${titleTag.slice(0, 100)}`);
     info(`<meta description>: ${metaDesc.slice(0, 100)}`);
     info(`<link canonical>: ${canonical || '(none)'}`);
     info(`<h1>: ${h1.slice(0, 100)}`);
     info(`headings: ${h2Count} H2s, ${h3Count} H3s`);
     info(`images with alt: ${imgWithAlt}`);
-    evidence.rendered = { titleTag, metaDesc, canonical, h1, h2Count, h3Count, imgWithAlt };
+    info(`hero <img>: ${heroImgUrl ? heroImgUrl.slice(0, 100) : '(none found)'}`);
+    if (heroImgAlt) info(`hero alt: ${heroImgAlt.slice(0, 100)}`);
+    evidence.rendered = { titleTag, metaDesc, canonical, h1, h2Count, h3Count, imgWithAlt, heroImgUrl, heroImgAlt };
     if (!titleTag.includes('SEO E2E')) evidence.errors.push('title did not include our test title');
   }
 

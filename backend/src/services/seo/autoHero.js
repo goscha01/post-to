@@ -38,6 +38,7 @@ async function attachAutoHeroToArticle({ userId, blog, connectionContext = {} })
   try {
     await blogHeroImageService.pickS3Domain(userId);
   } catch (e) {
+    logger.warn('auto_hero.no_s3_domain', { userId, error: e.message });
     return skip('no_s3_domain');
   }
 

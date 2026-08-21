@@ -190,4 +190,4 @@ async function getPreviewUrl({ userId, heroImagePath }) {
   }
 }
 
-module.exports = { upload, uploadFromBuffer, remove, publicPath, objectKey, getPreviewUrl };
+module.exports = { upload, uploadFromBuffer, remove, publicPath, objectKey, getPreviewUrl, pickS3Domain };
