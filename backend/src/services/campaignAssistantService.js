@@ -1213,8 +1213,8 @@ OUTPUT SCHEMA — valid JSON only, no prose, no code fences:
     // Add a NEW step that doesn't exist in the current plan. For type="observation" that maps to a wired monitor source, populate monitor_spec + check_after + check_until (see the AUTO-MONITOR CATALOG that was in the initial-plan prompt: sources = ga4_event_rate | ga4_event_count | google_ads_geo_share, threshold = {op, value}, dates as ISO 8601).
     {"op":"add","position":<0-based insertion index in the current step list>,"step":{"title","description","type","action_type"|null,"action_params"|null,"priority","effort","monitor_spec"|null,"check_after"|null,"check_until"|null},"reason":"why this is new work"},
 
-    // Refactor an existing step's title/description because new information changed the framing
-    {"op":"refactor","step_id":"<uuid>","newTitle":"...","newDescription":"...","reason":"why the reshape"},
+    // Refactor an existing step's title/description, OR retrofit auto-monitor fields onto an existing observation step that lacks them. Any of newTitle/newDescription/monitor_spec may be omitted; at least one must be present.
+    {"op":"refactor","step_id":"<uuid>","newTitle":"...","newDescription":"...","monitor_spec":{...} | null,"check_after":"<ISO 8601>" | null,"check_until":"<ISO 8601>" | null,"reason":"why the reshape"},
 
     // Mark a step's status transition (PROGRESSION-ONLY — no 'pending' allowed here)
     {"op":"mark","step_id":"<uuid>","status":"done"|"applied"|"skipped"|"failed","reason":"why the transition"},
@@ -1235,6 +1235,29 @@ HARD RULES:
 
 AIM FOR MINIMAL EDITS. If the discussion contains one new piece of info, expect 1-2 ops. Only when the whole strategy has shifted should you have >5 ops.
 
+AUTO-MONITOR CATALOG (for populating monitor_spec on observation steps — via "add" for new observations, via "refactor" to retrofit existing observation steps marked [monitor: NO]):
+
+- source: "ga4_event_rate" — ratio of two GA4 event counts over N days
+    params: { numerator_event, denominator_event, days:1..90 }
+    threshold: { op: "<"|"<="|">"|">="|"==", value:<0..1 rate> }
+    Example: cancellation rate below 30% → source=ga4_event_rate, params={numerator_event:"purchase_cancelled", denominator_event:"purchase_started", days:14}, threshold={op:"<", value:0.30}
+
+- source: "ga4_event_count" — raw event count over N days
+    params: { event_name, days:1..90 }
+    threshold: { op:">="|">"|"<="|"<"|"==", value:<integer> }
+    Example: trial_started climbing → source=ga4_event_count, params={event_name:"trial_started", days:2}, threshold={op:">=", value:5}
+
+- source: "google_ads_geo_share" — % of impressions from a country criterion
+    params: { country_criterion_id, days:1..90 }
+    threshold: { op:"<"|"<=", value:<0..1 fraction> }
+    Example: South Korea drops below 5% → source=google_ads_geo_share, params={country_criterion_id:"2410", days:7}, threshold={op:"<", value:0.05}
+
+check_after = earliest ISO timestamp checking makes sense (change_date + data_lag, typically +24-48h).
+check_until = deadline ISO timestamp (change_date + observation window, e.g. +14d).
+target_description = human-readable one-liner matching the threshold intent.
+
+Retrofit is HIGH-VALUE: any observation step marked [monitor: NO — eligible for retrofit] that measures a wired source should get monitor_spec added via refactor so it stops requiring manual re-check.
+
 CURRENT PLAN STATE will be given in the user message. Use the step_id values shown there.`;
 
 async function synthesizeEditOps({ report, transcript, currentPlan, currentSteps }) {
@@ -1242,12 +1265,17 @@ async function synthesizeEditOps({ report, transcript, currentPlan, currentSteps
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not configured');
 
-  // Format the current plan state for the AI to reference.
-  const stepLines = (currentSteps || []).map((s, i) =>
-    `  [step_id: ${s.id}] [position: ${i}] [status: ${s.status || 'pending'}] ${s.title}` +
-    (s.description ? `\n     desc: ${s.description.replace(/\s+/g, ' ').slice(0, 400)}` : '') +
-    (s.notes ? `\n     notes: ${s.notes.replace(/\s+/g, ' ').slice(0, 400)}` : '')
-  ).join('\n');
+  // Format the current plan state for the AI to reference. Exposing `type` and
+  // whether monitor_spec is set lets the AI spot observation steps that are
+  // eligible for auto-monitor retrofit via refactor.
+  const stepLines = (currentSteps || []).map((s, i) => {
+    const monitorFlag = s.type === 'observation'
+      ? (s.monitor_spec ? ' [monitor: yes]' : ' [monitor: NO — eligible for retrofit]')
+      : '';
+    return `  [step_id: ${s.id}] [position: ${i}] [status: ${s.status || 'pending'}] [type: ${s.type || 'other'}]${monitorFlag} ${s.title}` +
+      (s.description ? `\n     desc: ${s.description.replace(/\s+/g, ' ').slice(0, 400)}` : '') +
+      (s.notes ? `\n     notes: ${s.notes.replace(/\s+/g, ' ').slice(0, 400)}` : '');
+  }).join('\n');
   const planStateBlock = `=== CURRENT PLAN ===
 Title: ${currentPlan.title || '(untitled)'}
 Summary: ${currentPlan.summary || '(none)'}
@@ -1371,7 +1399,16 @@ function safeParseEditOps(text) {
       clean.step_id = String(op.step_id);
       if (op.newTitle) clean.newTitle = String(op.newTitle).slice(0, 500);
       if (op.newDescription) clean.newDescription = String(op.newDescription);
-      if (!clean.newTitle && !clean.newDescription) continue;
+      // Allow refactor to also SET or REPLACE monitor fields on an existing
+      // step. This is how the AI retrofits auto-monitoring onto observation
+      // steps that were created before the monitor feature existed.
+      const monitor = sanitizeMonitorFields(op);
+      if (monitor.monitor_spec) {
+        clean.newMonitorSpec = monitor.monitor_spec;
+        clean.newCheckAfter = monitor.check_after;
+        clean.newCheckUntil = monitor.check_until;
+      }
+      if (!clean.newTitle && !clean.newDescription && !clean.newMonitorSpec) continue;
     } else if (op.op === 'mark') {
       if (!op.step_id || !VALID_EDIT_STATUS.has(op.status)) continue;
       clean.step_id = String(op.step_id);

@@ -1236,6 +1236,13 @@ async function applyEditOps(livingPlanId, operations) {
         const patch = {};
         if (op.newTitle) patch.title = op.newTitle;
         if (op.newDescription) patch.description = op.newDescription;
+        // Refactor may also retrofit auto-monitor fields onto existing
+        // observation steps (e.g. steps created before the monitor feature).
+        if (op.newMonitorSpec) {
+          patch.monitor_spec = op.newMonitorSpec;
+          patch.check_after = op.newCheckAfter;
+          patch.check_until = op.newCheckUntil;
+        }
         // Append refactor reason to notes as an audit trail.
         const noteAddition = `[Refactored by AI regen ${nowIso}]${op.reason ? ' ' + op.reason : ''}`;
         const { data: latest } = await supabase
