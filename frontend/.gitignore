@@ -55,3 +55,9 @@ Thumbs.db
 # React specific
 .cache/
 .parcel-cache/
+
+# Playwright
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/

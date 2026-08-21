@@ -1,0 +1,79 @@
+{
+  "startedAt": "2026-08-21T17:15:25.837Z",
+  "backend": "http://localhost:3099",
+  "steps": [],
+  "errors": [],
+  "generation": {
+    "ms": 34606,
+    "id": "300029f9-bfa8-4e25-aa5f-23ff342d332b",
+    "title": "Post to SEO E2E Engineering Test: Understanding Its Importance",
+    "slug": "seo-e2e-engineering-test",
+    "metaLength": 170,
+    "tags": [
+      "seo",
+      "engineering",
+      "testing",
+      "tampa",
+      "digital marketing"
+    ],
+    "searchIntent": "informational",
+    "repairApplied": true,
+    "seoScore": 77,
+    "seoStatus": "red",
+    "checks": {
+      "passed": 17,
+      "warnings": 8,
+      "failed": 2
+    },
+    "model": "gpt-4o-mini-2024-07-18",
+    "tokens": {
+      "prompt": 2491,
+      "completion": 1989,
+      "total": 4480
+    },
+    "costUsd": "0.000000"
+  },
+  "brokenState": {
+    "score": 67,
+    "status": "red",
+    "failed": 4,
+    "criticalFailures": 3
+  },
+  "fixedState": {
+    "score": 73,
+    "status": "red",
+    "failed": 3,
+    "criticalFailures": 2
+  },
+  "publish": {
+    "urls": [
+      "https://www.spotless.homes/blog/post-to-seo-e2e-2026-08-21"
+    ],
+    "deployHints": [
+      {
+        "host": "blog.spotless.homes",
+        "hint": "Article uploaded to S3. Auto-deploy fired via github_actions — should be live within a couple minutes.",
+        "autoDeployed": true
+      }
+    ]
+  },
+  "published": {
+    "url": "https://www.spotless.homes/blog/post-to-seo-e2e-2026-08-21",
+    "waitedMs": 267830,
+    "ok": true
+  },
+  "rendered": {
+    "titleTag": "Post-To SEO E2E Engineering Test (2026-08-21) — DO NOT INDEX | Spotless Homes",
+    "metaDesc": "Discover the importance of post to SEO E2E engineering tests for homeowners and renters in Tampa, and learn how they can enhance your online presence.",
+    "canonical": "https://www.spotless.homes/blog/post-to-seo-e2e-2026-08-21/",
+    "h1": "Post-To SEO E2E Engineering Test (2026-08-21) — DO NOT INDEX",
+    "h2Count": 7,
+    "h3Count": 15,
+    "imgWithAlt": 3
+  },
+  "cleanup": {
+    "unpublishOk": true,
+    "deleteOk": true
+  },
+  "completedAt": "2026-08-21T17:20:49.415Z"
+}

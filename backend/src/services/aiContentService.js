@@ -30,7 +30,16 @@ const MODEL_PRICING = {
 
 function estimateCostUsd(model, usage) {
   if (!usage) return null;
-  const p = MODEL_PRICING[model];
+  // OpenAI returns the versioned model id in the response (e.g.
+  // "gpt-4o-mini-2024-07-18"). Match against the price table by longest
+  // prefix so any dated variant maps to its family's price.
+  let p = MODEL_PRICING[model];
+  if (!p && model) {
+    const family = Object.keys(MODEL_PRICING)
+      .filter((k) => String(model).startsWith(k))
+      .sort((a, b) => b.length - a.length)[0];
+    if (family) p = MODEL_PRICING[family];
+  }
   if (!p) return null;
   const promptCost = (usage.prompt_tokens || 0) / 1000 * p.prompt;
   const completionCost = (usage.completion_tokens || 0) / 1000 * p.completion;
