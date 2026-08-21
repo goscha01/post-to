@@ -482,6 +482,20 @@ If the transcript begins with a "=== PRIOR PLAN OUTCOMES ===" block, that block 
 - If a step's note contains "[RESULTS ... AI action: close]" with a note like "User reported: [dev agent explaining the task was misframed, offering alternatives]", the ORIGINAL task is done AND you should consider whether the ALTERNATIVES the agent offered still need to be captured as new steps.
 - If a step's note contains "[Carried forward from previous plan]", treat its status as authoritative — the user's earlier work is preserved.
 
+HARD DEDUP RULE — final check before you output the plan.
+
+For every step you're about to include, ask yourself: "does this substantively duplicate any OUTCOMES entry?" — where "substantively duplicate" means SAME core action + SAME object, even if paraphrased.
+
+Examples of the SAME task (must NOT be re-proposed if any variant appears in OUTCOMES):
+- "Cap job reminder prompt at 2 impressions per user" ≈ "Cap job reminder prompt at N per user" ≈ "Limit job reminder to 2 impressions" ≈ "Cap scheduled job-reminder pushes per user per 24h"
+- "Fix ATT consent prompt timing" ≈ "Move ATT prompt to after first_photo_taken" ≈ "Rework when ATT prompt fires"
+- "Add attribution_captured event at UTM extraction" ≈ "Implement attribution_captured logging" ≈ "Instrument UTM capture at install"
+- "Verify geo-targeting is PRESENCE only" ≈ "Set positive geo-target to PRESENCE" ≈ "Confirm campaign geo mode"
+
+If a would-be step matches ANY of these patterns against the OUTCOMES block, drop it entirely — OR only include it if it's a genuinely NEW follow-up action (e.g. "the cap is live per prior plan; A/B test 2 vs 3 as the cap value" — that's follow-up, not re-do).
+
+Do this dedup pass silently — no need to mention it in the plan summary — but treat it as a hard bug if you emit a duplicate.
+
 RESPECT CURRENT STATE — CRITICAL
 
 Before recommending ANY change to ANY setting or statistic, check the current value in the campaign snapshot. If the change you'd recommend is already in effect (or effectively so), DO NOT include that as a step. The user is planning what to do NEXT, not re-doing what's already been done. This applies to EVERY recommendation — not just campaign status. Concretely:

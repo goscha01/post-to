@@ -1301,7 +1301,7 @@ router.post('/conversations/:id/plans', async (req, res) => {
       model: result.model,
       stepCount: steps.length,
       carriedForward,
-      carriedFromPlanId,
+      carriedFromPlanIds,
       costUsd: result.usage.costUsd,
       degraded: !!result.degraded,
       duration_ms: Date.now() - t0,
