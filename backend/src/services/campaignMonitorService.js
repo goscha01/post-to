@@ -101,6 +101,32 @@ async function evalGoogleAdsGeoShare({ token, customerId, loginCustomerId, campa
 
 // -- Dispatch ----------------------------------------------------------------
 
+// Given a provider + external ID, look up the connected_account and return
+// its owner_google_id (the Google account that owns the resource). Returns
+// null if there's no match or no owner is stored.
+async function ownerGoogleIdFor(userId, provider, externalId) {
+  const { data } = await supabase
+    .from('connected_accounts')
+    .select('metadata')
+    .eq('user_id', userId)
+    .eq('provider', provider)
+    .eq('external_id', externalId)
+    .limit(1);
+  return data?.[0]?.metadata?.owner_google_id || null;
+}
+
+// Pick the OAuth access token that belongs to the specified Google account.
+// Falls back to the first available token if we can't identify the owner —
+// which usually leads to a 403 downstream, but that's the correct error.
+function pickToken(tokens, ownerGoogleId) {
+  if (!tokens || tokens.length === 0) return null;
+  if (ownerGoogleId) {
+    const match = tokens.find(t => t.google_id === ownerGoogleId);
+    if (match) return match.access_token;
+  }
+  return tokens[0].access_token;
+}
+
 async function evaluateSpec({ spec, userId, conversation }) {
   const source = spec?.source;
   if (!SUPPORTED_SOURCES.has(source)) {
@@ -108,24 +134,25 @@ async function evaluateSpec({ spec, userId, conversation }) {
   }
   const params = spec.params || {};
 
-  // Resolve token for the owner of the target account.
-  // Both GA4 and Ads services need an OAuth access token from the correct
-  // Google account. We pick the token by matching owner_google_id if stored
-  // on the connected_account; otherwise fall back to the first token.
   const tokens = await getAllBusinessTokens(userId);
   if (!tokens || tokens.length === 0) return { error: 'no business tokens for user' };
-  const token = tokens[0].access_token;
 
   try {
     if (source === 'ga4_event_rate' || source === 'ga4_event_count') {
       const propertyId = conversation.ga4_property_id;
       if (!propertyId) return { error: 'conversation has no ga4_property_id' };
+      const ownerId = await ownerGoogleIdFor(userId, 'google_analytics', `ga4:${propertyId}`);
+      const token = pickToken(tokens, ownerId);
+      if (!token) return { error: 'no matching OAuth token for GA4 property owner' };
       const evalFn = source === 'ga4_event_rate' ? evalGa4EventRate : evalGa4EventCount;
       return await evalFn({ token, propertyId, params });
     }
     if (source === 'google_ads_geo_share') {
       const customerId = conversation.google_ads_customer_id;
       if (!customerId) return { error: 'conversation has no google_ads_customer_id' };
+      const ownerId = await ownerGoogleIdFor(userId, 'google_ads', `ads:${customerId}`);
+      const token = pickToken(tokens, ownerId);
+      if (!token) return { error: 'no matching OAuth token for Ads customer owner' };
       return await evalGoogleAdsGeoShare({
         token,
         customerId,
