@@ -224,6 +224,105 @@ function containsKeyword(text, keyword) {
   return countKeywordOccurrences(text, keyword) > 0;
 }
 
+// Semantic keyword presence — used by the "keyword in title/intro/heading"
+// checks where an exact-phrase match is too strict for long-tail queries.
+//
+// Real Google Search Console keywords like "ann russell how to clean
+// everything" or "how to remove wine stains from carpet" don't fit into
+// natural writing as a literal phrase. A well-written article title like
+// "Ann Russell's Guide: How to Clean Everything Effectively" clearly targets
+// that query — every token is present, in order, close together — but it's
+// not the exact phrase, so a literal-match analyzer marks it missing.
+//
+// This helper returns true if ALL keyword tokens appear in `text` within a
+// sliding window whose size is (keyword tokens + proximityWords). Falls back
+// to true for single-token keywords when the token is present at all.
+//
+// Stop-word aware: tokens like "how", "to", "the", "and" are stripped from
+// the required set so their absence from prose doesn't fail a match on the
+// meaningful tokens.
+const STOP_WORDS = new Set([
+  'a', 'an', 'the', 'and', 'or', 'but', 'if', 'so', 'of', 'in', 'on', 'at',
+  'to', 'for', 'with', 'from', 'by', 'is', 'are', 'was', 'were', 'be',
+  'how', 'what', 'when', 'where', 'why', 'do', 'does', 'did',
+  'my', 'your', 'our', 'their', 'this', 'that', 'these', 'those',
+]);
+function containsKeywordSemantic(text, keyword, { proximityWords = 15 } = {}) {
+  return countKeywordSemanticHits(text, keyword, { proximityWords, maxHits: 1 }) > 0;
+}
+
+// What fraction of the keyword's non-stop-word tokens appear in `text`?
+// Returns 0-1. Used for the "keyword in heading" check where requiring all
+// tokens in a single short heading is unrealistic for long-tail queries
+// like "ann russell how to clean everything" — a natural article splits
+// that across multiple H2s ("Ann Russell's method" + "How to clean
+// everything on the counter"). Any one heading with ≥50% overlap is a
+// reasonable positive signal.
+function keywordOverlapRatio(text, keyword) {
+  if (!text || !keyword) return 0;
+  const kwTokens = tokenize(keyword);
+  const required = new Set(kwTokens.filter((t) => !STOP_WORDS.has(t)));
+  if (required.size === 0) return 0;
+  const textTokens = new Set(tokenize(text));
+  let hits = 0;
+  for (const t of required) if (textTokens.has(t)) hits++;
+  return hits / required.size;
+}
+
+// Count non-overlapping semantic hits — sliding-window matches where all
+// non-stop-word keyword tokens appear together within
+// (kwTokens + proximityWords) words. Non-overlapping: after each hit the
+// scan jumps past the window so a single mention doesn't count 15 times.
+//
+// Approximates "how often is the topic discussed" — appropriate for the
+// keyword_density check. Exact-phrase hits are counted at least too so
+// classic "keyword density" wording still applies for short-tail keywords.
+function countKeywordSemanticHits(text, keyword, { proximityWords = 15, maxHits = 100 } = {}) {
+  if (!text || !keyword) return 0;
+  const kwTokens = tokenize(keyword);
+  if (kwTokens.length === 0) return 0;
+  const textTokens = tokenize(text);
+  if (textTokens.length === 0) return 0;
+
+  const required = new Set(kwTokens.filter((t) => !STOP_WORDS.has(t)));
+  if (required.size === 0) {
+    // Keyword is entirely stop-words — count any single occurrence.
+    return kwTokens.some((t) => textTokens.includes(t)) ? 1 : 0;
+  }
+  if (required.size === 1) {
+    // Single meaningful token — count exact occurrences.
+    const t = [...required][0];
+    return textTokens.filter((x) => x === t).length;
+  }
+
+  const windowSize = kwTokens.length + proximityWords;
+  let hits = 0;
+  let i = 0;
+  while (i < textTokens.length && hits < maxHits) {
+    const end = Math.min(textTokens.length, i + windowSize);
+    const found = new Set();
+    let lastFoundIdx = -1;
+    for (let j = i; j < end; j++) {
+      if (required.has(textTokens[j])) {
+        found.add(textTokens[j]);
+        lastFoundIdx = j;
+      }
+      if (found.size === required.size) break;
+    }
+    if (found.size === required.size) {
+      hits++;
+      // Jump past the last matched token so overlapping windows don't
+      // double-count. `lastFoundIdx + 1` is safe because we broke out at
+      // the moment we hit `required.size` — lastFoundIdx is the final
+      // required token in this window.
+      i = lastFoundIdx + 1;
+    } else {
+      i++;
+    }
+  }
+  return hits;
+}
+
 // Rough tokenization — used for slug/keyword alignment.
 function tokenize(text) {
   return String(text || '')
@@ -265,6 +364,9 @@ module.exports = {
   extractConclusionText,
   countKeywordOccurrences,
   containsKeyword,
+  containsKeywordSemantic,
+  countKeywordSemanticHits,
+  keywordOverlapRatio,
   tokenize,
   contentHash,
 };

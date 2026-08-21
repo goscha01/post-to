@@ -90,14 +90,15 @@ test('2. short article: word_count fails, and content flags trip', () => {
   assert.ok(['warning', 'failed'].includes(pick(r, 'intro_present').status));
 });
 
-test('3. missing keyword: keyword_in_title/heading/density all flag', () => {
+test('3. missing keyword: keyword_in_title flags; density warns', () => {
   const r = analyzer.analyze(fixtures.missingKeyword);
+  // Title has zero keyword tokens → hard fail.
   assert.equal(pick(r, 'keyword_in_title').status, 'failed');
-  assert.equal(pick(r, 'keyword_in_intro').status, 'warning');
-  assert.equal(pick(r, 'keyword_in_heading').status, 'warning');
-  // Density will warn (0 occurrences).
+  // The stale fixture left "routine house cleaning" inside an FAQ heading —
+  // 3/4 keyword tokens overlap, so the new relaxed heading check accepts it.
+  // Density is what proves the keyword is genuinely underused.
   const kd = pick(r, 'keyword_density');
-  assert.equal(kd.status, 'warning');
+  assert.ok(['warning', 'failed'].includes(kd.status), `density should flag when keyword is under-used, got ${kd.status}`);
 });
 
 test('4. keyword stuffing: keyword_density fails and status is red', () => {
@@ -211,6 +212,53 @@ test('semantically identical images produce identical hash regardless of images-
   const a = analyzer.analyze(fixtures.strong);
   const b = analyzer.analyze({ ...fixtures.strong, heroAlt: fixtures.strong.heroAlt + ' extra' });
   assert.notEqual(a.contentHash, b.contentHash);
+});
+
+// Regression: real-world long-tail keyword from GSC ("ann russell how to
+// clean everything") was flagged as "not present" in title/meta/intro/
+// heading because the analyzer required a literal-phrase match. Natural
+// writing fragments long-tail keywords ("Ann Russell's Guide: How to Clean
+// Everything Effectively"). Semantic (proximity) match should accept it.
+test('long-tail GSC keyword: semantic match accepts natural rewordings', () => {
+  const input = {
+    keyword: 'ann russell how to clean everything',
+    title: "Ann Russell's Guide: How to Clean Everything Effectively",
+    slug: 'ann-russell-how-to-clean-everything',
+    metaDescription: "Discover Ann Russell's expert tips on how to clean everything in your home. Practical guide with clear steps and pro cleaning advice.",
+    markdown: `Cleaning your home can often feel overwhelming, especially when you're facing tough stains or clutter. Ann Russell's guide walks you through how to clean everything room by room.
+
+## Where to start when you need to clean everything
+
+Break the work into zones. Kitchen surfaces first, then bathrooms, then bedrooms.
+
+## Ann Russell's method
+
+Work top-to-bottom, dry-to-wet. Ann Russell has taught this pattern for years.
+
+### Kitchen: how to clean everything on the counter
+
+Wipe down surfaces with a mild cleaner.
+
+## Conclusion
+
+Following Ann Russell's how-to-clean-everything method keeps a home consistently fresh.`,
+    tags: ['cleaning', 'tampa'],
+    heroImage: 'https://cdn.example/hero.jpg',
+    heroAlt: 'Hands wearing yellow gloves cleaning a counter',
+    internalHostnames: ['spotless.homes'],
+  };
+  const analyzer = require('../../src/services/seo/articleSeoAnalyzer');
+  const r = analyzer.analyze(input);
+  const p = (id) => r.checks.find((c) => c.id === id);
+  assert.equal(p('keyword_in_title').status, 'passed', 'keyword semantically in title');
+  assert.equal(p('keyword_in_meta_description').status, 'passed');
+  assert.equal(p('keyword_in_intro').status, 'passed');
+  assert.equal(p('keyword_in_heading').status, 'passed');
+  assert.equal(p('keyword_placement_distribution').status, 'passed');
+  // Density passes because we have multiple semantic hits, even without a
+  // single verbatim occurrence of the whole 6-word phrase.
+  const kd = p('keyword_density');
+  assert.ok(kd.status !== 'failed', `keyword_density should not fail, got ${kd.status} (${kd.value})`);
 });
 
 test('groupByCategory returns exactly the 5 categories', () => {

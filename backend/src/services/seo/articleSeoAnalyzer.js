@@ -248,7 +248,7 @@ const evaluators = {
     if (!keyword || !images || images.length === 0) return na('Keyword in image alt', 'no keyword or images');
     const withAlt = images.filter((i) => (i.alt || '').trim());
     if (withAlt.length === 0) return na('Keyword in image alt', 'no alt text to check');
-    const hit = withAlt.some((i) => u.containsKeyword(i.alt, keyword));
+    const hit = withAlt.some((i) => u.containsKeywordSemantic(i.alt, keyword));
     if (hit) return pass('Keyword in image alt', 'appears in at least one alt');
     return warn('Keyword in image alt', 'not present', 'Include the target keyword in one image alt where it fits naturally.');
   },
@@ -373,14 +373,19 @@ const evaluators = {
   // ============ Search Term Optimization ============
   keyword_in_title({ keyword, title }) {
     if (!keyword) return na('Keyword in title', 'no keyword');
-    if (u.containsKeyword(title, keyword)) return pass('Keyword in title');
+    // Semantic match: for long-tail keywords like "ann russell how to clean
+    // everything" the natural title ("Ann Russell's Guide: How to Clean
+    // Everything Effectively") uses every meaningful token in proximity but
+    // isn't the literal phrase. Google treats these the same; the analyzer
+    // should too.
+    if (u.containsKeywordSemantic(title, keyword)) return pass('Keyword in title');
     return fail('Keyword in title', 'not present', 'Work the target keyword into the title.');
   },
 
   keyword_in_meta_description({ keyword, metaDescription }) {
     if (!keyword) return na('Keyword in meta description', 'no keyword');
     if (!metaDescription) return na('Keyword in meta description', 'no meta description');
-    if (u.containsKeyword(metaDescription, keyword)) return pass('Keyword in meta description');
+    if (u.containsKeywordSemantic(metaDescription, keyword)) return pass('Keyword in meta description');
     return warn('Keyword in meta description', 'not present', 'Include the target keyword naturally in the meta description.');
   },
 
@@ -399,31 +404,51 @@ const evaluators = {
   keyword_in_intro({ keyword, intro }) {
     if (!keyword) return na('Keyword in introduction', 'no keyword');
     if (!intro) return warn('Keyword in introduction', 'no intro', 'Add an introduction that includes the keyword.');
-    if (u.containsKeyword(intro, keyword)) return pass('Keyword in introduction');
+    if (u.containsKeywordSemantic(intro, keyword)) return pass('Keyword in introduction');
     return warn('Keyword in introduction', 'not present', 'Mention the keyword naturally in the first paragraph.');
   },
 
   keyword_in_heading({ keyword, headings }) {
     if (!keyword) return na('Keyword in a heading', 'no keyword');
     if (headings.length === 0) return warn('Keyword in a heading', 'no headings', 'Add H2/H3 sections including the keyword where natural.');
-    const hit = headings.some((h) => u.containsKeyword(h.text, keyword));
-    if (hit) return pass('Keyword in a heading');
-    return warn('Keyword in a heading', 'not present', 'Include the keyword in at least one H2 or H3.');
+    // Ideal: a heading contains the full semantic keyword (all required
+    // tokens in proximity). But for long-tail queries a full match is
+    // unnatural — accept ≥ 50% token overlap in any single heading too.
+    const fullHit = headings.some((h) => u.containsKeywordSemantic(h.text, keyword));
+    if (fullHit) return pass('Keyword in a heading');
+    const partialHit = headings.some((h) => u.keywordOverlapRatio(h.text, keyword) >= 0.5);
+    if (partialHit) return pass('Keyword in a heading', 'partial keyword coverage across headings');
+    return warn('Keyword in a heading', 'not present', 'Include the keyword (or key tokens from it) in at least one H2 or H3.');
   },
 
   keyword_density({ keyword, plainText }) {
     if (!keyword) return na('Keyword usage', 'no keyword');
     const words = u.countWords(plainText);
     if (words === 0) return na('Keyword usage', 'no article body');
-    const count = u.countKeywordOccurrences(plainText, keyword);
-    const density = count / words;
+    // Count both exact-phrase and semantic hits. Semantic hits use a
+    // proximity window so an article that says "Ann Russell's guide … clean
+    // everything" for a long-tail keyword still gets credit even when the
+    // literal phrase never appears. Take the max so short-tail keywords
+    // (single words) still work under the classic exact-count logic.
+    const exact = u.countKeywordOccurrences(plainText, keyword);
+    const semantic = u.countKeywordSemanticHits(plainText, keyword);
+    const count = Math.max(exact, semantic);
+    // For density, use exact-count when we have any (traditional metric) —
+    // semantic hits without exact phrases means the density concept doesn't
+    // literally apply, so we skip the density warning and only require
+    // minimum coverage.
+    const density = exact / words;
     const t = THRESHOLDS.keyword;
     const pct = (density * 100).toFixed(2) + '%';
     if (density >= t.stuffingDensity) {
-      return fail('Keyword usage', `${count}× (${pct})`, 'Keyword density is unnaturally high — reduce repetition.');
+      return fail('Keyword usage', `${exact}× exact (${pct})`, 'Keyword density is unnaturally high — reduce repetition.');
     }
     if (count < t.minOccurrences) {
       return warn('Keyword usage', `${count}×`, `Use the keyword at least ${t.minOccurrences} times naturally.`);
+    }
+    if (exact === 0) {
+      // All matches were semantic — that's fine for long-tail keywords.
+      return pass('Keyword usage', `${semantic}× semantic — natural usage`);
     }
     if (density < t.idealMinDensity) {
       return warn('Keyword usage', `${count}× (${pct})`, 'A little light — mention the keyword a few more times where natural.');
@@ -437,10 +462,12 @@ const evaluators = {
   keyword_placement_distribution({ keyword, intro, conclusionText, plainText }) {
     if (!keyword) return na('Keyword placement across article', 'no keyword');
     if (!plainText) return na('Keyword placement across article', 'no article body');
-    const total = u.countKeywordOccurrences(plainText, keyword);
-    if (total === 0) return warn('Keyword placement across article', 'not present', 'Include the keyword through the article.');
-    const introHit = u.containsKeyword(intro, keyword);
-    const concHit = u.containsKeyword(conclusionText, keyword);
+    // Semantic checks — "keyword present" here means "topic clearly covered
+    // in this region," not "exact phrase appears verbatim."
+    const totalSemantic = u.countKeywordSemanticHits(plainText, keyword);
+    if (totalSemantic === 0) return warn('Keyword placement across article', 'not present', 'Include the keyword through the article.');
+    const introHit = u.containsKeywordSemantic(intro, keyword);
+    const concHit = u.containsKeywordSemantic(conclusionText, keyword);
     if (introHit && concHit) return pass('Keyword placement across article', 'intro + body + conclusion');
     if (!introHit && !concHit) return warn('Keyword placement across article', 'body only', 'Include the keyword in both the intro and conclusion for even placement.');
     if (!introHit) return warn('Keyword placement across article', 'missing from intro', 'Include the keyword in the introduction.');
