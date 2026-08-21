@@ -33,7 +33,13 @@ const generate = async ({ connectionId, keyword, businessName, businessType, ser
   if (city) body.city = city;
   if (tone) body.tone = tone;
   if (targetAudience) body.targetAudience = targetAudience;
-  const res = await axios.post('/api/ai/articles', body, { timeout: 60000 });
+  // Article generation now includes: initial LLM (10-30s) + optional bounded
+  // repair (+10-15s) + auto-hero attach (Pexels + image download + S3 upload,
+  // 5-15s). Real median ~25s but tail can hit ~90s under load. Bump to 3 min
+  // to keep the UI from tearing when everything runs long. Server-side there
+  // are still individual timeouts (90s per LLM call, 15s for image download,
+  // etc.) that stop things running away forever.
+  const res = await axios.post('/api/ai/articles', body, { timeout: 3 * 60 * 1000 });
   return res.data;
 };
 

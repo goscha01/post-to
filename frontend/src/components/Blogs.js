@@ -299,7 +299,18 @@ const GeneratorModal = ({ connections, defaultConnectionId, defaultKeyword = '',
   const [tone, setTone] = useState('');
   const [targetAudience, setTargetAudience] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [elapsedSec, setElapsedSec] = useState(0);
   const [err, setErr] = useState('');
+
+  // Tick a visible timer while generating so the button doesn't look frozen.
+  // Generation typically takes 15-40s; longer when bounded repair + auto-hero
+  // both fire. Anything > 90s is unusual and worth surfacing to the user.
+  useEffect(() => {
+    if (!submitting) { setElapsedSec(0); return; }
+    const started = Date.now();
+    const iv = setInterval(() => setElapsedSec(Math.round((Date.now() - started) / 1000)), 1000);
+    return () => clearInterval(iv);
+  }, [submitting]);
 
   const submit = async (e) => {
     e.preventDefault();
@@ -315,7 +326,15 @@ const GeneratorModal = ({ connections, defaultConnectionId, defaultKeyword = '',
       });
       onGenerated({ ...row, connectionId });
     } catch (e2) {
-      setErr(e2.response?.data?.error || e2.response?.data?.message || e2.message || 'Failed to generate');
+      // Distinguish timeout from other errors — axios sets code 'ECONNABORTED'
+      // when its own timeout fires, and no response is attached.
+      let msg;
+      if (e2.code === 'ECONNABORTED' || /timeout/i.test(e2.message || '')) {
+        msg = 'Generation is taking longer than usual. The article may still complete on the server — check the article list in a minute.';
+      } else {
+        msg = e2.response?.data?.error || e2.response?.data?.message || e2.message || 'Failed to generate';
+      }
+      setErr(msg);
     } finally {
       setSubmitting(false);
     }
@@ -384,6 +403,14 @@ const GeneratorModal = ({ connections, defaultConnectionId, defaultKeyword = '',
         {err && (
           <div className="p-2 bg-red-50 border border-red-200 rounded text-xs text-red-800">{err}</div>
         )}
+        {submitting && (
+          <div className="p-2 bg-blue-50 border border-blue-200 rounded text-xs text-blue-800">
+            Writing the article, running SEO analysis, and attaching a hero image. This usually takes 20–40 seconds; longer articles can take up to 90.
+            {elapsedSec >= 45 && (
+              <> Still working ({elapsedSec}s elapsed) — don't close this window.</>
+            )}
+          </div>
+        )}
         <div className="flex justify-end gap-2">
           <button
             type="button"
@@ -400,7 +427,7 @@ const GeneratorModal = ({ connections, defaultConnectionId, defaultKeyword = '',
             {submitting ? (
               <>
                 <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                Generating…
+                Generating{elapsedSec > 0 ? ` (${elapsedSec}s)` : '…'}
               </>
             ) : (
               <>
