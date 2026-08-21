@@ -1159,7 +1159,7 @@ OUTPUT SCHEMA — valid JSON only, no prose, no code fences:
     // Refactor an existing step's title/description because new information changed the framing
     {"op":"refactor","step_id":"<uuid>","newTitle":"...","newDescription":"...","reason":"why the reshape"},
 
-    // Mark a step's status transition (usually because of new data or user report)
+    // Mark a step's status transition (PROGRESSION-ONLY — no 'pending' allowed here)
     {"op":"mark","step_id":"<uuid>","status":"done"|"applied"|"skipped"|"failed","reason":"why the transition"},
 
     // Drop a step that's obsolete (based on a since-disproven assumption or superseded by other work)
@@ -1170,6 +1170,7 @@ OUTPUT SCHEMA — valid JSON only, no prose, no code fences:
 HARD RULES:
 - NEVER add a new step that substantively duplicates any existing step (even if paraphrased). If you catch yourself doing this, use "refactor" on the existing step instead.
 - NEVER drop a step that is already "done" or "applied" — that's the user's completed work; it stays as historical record. Only drop "pending" steps that have become obsolete.
+- NEVER "mark" a step back to "pending". Status transitions are PROGRESSION-ONLY (pending → done/applied/skipped/failed). If a done step needs more work, "refactor" it (title/description stays, status stays done, discussion continues). If it needs to be re-opened, that's a user action — not yours.
 - If a step is "pending" and the campaign snapshot / transcript shows the underlying work has been completed (e.g. user reported it, the metric moved, the change history confirms it), use "mark" with status="done".
 - If a step is "failed" and the discussion suggests a different approach might work, use "refactor" — don't add a new step for the retry.
 - For "refactor" and "mark" and "drop": step_id MUST match an existing step's UUID from the CURRENT PLAN block. If uncertain, prefer no-op over guessing.
@@ -1264,7 +1265,10 @@ Output the edit operations JSON now. Empty operations is fine.`;
 }
 
 const VALID_EDIT_OP_TYPES = new Set(['add', 'refactor', 'mark', 'drop']);
-const VALID_EDIT_STATUS = new Set(['done', 'applied', 'skipped', 'failed', 'pending']);
+// AI can only PROGRESS a step (pending → done/applied/skipped/failed).
+// Demotion back to 'pending' is a user-only action. Accepting AI-emitted
+// 'pending' caused done items to silently regress on regen.
+const VALID_EDIT_STATUS = new Set(['done', 'applied', 'skipped', 'failed']);
 
 function safeParseEditOps(text) {
   if (!text) throw new Error('Empty edit-ops response');

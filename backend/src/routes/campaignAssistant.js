@@ -1250,6 +1250,15 @@ async function applyEditOps(livingPlanId, operations) {
       } else if (op.op === 'mark') {
         const step = stepById.get(op.step_id);
         if (!step) { skipped.push({ op: 'mark', step_id: op.step_id, reason: 'unknown step_id' }); continue; }
+        // Safety: forbid demoting already-progressed work back to pending.
+        // The AI has hallucinated regressions ("this step still needs work")
+        // even when the user already completed it. Only user actions may
+        // demote status; edit ops are progression-only.
+        const TERMINAL = new Set(['done', 'applied', 'skipped', 'failed']);
+        if (TERMINAL.has(step.status) && op.status === 'pending') {
+          skipped.push({ op: 'mark', step_id: op.step_id, reason: `refused to demote ${step.status} → pending (progression-only)` });
+          continue;
+        }
         const patch = { status: op.status };
         const noteAddition = `[AI marked ${op.status} on ${nowIso}]${op.reason ? ' ' + op.reason : ''}`;
         const { data: latest } = await supabase
