@@ -102,11 +102,26 @@ const setHeroImageFromUrl = async (id, url, sourceId) => {
   return res.data?.blog;
 };
 
+// Recompute the server-authoritative SEO analysis on demand. Cheap on the
+// server (analyzer is pure JS) — fine to call after debounced local edits.
+const analyzeSeo = async (id) => {
+  const res = await axios.post(`/api/blogs/${id}/seo-analyze`);
+  return res.data; // { blog, seo }
+};
+
+// Targeted "Fix with AI" for a single failed check. Returns the changed
+// fields (so the UI can highlight the diff) alongside the fresh analysis.
+const fixSeo = async (id, checkId) => {
+  const res = await axios.post(`/api/blogs/${id}/seo-fix`, { checkId }, { timeout: 60000 });
+  return res.data; // { blog, seo, changed, previous }
+};
+
 const blogsService = {
   list, get, update, remove, generate,
   publish, unpublish,
   listDomains, createDomain, verifyDomain, deleteDomain,
   refreshDomainTheme, updateDomainTheme,
   uploadHeroImage, removeHeroImage, suggestHeroImages, setHeroImageFromUrl,
+  analyzeSeo, fixSeo,
 };
 export default blogsService;

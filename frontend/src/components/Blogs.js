@@ -5,6 +5,7 @@ import { useAuth } from '../contexts/AuthContext';
 import blogsService from '../services/blogsService';
 import connectionsService from '../services/connectionsService';
 import gscService from '../services/gscService';
+import { SeoBanner, SeoChecklistDrawer, MetadataEditor, useDebouncedSeo } from './seo/SeoPanel';
 
 const STATUS_STYLES = {
   draft: 'bg-gray-100 text-gray-700',
@@ -423,6 +424,9 @@ const EditorModal = ({ blogId, onClose, onSaved, onDeleted }) => {
   const [publishedNoDomain, setPublishedNoDomain] = useState(false);
   const [err, setErr] = useState('');
   const [savedFlash, setSavedFlash] = useState(false);
+  const [seoDrawerOpen, setSeoDrawerOpen] = useState(false);
+  // Every relevant edit bumps this; the SEO hook debounces + re-analyzes.
+  const [seoInputVersion, setSeoInputVersion] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -439,7 +443,22 @@ const EditorModal = ({ blogId, onClose, onSaved, onDeleted }) => {
     return () => { cancelled = true; };
   }, [blogId]);
 
-  const set = (field, value) => setBlog(prev => ({ ...prev, [field]: value }));
+  const { analysis: seoAnalysis, recalculating: seoRecalculating } = useDebouncedSeo({
+    blogId,
+    seoInputVersion,
+    initialAnalysis: blog?.seo_metadata,
+  });
+
+  // Keep our local `set` (single field) and add `setFromMetadata` (whole
+  // patch, used by MetadataEditor which returns the entire blog object).
+  const set = (field, value) => {
+    setBlog(prev => ({ ...prev, [field]: value }));
+    setSeoInputVersion(v => v + 1);
+  };
+  const setFromMetadata = (updated) => {
+    setBlog(updated);
+    setSeoInputVersion(v => v + 1);
+  };
 
   const save = async () => {
     if (!blog) return;
@@ -454,10 +473,16 @@ const EditorModal = ({ blogId, onClose, onSaved, onDeleted }) => {
         suggestedExcerpt: blog.suggested_excerpt,
         suggestedSocialPost: blog.suggested_social_post,
         status: blog.status,
+        keyword: blog.keyword,
+        heroAlt: blog.hero_alt,
+        tags: Array.isArray(blog.tags) ? blog.tags : [],
       });
       setBlog(updated);
       onSaved(updated);
       setSavedFlash(true);
+      // The PATCH above invalidated seo_metadata server-side; kick a fresh
+      // analysis so the banner reflects the saved state.
+      setSeoInputVersion(v => v + 1);
       setTimeout(() => setSavedFlash(false), 1500);
     } catch (e) {
       setErr(e.response?.data?.error || 'Failed to save');
@@ -613,63 +638,47 @@ const EditorModal = ({ blogId, onClose, onSaved, onDeleted }) => {
                   Article is marked published, but no verified blog domain is connected yet — add one at the top of the Blogs page to get a public URL.
                 </div>
               )}
+              <SeoBanner
+                analysis={seoAnalysis}
+                recalculating={seoRecalculating}
+                onOpenChecklist={() => setSeoDrawerOpen(true)}
+              />
               <HeroImageField
                 blog={blog}
-                onChange={(updated) => setBlog(prev => ({
-                  ...prev,
-                  hero_image: updated.hero_image,
-                  hero_image_preview_url: updated.hero_image_preview_url,
-                }))}
+                onChange={(updated) => {
+                  setBlog(prev => ({
+                    ...prev,
+                    hero_image: updated.hero_image,
+                    hero_image_preview_url: updated.hero_image_preview_url,
+                    hero_alt: updated.hero_alt ?? prev.hero_alt,
+                  }));
+                  setSeoInputVersion(v => v + 1);
+                }}
               />
+              <MetadataEditor blog={blog} onChange={setFromMetadata} />
               <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">Title</label>
-                <input
-                  type="text"
-                  value={blog.title || ''}
-                  onChange={e => set('title', e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
-                />
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">Slug</label>
-                  <input
-                    type="text"
-                    value={blog.slug || ''}
-                    onChange={e => set('slug', e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm font-mono"
-                  />
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-xs font-medium text-gray-600">Markdown</label>
+                  <span className="text-[11px] text-gray-400">Body starts at H2 — the site renders the title as the H1.</span>
                 </div>
-                <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">Status</label>
-                  <select
-                    value={blog.status || 'draft'}
-                    onChange={e => set('status', e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
-                  >
-                    <option value="draft">draft</option>
-                    <option value="published">published</option>
-                    <option value="failed">failed</option>
-                  </select>
-                </div>
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">Meta description</label>
-                <textarea
-                  value={blog.meta_description || ''}
-                  onChange={e => set('meta_description', e.target.value)}
-                  rows={2}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">Markdown</label>
                 <textarea
                   value={blog.markdown || ''}
                   onChange={e => set('markdown', e.target.value)}
                   rows={18}
                   className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm font-mono"
                 />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Status</label>
+                <select
+                  value={blog.status || 'draft'}
+                  onChange={e => set('status', e.target.value)}
+                  className="w-full sm:w-48 px-3 py-2 border border-gray-300 rounded-md text-sm"
+                >
+                  <option value="draft">draft</option>
+                  <option value="published">published</option>
+                  <option value="failed">failed</option>
+                </select>
               </div>
               <div>
                 <label className="block text-xs font-medium text-gray-600 mb-1">Suggested excerpt</label>
@@ -693,6 +702,18 @@ const EditorModal = ({ blogId, onClose, onSaved, onDeleted }) => {
           )}
         </div>
       </div>
+      <SeoChecklistDrawer
+        open={seoDrawerOpen}
+        onClose={() => setSeoDrawerOpen(false)}
+        analysis={seoAnalysis}
+        blogId={blog?.id}
+        onFixed={({ blog: updatedBlog }) => {
+          if (updatedBlog) {
+            setBlog(updatedBlog);
+            setSeoInputVersion(v => v + 1);
+          }
+        }}
+      />
     </div>
   );
 };
