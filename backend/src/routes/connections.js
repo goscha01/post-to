@@ -103,6 +103,20 @@ router.post(
   }
 );
 
+// Re-crawl a website connection's sitemap and refresh its internal_urls
+// list. Used by the SEO pipeline as the whitelist for internal links so
+// articles can reference the site's real pages instead of skipping links
+// entirely.
+router.post('/:id/refresh-urls', async (req, res) => {
+  try {
+    const result = await connections.refreshWebsiteUrls({ userId: req.user.userId, id: req.params.id });
+    res.json({ ok: true, count: result.count });
+  } catch (err) {
+    logger.error('connections.refresh_urls_failed', { error: err.message, id: req.params.id });
+    res.status(500).json({ error: err.message || 'Failed to refresh URLs' });
+  }
+});
+
 router.delete('/:id', async (req, res) => {
   try {
     const existing = await connections.getForUser(req.user.userId, req.params.id);

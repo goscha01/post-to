@@ -214,7 +214,23 @@ Choose the combination that best answers the search intent. Do NOT include an FA
 
 # External links
 
-Include **1–2 external links to authoritative, non-competitor sources** that genuinely help the reader (e.g. Wikipedia, CDC, EPA, government agencies, well-known research bodies). Never link to competitors. Use descriptive anchor text. Skip external links only when the topic truly has no relevant authoritative source.
+Include **exactly 1–2 real external links to authoritative sources** that genuinely help the reader. Insert them inline in the markdown, in the body of a paragraph, using descriptive anchor text (never "click here" / "learn more").
+
+Only use URLs from these safe, stable, well-known authoritative domains:
+- \`en.wikipedia.org/wiki/*\` — for definitions, background, general concepts
+- \`www.cdc.gov/*\` — for health / hygiene / cleaning safety
+- \`www.epa.gov/*\` — for environmental / cleaning-chemical topics
+- \`www.hhs.gov/*\`, \`www.nih.gov/*\`, \`www.ncbi.nlm.nih.gov/*\` — health/medical
+- \`www.mayoclinic.org/*\`, \`my.clevelandclinic.org/*\` — health-adjacent
+- \`www.energy.gov/*\`, \`www.usa.gov/*\` — government resources
+- \`www.consumerreports.org/*\` — product-neutral consumer research
+- \`www.osha.gov/*\` — workplace / occupational cleaning
+
+Pick URLs you are confident actually exist. Prefer stable topical pages (e.g. \`en.wikipedia.org/wiki/Housekeeping\`) over deep-linked articles that may 404. Never link to competitors. Never invent URLs on other domains. If a topic genuinely has no authoritative reference, output an empty suggestedInternalLinks entry rather than making one up.
+
+# Internal links (from the site's own pages)
+
+You will see a list of "Available internal pages" above (or "NONE" if the site has no known URLs). If URLs are available, work **2–6 relevant internal links** into the body using descriptive anchor text (e.g. "see our deep cleaning service"). Only use URLs from that list. Never invent internal URLs on the customer's own domain.
 
 # Trust and quality
 
@@ -223,11 +239,6 @@ Include **1–2 external links to authoritative, non-competitor sources** that g
 - Where mentioning cost, give ranges typical for ${city} and note that pricing varies.
 - Mention when hiring a professional makes sense; also when DIY is fine.
 - Include a soft CTA for ${businessName} near the end.
-
-# Internal links
-
-- Only link to URLs from the list above. Use descriptive anchor text (e.g. "see our deep cleaning service" — not "click here" / "learn more").
-- Do NOT force internal links if none are relevant.
 
 # Images
 

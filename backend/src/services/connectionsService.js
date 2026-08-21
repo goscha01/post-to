@@ -269,6 +269,88 @@ async function deleteForUser(userId, id) {
 }
 
 // Insert or refresh a website connection. We dedupe per user on (provider, external_id).
+// Sitemap-based URL discovery for a website connection. Tries the standard
+// sitemap.xml locations (root, robots.txt Sitemap: hint). Extracts <loc>
+// entries and returns unique root-relative paths — this is what the SEO
+// pipeline hands to the LLM as the internal-link whitelist so it can pick
+// real URLs to link to instead of inventing them.
+//
+// Best-effort. Any failure returns []. Never throws.
+async function discoverInternalUrls(siteUrl) {
+  try {
+    const base = new URL(siteUrl);
+    const origin = `${base.protocol}//${base.host}`;
+    const candidates = [
+      `${origin}/sitemap.xml`,
+      `${origin}/sitemap_index.xml`,
+      `${origin}/sitemap-index.xml`,
+    ];
+    // Also honor robots.txt Sitemap: entries.
+    try {
+      const rob = await axios.get(`${origin}/robots.txt`, { timeout: 5000, validateStatus: () => true });
+      if (rob.status === 200 && typeof rob.data === 'string') {
+        for (const m of rob.data.matchAll(/^\s*Sitemap:\s*(\S+)/gim)) {
+          candidates.push(m[1].trim());
+        }
+      }
+    } catch { /* ignore */ }
+
+    const seen = new Set();
+    const paths = new Set();
+    for (const url of candidates) {
+      if (seen.has(url)) continue;
+      seen.add(url);
+      const r = await axios.get(url, {
+        timeout: 8000, maxContentLength: 5 * 1024 * 1024,
+        validateStatus: () => true,
+        headers: { 'User-Agent': 'post-to/1.0 (+sitemap-discover)' },
+      }).catch(() => null);
+      if (!r || r.status !== 200 || typeof r.data !== 'string') continue;
+
+      // Sitemap index → fetch each child (cap to 3 to keep this bounded).
+      const childSitemaps = [...r.data.matchAll(/<sitemap>\s*<loc>([^<]+)<\/loc>/gi)].map((m) => m[1].trim());
+      const targets = childSitemaps.length > 0 ? childSitemaps.slice(0, 3) : [url];
+      for (const t of targets) {
+        let body = r.data;
+        if (t !== url) {
+          const child = await axios.get(t, {
+            timeout: 8000, maxContentLength: 5 * 1024 * 1024,
+            validateStatus: () => true,
+            headers: { 'User-Agent': 'post-to/1.0 (+sitemap-discover)' },
+          }).catch(() => null);
+          if (!child || child.status !== 200) continue;
+          body = child.data;
+        }
+        for (const m of body.matchAll(/<loc>([^<]+)<\/loc>/gi)) {
+          const raw = m[1].trim();
+          try {
+            const u = new URL(raw);
+            // Same-origin only.
+            if (u.hostname.replace(/^www\./, '') !== base.hostname.replace(/^www\./, '')) continue;
+            // Root path — keep; strip trailing slash except for `/`.
+            let path = u.pathname || '/';
+            if (path.length > 1 && path.endsWith('/')) path = path.slice(0, -1);
+            // Drop the home page, obvious legal / plumbing pages, and blog
+            // posts (the article we're writing IS a blog post; linking to
+            // other blog posts is fine but risks self-referential loops).
+            if (path === '/') continue;
+            if (/^\/(privacy|terms|cookies?|legal|sitemap|robots|feed|rss|search|sign[-_]?in|sign[-_]?up|login|logout|auth)(\/|$|-)/i.test(path)) continue;
+            paths.add(path);
+          } catch { /* ignore malformed */ }
+        }
+      }
+      // If the first candidate gave us URLs, stop.
+      if (paths.size > 0) break;
+    }
+    // Cap at 60 URLs so the prompt doesn't balloon; the LLM only needs a
+    // representative sample of pages to link to.
+    return [...paths].slice(0, 60);
+  } catch (e) {
+    logger.warn('connections.discover_urls_failed', { site_url: siteUrl, error: e.message });
+    return [];
+  }
+}
+
 async function upsertWebsite({ userId, url }) {
   const normalized = normalizeUrl(url);
   if (!normalized) throw new Error('Invalid URL');
@@ -282,6 +364,10 @@ async function upsertWebsite({ userId, url }) {
     fetched.meta.title ||
     host;
 
+  // Sitemap crawl in parallel with the meta fetch (fetched already ran, so
+  // this is sequential but still cheap). Failures return [] silently.
+  const internalUrls = await discoverInternalUrls(fetched.finalUrl || normalized);
+
   const metadata = {
     url: normalized,
     host,
@@ -293,6 +379,11 @@ async function upsertWebsite({ userId, url }) {
     description: fetched.meta.description || fetched.meta.ogDescription,
     og_image: fetched.meta.ogImage,
     keywords: fetched.meta.keywords,
+    // Used by the SEO pipeline (routes/ai.js + automationExecutor.js) as
+    // the internal-link whitelist for article generation.
+    internal_urls: internalUrls,
+    internal_urls_discovered_at: new Date().toISOString(),
+    internal_urls_count: internalUrls.length,
   };
 
   // Upsert by (user_id, provider, external_id). Manual select-then-update so
@@ -884,12 +975,38 @@ async function reconcileGoogleBusiness(userId) {
   return { added, skipped };
 }
 
+// Re-run sitemap discovery for an EXISTING website connection. Cheap way
+// to backfill `metadata.internal_urls` for connections created before we
+// crawled sitemaps at upsert time. Idempotent; overwrites the current URL
+// list with what's live now.
+async function refreshWebsiteUrls({ userId, id }) {
+  const row = await getRawForUser({ userId, id });
+  if (!row) throw new Error('Connection not found');
+  if (row.provider !== 'website') throw new Error('Only website connections have internal_urls');
+  const siteUrl = row.metadata?.url;
+  if (!siteUrl) throw new Error('Connection has no url in metadata');
+  const urls = await discoverInternalUrls(siteUrl);
+  const nextMetadata = {
+    ...(row.metadata || {}),
+    internal_urls: urls,
+    internal_urls_discovered_at: new Date().toISOString(),
+    internal_urls_count: urls.length,
+  };
+  const { data, error } = await supabase
+    .from(TABLE).update({ metadata: nextMetadata })
+    .eq('id', id).eq('user_id', userId).select().single();
+  if (error) throw error;
+  return { connection: data, count: urls.length };
+}
+
 module.exports = {
   listForUser,
   getForUser,
   getRawForUser,
   deleteForUser,
   upsertWebsite,
+  refreshWebsiteUrls,
+  discoverInternalUrls,
   upsertGoogleBusiness,
   reconcileGoogleBusiness,
   upsertGoogleAnalytics,
@@ -901,5 +1018,5 @@ module.exports = {
   reconcileFacebookPictures,
   fetchSiteTheme,
   // exposed for tests / future callers
-  _internal: { normalizeUrl, hostOf, extractMeta, extractTheme, fetchSiteMeta, fetchSiteTheme, maskApiKey, normalizeAdAccountId, stripSensitiveMetadata },
+  _internal: { normalizeUrl, hostOf, extractMeta, extractTheme, fetchSiteMeta, fetchSiteTheme, maskApiKey, normalizeAdAccountId, stripSensitiveMetadata, discoverInternalUrls },
 };
