@@ -13,6 +13,7 @@ const { createClient } = require('@supabase/supabase-js');
 const authMiddleware = require('../middleware/authMiddleware');
 const aiContent = require('../services/aiContentService');
 const aiJobs = require('../services/aiJobsService');
+const seoPipeline = require('../services/seo/articleSeoPipeline');
 const connectionsService = require('../services/connectionsService');
 const driveRouter = require('./drive'); // for driveFileIdFromUrl + fetchDriveFileBytes helpers
 const logger = require('../utils/logger');
@@ -86,6 +87,26 @@ router.post(
 
     const connBusinessName = connection?.display_name || null;
     const connDescription = connection?.metadata?.description || null;
+    // Pull known internal URLs off the connection so the generator can pick
+    // real anchors instead of hallucinating them. Sources it may find on a
+    // scraped website connection: metadata.pages, metadata.sitemap_urls,
+    // metadata.internal_urls. Falls back to [] which the prompt handles.
+    const knownInternalUrls = Array.isArray(connection?.metadata?.internal_urls)
+      ? connection.metadata.internal_urls
+      : Array.isArray(connection?.metadata?.pages)
+      ? connection.metadata.pages
+      : Array.isArray(connection?.metadata?.sitemap_urls)
+      ? connection.metadata.sitemap_urls
+      : [];
+    // Derive internal hostnames from the connection URL so the analyzer can
+    // classify absolute-URL links correctly.
+    let internalHostnames = [];
+    if (connection?.metadata?.url) {
+      try {
+        const host = new URL(connection.metadata.url).hostname.toLowerCase();
+        internalHostnames = [host, host.replace(/^www\./, '')];
+      } catch { /* ignore */ }
+    }
 
     const input = {
       businessName: req.body.businessName || connBusinessName || 'Spotless Homes',
@@ -94,20 +115,29 @@ router.post(
       city: req.body.city || 'Tampa',
       keyword: req.body.keyword,
       tone: req.body.tone || 'helpful, local, professional',
-      targetAudience: req.body.targetAudience || 'homeowners and renters in Florida'
+      targetAudience: req.body.targetAudience || 'homeowners and renters in Florida',
+      articleTopic: req.body.articleTopic || '',
+      knownInternalUrls,
+      internalHostnames,
     };
 
     let job;
     try {
-      job = await aiJobs.createJob({ userId, kind, model: process.env.AI_MODEL || null, inputJson: input });
+      job = await aiJobs.createJob({
+        userId,
+        kind,
+        model: process.env.AI_ARTICLE_MODEL || process.env.AI_MODEL || null,
+        inputJson: input,
+      });
     } catch (e) {
       console.error('createJob failed:', e.message);
       return res.status(500).json({ error: 'Could not create AI job' });
     }
 
     try {
-      const result = await aiContent.generateArticle(input);
+      const result = await seoPipeline.generateArticleWithSeo(input);
       const ai = result.data;
+      const analysis = result.analysis;
 
       const slug = slugify(ai.slug || ai.title);
 
@@ -128,7 +158,13 @@ router.post(
           markdown: ai.markdown,
           suggested_excerpt: ai.suggestedExcerpt,
           suggested_social_post: ai.suggestedSocialPost,
-          status: 'draft'
+          tags: ai.tags || [],
+          search_intent: ai.searchIntent || null,
+          suggested_internal_links: ai.suggestedInternalLinks || [],
+          image_suggestions: ai.imageSuggestions || [],
+          faq: ai.faq || [],
+          seo_metadata: analysis || null,
+          status: 'draft',
         })
         .select()
         .single();
@@ -136,13 +172,13 @@ router.post(
       if (insertErr) throw new Error(`DB insert failed: ${insertErr.message}`);
 
       await aiJobs.completeJob(job.id, {
-        prompt: result.prompt,
-        outputJson: ai,
+        prompt: result.prompts?.initial || null,
+        outputJson: { ...ai, __seo: analysis, __repairApplied: result.repairApplied },
         model: result.model,
         usage: result.usage,
         costUsd: result.costUsd,
         resultTable: 'blog_articles',
-        resultId: article.id
+        resultId: article.id,
       });
 
       return res.status(201).json({
@@ -154,7 +190,14 @@ router.post(
         markdown: article.markdown,
         suggestedExcerpt: article.suggested_excerpt,
         suggestedSocialPost: article.suggested_social_post,
-        status: article.status
+        tags: article.tags,
+        searchIntent: article.search_intent,
+        faq: article.faq,
+        imageSuggestions: article.image_suggestions,
+        suggestedInternalLinks: article.suggested_internal_links,
+        seo: analysis,
+        repairApplied: result.repairApplied,
+        status: article.status,
       });
     } catch (err) {
       console.error('article generation failed:', err.message);

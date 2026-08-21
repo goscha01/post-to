@@ -25,6 +25,7 @@ const { createClient } = require('@supabase/supabase-js');
 const aiContent = require('./aiContentService');
 const aiImage = require('./aiImageService');
 const aiJobs = require('./aiJobsService');
+const seoPipeline = require('./seo/articleSeoPipeline');
 const automationsService = require('./automationsService');
 const blogPublisherS3 = require('./blogPublisherS3');
 const blogDeployTrigger = require('./blogDeployTrigger');
@@ -104,6 +105,29 @@ async function pickTopic(rule) {
 
 async function runBlog(rule, { topic, keyword }) {
   const ctx = rule.business_context || {};
+  // Look up the automation's connection (if any) so the SEO pipeline can pass
+  // real internal URLs / hostnames through to the generator + analyzer.
+  let knownInternalUrls = [];
+  let internalHostnames = [];
+  if (rule.connection_id) {
+    try {
+      const conn = await connectionsService.getForUser(rule.user_id, rule.connection_id);
+      if (conn) {
+        const m = conn.metadata || {};
+        knownInternalUrls = Array.isArray(m.internal_urls) ? m.internal_urls
+          : Array.isArray(m.pages) ? m.pages
+          : Array.isArray(m.sitemap_urls) ? m.sitemap_urls
+          : [];
+        if (m.url) {
+          try {
+            const host = new URL(m.url).hostname.toLowerCase();
+            internalHostnames = [host, host.replace(/^www\./, '')];
+          } catch { /* ignore */ }
+        }
+      }
+    } catch { /* ignore */ }
+  }
+
   const input = {
     businessName: ctx.businessName || 'the business',
     businessType: ctx.businessType || 'local service business',
@@ -112,19 +136,25 @@ async function runBlog(rule, { topic, keyword }) {
     keyword: keyword || topic,
     tone: ctx.tone || 'helpful, local, professional',
     targetAudience: ctx.targetAudience || 'homeowners and renters',
+    articleTopic: topic || '',
+    knownInternalUrls,
+    internalHostnames,
   };
 
   const job = await aiJobs.createJob({
     userId: rule.user_id,
     kind: 'article_generation',
-    model: process.env.AI_MODEL || null,
+    model: process.env.AI_ARTICLE_MODEL || process.env.AI_MODEL || null,
     inputJson: { ...input, automation_rule_id: rule.id, topic },
   });
 
   let article;
   try {
-    const result = await aiContent.generateArticle(input);
+    // Same pipeline the manual /api/ai/articles route uses. Any future
+    // change (better repair, different scoring) applies to both paths.
+    const result = await seoPipeline.generateArticleWithSeo(input);
     const ai = result.data;
+    const analysis = result.analysis;
     const slug = slugify(ai.slug || ai.title);
     const { data: inserted, error: insertErr } = await supabase
       .from('blog_articles')
@@ -141,6 +171,12 @@ async function runBlog(rule, { topic, keyword }) {
         markdown: ai.markdown,
         suggested_excerpt: ai.suggestedExcerpt,
         suggested_social_post: ai.suggestedSocialPost,
+        tags: ai.tags || [],
+        search_intent: ai.searchIntent || null,
+        suggested_internal_links: ai.suggestedInternalLinks || [],
+        image_suggestions: ai.imageSuggestions || [],
+        faq: ai.faq || [],
+        seo_metadata: analysis || null,
         status: 'draft',
       })
       .select().single();
@@ -148,8 +184,8 @@ async function runBlog(rule, { topic, keyword }) {
     article = inserted;
 
     await aiJobs.completeJob(job.id, {
-      prompt: result.prompt,
-      outputJson: ai,
+      prompt: result.prompts?.initial || null,
+      outputJson: { ...ai, __seo: analysis, __repairApplied: result.repairApplied },
       model: result.model,
       usage: result.usage,
       costUsd: result.costUsd,

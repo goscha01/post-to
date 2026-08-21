@@ -13,6 +13,10 @@
 const axios = require('axios');
 
 const DEFAULT_MODEL = process.env.AI_MODEL || 'gpt-4o-mini';
+// Article generation gets its own model knob — an SEO article is more
+// demanding than a review-post caption. Falls back to AI_MODEL so today's
+// deployment continues to use gpt-4o-mini until we benchmark and flip.
+const DEFAULT_ARTICLE_MODEL = process.env.AI_ARTICLE_MODEL || DEFAULT_MODEL;
 const DEFAULT_PROVIDER = (process.env.AI_PROVIDER || 'openai').toLowerCase();
 const OPENAI_URL = 'https://api.openai.com/v1/chat/completions';
 
@@ -109,6 +113,22 @@ async function callLLM(args) {
 // Prompts
 // ---------------------------------------------------------------------------
 
+// Enhanced article prompt.
+//
+// Design choices worth calling out (they push back on common "AI-blog" tells):
+//
+//   1. Structure is adaptive. The prompt gives a menu of section types and
+//      asks the model to pick the layout that fits the search intent — no
+//      universal "Intro/H2/H2/FAQ/Conclusion" mould.
+//   2. Word count is a target range (1500–2500), not a hard box. Justified
+//      longer content is allowed; padding is explicitly forbidden.
+//   3. Internal links are drawn ONLY from the known site URLs passed in.
+//      When none are provided the model is instructed not to invent them.
+//   4. Structured output extends the legacy 6-field JSON with tags, FAQ,
+//      searchIntent, imageSuggestions, and suggestedInternalLinks — enough
+//      for the analyzer + UI to work without re-parsing prose.
+//   5. The body must start at H2 (the article title is the H1 rendered by
+//      the site). The analyzer's heading_hierarchy check enforces this.
 function buildArticlePrompt(input) {
   const {
     businessName = 'the business',
@@ -117,46 +137,147 @@ function buildArticlePrompt(input) {
     city = 'Florida',
     keyword = '',
     tone = 'helpful, local, professional',
-    targetAudience = 'homeowners and renters'
+    targetAudience = 'homeowners and renters',
+    articleTopic = '',
+    knownInternalUrls = [],
   } = input || {};
 
-  const system = 'You are an SEO content writer for local service businesses. You always reply with valid JSON only — no prose, no code fences.';
+  const system = 'You are a senior SEO content writer for local service businesses. You write in clear American English, sound local and specific, and never fabricate statistics or credentials. You always reply with valid JSON only — no prose, no code fences.';
 
-  const user = `You are an SEO content writer for a local residential cleaning company in Florida.
+  const internalLinksBlock = Array.isArray(knownInternalUrls) && knownInternalUrls.length
+    ? `Available internal pages on the business's own website (use these for internal links — do NOT invent URLs):
+${knownInternalUrls.slice(0, 25).map((u) => `- ${typeof u === 'string' ? u : (u.url || '')}${typeof u === 'object' && u.title ? `  (${u.title})` : ''}`).join('\n')}`
+    : `Internal pages available: NONE. Do NOT invent internal links. Skip the suggestedInternalLinks array (return []).`;
 
-Write a helpful, non-spammy blog article for homeowners and renters.
+  const user = `You are writing one long-form SEO article for a local service business.
 
 Business: ${businessName}
 Business type: ${businessType}
-Service: ${service}
-City/area: ${city}
-Target keyword: ${keyword}
-Audience: ${targetAudience}
+Primary service: ${service}
+City / service area: ${city}
+Target keyword: "${keyword}"
+${articleTopic ? `Article topic angle: ${articleTopic}` : ''}
+Target audience: ${targetAudience}
 Tone: ${tone}
 
-Requirements:
-- Write in clear American English.
-- Sound local and practical, not generic.
-- Do not overpromise.
-- Do not mention fake statistics.
-- Do not claim certifications unless provided.
-- Include practical cleaning advice.
-- Mention when hiring a professional cleaner makes sense.
-- Naturally include the city/area and service.
-- Include a soft call to action for ${businessName}.
-- Markdown body should be 700–1100 words with H2/H3 subheadings and a short intro and conclusion.
-- The slug must be lowercase, hyphen-separated, no special characters.
-- metaDescription must be under 160 characters.
+${internalLinksBlock}
 
-Return valid JSON only with exactly these keys:
+# Search intent
+
+Before writing, silently decide the search intent behind "${keyword}" — informational, transactional, comparison, how-to, list, or FAQ — and let that dictate the article's structure. Different keywords deserve different layouts. Do not use the same template for every article.
+
+# Structure — pick what fits, do not use everything
+
+Possible sections you may compose (in any order that reads naturally):
+- Strong intro that names the topic and previews the value (~80–150 words)
+- "Key Takeaways" callout at the top (3–6 crisp bullet points) — useful for long articles
+- Definition / background section
+- Step-by-step or how-to walkthrough
+- Comparison (best done as a table)
+- Pros/cons or checklist (list format)
+- Cost / pricing section (table where amounts vary by dimension)
+- Common mistakes / what to avoid
+- FAQ — 3–6 real questions people ask about "${keyword}" — only if it fits the intent
+- Conclusion or "Key takeaways" wrap-up with a soft CTA
+
+Choose the combination that best answers the search intent. Do NOT include an FAQ or a comparison table if the topic doesn't call for it. Vary the layout between articles — this is important.
+
+# Formatting rules
+
+- The article title is the H1 rendered by the site. Your markdown body MUST start at H2. Never emit an H1 (# ) in the body.
+- Use H2 for major sections. Use H3 for sub-points inside a section. Do not skip heading levels.
+- Write short, scannable paragraphs (target 2–5 sentences, ~60–90 words). Avoid walls of text.
+- Use bullet or numbered lists where they improve scanning.
+- Use markdown tables when data has 2+ dimensions (e.g. "add-on | typical cost").
+- If you include an FAQ, put each question as an H3.
+- Any callouts should be clearly labeled (e.g. an H3 "Key takeaways" followed by a bullet list).
+
+# Length
+
+Target 1500–2500 words. Longer is allowed IF the extra content is genuinely useful. Do NOT pad to hit a word count.
+
+# Keyword usage
+
+- Use the target keyword in: the title, the introduction, at least one H2 or H3, and the conclusion.
+- Density should be natural — a handful of exact uses plus close variants. Do NOT stuff the keyword.
+
+# Trust and quality
+
+- Do NOT invent statistics, awards, certifications, or guarantees.
+- Do NOT claim you serve areas the business doesn't (only the given city).
+- Where mentioning cost, give ranges typical for ${city} and note that pricing varies.
+- Mention when hiring a professional makes sense; also when DIY is fine.
+- Include a soft CTA for ${businessName} near the end.
+
+# Internal links
+
+- Only link to URLs from the list above. Use descriptive anchor text (e.g. "see our deep cleaning service" — not "click here" / "learn more").
+- Do NOT force internal links if none are relevant.
+
+# Images
+
+- Do NOT put any image markdown in the body. The site inserts the hero image itself.
+- In imageSuggestions, list 2–4 specific images that would strengthen the article (each with a descriptive alt including relevant semantic phrases). These are hints for the editor, not required to be present.
+
+# Output — return valid JSON only, exactly these keys:
+
 {
-  "title": string,
-  "slug": string,
-  "metaDescription": string,
-  "markdown": string,
-  "suggestedExcerpt": string,
-  "suggestedSocialPost": string
+  "title": string,                          // 45–65 chars, includes keyword
+  "slug": string,                           // lowercase, hyphens only, no leading/trailing hyphen
+  "metaDescription": string,                // 140–160 chars, includes keyword naturally
+  "markdown": string,                       // article body starting at H2
+  "suggestedExcerpt": string,               // 150–220 chars, standalone summary
+  "suggestedSocialPost": string,            // 1–2 sentences for a GBP/Facebook post
+  "tags": string[],                         // 3–8 lowercase tag words
+  "searchIntent": string,                   // one of: informational | how-to | comparison | list | transactional | FAQ | other
+  "faq": [{"question": string, "answer": string}],  // [] if none
+  "imageSuggestions": [{"description": string, "alt": string}],  // 2–4 suggestions
+  "suggestedInternalLinks": [{"anchor": string, "url": string}]  // may be [] if none available
 }`;
+
+  return { system, user };
+}
+
+// Targeted repair prompt: given the previous article JSON and the analyzer's
+// findings, ask the model to output an improved JSON in the SAME schema,
+// changing ONLY what's needed to address the failed / low-confidence checks.
+// Used by generateArticleWithSeo for the single bounded repair pass, and by
+// the frontend "Fix with AI" action for scoped fixes.
+function buildArticleRepairPrompt({ previousJson, analysis, keyword, businessName, knownInternalUrls = [] }) {
+  const failedChecks = (analysis?.checks || []).filter(
+    (c) => c.status === 'failed' || (c.status === 'warning' && c.weight >= 2),
+  );
+
+  const failedBlock = failedChecks
+    .slice(0, 20)
+    .map((c) => `- [${c.status}] ${c.label}${c.value ? ` (${c.value})` : ''} — ${c.recommendation || 'improve this'}`)
+    .join('\n');
+
+  const internalLinksBlock = Array.isArray(knownInternalUrls) && knownInternalUrls.length
+    ? `Available internal URLs (use only these; do NOT invent):\n${knownInternalUrls.slice(0, 25).map((u) => `- ${typeof u === 'string' ? u : (u.url || '')}`).join('\n')}`
+    : `No internal URLs available. Do NOT invent internal links.`;
+
+  const system = 'You are a senior SEO editor. You revise an existing article JSON to address specific SEO issues without rewriting sections that are already good. You always reply with valid JSON only — no prose, no code fences.';
+
+  const user = `An article was generated for the keyword "${keyword}" for ${businessName}. A deterministic SEO analyzer found the following issues:
+
+${failedBlock || '(no significant issues — return the article unchanged)'}
+
+${internalLinksBlock}
+
+Revise the article to fix these issues:
+- Keep the overall structure and voice.
+- Only edit what needs editing. Do not rewrite the whole article.
+- If a check is about metadata (title / slug / metaDescription / tags), fix that field.
+- If a check is about content structure (headings, paragraph length, missing intro/conclusion, missing keyword in headings), edit just those sections.
+- If internal links are required, use ONLY the URLs listed above.
+- Do NOT introduce fake statistics or claims to satisfy a check.
+- Do NOT stuff the keyword to satisfy density — natural placement in title + intro + one heading + conclusion is enough.
+
+Previous article JSON:
+${JSON.stringify(previousJson)}
+
+Return valid JSON only, in the SAME schema as the original (title, slug, metaDescription, markdown, suggestedExcerpt, suggestedSocialPost, tags, searchIntent, faq, imageSuggestions, suggestedInternalLinks). Every key from the previous JSON must be present in the response.`;
 
   return { system, user };
 }
@@ -315,17 +436,57 @@ async function callOpenAIVision({ system, userText, images, model, temperature =
 // Public generators
 // ---------------------------------------------------------------------------
 
-async function generateArticle(input) {
-  const model = input.model || DEFAULT_MODEL;
-  const { system, user } = buildArticlePrompt(input);
-  const result = await callLLM({ system, user, model, temperature: 0.7, maxTokens: 3000 });
-  const data = extractJson(result.raw);
+// Article model gets more headroom than review-post captions — the enhanced
+// prompt asks for 1500–2500 words plus a structured JSON envelope.
+const ARTICLE_MAX_TOKENS = 6000;
 
-  // Light shape validation — keeps downstream code honest.
-  const required = ['title', 'slug', 'metaDescription', 'markdown', 'suggestedExcerpt', 'suggestedSocialPost'];
-  for (const key of required) {
+// Validate + normalize the LLM's structured output. Enforces the six legacy
+// fields (title/slug/metaDescription/markdown/suggestedExcerpt/
+// suggestedSocialPost) — throws if missing — and defaults the new fields
+// (tags/faq/searchIntent/imageSuggestions/suggestedInternalLinks) so the
+// downstream code never crashes on a partial model response.
+function normalizeArticleOutput(data) {
+  const requiredLegacy = ['title', 'slug', 'metaDescription', 'markdown', 'suggestedExcerpt', 'suggestedSocialPost'];
+  for (const key of requiredLegacy) {
     if (!(key in data)) throw new Error(`LLM response missing field: ${key}`);
   }
+  return {
+    title: String(data.title || '').trim(),
+    slug: String(data.slug || '').trim(),
+    metaDescription: String(data.metaDescription || '').trim(),
+    markdown: String(data.markdown || ''),
+    suggestedExcerpt: String(data.suggestedExcerpt || '').trim(),
+    suggestedSocialPost: String(data.suggestedSocialPost || '').trim(),
+    tags: Array.isArray(data.tags)
+      ? data.tags.map((t) => String(t || '').trim().toLowerCase()).filter(Boolean).slice(0, 12)
+      : [],
+    searchIntent: data.searchIntent ? String(data.searchIntent).trim() : '',
+    faq: Array.isArray(data.faq)
+      ? data.faq
+          .map((f) => ({ question: String(f?.question || '').trim(), answer: String(f?.answer || '').trim() }))
+          .filter((f) => f.question && f.answer)
+          .slice(0, 8)
+      : [],
+    imageSuggestions: Array.isArray(data.imageSuggestions)
+      ? data.imageSuggestions
+          .map((i) => ({ description: String(i?.description || '').trim(), alt: String(i?.alt || '').trim() }))
+          .filter((i) => i.description || i.alt)
+          .slice(0, 6)
+      : [],
+    suggestedInternalLinks: Array.isArray(data.suggestedInternalLinks)
+      ? data.suggestedInternalLinks
+          .map((l) => ({ anchor: String(l?.anchor || '').trim(), url: String(l?.url || '').trim() }))
+          .filter((l) => l.anchor && l.url)
+          .slice(0, 10)
+      : [],
+  };
+}
+
+async function generateArticle(input) {
+  const model = input.model || DEFAULT_ARTICLE_MODEL;
+  const { system, user } = buildArticlePrompt(input);
+  const result = await callLLM({ system, user, model, temperature: 0.7, maxTokens: ARTICLE_MAX_TOKENS });
+  const data = normalizeArticleOutput(extractJson(result.raw));
 
   return {
     data,
@@ -334,6 +495,24 @@ async function generateArticle(input) {
     model: result.model,
     usage: result.usage,
     costUsd: estimateCostUsd(result.model, result.usage)
+  };
+}
+
+// Targeted repair pass. Runs the same schema through the model with the
+// analyzer's failure list. Never asked to invent internal URLs; may return
+// the article unchanged if it decides the analyzer's issues are subjective.
+async function repairArticle({ previousJson, analysis, keyword, businessName, knownInternalUrls, model }) {
+  const chosenModel = model || DEFAULT_ARTICLE_MODEL;
+  const { system, user } = buildArticleRepairPrompt({ previousJson, analysis, keyword, businessName, knownInternalUrls });
+  const result = await callLLM({ system, user, model: chosenModel, temperature: 0.5, maxTokens: ARTICLE_MAX_TOKENS });
+  const data = normalizeArticleOutput(extractJson(result.raw));
+  return {
+    data,
+    raw: result.raw,
+    prompt: user,
+    model: result.model,
+    usage: result.usage,
+    costUsd: estimateCostUsd(result.model, result.usage),
   };
 }
 
@@ -461,9 +640,19 @@ Return valid JSON with exactly these keys:
 
 module.exports = {
   generateArticle,
+  repairArticle,
   generateReviewPost,
   generateReviewReply,
   generatePostFromImages,
+  normalizeArticleOutput,
   // exported for tests
-  _internal: { extractJson, buildArticlePrompt, buildReviewPostPrompt, buildReviewReplyPrompt, estimateCostUsd }
+  _internal: {
+    extractJson,
+    buildArticlePrompt,
+    buildArticleRepairPrompt,
+    buildReviewPostPrompt,
+    buildReviewReplyPrompt,
+    estimateCostUsd,
+    DEFAULT_ARTICLE_MODEL,
+  },
 };

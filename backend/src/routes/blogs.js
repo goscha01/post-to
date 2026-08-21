@@ -17,6 +17,11 @@ const blogDomainsService = require('../services/blogDomainsService');
 const blogPublisherS3 = require('../services/blogPublisherS3');
 const blogDeployTrigger = require('../services/blogDeployTrigger');
 const blogHeroImageService = require('../services/blogHeroImageService');
+const seoPipeline = require('../services/seo/articleSeoPipeline');
+const seoAnalyzer = require('../services/seo/articleSeoAnalyzer');
+const aiContent = require('../services/aiContentService');
+const aiJobs = require('../services/aiJobsService');
+const connectionsService = require('../services/connectionsService');
 
 // Augment a blog row with hero_image_preview_url so the frontend can render
 // a thumbnail before the customer's site build has published the image to
@@ -72,11 +77,44 @@ const PUBLIC_FIELDS = [
   'status',
   'published_at',
   'hero_image',
+  'hero_alt',
   'hero_image_source_id',
   'visual_search_query',
+  'tags',
+  'search_intent',
+  'suggested_internal_links',
+  'image_suggestions',
+  'faq',
+  'seo_metadata',
   'created_at',
   'updated_at',
 ].join(', ');
+
+// Load the caller's connection so the analyzer knows which URLs count as
+// internal. Silent-fail: an article can be analyzed even without a
+// connection — we just skip the internal-link classification.
+async function loadConnectionContext(userId, connectionId) {
+  if (!connectionId) return { knownInternalUrls: [], internalHostnames: [] };
+  try {
+    const connection = await connectionsService.getForUser(userId, connectionId);
+    if (!connection) return { knownInternalUrls: [], internalHostnames: [] };
+    const meta = connection.metadata || {};
+    const knownInternalUrls = Array.isArray(meta.internal_urls) ? meta.internal_urls
+      : Array.isArray(meta.pages) ? meta.pages
+      : Array.isArray(meta.sitemap_urls) ? meta.sitemap_urls
+      : [];
+    let internalHostnames = [];
+    if (meta.url) {
+      try {
+        const host = new URL(meta.url).hostname.toLowerCase();
+        internalHostnames = [host, host.replace(/^www\./, '')];
+      } catch { /* ignore */ }
+    }
+    return { knownInternalUrls, internalHostnames };
+  } catch {
+    return { knownInternalUrls: [], internalHostnames: [] };
+  }
+}
 
 // ============================================================================
 // Blog domains (custom subdomains that serve published articles)
@@ -235,7 +273,23 @@ router.get('/:id', [param('id').isUUID()], async (req, res) => {
       if (error.code === 'PGRST116') return res.status(404).json({ error: 'Blog not found' });
       throw error;
     }
-    res.json({ blog: await withPreview(req.user.userId, data) });
+    // Opportunistic SEO analysis: any read of a row without seo_metadata OR
+    // with a stale analyzer_version recomputes on the fly. Analyzer is pure
+    // JS and typically completes in a few ms; keeps the frontend simple.
+    let blog = data;
+    const cached = data.seo_metadata;
+    const stale = !cached || cached.analyzerVersion !== seoAnalyzer.SEO_ANALYZER_VERSION;
+    if (stale) {
+      const ctx = await loadConnectionContext(req.user.userId, data.connection_id);
+      const analysis = seoPipeline.analyzeExistingArticle({ article: data, ...ctx });
+      // Persist so future reads are pure DB lookups. Best-effort — a save
+      // failure doesn't affect the response.
+      supabase.from('blog_articles').update({ seo_metadata: analysis })
+        .eq('user_id', req.user.userId).eq('id', req.params.id)
+        .then(() => {}, () => {});
+      blog = { ...data, seo_metadata: analysis };
+    }
+    res.json({ blog: await withPreview(req.user.userId, blog) });
   } catch (err) {
     logger.error('blogs.get_failed', { error: err.message });
     res.status(500).json({ error: 'Failed to load blog' });
@@ -251,7 +305,22 @@ const EDITABLE_FIELDS_MAP = {
   suggestedSocialPost: 'suggested_social_post',
   status: 'status',
   heroImage: 'hero_image',
+  heroAlt: 'hero_alt',
+  keyword: 'keyword',
+  tags: 'tags',
+  searchIntent: 'search_intent',
+  faq: 'faq',
+  suggestedInternalLinks: 'suggested_internal_links',
+  imageSuggestions: 'image_suggestions',
 };
+
+// Any of these editable fields invalidates the cached SEO analysis. When one
+// is present in the PATCH we clear seo_metadata so the next GET / analyze
+// call recomputes rather than trusting stale numbers.
+const SEO_INVALIDATING_FIELDS = new Set([
+  'title', 'slug', 'meta_description', 'markdown', 'keyword',
+  'hero_image', 'hero_alt', 'tags', 'search_intent',
+]);
 
 router.patch(
   '/:id',
@@ -265,6 +334,14 @@ router.patch(
     body('suggestedSocialPost').optional().isString().isLength({ max: 4000 }),
     body('status').optional().isIn(['draft', 'published', 'failed']),
     body('heroImage').optional({ nullable: true }).isString().isLength({ max: 1024 }),
+    body('heroAlt').optional({ nullable: true }).isString().isLength({ max: 500 }),
+    body('keyword').optional().isString().isLength({ max: 255 }),
+    body('tags').optional().isArray({ max: 20 }),
+    body('tags.*').optional().isString().isLength({ max: 60 }),
+    body('searchIntent').optional({ nullable: true }).isString().isLength({ max: 64 }),
+    body('faq').optional().isArray({ max: 20 }),
+    body('suggestedInternalLinks').optional().isArray({ max: 20 }),
+    body('imageSuggestions').optional().isArray({ max: 20 }),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -280,6 +357,10 @@ router.patch(
     if (Object.keys(patch).length === 0) {
       return res.status(400).json({ error: 'No editable fields provided' });
     }
+    // Invalidate the cached SEO analysis when any analyzer-relevant field
+    // changed. The next read (or explicit /seo-analyze) will recompute.
+    const invalidates = Object.keys(patch).some((k) => SEO_INVALIDATING_FIELDS.has(k));
+    if (invalidates) patch.seo_metadata = null;
     try {
       const { data, error } = await supabase
         .from('blog_articles')
@@ -292,11 +373,167 @@ router.patch(
         if (error.code === 'PGRST116') return res.status(404).json({ error: 'Blog not found' });
         throw error;
       }
-      logger.info('blogs.updated', { userId: req.user.userId, blogId: req.params.id, fields: Object.keys(patch) });
+      logger.info('blogs.updated', { userId: req.user.userId, blogId: req.params.id, fields: Object.keys(patch), seo_invalidated: invalidates });
       res.json({ blog: await withPreview(req.user.userId, data) });
     } catch (err) {
       logger.error('blogs.update_failed', { error: err.message });
       res.status(500).json({ error: 'Failed to update blog' });
+    }
+  }
+);
+
+// On-demand SEO analysis endpoint.
+//   POST /api/blogs/:id/seo-analyze
+//
+// Recomputes the analyzer from the CURRENT row fields. Persists the result
+// into seo_metadata so subsequent reads can render immediately. Legacy rows
+// without any seo_metadata behave identically here — no backfill needed.
+router.post('/:id/seo-analyze', [param('id').isUUID()], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ error: 'Invalid id' });
+  try {
+    const { data: article, error: loadErr } = await supabase
+      .from('blog_articles')
+      .select(PUBLIC_FIELDS)
+      .eq('user_id', req.user.userId)
+      .eq('id', req.params.id)
+      .single();
+    if (loadErr) {
+      if (loadErr.code === 'PGRST116') return res.status(404).json({ error: 'Blog not found' });
+      throw loadErr;
+    }
+    const ctx = await loadConnectionContext(req.user.userId, article.connection_id);
+    const analysis = seoPipeline.analyzeExistingArticle({
+      article,
+      internalHostnames: ctx.internalHostnames,
+      knownInternalUrls: ctx.knownInternalUrls,
+    });
+    const { data: updated, error: updateErr } = await supabase
+      .from('blog_articles')
+      .update({ seo_metadata: analysis })
+      .eq('user_id', req.user.userId)
+      .eq('id', req.params.id)
+      .select(PUBLIC_FIELDS)
+      .single();
+    if (updateErr) throw updateErr;
+    res.json({ blog: await withPreview(req.user.userId, updated), seo: analysis });
+  } catch (err) {
+    logger.error('blogs.seo_analyze_failed', { error: err.message, id: req.params.id });
+    res.status(500).json({ error: 'Failed to analyze blog' });
+  }
+});
+
+// Targeted "Fix with AI" — one check id at a time. Applies a narrow LLM
+// transform, saves the resulting fields on the row, and returns the fresh
+// SEO analysis. Non-destructive: title/meta/etc. get overwritten only if
+// the model returns a different value; the previous value is left in the
+// `previous` field in the response so the UI can offer undo.
+router.post(
+  '/:id/seo-fix',
+  [
+    param('id').isUUID(),
+    body('checkId').isString().isLength({ min: 1, max: 64 }),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ error: 'Invalid input', details: errors.array() });
+    try {
+      const { data: article, error: loadErr } = await supabase
+        .from('blog_articles')
+        .select(PUBLIC_FIELDS)
+        .eq('user_id', req.user.userId)
+        .eq('id', req.params.id)
+        .single();
+      if (loadErr) {
+        if (loadErr.code === 'PGRST116') return res.status(404).json({ error: 'Blog not found' });
+        throw loadErr;
+      }
+      const ctx = await loadConnectionContext(req.user.userId, article.connection_id);
+      const analysis = seoPipeline.analyzeExistingArticle({ article, ...ctx });
+      const kind = 'article_seo_fix';
+      const job = await aiJobs.createJob({
+        userId: req.user.userId,
+        kind,
+        model: process.env.AI_ARTICLE_MODEL || process.env.AI_MODEL || null,
+        inputJson: { blogId: article.id, checkId: req.body.checkId },
+      });
+      try {
+        const previousJson = {
+          title: article.title,
+          slug: article.slug,
+          metaDescription: article.meta_description,
+          markdown: article.markdown,
+          suggestedExcerpt: article.suggested_excerpt,
+          suggestedSocialPost: article.suggested_social_post,
+          tags: article.tags || [],
+          searchIntent: article.search_intent || '',
+          faq: article.faq || [],
+          imageSuggestions: article.image_suggestions || [],
+          suggestedInternalLinks: article.suggested_internal_links || [],
+        };
+        // The repair prompt handles any subset of failures — narrow it to the
+        // one check the user asked about, so only that field changes.
+        const targeted = { ...analysis, checks: analysis.checks.filter((c) => c.id === req.body.checkId) };
+        const repair = await aiContent.repairArticle({
+          previousJson,
+          analysis: targeted,
+          keyword: article.keyword,
+          businessName: article.business_name,
+          knownInternalUrls: ctx.knownInternalUrls,
+        });
+        const changed = {};
+        const previous = {};
+        for (const [k, dbKey] of Object.entries({
+          title: 'title', slug: 'slug', metaDescription: 'meta_description',
+          markdown: 'markdown', suggestedExcerpt: 'suggested_excerpt',
+          suggestedSocialPost: 'suggested_social_post', tags: 'tags',
+          searchIntent: 'search_intent', faq: 'faq',
+          imageSuggestions: 'image_suggestions',
+          suggestedInternalLinks: 'suggested_internal_links',
+        })) {
+          if (JSON.stringify(repair.data[k]) !== JSON.stringify(previousJson[k])) {
+            changed[dbKey] = repair.data[k];
+            previous[dbKey] = previousJson[k];
+          }
+        }
+        if (Object.keys(changed).length === 0) {
+          await aiJobs.completeJob(job.id, {
+            prompt: repair.prompt, outputJson: repair.data, model: repair.model,
+            usage: repair.usage, costUsd: repair.costUsd,
+          });
+          return res.json({ blog: await withPreview(req.user.userId, article), seo: analysis, changed: {}, previous: {} });
+        }
+        // Save + re-analyze (invalidate cache).
+        changed.seo_metadata = null;
+        const { data: updated, error: updateErr } = await supabase
+          .from('blog_articles')
+          .update(changed)
+          .eq('user_id', req.user.userId)
+          .eq('id', req.params.id)
+          .select(PUBLIC_FIELDS)
+          .single();
+        if (updateErr) throw updateErr;
+        const newAnalysis = seoPipeline.analyzeExistingArticle({ article: updated, ...ctx });
+        await supabase.from('blog_articles').update({ seo_metadata: newAnalysis })
+          .eq('user_id', req.user.userId).eq('id', req.params.id);
+        await aiJobs.completeJob(job.id, {
+          prompt: repair.prompt, outputJson: repair.data, model: repair.model,
+          usage: repair.usage, costUsd: repair.costUsd,
+          resultTable: 'blog_articles', resultId: updated.id,
+        });
+        return res.json({
+          blog: await withPreview(req.user.userId, { ...updated, seo_metadata: newAnalysis }),
+          seo: newAnalysis,
+          changed,
+          previous,
+        });
+      } catch (err) {
+        await aiJobs.failJob(job.id, err.message);
+        throw err;
+      }
+    } catch (err) {
+      logger.error('blogs.seo_fix_failed', { error: err.message, id: req.params.id, checkId: req.body.checkId });
+      res.status(500).json({ error: 'Failed to apply SEO fix', message: err.message });
     }
   }
 );
