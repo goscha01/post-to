@@ -23,6 +23,7 @@
 
 const aiContent = require('../aiContentService');
 const analyzer = require('./articleSeoAnalyzer');
+const linkVerifier = require('./externalLinkVerifier');
 
 const REPAIR_TRIGGER = {
   scoreBelow: 60,
@@ -40,7 +41,7 @@ const REPAIR_IGNORED_CHECK_IDS = new Set([
   'keyword_in_image_alt',
 ]);
 
-function buildAnalyzerInput({ generation, input }) {
+function buildAnalyzerInput({ generation, input, verifiedExternalLinks = null, externalLinkVerification = null }) {
   return {
     keyword: input.keyword || '',
     title: generation.title || '',
@@ -54,6 +55,12 @@ function buildAnalyzerInput({ generation, input }) {
     knownInternalUrls: input.knownInternalUrls || [],
     internalHostnames: input.internalHostnames || [],
     searchIntent: generation.searchIntent || '',
+    // Verifier output — enables the `external_links_verified` analyzer
+    // check to distinguish "3 external links present" from "3/3 links
+    // still alive." When absent, the analyzer treats verification as
+    // unknown and skips that check.
+    verifiedExternalLinks,
+    externalLinkVerification,
   };
 }
 
@@ -129,13 +136,71 @@ function addUsage(a, b) {
   };
 }
 
+// Verify every external link in `markdown` against the allowlist + HTTP
+// reachability. Dead links are stripped from the markdown (their anchor
+// text is kept). Returns the possibly-mutated markdown + verifier
+// telemetry. NEVER throws — verifier failures are caught and treated as
+// "0 links verified" so a broken verifier can't fail generation.
+async function verifyAndCleanExternalLinks(markdown) {
+  const empty = { markdown, verification: { total: 0, verified: 0, dead: 0, deadUrls: [], durationMs: 0 } };
+  if (!markdown) return empty;
+  const urls = linkVerifier.extractExternalLinksFromMarkdown(markdown);
+  if (urls.length === 0) return empty;
+  const t0 = Date.now();
+  try {
+    const { results, summary } = await linkVerifier.verifyMany(urls);
+    const deadUrls = results.filter((r) => !r.ok).map((r) => r.url);
+    const cleaned = deadUrls.length > 0
+      ? linkVerifier.stripDeadLinksFromMarkdown(markdown, deadUrls)
+      : markdown;
+    return {
+      markdown: cleaned,
+      verification: {
+        total: summary.total,
+        verified: summary.ok,
+        dead: summary.dead,
+        deadUrls,
+        durationMs: Date.now() - t0,
+      },
+    };
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('external-link verification failed:', err.message);
+    return {
+      ...empty,
+      verification: { ...empty.verification, durationMs: Date.now() - t0, error: err.message },
+    };
+  }
+}
+
 async function generateArticleWithSeo(input) {
   const businessName = input.businessName || 'the business';
   const knownInternalUrls = input.knownInternalUrls || [];
+  const timing = { generation_ms: 0, external_link_verification_ms: 0, seo_analysis_ms: 0, repair_ms: 0, total_ms: 0 };
+  const t_start = Date.now();
 
+  const t_gen = Date.now();
   const initial = await aiContent.generateArticle(input);
+  timing.generation_ms = Date.now() - t_gen;
+
   let currentData = initial.data;
-  let analysis = analyzer.analyze(buildAnalyzerInput({ generation: currentData, input }));
+
+  // External-link verification BEFORE the draft is finalized. Dead links
+  // are stripped from the markdown; the prose survives. Runs synchronously
+  // but with bounded concurrency + short per-URL timeout so 5 links don't
+  // add 5×timeout latency. Verifier failure never throws.
+  const initialVerification = await verifyAndCleanExternalLinks(currentData.markdown);
+  currentData = { ...currentData, markdown: initialVerification.markdown };
+  timing.external_link_verification_ms = initialVerification.verification.durationMs;
+  const verification = initialVerification.verification;
+
+  const t_analysis = Date.now();
+  let analysis = analyzer.analyze(buildAnalyzerInput({
+    generation: currentData, input,
+    verifiedExternalLinks: linkVerifier.extractExternalLinksFromMarkdown(currentData.markdown),
+    externalLinkVerification: verification,
+  }));
+  timing.seo_analysis_ms = Date.now() - t_analysis;
 
   let repairApplied = false;
   let repairResult = null;
@@ -143,6 +208,7 @@ async function generateArticleWithSeo(input) {
 
   if (needsRepair(analysis)) {
     repairApplied = true;
+    const t_repair = Date.now();
     try {
       repairResult = await aiContent.repairArticle({
         previousJson: currentData,
@@ -152,8 +218,22 @@ async function generateArticleWithSeo(input) {
         knownInternalUrls,
         model: input.model,
       });
-      const repairedData = repairResult.data;
-      const repairedAnalysis = analyzer.analyze(buildAnalyzerInput({ generation: repairedData, input }));
+      let repairedData = repairResult.data;
+      // The repair pass may have introduced new external links (or reworked
+      // existing ones). Verify + clean again before scoring so the analyzer
+      // sees the actual final markdown.
+      const repairedVerification = await verifyAndCleanExternalLinks(repairedData.markdown);
+      repairedData = { ...repairedData, markdown: repairedVerification.markdown };
+      timing.external_link_verification_ms += repairedVerification.verification.durationMs;
+
+      const t_repair_analysis = Date.now();
+      const repairedAnalysis = analyzer.analyze(buildAnalyzerInput({
+        generation: repairedData, input,
+        verifiedExternalLinks: linkVerifier.extractExternalLinksFromMarkdown(repairedData.markdown),
+        externalLinkVerification: repairedVerification.verification,
+      }));
+      timing.seo_analysis_ms += Date.now() - t_repair_analysis;
+
       // Only accept the repair if it actually improved the score OR reduced
       // critical failures. Otherwise keep the initial draft — this stops the
       // model making things worse by over-editing.
@@ -172,10 +252,12 @@ async function generateArticleWithSeo(input) {
       // eslint-disable-next-line no-console
       console.warn('article SEO repair failed:', err.message);
     }
+    timing.repair_ms = Date.now() - t_repair;
   }
 
   const usage = addUsage(initial.usage, repairResult?.usage);
   const costUsd = Number(((initial.costUsd || 0) + (repairResult?.costUsd || 0)).toFixed(6));
+  timing.total_ms = Date.now() - t_start;
 
   return {
     data: currentData,
@@ -190,6 +272,8 @@ async function generateArticleWithSeo(input) {
       initial: initial.prompt,
       repair: repairResult?.prompt || null,
     },
+    externalLinkVerification: verification,
+    timing,
   };
 }
 

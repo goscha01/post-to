@@ -186,10 +186,35 @@ const evaluators = {
     return fail('Descriptive anchor text', `${generic.length} generic anchor${generic.length === 1 ? '' : 's'}`, `Replace generic anchors like "${generic[0].text}" with descriptive text.`);
   },
 
-  external_links_present({ links, internalHostnames }) {
+  external_links_present({ links, internalHostnames, searchIntent }) {
     const ext = links.filter((l) => classifyLink(l, internalHostnames) === 'external');
-    if (ext.length === 0) return warn('External links present', '0 external links', 'Consider linking to 1–2 authoritative sources.');
+    if (ext.length === 0) {
+      // Don't force links just to satisfy a checkbox. If the topic is
+      // conversational / opinion-shaped, external references aren't
+      // required. Everything else defaults to "consider adding one."
+      const intentNa = /opinion|announcement|update|news/i.test(String(searchIntent || ''));
+      if (intentNa) return na('External links present', 'external references not required for this article type');
+      return warn('External links present', '0 external links', 'Consider linking to 1–2 authoritative sources.');
+    }
     return pass('External links present', `${ext.length} external link${ext.length === 1 ? '' : 's'}`);
+  },
+
+  // Only meaningful when the pipeline actually ran the verifier — the
+  // analyzer is otherwise stateless and can't verify network reachability
+  // on its own. On existing-article analysis (no verification run), this
+  // rule returns N/A.
+  external_links_verified({ links, internalHostnames, externalLinkVerification }) {
+    const ext = links.filter((l) => classifyLink(l, internalHostnames) === 'external');
+    if (ext.length === 0) return na('External links verified', 'no external links to verify');
+    if (!externalLinkVerification || typeof externalLinkVerification.total !== 'number') {
+      return na('External links verified', 'not verified in this pass');
+    }
+    const { total, verified, dead } = externalLinkVerification;
+    if (dead > 0) {
+      return warn('External links verified', `${verified}/${total} verified — ${dead} dead removed`, 'A dead link was stripped from the article body. The AI can try adding a replacement citation in the next repair pass.');
+    }
+    if (verified === total && total > 0) return pass('External links verified', `${verified}/${total} verified`);
+    return warn('External links verified', `${verified}/${total} verified`, 'Some external links could not be verified.');
   },
 
   no_broken_markdown_links({ links }) {
@@ -497,6 +522,11 @@ function analyze(input) {
     knownInternalUrls = [],
     internalHostnames = [],
     searchIntent = '',
+    // Set by the pipeline when it runs the external-link verifier before
+    // analysis. Existing-article analysis (routes/blogs.js#/seo-analyze)
+    // leaves these null → the `external_links_verified` check returns N/A.
+    externalLinkVerification = null,
+    verifiedExternalLinks = null,
   } = input || {};
 
   // Pre-compute derived structures once and pass them to evaluators — avoids
@@ -524,6 +554,7 @@ function analyze(input) {
     images: allImages, heroImage, heroAlt,
     knownInternalUrls, internalHostnames, searchIntent,
     plainText, paragraphs, headings, links, intro, conclusionText,
+    externalLinkVerification, verifiedExternalLinks,
   };
 
   let passed = 0;

@@ -261,6 +261,40 @@ Following Ann Russell's how-to-clean-everything method keeps a home consistently
   assert.ok(kd.status !== 'failed', `keyword_density should not fail, got ${kd.status} (${kd.value})`);
 });
 
+test('external_links_verified: N/A when no verification was run', () => {
+  const r = analyzer.analyze({
+    keyword: 'x', title: 'X', slug: 'x', metaDescription: 'x'.repeat(150),
+    markdown: 'Body with a link to [Wikipedia](https://en.wikipedia.org/wiki/X).',
+    tags: ['a'], heroImage: 'x', heroAlt: 'x',
+  });
+  const v = r.checks.find((c) => c.id === 'external_links_verified');
+  assert.equal(v.status, 'not_applicable');
+});
+
+test('external_links_verified: passes when all links verified', () => {
+  const r = analyzer.analyze({
+    keyword: 'x', title: 'X', slug: 'x', metaDescription: 'x'.repeat(150),
+    markdown: 'Body with a link to [Wikipedia](https://en.wikipedia.org/wiki/X) and [CDC](https://www.cdc.gov/y).',
+    tags: ['a'], heroImage: 'x', heroAlt: 'x',
+    externalLinkVerification: { total: 2, verified: 2, dead: 0, durationMs: 300 },
+  });
+  const v = r.checks.find((c) => c.id === 'external_links_verified');
+  assert.equal(v.status, 'passed');
+  assert.match(v.value, /2\/2/);
+});
+
+test('external_links_verified: warns when some links dead (dropped from body)', () => {
+  const r = analyzer.analyze({
+    keyword: 'x', title: 'X', slug: 'x', metaDescription: 'x'.repeat(150),
+    // Only the surviving link remains in the body — verifier already stripped the dead one.
+    markdown: 'Body with only [Wikipedia](https://en.wikipedia.org/wiki/X) left after the dead EPA link was removed.',
+    tags: ['a'], heroImage: 'x', heroAlt: 'x',
+    externalLinkVerification: { total: 2, verified: 1, dead: 1, deadUrls: ['https://www.epa.gov/bad'], durationMs: 300 },
+  });
+  const v = r.checks.find((c) => c.id === 'external_links_verified');
+  assert.equal(v.status, 'warning');
+});
+
 test('groupByCategory returns exactly the 5 categories', () => {
   const r = analyzer.analyze(fixtures.strong);
   const groups = analyzer.groupByCategory(r.checks);

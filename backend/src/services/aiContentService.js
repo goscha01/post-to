@@ -226,7 +226,11 @@ Only use URLs from these safe, stable, well-known authoritative domains:
 - \`www.consumerreports.org/*\` — product-neutral consumer research
 - \`www.osha.gov/*\` — workplace / occupational cleaning
 
-Pick URLs you are confident actually exist. Prefer stable topical pages (e.g. \`en.wikipedia.org/wiki/Housekeeping\`) over deep-linked articles that may 404. Never link to competitors. Never invent URLs on other domains. If a topic genuinely has no authoritative reference, output an empty suggestedInternalLinks entry rather than making one up.
+Pick URLs you are confident actually exist. Prefer stable topical pages (e.g. \`en.wikipedia.org/wiki/Housekeeping\`) over deep-linked articles that may 404. Never link to competitors. Never invent URLs on other domains.
+
+**Frame external links as reader resources, NOT as citations for specific factual claims.** Do NOT write "Florida's humidity accelerates mildew growth ([EPA guide](...))" — the URL doesn't prove that statement. Instead write "For additional guidance on indoor air quality, see the [EPA's indoor air quality resources](...)." Reader-resource framing is honest; parenthetical citation-style framing implies verification the URL alone doesn't provide.
+
+If a topic genuinely has no authoritative reference, skip the external link — do NOT invent one.
 
 # Internal links (from the site's own pages)
 

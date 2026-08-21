@@ -174,7 +174,13 @@ router.post(
 
       await aiJobs.completeJob(job.id, {
         prompt: result.prompts?.initial || null,
-        outputJson: { ...ai, __seo: analysis, __repairApplied: result.repairApplied },
+        outputJson: {
+          ...ai,
+          __seo: analysis,
+          __repairApplied: result.repairApplied,
+          __externalLinkVerification: result.externalLinkVerification || null,
+          __timing: result.timing || null,
+        },
         model: result.model,
         usage: result.usage,
         costUsd: result.costUsd,
@@ -221,6 +227,8 @@ router.post(
         heroAlt: finalArticle.hero_alt,
         seo: finalAnalysis,
         repairApplied: result.repairApplied,
+        externalLinkVerification: result.externalLinkVerification || null,
+        timing: result.timing || null,
         status: finalArticle.status,
       });
     } catch (err) {

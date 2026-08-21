@@ -101,6 +101,7 @@ const RULES = [
   { id: 'internal_links_present',   category: 'links',   label: 'Internal links present',   weight: 2 },
   { id: 'descriptive_anchor_text',  category: 'links',   label: 'Descriptive anchor text',  weight: 2 },
   { id: 'external_links_present',   category: 'links',   label: 'External links present',   weight: 1 },
+  { id: 'external_links_verified',  category: 'links',   label: 'External links verified',  weight: 2 },
   { id: 'no_broken_markdown_links', category: 'links',   label: 'No broken markdown links', weight: 2 },
   { id: 'anchor_diversity',         category: 'links',   label: 'Anchor text diversity',    weight: 1 },
 
