@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Plus, Sparkles, Trash2, Edit3, Globe, Search, X, AlertCircle, Check, FileText, RefreshCw, Send, ExternalLink, Copy, Upload, Image as ImageIcon } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
@@ -301,6 +301,15 @@ const GeneratorModal = ({ connections, defaultConnectionId, defaultKeyword = '',
   const [submitting, setSubmitting] = useState(false);
   const [elapsedSec, setElapsedSec] = useState(0);
   const [err, setErr] = useState('');
+  const [capInfo, setCapInfo] = useState(null); // { used, cap } when 429 hits
+
+  // Hard guard: a ref (not state) that tracks in-flight so we can no-op
+  // any submit that fires while one is already running — regardless of
+  // whether React has re-rendered with submitting=true yet. Fixes an
+  // observed case where /api/ai/articles kept POSTing every ~6s in the
+  // background even though the button was locked; the ref-based guard
+  // short-circuits before any state check or network call.
+  const inFlightRef = useRef(false);
 
   // Tick a visible timer while generating so the button doesn't look frozen.
   // Generation typically takes 15-40s; longer when bounded repair + auto-hero
@@ -313,10 +322,13 @@ const GeneratorModal = ({ connections, defaultConnectionId, defaultKeyword = '',
   }, [submitting]);
 
   const submit = async (e) => {
-    e.preventDefault();
+    if (e && e.preventDefault) e.preventDefault();
+    if (inFlightRef.current) return; // dedupe concurrent submits
     if (!keyword.trim()) return;
+    inFlightRef.current = true;
     setSubmitting(true);
     setErr('');
+    setCapInfo(null);
     try {
       const row = await blogsService.generate({
         connectionId: connectionId || undefined,
@@ -326,16 +338,24 @@ const GeneratorModal = ({ connections, defaultConnectionId, defaultKeyword = '',
       });
       onGenerated({ ...row, connectionId });
     } catch (e2) {
-      // Distinguish timeout from other errors — axios sets code 'ECONNABORTED'
-      // when its own timeout fires, and no response is attached.
+      // Distinguish timeout / cap / other errors so the message is useful.
       let msg;
+      const status = e2.response?.status;
+      const data = e2.response?.data;
       if (e2.code === 'ECONNABORTED' || /timeout/i.test(e2.message || '')) {
         msg = 'Generation is taking longer than usual. The article may still complete on the server — check the article list in a minute.';
+      } else if (status === 429 && data) {
+        // Backend returns { error, used, cap } on cap-hit.
+        msg = data.error || 'Daily article generation limit reached';
+        if (Number.isInteger(data.used) && Number.isInteger(data.cap)) {
+          setCapInfo({ used: data.used, cap: data.cap });
+        }
       } else {
-        msg = e2.response?.data?.error || e2.response?.data?.message || e2.message || 'Failed to generate';
+        msg = data?.error || data?.message || e2.message || 'Failed to generate';
       }
       setErr(msg);
     } finally {
+      inFlightRef.current = false;
       setSubmitting(false);
     }
   };
@@ -401,7 +421,15 @@ const GeneratorModal = ({ connections, defaultConnectionId, defaultKeyword = '',
           </div>
         </div>
         {err && (
-          <div className="p-2 bg-red-50 border border-red-200 rounded text-xs text-red-800">{err}</div>
+          <div className="p-3 bg-red-50 border border-red-200 rounded text-sm text-red-800">
+            <div className="font-medium">{err}</div>
+            {capInfo && (
+              <div className="mt-1 text-xs">
+                You've used <strong>{capInfo.used}/{capInfo.cap}</strong> article generations today.
+                The counter resets at midnight UTC.
+              </div>
+            )}
+          </div>
         )}
         {submitting && (
           <div className="p-2 bg-blue-50 border border-blue-200 rounded text-xs text-blue-800">
