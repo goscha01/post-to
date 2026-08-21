@@ -29,7 +29,9 @@ const path = require('path');
 
 const BACKEND_URL = process.env.BACKEND_URL || 'https://self-post-production.up.railway.app';
 const KEYWORD = 'post to seo e2e engineering test';
-const TEST_SLUG = 'post-to-seo-e2e-2026-08-21';
+// Per-run slug so we never hit a CloudFront-cached response from a previous
+// run. Still clearly-marked as an engineering artifact.
+const TEST_SLUG = `post-to-seo-e2e-${Date.now().toString(36)}`;
 const TEST_TITLE = 'Post-To SEO E2E Engineering Test (2026-08-21) — DO NOT INDEX';
 const PUBLISH_WAIT_MS = 6 * 60 * 1000; // GH Actions build typically ~2-4 min
 const POLL_INTERVAL_MS = 15 * 1000;
@@ -127,6 +129,8 @@ async function main() {
   info(`repair applied: ${gen.repairApplied}`);
   if (!gen.seo) fail('no seo in response');
   info(`SEO: score=${gen.seo.score}, status=${gen.seo.status}, ${gen.seo.passed}✓ / ${gen.seo.warnings}⚠ / ${gen.seo.failed}✗`);
+  info(`heroImage: ${gen.heroImage || '(none — auto-hero did not attach)'}`);
+  info(`heroAlt: ${gen.heroAlt || '(none)'}`);
   const articleId = gen.id;
   evidence.generation = {
     ms: genMs, id: articleId, title: gen.title, slug: gen.slug,

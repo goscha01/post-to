@@ -26,6 +26,7 @@ const aiContent = require('./aiContentService');
 const aiImage = require('./aiImageService');
 const aiJobs = require('./aiJobsService');
 const seoPipeline = require('./seo/articleSeoPipeline');
+const autoHero = require('./seo/autoHero');
 const automationsService = require('./automationsService');
 const blogPublisherS3 = require('./blogPublisherS3');
 const blogDeployTrigger = require('./blogDeployTrigger');
@@ -192,6 +193,20 @@ async function runBlog(rule, { topic, keyword }) {
       resultTable: 'blog_articles',
       resultId: article.id,
     });
+
+    // Same auto-hero pattern as the manual /api/ai/articles route. Never
+    // fails the run — an article without a hero is still valid, and the
+    // scheduled path publishes even if this is a no-op.
+    try {
+      const auto = await autoHero.attachAutoHeroToArticle({
+        userId: rule.user_id,
+        blog: article,
+        connectionContext: { internalHostnames, knownInternalUrls },
+      });
+      if (auto.attached) article = auto.blog;
+    } catch (e) {
+      logger.warn('automation.auto_hero_failed', { blog_id: article.id, error: e.message });
+    }
   } catch (e) {
     await aiJobs.failJob(job.id, e.message);
     throw e;

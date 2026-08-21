@@ -14,6 +14,7 @@ const authMiddleware = require('../middleware/authMiddleware');
 const aiContent = require('../services/aiContentService');
 const aiJobs = require('../services/aiJobsService');
 const seoPipeline = require('../services/seo/articleSeoPipeline');
+const autoHero = require('../services/seo/autoHero');
 const connectionsService = require('../services/connectionsService');
 const driveRouter = require('./drive'); // for driveFileIdFromUrl + fetchDriveFileBytes helpers
 const logger = require('../utils/logger');
@@ -181,23 +182,46 @@ router.post(
         resultId: article.id,
       });
 
+      // Best-effort auto-hero attachment. Never fails the request — the
+      // article is already saved. Attaches a Pexels stock image + alt when
+      // the deployment has PEXELS_API_KEY and the user has an S3-verified
+      // blog_domain. On success the response carries the updated hero_image
+      // and freshly-recomputed SEO analysis.
+      let finalArticle = article;
+      let finalAnalysis = analysis;
+      try {
+        const auto = await autoHero.attachAutoHeroToArticle({
+          userId,
+          blog: article,
+          connectionContext: { internalHostnames, knownInternalUrls },
+        });
+        if (auto.attached) {
+          finalArticle = auto.blog;
+          finalAnalysis = auto.seo;
+        }
+      } catch (e) {
+        console.warn('auto-hero attach failed:', e.message);
+      }
+
       return res.status(201).json({
-        id: article.id,
+        id: finalArticle.id,
         jobId: job.id,
-        title: article.title,
-        slug: article.slug,
-        metaDescription: article.meta_description,
-        markdown: article.markdown,
-        suggestedExcerpt: article.suggested_excerpt,
-        suggestedSocialPost: article.suggested_social_post,
-        tags: article.tags,
-        searchIntent: article.search_intent,
-        faq: article.faq,
-        imageSuggestions: article.image_suggestions,
-        suggestedInternalLinks: article.suggested_internal_links,
-        seo: analysis,
+        title: finalArticle.title,
+        slug: finalArticle.slug,
+        metaDescription: finalArticle.meta_description,
+        markdown: finalArticle.markdown,
+        suggestedExcerpt: finalArticle.suggested_excerpt,
+        suggestedSocialPost: finalArticle.suggested_social_post,
+        tags: finalArticle.tags,
+        searchIntent: finalArticle.search_intent,
+        faq: finalArticle.faq,
+        imageSuggestions: finalArticle.image_suggestions,
+        suggestedInternalLinks: finalArticle.suggested_internal_links,
+        heroImage: finalArticle.hero_image,
+        heroAlt: finalArticle.hero_alt,
+        seo: finalAnalysis,
         repairApplied: result.repairApplied,
-        status: article.status,
+        status: finalArticle.status,
       });
     } catch (err) {
       console.error('article generation failed:', err.message);
