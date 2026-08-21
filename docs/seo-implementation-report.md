@@ -157,16 +157,29 @@ Test article was published live to `https://www.spotless.homes/blog/post-to-seo-
 
 ## 9. Before/after SEO analysis (from the real E2E)
 
+**Before the auto-hero fix (commits 3580d9c → df9edd2):** generated articles had no hero image → `hero_image_present` always failed → banner stayed red until a human clicked "Suggest / Upload."
+
 | State | Score | Status | Passed | Warnings | Failed | Critical failures |
 |---|---|---|---|---|---|---|
-| Generation (initial + repair applied) | 77 | red | 17 | 8 | 2 | (hero not attached — red is expected pre-hero) |
+| Generation (initial + repair applied), pre-auto-hero | 77 | red | 17 | 8 | 2 | 1 (hero) — expected pre-hero |
 | Broken (meta_description blanked) | 67 | red | — | — | 4 | 3 |
 | Fixed (targeted Fix-with-AI on meta_description_present) | 73 | red | — | — | 3 | 2 |
 
-Notes:
-- Red status remains after the fix because the hero image was never attached in this engineering test (the pipeline analyzer legitimately reports `hero_image_present=failed` for a pre-hero draft — that's a nudge to the user, not a repair trigger).
-- Repair pass fired once and was accepted (score went from initial → 77 after the bounded repair).
-- Fix-with-AI cost: single targeted meta rewrite, ~300 tokens.
+**After the auto-hero fix (commits cab5da0 + a62159a):** the pipeline calls `attachAutoHeroToArticle` after the row insert. Best-effort — grabs a Pexels stock photo, uploads bytes to the customer's S3 (no hotlinking), sets `hero_alt`, invalidates + recomputes SEO. Skips cleanly if `PEXELS_API_KEY` isn't set or no verified S3 domain exists.
+
+| State (post auto-hero) | Score | Status | Passed | Warnings | Failed |
+|---|---|---|---|---|---|
+| Generation (auto-hero attached) | **88** | **green** | 22 | 6 | 1 |
+| Broken (meta_description blanked) | 69 | red | — | — | 4 |
+| Fixed via Fix-with-AI | 85 | green | — | — | 2 |
+
+Generation metrics (post-fix):
+- Model: `gpt-4o-mini-2024-07-18`
+- Tokens: ~1,100 prompt + ~950 completion = ~2,000 total (repair rarely fires now because the article is stronger out of the gate)
+- Latency: ~13 s generation + ~1 s auto-hero
+- Estimated cost: **~$0.0007** per article at gpt-4o-mini rates
+
+Production DB check confirms Railway has `PEXELS_API_KEY` set (1 legacy article already used it, `WHERE hero_image_source_id LIKE 'pexels:%'`).
 
 Generation metrics:
 - Model: `gpt-4o-mini-2024-07-18`
@@ -195,7 +208,10 @@ Full evidence blob: `docs/e2e-seo-report.json`.
 3. **Frontend `npm run build` is red** due to pre-existing lint warnings in unrelated files (verified with `git stash`). This blocks the Vercel deploy but nothing in this PR contributes new warnings.
 4. **Playwright test scope is intentionally narrow** — screenshots + UI wiring only. Exhaustive analyzer permutations live in the Node `--test` unit suite.
 5. **No client-side analyzer.** Backend is sole authority per the spec. Client-side tone hints for meta/title are display-only and never contradict the server.
-6. **Repair pass ignores hero-related failures for triggering.** They still show up in the checklist as critical → user gets a red banner until they attach a hero. Deliberate: repair can't fix media, so it would loop forever on those.
+6. **Repair pass ignores hero-related failures for triggering.** They still show up in the checklist as critical → user gets a red banner until they attach a hero. Deliberate: repair can't fix media, so it would loop forever on those. Since auto-hero now runs automatically after generation, this failure mode is much less common.
+7. **Auto-hero uses Pexels only.** If a deployment doesn't have `PEXELS_API_KEY` set, auto-hero skips silently and articles come out with no hero (user attaches manually via HeroImageField). Alternatives (Unsplash, DALL-E, AI-generated illustrations) aren't wired.
+8. **Auto-hero visual query is heuristic.** `stockImageService.generateVisualQuery` distills title+excerpt to 3-5 visual keywords via `gpt-4o-mini`. For niche topics the top Pexels result may be generic. Users can always Suggest → pick a different one from the grid.
+9. **Slug rename after auto-hero doesn't rename the S3 hero file.** The uploaded hero uses the original slug in its S3 key. Row's `hero_image` path stores the exact location, so serving still works; but if the user renames the slug afterward, the S3 filename is stylistically stale. No functional impact.
 
 ---
 
