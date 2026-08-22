@@ -440,12 +440,40 @@ const ConnectionCard = ({ connection, onDelete }) => {
 // PROVIDER_CONFIGS in BlogIntegrationForm.js.
 const BLOG_STEPS = ['shopify', 'webflow', 'wix', 'squarespace', 'bigcommerce', 'duda', 'hubspot', 'gohighlevel'];
 
+// Providers wired to real backend endpoints. The map value is a function
+// that takes the form values and returns a Promise<connection>. When a
+// provider is present here, BlogIntegrationForm hits the real endpoint
+// instead of returning a placeholder. Unwired providers (Shopify,
+// Squarespace) still render but stay in placeholder mode.
+const BLOG_SUBMIT_HANDLERS = {
+  webflow: v => connectionsService.connectWebflow({ apiToken: v.apiToken }),
+  wix: v => connectionsService.connectWix({ siteId: v.siteId, apiKey: v.apiKey }),
+  bigcommerce: v => connectionsService.connectBigCommerce({
+    storeHash: v.storeHash,
+    accessToken: v.accessToken,
+    webdavUrl: v.webdavUrl,
+    webdavUser: v.webdavUser,
+    webdavPass: v.webdavPass,
+    authorName: v.authorName,
+  }),
+  hubspot: v => connectionsService.connectHubSpot({ accessToken: v.accessToken }),
+  gohighlevel: v => connectionsService.connectGoHighLevel({ token: v.token, locationId: v.locationId }),
+  duda: v => connectionsService.connectDuda({ siteName: v.siteName, apiUser: v.apiUser, apiPass: v.apiPass }),
+};
+
 // Steps that use a bespoke form component from AdvancedIntegrations.js.
 const ADVANCED_STEPS = {
   lovable: LovableForm,
   rss: RssFeedForm,
   hosted_blog: HostedBlogForm,
   webhook: WebhookForm,
+};
+
+// onSubmit handlers for the advanced (custom) forms. Same contract as
+// BLOG_SUBMIT_HANDLERS — present here iff the provider is wired.
+const ADVANCED_SUBMIT_HANDLERS = {
+  webhook: v => connectionsService.connectWebhook({ url: v.url }),
+  rss: () => connectionsService.connectRssFeeds(),
 };
 
 // Brand-icon injection — several BlogIntegrationForm configs are declared
@@ -590,11 +618,13 @@ const ConnectPickerModal = ({ onClose, onConnected }) => {
               }}
               onCancel={() => setStep('pick')}
               onConnected={onConnected}
+              onSubmit={BLOG_SUBMIT_HANDLERS[step]}
             />
           )}
           {ADVANCED_STEPS[step] && React.createElement(ADVANCED_STEPS[step], {
             onCancel: () => setStep('pick'),
             onConnected,
+            onSubmit: ADVANCED_SUBMIT_HANDLERS[step],
           })}
         </div>
       </div>
@@ -840,6 +870,9 @@ const WP_STEPS = [
 const WordPressWizard = ({ onCancel, onConnected }) => {
   const [stepIdx, setStepIdx] = useState(0);
   const [url, setUrl] = useState('');
+  // siteInfo from the verify probe will be threaded into step 2 once the
+  // plugin-install UI lands; for now we drop it — verifying at all is
+  // enough proof to advance.
 
   return (
     <div>
@@ -917,11 +950,14 @@ const WpStepUrl = ({ url, setUrl, onVerified, onCancel }) => {
     if (!url.trim()) return;
     setVerifying(true);
     setErr('');
-    // TODO: hit backend verify endpoint — for now advance to next step.
-    setTimeout(() => {
+    try {
+      const info = await connectionsService.verifyWordPress(url.trim());
+      onVerified(info);
+    } catch (e2) {
+      setErr(e2?.response?.data?.error || e2?.message || 'Failed to verify WordPress site');
+    } finally {
       setVerifying(false);
-      onVerified();
-    }, 400);
+    }
   };
 
   const copyKey = async () => {

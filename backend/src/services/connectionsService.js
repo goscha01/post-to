@@ -209,6 +209,15 @@ const SENSITIVE_METADATA_KEYS = [
   's3_access_key_secret',
   // GitHub PAT used to fire repository_dispatch after publish (auto-deploy).
   'github_token',
+  // Publishing Platform provider secrets — mirrored from
+  // publishingPlatformService.SENSITIVE_FIELDS. See that file for provenance.
+  'api_token',       // Webflow
+  'access_token',    // BigCommerce, HubSpot
+  'pit_token',       // GoHighLevel
+  'api_pass',        // Duda
+  'webdav_pass',     // BigCommerce WebDAV
+  'bearer_token',    // Webhook
+  'feed_token',      // RSS/JSON feeds
 ];
 
 function stripSensitiveMetadata(row) {

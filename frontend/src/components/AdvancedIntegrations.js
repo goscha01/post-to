@@ -229,14 +229,25 @@ export const LovableForm = ({ onCancel, onConnected }) => {
 // RSS & JSON Feeds — one-click enable, no form
 // ---------------------------------------------------------------------------
 
-export const RssFeedForm = ({ onCancel, onConnected }) => {
+export const RssFeedForm = ({ onCancel, onConnected, onSubmit }) => {
   const [enabling, setEnabling] = useState(false);
-  const enable = () => {
+  const [err, setErr] = useState('');
+  const enable = async () => {
     setEnabling(true);
-    setTimeout(() => {
+    setErr('');
+    try {
+      if (onSubmit) {
+        const row = await onSubmit();
+        onConnected && onConnected(row);
+      } else {
+        await new Promise(r => setTimeout(r, 400));
+        onConnected && onConnected({ id: 'rss-placeholder', provider: 'rss', display_name: 'RSS & JSON Feeds', status: 'active' });
+      }
+    } catch (e) {
+      setErr(e?.response?.data?.error || e?.message || 'Failed to enable feeds');
+    } finally {
       setEnabling(false);
-      onConnected && onConnected({ id: 'rss-placeholder', provider: 'rss', display_name: 'RSS & JSON Feeds', status: 'active' });
-    }, 400);
+    }
   };
   return (
     <div className="space-y-5">
@@ -266,6 +277,9 @@ export const RssFeedForm = ({ onCancel, onConnected }) => {
         >
           {enabling ? 'Enabling…' : 'Enable Feed'}
         </button>
+        {err && (
+          <div className="mt-3 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-800">{err}</div>
+        )}
       </div>
 
       <div>
@@ -453,7 +467,7 @@ const PAYLOAD_FIELDS = [
   ['createdAt', 'string', 'ISO 8601 creation timestamp'],
 ];
 
-export const WebhookForm = ({ onCancel, onConnected }) => {
+export const WebhookForm = ({ onCancel, onConnected, onSubmit }) => {
   const [url, setUrl] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -469,10 +483,19 @@ export const WebhookForm = ({ onCancel, onConnected }) => {
     }
     setSubmitting(true);
     setErr('');
-    setTimeout(() => {
+    try {
+      if (onSubmit) {
+        const row = await onSubmit({ url: url.trim() });
+        onConnected && onConnected(row);
+      } else {
+        await new Promise(r => setTimeout(r, 400));
+        onConnected && onConnected({ id: 'webhook-placeholder', provider: 'webhook', display_name: url, status: 'active' });
+      }
+    } catch (e2) {
+      setErr(e2?.response?.data?.error || e2?.message || 'Failed to connect webhook');
+    } finally {
       setSubmitting(false);
-      onConnected && onConnected({ id: 'webhook-placeholder', provider: 'webhook', display_name: url, status: 'active' });
-    }, 400);
+    }
   };
 
   const sendTest = () => {

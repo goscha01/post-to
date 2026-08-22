@@ -14,7 +14,7 @@ import { AlertTriangle, Info, Check, ExternalLink, ShoppingBag } from 'lucide-re
 // Instead of coding each panel by hand, callers pass a config object.
 // See PROVIDER_CONFIGS at the bottom of this file for the per-provider setup.
 
-const BlogIntegrationForm = ({ config, onCancel, onConnected }) => {
+const BlogIntegrationForm = ({ config, onCancel, onConnected, onSubmit }) => {
   const [values, setValues] = useState(() =>
     Object.fromEntries((config.fields || []).map(f => [f.key, f.default || '']))
   );
@@ -33,18 +33,26 @@ const BlogIntegrationForm = ({ config, onCancel, onConnected }) => {
     }
     setSubmitting(true);
     setErr('');
-    // TODO: wire to /api/connections/<provider>. Placeholder for now.
-    setTimeout(() => {
-      setSubmitting(false);
-      if (onConnected) {
-        onConnected({
+    try {
+      // Prefer the real-backend onSubmit prop. Fall back to placeholder for
+      // providers that aren't wired yet (Shopify, Squarespace, etc.).
+      if (onSubmit) {
+        const row = await onSubmit(values);
+        onConnected && onConnected(row);
+      } else {
+        await new Promise(r => setTimeout(r, 400));
+        onConnected && onConnected({
           id: `${config.providerKey}-placeholder`,
           provider: config.providerKey,
           display_name: values[config.displayField] || config.brandName,
           status: 'active',
         });
       }
-    }, 400);
+    } catch (e2) {
+      setErr(e2?.response?.data?.error || e2?.message || 'Failed to connect');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   // Shopify-style flow uses an install-app button rather than a credential form.

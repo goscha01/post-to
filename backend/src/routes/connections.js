@@ -11,6 +11,7 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const authMiddleware = require('../middleware/authMiddleware');
 const connections = require('../services/connectionsService');
+const publishing = require('../services/publishingPlatformService');
 const logger = require('../utils/logger');
 
 const router = express.Router();
@@ -99,6 +100,158 @@ router.post(
       logger.error('connections.openai_ads.failed', { error: err.message });
       const status = err.message === 'Invalid ad account ID' || err.message === 'API key required' ? 400 : 500;
       res.status(status).json({ error: err.message || 'Failed to connect OpenAI Ads' });
+    }
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Publishing Platform connect routes.
+// One route per provider — each verifies creds against the provider's own
+// API before upserting, so the UI gets immediate feedback on bad credentials
+// or missing permissions. See services/publishingPlatformService.js.
+// ---------------------------------------------------------------------------
+
+// Small helper so the 9 routes below don't each repeat the same 15 lines of
+// validation-error handling, service-error mapping, and structured logging.
+function makePlatformRoute({ path, validators, provider, mapBody, extraLog }) {
+  router.post(path, validators, async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Invalid input', details: errors.array() });
+    }
+    try {
+      const fnName = 'connect' + provider;
+      const row = await publishing[fnName]({ userId: req.user.userId, ...mapBody(req.body) });
+      logger.info(`connections.${provider.toLowerCase()}.connected`, {
+        userId: req.user.userId,
+        connectionId: row.id,
+        ...(extraLog ? extraLog(row) : {}),
+      });
+      res.status(201).json({ connection: row });
+    } catch (err) {
+      const status = err.status || 500;
+      logger.warn(`connections.${provider.toLowerCase()}.failed`, {
+        userId: req.user.userId,
+        status,
+        code: err.code,
+        error: err.message,
+      });
+      res.status(status).json({ error: err.message, code: err.code });
+    }
+  });
+}
+
+makePlatformRoute({
+  path: '/webflow',
+  validators: [body('apiToken').isString().isLength({ min: 8, max: 500 })],
+  provider: 'Webflow',
+  mapBody: b => ({ apiToken: b.apiToken }),
+  extraLog: r => ({ site_id: r.metadata?.site_id, site_count: r.metadata?.site_count }),
+});
+
+makePlatformRoute({
+  path: '/wix',
+  validators: [
+    body('siteId').isString().isLength({ min: 8, max: 200 }),
+    body('apiKey').isString().isLength({ min: 8, max: 2000 }),
+  ],
+  provider: 'Wix',
+  mapBody: b => ({ siteId: b.siteId, apiKey: b.apiKey }),
+  extraLog: r => ({ site_id: r.metadata?.site_id }),
+});
+
+makePlatformRoute({
+  path: '/bigcommerce',
+  validators: [
+    body('storeHash').isString().isLength({ min: 4, max: 100 }),
+    body('accessToken').isString().isLength({ min: 8, max: 500 }),
+    body('webdavUrl').optional({ nullable: true, checkFalsy: true }).isString().isLength({ max: 500 }),
+    body('webdavUser').optional({ nullable: true, checkFalsy: true }).isString().isLength({ max: 200 }),
+    body('webdavPass').optional({ nullable: true, checkFalsy: true }).isString().isLength({ max: 500 }),
+    body('authorName').optional({ nullable: true, checkFalsy: true }).isString().isLength({ max: 200 }),
+  ],
+  provider: 'BigCommerce',
+  mapBody: b => ({
+    storeHash: b.storeHash,
+    accessToken: b.accessToken,
+    webdavUrl: b.webdavUrl,
+    webdavUser: b.webdavUser,
+    webdavPass: b.webdavPass,
+    authorName: b.authorName,
+  }),
+  extraLog: r => ({ store_hash: r.metadata?.store_hash }),
+});
+
+makePlatformRoute({
+  path: '/hubspot',
+  validators: [body('accessToken').isString().isLength({ min: 8, max: 500 })],
+  provider: 'HubSpot',
+  mapBody: b => ({ accessToken: b.accessToken }),
+  extraLog: r => ({ portal_id: r.metadata?.portal_id }),
+});
+
+makePlatformRoute({
+  path: '/gohighlevel',
+  validators: [
+    body('token').isString().isLength({ min: 8, max: 500 }),
+    body('locationId').isString().isLength({ min: 4, max: 200 }),
+  ],
+  provider: 'GoHighLevel',
+  mapBody: b => ({ token: b.token, locationId: b.locationId }),
+  extraLog: r => ({ location_id: r.metadata?.location_id }),
+});
+
+makePlatformRoute({
+  path: '/duda',
+  validators: [
+    body('siteName').isString().isLength({ min: 4, max: 200 }),
+    body('apiUser').isString().isLength({ min: 2, max: 200 }),
+    body('apiPass').isString().isLength({ min: 4, max: 500 }),
+  ],
+  provider: 'Duda',
+  mapBody: b => ({ siteName: b.siteName, apiUser: b.apiUser, apiPass: b.apiPass }),
+  extraLog: r => ({ site_name: r.metadata?.site_name, site_domain: r.metadata?.site_domain }),
+});
+
+makePlatformRoute({
+  path: '/webhook',
+  validators: [body('url').isString().isLength({ min: 8, max: 2048 })],
+  provider: 'Webhook',
+  mapBody: b => ({ url: b.url }),
+  extraLog: r => ({ url: r.metadata?.url }),
+});
+
+// RSS/JSON Feeds — no body needed, one row per user. The POST is still a
+// creation semantically ("please enable feeds for me").
+router.post('/rss', async (req, res) => {
+  try {
+    const row = await publishing.connectRssFeeds({ userId: req.user.userId });
+    logger.info('connections.rss.connected', { userId: req.user.userId, connectionId: row.id });
+    res.status(201).json({ connection: row });
+  } catch (err) {
+    logger.warn('connections.rss.failed', { userId: req.user.userId, error: err.message });
+    res.status(err.status || 500).json({ error: err.message, code: err.code });
+  }
+});
+
+// WordPress step 1 — verify a URL is a WordPress site. Returns
+// { ok, url, siteName } so the wizard can advance to step 2 (plugin install).
+// Does NOT create a connected_accounts row; the full connect flow lives
+// with the plugin (Phase 2).
+router.post(
+  '/wordpress/verify',
+  [body('url').isString().isLength({ min: 3, max: 2048 })],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Invalid input', details: errors.array() });
+    }
+    try {
+      const result = await publishing.verifyWordPress({ url: req.body.url });
+      res.json(result);
+    } catch (err) {
+      logger.warn('connections.wordpress_verify.failed', { url: req.body.url, error: err.message });
+      res.status(err.status || 500).json({ error: err.message, code: err.code });
     }
   }
 );
