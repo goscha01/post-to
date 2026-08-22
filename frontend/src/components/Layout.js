@@ -39,7 +39,6 @@ const Layout = ({ children }) => {
       items: [
         { name: 'Dashboard', href: '/dashboard', icon: Home },
         { name: 'Business Profiles', href: '/profiles', icon: Building2 },
-        { name: 'Billing', href: '/billing', icon: CreditCard },
       ],
     },
     {
@@ -62,6 +61,12 @@ const Layout = ({ children }) => {
         { name: 'OpenAI Ads', href: '/openai-ads', icon: Bot },
         { name: 'Campaign Assistant', href: '/campaign-assistant', icon: Sparkles },
         { name: 'Integrations', href: '/connections', icon: Link2 },
+      ],
+    },
+    {
+      label: 'Account',
+      items: [
+        { name: 'Billing', href: '/billing', icon: CreditCard },
       ],
     },
   ];
