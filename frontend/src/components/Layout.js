@@ -16,6 +16,7 @@ import {
   Link2,
   CalendarDays,
   Zap,
+  CreditCard,
   Menu,
   X,
   LogOut,
@@ -38,6 +39,7 @@ const Layout = ({ children }) => {
       items: [
         { name: 'Dashboard', href: '/dashboard', icon: Home },
         { name: 'Business Profiles', href: '/profiles', icon: Building2 },
+        { name: 'Billing', href: '/billing', icon: CreditCard },
       ],
     },
     {

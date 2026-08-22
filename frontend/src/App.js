@@ -19,6 +19,7 @@ import OpenAiAds from './components/OpenAiAds';
 import CampaignAssistant from './components/CampaignAssistant';
 import Automations from './components/Automations';
 import Services from './components/Services';
+import Billing from './components/Billing';
 import Layout from './components/Layout';
 import BusinessSuccessCallback from './components/BusinessSuccessCallback'; 
 import './App.css';
@@ -189,6 +190,16 @@ const AppContent = () => {
             <ProtectedRoute>
               <Layout>
                 <Automations />
+              </Layout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/billing"
+          element={
+            <ProtectedRoute>
+              <Layout>
+                <Billing />
               </Layout>
             </ProtectedRoute>
           }
