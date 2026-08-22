@@ -70,7 +70,29 @@ test('repair prompt lists analyzer failures verbatim', () => {
   });
   assert.match(user, /Aim for 45–65 chars/);
   assert.match(user, /Trim under 160/);
-  assert.match(user, /Do not rewrite the whole article/i);
+  assert.match(user, /Keep the overall voice/i);
+});
+
+test('repair prompt: word_count issue triggers explicit expansion instruction', () => {
+  const { user } = require('../../src/services/aiContentService')._internal.buildArticleRepairPrompt({
+    previousJson: { title: 't', slug: 't', metaDescription: 'x', markdown: '## t\n\nshort', suggestedExcerpt: '', suggestedSocialPost: '', tags: [] },
+    analysis: { checks: [{ id: 'word_count', status: 'warning', label: 'Article length', value: '600 words', recommendation: 'Expand.', weight: 2 }] },
+    keyword: 'k', businessName: 'Biz',
+  });
+  assert.match(user, /CRITICAL: The article is currently too short/i);
+  assert.match(user, /1,500 words/);
+  assert.match(user, /adding entirely new H2 sections/i);
+});
+
+test('repair prompt: external_links issue triggers allowlist reminder', () => {
+  const { user } = require('../../src/services/aiContentService')._internal.buildArticleRepairPrompt({
+    previousJson: { title: 't', slug: 't', metaDescription: 'x', markdown: '## t\n\nx', suggestedExcerpt: '', suggestedSocialPost: '', tags: [] },
+    analysis: { checks: [{ id: 'external_links_present', status: 'warning', label: 'External links present', value: '0', recommendation: 'Add.', weight: 2 }] },
+    keyword: 'k', businessName: 'Biz',
+  });
+  assert.match(user, /External links/);
+  assert.match(user, /en\.wikipedia\.org/);
+  assert.match(user, /NEVER use example\.com/i);
 });
 
 // ---------------------------------------------------------------------------

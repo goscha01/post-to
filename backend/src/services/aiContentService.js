@@ -180,7 +180,7 @@ Before writing, silently decide the search intent behind "${keyword}" — inform
 **MANDATORY first block**: 1–2 short opening paragraphs (60–120 words total) that name the topic, mention the target keyword naturally, and preview what the reader will get. This intro comes BEFORE any H2, BEFORE any "Key Takeaways" callout, BEFORE any list. Do NOT start the article with a heading — start with prose.
 
 After the intro, pick from these sections in any order that reads naturally:
-- "Key Takeaways" callout (3–6 crisp bullet points) — useful for long articles
+- "At a glance" callout (3–6 crisp bullet points) — useful for long articles. Use this heading (not "Key Takeaways") so it doesn't collide with the closing wrap-up.
 - Definition / background section
 - Step-by-step or how-to walkthrough
 - Comparison (best done as a table)
@@ -188,14 +188,16 @@ After the intro, pick from these sections in any order that reads naturally:
 - Cost / pricing section (table where amounts vary by dimension)
 - Common mistakes / what to avoid
 - FAQ — 3–6 real questions people ask about "${keyword}" — only if it fits the intent
-- Conclusion or "Key takeaways" wrap-up with a soft CTA
+- Conclusion or "Key takeaways" wrap-up with a soft CTA. If you already used "At a glance" up top, this is the ONLY place you may use the "Key takeaways" label.
+
+**Heading uniqueness**: no two headings may share the exact same text. If you find yourself wanting the same label twice (e.g. "Key takeaways" once at the top and once at the bottom), rename one — the opening callout should be "At a glance," "Quick summary," or "The short version."
 
 Choose the combination that best answers the search intent. Do NOT include an FAQ or a comparison table if the topic doesn't call for it. Vary the layout between articles — this is important.
 
 # Formatting rules
 
 - The article title is the H1 rendered by the site. The body MUST open with the intro paragraphs, then move to H2 for the first section. Never emit an H1 (# ) in the body.
-- Never start the body with a heading. Never start the body with a list. Never start the body with a "Key Takeaways" callout — the intro comes first.
+- Never start the body with a heading. Never start the body with a list. Never start the body with an "At a glance" / "Key takeaways" callout — the intro comes first.
 - Use H2 for major sections. Use H3 for sub-points inside a section. Do not skip heading levels.
 - Write short, scannable paragraphs (target 2–5 sentences, ~60–90 words). Avoid walls of text.
 - Use bullet or numbered lists where they improve scanning.
@@ -215,6 +217,10 @@ Choose the combination that best answers the search intent. Do NOT include an FA
 # External links
 
 Include **exactly 1–2 real external links to authoritative sources** that genuinely help the reader. Insert them inline in the markdown, in the body of a paragraph, using descriptive anchor text (never "click here" / "learn more").
+
+**Never use placeholder URLs.** Never write \`https://example.com/...\`, \`https://example.org/...\`, or any URL on a domain not listed below. Placeholder URLs will be automatically stripped from the article — you'll get zero external links credit if you use them. If you don't know a real URL, skip the link.
+
+**External URLs must be full https:// URLs on one of the allowlisted domains below. Internal URLs (the customer's own site pages) go in the internal-links section — those use root-relative paths like \`/services/deep-cleaning\`, NOT full URLs.** Do not confuse the two.
 
 Only use URLs from these safe, stable, well-known authoritative domains:
 - \`en.wikipedia.org/wiki/*\` — for definitions, background, general concepts
@@ -289,18 +295,43 @@ function buildArticleRepairPrompt({ previousJson, analysis, keyword, businessNam
 
   const system = 'You are a senior SEO editor. You revise an existing article JSON to address specific SEO issues without rewriting sections that are already good. You always reply with valid JSON only — no prose, no code fences.';
 
+  // If the article is too short, the repair MUST expand it — a "keep-it-
+  // minimal" edit can't fix a word-count warning. Signal that to the model
+  // so it doesn't just polish the existing prose.
+  const wordCountIssue = failedChecks.find((c) => c.id === 'word_count');
+  const expansionInstruction = wordCountIssue
+    ? `\n**CRITICAL: The article is currently too short.** You MUST substantially expand it to at least 1,500 words by:
+- adding entirely new H2 sections that cover angles the current draft skips (specific scenarios, common questions, cost breakdowns, tools, seasonal factors),
+- expanding existing sections with concrete examples, step-by-step details, real numbers, mini-tables where useful,
+- adding an FAQ section (3–6 real questions) if it fits the topic.
+Do NOT pad with filler. Do NOT just rephrase existing sentences at greater length. Every added sentence must carry information.\n`
+    : '';
+
+  // If external links are missing, the repair should add them — but ONLY
+  // from the safe allowlist and using descriptive anchor text.
+  const externalLinksIssue = failedChecks.find((c) => c.id === 'external_links_present' || c.id === 'external_links_verified');
+  const externalLinksInstruction = externalLinksIssue
+    ? `\n**External links**: add 1–2 real external links inline in the body. Use FULL https:// URLs from ONLY these allowlisted domains: en.wikipedia.org, www.cdc.gov, www.epa.gov, www.nih.gov, www.ncbi.nlm.nih.gov, www.mayoclinic.org, my.clevelandclinic.org, www.energy.gov, www.consumerreports.org, www.osha.gov. NEVER use example.com or any URL on another domain — those will be stripped and won't count. Descriptive anchor text like "the [EPA's indoor air quality resources](https://www.epa.gov/indoor-air-quality-iaq)."\n`
+    : '';
+
+  // If a heading is duplicated, name the offender explicitly.
+  const uniqueHeadingsIssue = failedChecks.find((c) => c.id === 'unique_headings');
+  const uniqueHeadingsInstruction = uniqueHeadingsIssue
+    ? `\n**Heading uniqueness**: rename the duplicate heading called out above. If the article has both a "Key Takeaways" callout up top and a "Key takeaways" wrap-up at the end, rename the opening one to "At a glance" or "Quick summary."\n`
+    : '';
+
   const user = `An article was generated for the keyword "${keyword}" for ${businessName}. A deterministic SEO analyzer found the following issues:
 
 ${failedBlock || '(no significant issues — return the article unchanged)'}
-
+${expansionInstruction}${externalLinksInstruction}${uniqueHeadingsInstruction}
 ${internalLinksBlock}
 
 Revise the article to fix these issues:
-- Keep the overall structure and voice.
-- Only edit what needs editing. Do not rewrite the whole article.
+- Keep the overall voice and topical accuracy.
 - If a check is about metadata (title / slug / metaDescription / tags), fix that field.
 - If a check is about content structure (headings, paragraph length, missing intro/conclusion, missing keyword in headings), edit just those sections.
-- If internal links are required, use ONLY the URLs listed above.
+- If internal links are required, use ONLY the URLs listed above (root-relative paths, no full URLs).
+- If external links are required, follow the External links block above — real https:// URLs from the allowlist only.
 - Do NOT introduce fake statistics or claims to satisfy a check.
 - Do NOT stuff the keyword to satisfy density — natural placement in title + intro + one heading + conclusion is enough.
 
