@@ -22,7 +22,13 @@
 const axios = require('axios');
 const crypto = require('crypto');
 const { createClient } = require('@supabase/supabase-js');
+const { marked } = require('marked');
 const logger = require('../utils/logger');
+
+// Fail-safe HTML config: no auto-linking of raw URLs (article prose already
+// has intentional markdown links), no header ids (each provider generates
+// them its own way), no mangling of emails.
+marked.setOptions({ gfm: true, breaks: false, headerIds: false, mangle: false });
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -430,6 +436,347 @@ async function verifyWordPress({ url }) {
   };
 }
 
+// ===========================================================================
+// PUBLISH — per-provider "push an article to this connection"
+// ===========================================================================
+//
+// Each publisher takes:
+//   { connection, article }
+// where `connection` is a raw connected_accounts row (with sensitive metadata
+// intact — dispatcher reads via connectionsService.getRawForUser) and
+// `article` is a blog_articles row.
+//
+// Returns:
+//   { publishedUrl, externalId, meta }
+//
+// Throws on failure — dispatcher catches, records status='failed' and
+// last_error. Errors are shaped via makeError so status codes propagate.
+
+function articleToHtml(article) {
+  const md = article?.markdown || '';
+  if (!md.trim()) return '';
+  try {
+    return marked.parse(md);
+  } catch (e) {
+    logger.warn('publish.markdown_parse_failed', { articleId: article?.id, error: e.message });
+    return `<p>${(md || '').replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]))}</p>`;
+  }
+}
+
+function articlePayload(article) {
+  return {
+    id: article.id,
+    title: article.title || '',
+    slug: article.slug || '',
+    meta_description: article.meta_description || '',
+    content_html: articleToHtml(article),
+    content_markdown: article.markdown || '',
+    hero_image_url: article.hero_image || null,
+    hero_image_alt: article.hero_alt || null,
+    tags: Array.isArray(article.tags) ? article.tags : [],
+    excerpt: article.suggested_excerpt || '',
+    faq: article.faq || null,
+    keyword: article.keyword || null,
+    published_at: article.published_at || new Date().toISOString(),
+  };
+}
+
+// -----------------------------------------------------------------
+// Webflow — POST draft item, PATCH to publish live.
+// -----------------------------------------------------------------
+async function publishWebflow({ connection, article }) {
+  const token = connection.metadata?.api_token;
+  const siteId = connection.metadata?.site_id;
+  if (!token || !siteId) throw makeError(400, 'CONNECTION_INCOMPLETE', 'Webflow connection missing token or site_id');
+
+  // Discover the first blog-shaped collection. Webflow doesn't have a
+  // canonical "blog" concept — customers name theirs anything from "Posts"
+  // to "Insights". We heuristic-match on slug/displayName; users can pick
+  // explicitly in a follow-up. Cached in metadata.collection_id after the
+  // first successful publish.
+  let collectionId = connection.metadata?.collection_id;
+  if (!collectionId) {
+    const cols = await axios.get(`https://api.webflow.com/v2/sites/${siteId}/collections`, {
+      timeout: 15000, headers: { Authorization: `Bearer ${token}` },
+    }).then(r => r.data?.collections || []);
+    const blogLike = cols.find(c => /blog|post|article|insight|news/i.test(c.slug || c.displayName || ''));
+    if (!blogLike) throw makeError(400, 'NO_COLLECTION', 'No blog-like collection found in Webflow — create a Blog Posts collection first');
+    collectionId = blogLike.id;
+  }
+
+  const p = articlePayload(article);
+  const fieldData = {
+    name: p.title,
+    slug: p.slug,
+    'post-body': p.content_html,
+    'meta-description': p.meta_description,
+    'main-image': p.hero_image_url || undefined,
+  };
+
+  let itemId;
+  try {
+    const create = await axios.post(
+      `https://api.webflow.com/v2/collections/${collectionId}/items`,
+      { isArchived: false, isDraft: false, fieldData },
+      { timeout: 20000, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
+    );
+    itemId = create.data?.id;
+    // Publish live so the item is actually visible on the site.
+    await axios.post(
+      `https://api.webflow.com/v2/collections/${collectionId}/items/${itemId}/publish`,
+      { itemIds: [itemId] },
+      { timeout: 20000, headers: { Authorization: `Bearer ${token}` } }
+    ).catch(() => { /* draft-created success even if publish-live fails */ });
+  } catch (err) {
+    throw makeError(err.response?.status || 502, 'PUBLISH_FAILED', `Webflow publish failed: ${err.response?.data?.message || err.message}`);
+  }
+  return { externalId: itemId, publishedUrl: null, meta: { collection_id: collectionId } };
+}
+
+// -----------------------------------------------------------------
+// Wix — create draft, then publish.
+// -----------------------------------------------------------------
+async function publishWix({ connection, article }) {
+  const apiKey = connection.metadata?.api_key;
+  const siteId = connection.metadata?.site_id;
+  if (!apiKey || !siteId) throw makeError(400, 'CONNECTION_INCOMPLETE', 'Wix connection missing api_key or site_id');
+  const p = articlePayload(article);
+  const headers = { Authorization: apiKey, 'wix-site-id': siteId, 'Content-Type': 'application/json' };
+  let draftId;
+  try {
+    const draft = await axios.post('https://www.wixapis.com/blog/v3/draft-posts', {
+      draftPost: {
+        title: p.title,
+        excerpt: p.excerpt || p.meta_description,
+        richContent: { nodes: [{ type: 'PARAGRAPH', nodes: [{ type: 'TEXT', textData: { text: p.content_markdown } }] }] },
+        seoData: { tags: [{ type: 'meta', props: { name: 'description', content: p.meta_description } }] },
+        media: p.hero_image_url ? { wixMedia: { image: p.hero_image_url }, displayed: true } : undefined,
+      },
+    }, { timeout: 20000, headers });
+    draftId = draft.data?.draftPost?.id;
+    if (!draftId) throw new Error('Wix returned no draft id');
+    const pub = await axios.post(`https://www.wixapis.com/blog/v3/draft-posts/${encodeURIComponent(draftId)}/publish`, {}, { timeout: 15000, headers });
+    return { externalId: pub.data?.postId || draftId, publishedUrl: pub.data?.post?.url || null, meta: {} };
+  } catch (err) {
+    throw makeError(err.response?.status || 502, 'PUBLISH_FAILED', `Wix publish failed: ${err.response?.data?.message || err.message}`);
+  }
+}
+
+// -----------------------------------------------------------------
+// BigCommerce — single POST publishes immediately.
+// -----------------------------------------------------------------
+async function publishBigCommerce({ connection, article }) {
+  const hash = connection.metadata?.store_hash;
+  const tok = connection.metadata?.access_token;
+  if (!hash || !tok) throw makeError(400, 'CONNECTION_INCOMPLETE', 'BigCommerce connection missing store hash or token');
+  const p = articlePayload(article);
+  try {
+    const res = await axios.post(
+      `https://api.bigcommerce.com/stores/${encodeURIComponent(hash)}/v3/content/blog/posts`,
+      {
+        title: p.title,
+        url: `/${p.slug}/`,
+        body: p.content_html,
+        meta_description: p.meta_description,
+        author: connection.metadata?.author_name || undefined,
+        tags: p.tags,
+        is_published: true,
+        thumbnail_path: p.hero_image_url || undefined,
+      },
+      { timeout: 20000, headers: { 'X-Auth-Token': tok, 'Content-Type': 'application/json', Accept: 'application/json' } }
+    );
+    const post = res.data?.data || {};
+    return {
+      externalId: String(post.id || ''),
+      publishedUrl: post.url ? `https://store-${hash}.mybigcommerce.com${post.url}` : null,
+      meta: {},
+    };
+  } catch (err) {
+    throw makeError(err.response?.status || 502, 'PUBLISH_FAILED', `BigCommerce publish failed: ${err.response?.data?.title || err.message}`);
+  }
+}
+
+// -----------------------------------------------------------------
+// HubSpot — POST creates a draft; PUT to publish. We publish immediately.
+// -----------------------------------------------------------------
+async function publishHubSpot({ connection, article }) {
+  const tok = connection.metadata?.access_token;
+  if (!tok) throw makeError(400, 'CONNECTION_INCOMPLETE', 'HubSpot connection missing token');
+  const p = articlePayload(article);
+  // Auto-detect the first blog if we don't have one cached.
+  let contentGroupId = connection.metadata?.content_group_id;
+  if (!contentGroupId) {
+    const blogs = await axios.get('https://api.hubapi.com/cms/v3/blogs/settings/v3?limit=1', {
+      timeout: 15000, headers: { Authorization: `Bearer ${tok}` },
+    }).catch(() => null);
+    contentGroupId = blogs?.data?.results?.[0]?.id || null;
+    if (!contentGroupId) throw makeError(400, 'NO_BLOG', 'No HubSpot blog found — create a blog in Content Hub first');
+  }
+  try {
+    const res = await axios.post('https://api.hubapi.com/cms/v3/blogs/posts', {
+      contentGroupId,
+      name: p.title,
+      slug: p.slug,
+      postBody: p.content_html,
+      metaDescription: p.meta_description,
+      state: 'PUBLISHED',
+      publishDate: p.published_at,
+      featuredImage: p.hero_image_url || undefined,
+      tagIds: [],
+    }, { timeout: 20000, headers: { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' } });
+    return { externalId: res.data?.id || null, publishedUrl: res.data?.url || null, meta: { content_group_id: contentGroupId } };
+  } catch (err) {
+    throw makeError(err.response?.status || 502, 'PUBLISH_FAILED', `HubSpot publish failed: ${err.response?.data?.message || err.message}`);
+  }
+}
+
+// -----------------------------------------------------------------
+// GoHighLevel — POST /blogs/posts with content_html.
+// -----------------------------------------------------------------
+async function publishGoHighLevel({ connection, article }) {
+  const tok = connection.metadata?.pit_token;
+  const loc = connection.metadata?.location_id;
+  if (!tok || !loc) throw makeError(400, 'CONNECTION_INCOMPLETE', 'GoHighLevel connection missing token or location');
+  const p = articlePayload(article);
+  try {
+    const res = await axios.post('https://services.leadconnectorhq.com/blogs/posts', {
+      locationId: loc,
+      title: p.title,
+      urlSlug: p.slug,
+      description: p.meta_description,
+      rawHTML: p.content_html,
+      status: 'PUBLISHED',
+      imageUrl: p.hero_image_url || undefined,
+      publishedAt: p.published_at,
+      tags: p.tags,
+    }, {
+      timeout: 20000,
+      headers: { Authorization: `Bearer ${tok}`, Version: '2021-07-28', 'Content-Type': 'application/json', Accept: 'application/json' },
+    });
+    return { externalId: res.data?.data?._id || res.data?.data?.id || null, publishedUrl: null, meta: {} };
+  } catch (err) {
+    throw makeError(err.response?.status || 502, 'PUBLISH_FAILED', `GoHighLevel publish failed: ${err.response?.data?.message || err.message}`);
+  }
+}
+
+// -----------------------------------------------------------------
+// Duda — POST /api/sites/multiscreen/{siteName}/blog/posts.
+// -----------------------------------------------------------------
+async function publishDuda({ connection, article }) {
+  const site = connection.metadata?.site_name;
+  const user = connection.metadata?.api_user;
+  const pass = connection.metadata?.api_pass;
+  if (!site || !user || !pass) throw makeError(400, 'CONNECTION_INCOMPLETE', 'Duda connection missing credentials');
+  const p = articlePayload(article);
+  const authHeader = 'Basic ' + Buffer.from(`${user}:${pass}`).toString('base64');
+  try {
+    const res = await axios.post(
+      `https://api.duda.co/api/sites/multiscreen/${encodeURIComponent(site)}/blog/posts`,
+      {
+        title: p.title,
+        url_slug: p.slug,
+        summary: p.meta_description,
+        post_body: p.content_html,
+        status: 'PUBLISHED',
+        featured_image_url: p.hero_image_url || undefined,
+      },
+      { timeout: 20000, headers: { Authorization: authHeader, 'Content-Type': 'application/json', Accept: 'application/json' } }
+    );
+    return { externalId: res.data?.uuid || res.data?.id || null, publishedUrl: res.data?.url || null, meta: {} };
+  } catch (err) {
+    throw makeError(err.response?.status || 502, 'PUBLISH_FAILED', `Duda publish failed: ${err.response?.data?.error?.message || err.message}`);
+  }
+}
+
+// -----------------------------------------------------------------
+// Webhook — POST to customer URL with the payload + HMAC signature we
+// documented in the Webhook connect UI.
+// -----------------------------------------------------------------
+async function publishWebhook({ connection, article }) {
+  const url = connection.metadata?.url;
+  const token = connection.metadata?.bearer_token;
+  if (!url || !token) throw makeError(400, 'CONNECTION_INCOMPLETE', 'Webhook connection missing url or bearer token');
+  const p = articlePayload(article);
+  const body = {
+    event: 'article.published',
+    id: p.id,
+    title: p.title,
+    slug: p.slug,
+    published_url: null,
+    metaDescription: p.meta_description,
+    content_html: p.content_html,
+    content_markdown: p.content_markdown,
+    heroImageUrl: p.hero_image_url,
+    heroImageAlt: p.hero_image_alt,
+    keywords: p.keyword ? [p.keyword] : [],
+    wordpressTags: (p.tags || []).join(', '),
+    faqSchema: p.faq,
+    languageCode: 'en',
+    status: 'published',
+    publishedAt: p.published_at,
+    updatedAt: new Date().toISOString(),
+    createdAt: new Date().toISOString(),
+  };
+  const raw = JSON.stringify(body);
+  const signature = crypto.createHmac('sha256', token).update(raw).digest('hex');
+  try {
+    const res = await axios.post(url, raw, {
+      timeout: 20000,
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+        'X-Postto-Event': 'article.published',
+        'X-Postto-Signature': signature,
+        'X-Postto-Delivery': crypto.randomUUID(),
+      },
+      validateStatus: () => true,
+    });
+    if (res.status >= 400) {
+      throw makeError(res.status, 'ENDPOINT_ERROR', `Webhook endpoint returned ${res.status}`);
+    }
+    // Customer may return { url } to give us the live post URL.
+    const returned = res.data;
+    const publishedUrl = returned?.url || returned?.published_url || returned?.permalink || null;
+    return { externalId: null, publishedUrl, meta: { status: res.status } };
+  } catch (err) {
+    if (err.status) throw err;
+    throw makeError(502, 'PUBLISH_FAILED', `Webhook delivery failed: ${err.message}`);
+  }
+}
+
+// -----------------------------------------------------------------
+// RSS — no external call. Just marks the target as "published" with a
+// pointer to the public feed URL. Actual serving happens in routes/feeds.js.
+// -----------------------------------------------------------------
+async function publishRss({ connection }) {
+  const token = connection.metadata?.feed_token;
+  if (!token) throw makeError(400, 'CONNECTION_INCOMPLETE', 'RSS connection missing feed token');
+  const base = process.env.PUBLIC_APP_URL || 'https://post-to.app';
+  return {
+    externalId: null,
+    publishedUrl: `${base}/feeds/${token}/rss.xml`,
+    meta: { rss_url: `${base}/feeds/${token}/rss.xml`, json_url: `${base}/feeds/${token}/feed.json` },
+  };
+}
+
+const PROVIDER_PUBLISHERS = {
+  webflow: publishWebflow,
+  wix: publishWix,
+  bigcommerce: publishBigCommerce,
+  hubspot: publishHubSpot,
+  gohighlevel: publishGoHighLevel,
+  duda: publishDuda,
+  webhook: publishWebhook,
+  rss: publishRss,
+};
+
+// Public dispatcher entry — resolves provider → publisher.
+async function publishToProvider({ connection, article }) {
+  const fn = PROVIDER_PUBLISHERS[connection.provider];
+  if (!fn) throw makeError(400, 'UNSUPPORTED_PROVIDER', `Provider ${connection.provider} is not wired for publishing yet`);
+  return fn({ connection, article });
+}
+
 module.exports = {
   connectWebflow,
   connectWix,
@@ -440,6 +787,8 @@ module.exports = {
   connectWebhook,
   connectRssFeeds,
   verifyWordPress,
+  publishToProvider,
+  PROVIDER_PUBLISHERS,
   SENSITIVE_FIELDS,
-  _internal: { normalizeUrl, upsert, stripSensitive, generateWebhookToken },
+  _internal: { normalizeUrl, upsert, stripSensitive, generateWebhookToken, articleToHtml, articlePayload },
 };

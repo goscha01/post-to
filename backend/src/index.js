@@ -25,6 +25,7 @@ const calendarRoutes = require('./routes/calendar');
 const driveRoutes = require('./routes/drive');
 const socialRoutes = require('./routes/social');
 const automationsRoutes = require('./routes/automations');
+const feedsRoutes = require('./routes/feeds');
 const scheduledPublisher = require('./workers/scheduledPublisher');
 const automationScheduler = require('./workers/automationScheduler');
 const campaignMonitorService = require('./services/campaignMonitorService');
@@ -132,6 +133,9 @@ app.use('/api/calendar', calendarRoutes);
 app.use('/api/drive', driveRoutes);
 app.use('/api/social', socialRoutes);
 app.use('/api/automations', automationsRoutes);
+// Public RSS + JSON feed endpoints — not under /api because RSS readers
+// expect canonical-looking URLs. Auth is via feed_token in the URL.
+app.use('/feeds', feedsRoutes);
 
 // Health check endpoint
 app.get('/health', (req, res) => {

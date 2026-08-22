@@ -22,6 +22,7 @@ const seoAnalyzer = require('../services/seo/articleSeoAnalyzer');
 const aiContent = require('../services/aiContentService');
 const aiJobs = require('../services/aiJobsService');
 const connectionsService = require('../services/connectionsService');
+const publishDispatcher = require('../services/blogPublishDispatcher');
 
 // Augment a blog row with hero_image_preview_url so the frontend can render
 // a thumbnail before the customer's site build has published the image to
@@ -750,6 +751,74 @@ router.post('/:id/publish', [param('id').isUUID()], async (req, res) => {
     res.status(500).json({ error: 'Failed to publish blog' });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Publishing Platform fan-out (Phase 2). Independent from the S3/hosted
+// publish above — customers may push the same article to their WordPress /
+// Webflow / Wix / etc. via connected_accounts. Each target tracked in
+// blog_publish_targets, dispatched by services/blogPublishDispatcher.js.
+// ---------------------------------------------------------------------------
+
+router.post(
+  '/:id/publish-to',
+  [
+    param('id').isUUID(),
+    body('connectionIds').isArray({ min: 1 }),
+    body('connectionIds.*').isUUID(),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ error: 'Invalid input', details: errors.array() });
+    try {
+      const out = await publishDispatcher.dispatch({
+        userId: req.user.userId,
+        articleId: req.params.id,
+        connectionIds: req.body.connectionIds,
+      });
+      const ok = out.results.filter(r => r.ok).length;
+      const failed = out.results.length - ok;
+      logger.info('blogs.publish_to.dispatched', { userId: req.user.userId, articleId: req.params.id, ok, failed });
+      res.json(out);
+    } catch (err) {
+      logger.error('blogs.publish_to.failed', { error: err.message, id: req.params.id });
+      res.status(500).json({ error: err.message || 'Failed to publish to targets' });
+    }
+  }
+);
+
+router.get('/:id/publish-targets', [param('id').isUUID()], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ error: 'Invalid id' });
+  try {
+    const targets = await publishDispatcher.listForArticle({
+      userId: req.user.userId,
+      articleId: req.params.id,
+    });
+    res.json({ targets });
+  } catch (err) {
+    logger.error('blogs.publish_targets.list_failed', { error: err.message });
+    res.status(500).json({ error: 'Failed to list publish targets' });
+  }
+});
+
+router.post(
+  '/:id/publish-targets/:targetId/retry',
+  [param('id').isUUID(), param('targetId').isUUID()],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ error: 'Invalid id' });
+    try {
+      const result = await publishDispatcher.retryTarget({
+        userId: req.user.userId,
+        targetId: req.params.targetId,
+      });
+      res.json({ result });
+    } catch (err) {
+      logger.error('blogs.publish_target.retry_failed', { error: err.message });
+      res.status(500).json({ error: err.message || 'Failed to retry publish' });
+    }
+  }
+);
 
 // Fan out an "article no longer exists" event to every S3-publishing domain:
 //   1. Delete posts/<date>-<slug>.md so the customer's next build won't

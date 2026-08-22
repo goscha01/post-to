@@ -470,6 +470,13 @@ const GeneratorModal = ({ connections, defaultConnectionId, defaultKeyword = '',
   );
 };
 
+// Publishing Platform providers that can receive an article via the
+// blog_publish_targets dispatcher. Any connected_account whose provider is
+// in this list appears in the "Publish to platforms" picker.
+const PUBLISH_TARGET_PROVIDERS = new Set([
+  'webflow', 'wix', 'bigcommerce', 'hubspot', 'gohighlevel', 'duda', 'webhook', 'rss',
+]);
+
 const EditorModal = ({ blogId, onClose, onSaved, onDeleted }) => {
   const [blog, setBlog] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -482,6 +489,10 @@ const EditorModal = ({ blogId, onClose, onSaved, onDeleted }) => {
   const [seoDrawerOpen, setSeoDrawerOpen] = useState(false);
   // Every relevant edit bumps this; the SEO hook debounces + re-analyzes.
   const [seoInputVersion, setSeoInputVersion] = useState(0);
+  // Publishing Platform (Phase 2) — per-target status + picker.
+  const [publishTargets, setPublishTargets] = useState([]);
+  const [platformPickerOpen, setPlatformPickerOpen] = useState(false);
+  const [retryingTargetId, setRetryingTargetId] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -497,6 +508,41 @@ const EditorModal = ({ blogId, onClose, onSaved, onDeleted }) => {
     })();
     return () => { cancelled = true; };
   }, [blogId]);
+
+  const loadPublishTargets = useCallback(async () => {
+    try {
+      const targets = await blogsService.listPublishTargets(blogId);
+      setPublishTargets(targets);
+    } catch (e) {
+      // Non-fatal: the panel just stays empty. Never blocks the editor.
+    }
+  }, [blogId]);
+
+  useEffect(() => { loadPublishTargets(); }, [loadPublishTargets]);
+
+  const publishToConnections = async (connectionIds) => {
+    setErr('');
+    try {
+      await blogsService.publishToTargets(blogId, connectionIds);
+      await loadPublishTargets();
+      setPlatformPickerOpen(false);
+    } catch (e) {
+      setErr(e.response?.data?.error || e.message || 'Failed to publish to platforms');
+    }
+  };
+
+  const retryTarget = async (targetId) => {
+    setRetryingTargetId(targetId);
+    setErr('');
+    try {
+      await blogsService.retryPublishTarget(blogId, targetId);
+      await loadPublishTargets();
+    } catch (e) {
+      setErr(e.response?.data?.error || e.message || 'Retry failed');
+    } finally {
+      setRetryingTargetId(null);
+    }
+  };
 
   const { analysis: seoAnalysis, recalculating: seoRecalculating } = useDebouncedSeo({
     blogId,
@@ -651,6 +697,15 @@ const EditorModal = ({ blogId, onClose, onSaved, onDeleted }) => {
                 {publishing ? 'Publishing…' : 'Publish'}
               </button>
             )}
+            <button
+              onClick={() => setPlatformPickerOpen(true)}
+              disabled={loading || !blog}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-primary-700 bg-primary-50 border border-primary-200 rounded-md hover:bg-primary-100 disabled:opacity-50"
+              title="Publish this article to your Publishing Platform integrations (WordPress, Webflow, Wix, etc.)"
+            >
+              <ExternalLink className="h-3.5 w-3.5" />
+              Publish to platforms
+            </button>
             <button onClick={onClose} className="text-gray-400 hover:text-gray-600 p-1">
               <X className="h-5 w-5" />
             </button>
@@ -692,6 +747,13 @@ const EditorModal = ({ blogId, onClose, onSaved, onDeleted }) => {
                 <div className="p-3 bg-amber-50 border border-amber-200 rounded text-xs text-amber-900">
                   Article is marked published, but no verified blog domain is connected yet — add one at the top of the Blogs page to get a public URL.
                 </div>
+              )}
+              {publishTargets.length > 0 && (
+                <PlatformTargetsPanel
+                  targets={publishTargets}
+                  retryingTargetId={retryingTargetId}
+                  onRetry={retryTarget}
+                />
               )}
               <SeoBanner
                 analysis={seoAnalysis}
@@ -769,7 +831,170 @@ const EditorModal = ({ blogId, onClose, onSaved, onDeleted }) => {
           }
         }}
       />
+      {platformPickerOpen && (
+        <PlatformPickerModal
+          existingTargets={publishTargets}
+          onClose={() => setPlatformPickerOpen(false)}
+          onSubmit={publishToConnections}
+        />
+      )}
     </div>
+  );
+};
+
+// Panel below the editor showing each Publishing Platform target and its
+// current status. Retry button surfaces on failed rows.
+const PlatformTargetsPanel = ({ targets, retryingTargetId, onRetry }) => (
+  <div className="p-3 bg-white border border-gray-200 rounded space-y-2">
+    <div className="text-sm font-medium text-gray-900 flex items-center gap-1">
+      <ExternalLink className="h-4 w-4" />
+      Publish to platforms
+    </div>
+    <ul className="space-y-1.5">
+      {targets.map(t => {
+        const badge =
+          t.status === 'published' ? 'bg-green-100 text-green-800'
+          : t.status === 'failed' ? 'bg-red-100 text-red-800'
+          : t.status === 'publishing' ? 'bg-blue-100 text-blue-800'
+          : 'bg-gray-100 text-gray-700';
+        return (
+          <li key={t.id} className="flex items-center gap-2 text-xs">
+            <span className={`inline-flex items-center px-1.5 py-0.5 rounded font-medium ${badge}`}>{t.status}</span>
+            <span className="font-medium text-gray-800 capitalize">{t.provider}</span>
+            {t.published_url && (
+              <a href={t.published_url} target="_blank" rel="noreferrer" className="text-primary-600 hover:underline flex-1 truncate inline-flex items-center gap-1">
+                <ExternalLink className="h-3 w-3" />{t.published_url}
+              </a>
+            )}
+            {!t.published_url && t.status === 'published' && (
+              <span className="flex-1 text-gray-500 italic">Published (no live URL returned)</span>
+            )}
+            {t.status === 'failed' && (
+              <>
+                <span className="flex-1 text-red-700 truncate" title={t.last_error}>{t.last_error || 'Failed'}</span>
+                <button
+                  onClick={() => onRetry(t.id)}
+                  disabled={retryingTargetId === t.id}
+                  className="p-1 text-gray-500 hover:text-primary-700 disabled:opacity-50"
+                  title="Retry"
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${retryingTargetId === t.id ? 'animate-spin' : ''}`} />
+                </button>
+              </>
+            )}
+            {t.attempts > 1 && <span className="text-gray-400">· {t.attempts} attempts</span>}
+          </li>
+        );
+      })}
+    </ul>
+  </div>
+);
+
+// Picker modal — lists user's Publishing Platform connected accounts with
+// checkboxes. Selected accounts get an immediate publish-to fanout on submit.
+const PlatformPickerModal = ({ existingTargets, onClose, onSubmit }) => {
+  const [connections, setConnections] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const [submitting, setSubmitting] = useState(false);
+  const [err, setErr] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const rows = await connectionsService.list();
+        if (cancelled) return;
+        const eligible = rows.filter(r => PUBLISH_TARGET_PROVIDERS.has(r.provider));
+        setConnections(eligible);
+      } catch (e) {
+        if (!cancelled) setErr(e.response?.data?.error || 'Failed to load connections');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const toggle = (id) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const submit = async () => {
+    if (selectedIds.size === 0) return;
+    setSubmitting(true);
+    try { await onSubmit(Array.from(selectedIds)); }
+    finally { setSubmitting(false); }
+  };
+
+  const targetStatusByConnection = new Map((existingTargets || []).map(t => [t.connection_id, t.status]));
+
+  return (
+    <Modal title="Publish to platforms" onClose={onClose}>
+      {loading ? (
+        <div className="text-sm text-gray-500">Loading connections…</div>
+      ) : connections.length === 0 ? (
+        <div className="text-sm text-gray-600">
+          No publishing-platform integrations connected yet. Head to <strong>Connections → Publishing Platform</strong> to add one.
+        </div>
+      ) : (
+        <>
+          <p className="text-xs text-gray-500 mb-3">
+            Select the destinations to push this article to. Each attempt is tracked below the editor with its own status and retry.
+          </p>
+          <ul className="space-y-2 max-h-72 overflow-y-auto">
+            {connections.map(c => {
+              const prevStatus = targetStatusByConnection.get(c.id);
+              return (
+                <li key={c.id}>
+                  <label className="flex items-center gap-3 p-2 border border-gray-200 rounded-md hover:bg-gray-50 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.has(c.id)}
+                      onChange={() => toggle(c.id)}
+                      className="h-4 w-4"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-gray-900 truncate">{c.display_name || c.provider}</p>
+                      <p className="text-xs text-gray-500 capitalize">{c.provider}</p>
+                    </div>
+                    {prevStatus && (
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                        prevStatus === 'published' ? 'bg-green-100 text-green-800'
+                        : prevStatus === 'failed' ? 'bg-red-100 text-red-800'
+                        : 'bg-gray-100 text-gray-700'
+                      }`}>{prevStatus}</span>
+                    )}
+                  </label>
+                </li>
+              );
+            })}
+          </ul>
+        </>
+      )}
+      {err && (
+        <div className="mt-3 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-800">{err}</div>
+      )}
+      <div className="flex justify-end gap-2 mt-4">
+        <button
+          onClick={onClose}
+          className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={submit}
+          disabled={submitting || selectedIds.size === 0}
+          className="px-4 py-2 text-sm font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 disabled:opacity-50"
+        >
+          {submitting ? 'Publishing…' : `Publish to ${selectedIds.size || 0}`}
+        </button>
+      </div>
+    </Modal>
   );
 };
 

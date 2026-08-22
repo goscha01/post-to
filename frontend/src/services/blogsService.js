@@ -130,6 +130,25 @@ const fixSeoAll = async (id) => {
   return res.data; // { blog, seo, applied: [{ checkId, changedFields }] }
 };
 
+// -------------------------------------------------------------------------
+// Publishing Platform fan-out (Phase 2)
+// -------------------------------------------------------------------------
+
+const publishToTargets = async (id, connectionIds) => {
+  const res = await axios.post(`/api/blogs/${id}/publish-to`, { connectionIds }, { timeout: 60000 });
+  return res.data; // { article_id, results: [{ connectionId, ok, publishedUrl, error, ... }] }
+};
+
+const listPublishTargets = async (id) => {
+  const res = await axios.get(`/api/blogs/${id}/publish-targets`);
+  return res.data?.targets || [];
+};
+
+const retryPublishTarget = async (id, targetId) => {
+  const res = await axios.post(`/api/blogs/${id}/publish-targets/${targetId}/retry`, {}, { timeout: 60000 });
+  return res.data?.result;
+};
+
 const blogsService = {
   list, get, update, remove, generate,
   publish, unpublish,
@@ -137,5 +156,6 @@ const blogsService = {
   refreshDomainTheme, updateDomainTheme,
   uploadHeroImage, removeHeroImage, suggestHeroImages, setHeroImageFromUrl,
   analyzeSeo, fixSeo, fixSeoAll,
+  publishToTargets, listPublishTargets, retryPublishTarget,
 };
 export default blogsService;
