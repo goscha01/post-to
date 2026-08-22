@@ -141,18 +141,32 @@ function addUsage(a, b) {
 // text is kept). Returns the possibly-mutated markdown + verifier
 // telemetry. NEVER throws — verifier failures are caught and treated as
 // "0 links verified" so a broken verifier can't fail generation.
-async function verifyAndCleanExternalLinks(markdown) {
-  const empty = { markdown, verification: { total: 0, verified: 0, dead: 0, deadUrls: [], durationMs: 0 } };
+//
+// Also runs a pre-verification rescue step: any link written as a full
+// URL whose PATH matches a known internal URL gets rewritten to a
+// relative path first. Fixes the observed prod case where the model
+// hallucinated `https://spotlesshomes.com/booking` when the real domain
+// is `spotless.homes` and `/booking` was a real internal page — the
+// verifier would otherwise strip it as an unknown-domain external link.
+async function verifyAndCleanExternalLinks(markdown, { knownInternalUrls = [] } = {}) {
+  const empty = { markdown, verification: { total: 0, verified: 0, dead: 0, deadUrls: [], rewritten: 0, durationMs: 0 } };
   if (!markdown) return empty;
-  const urls = linkVerifier.extractExternalLinksFromMarkdown(markdown);
-  if (urls.length === 0) return empty;
+
+  // Rescue "internal links written as full URLs" first.
+  const rescued = linkVerifier.rewriteMistakenlyAbsoluteInternalLinks(markdown, knownInternalUrls);
+  const rewritten = rescued !== markdown ? 1 : 0;
+
+  const urls = linkVerifier.extractExternalLinksFromMarkdown(rescued);
+  if (urls.length === 0) {
+    return { ...empty, markdown: rescued, verification: { ...empty.verification, rewritten } };
+  }
   const t0 = Date.now();
   try {
     const { results, summary } = await linkVerifier.verifyMany(urls);
     const deadUrls = results.filter((r) => !r.ok).map((r) => r.url);
     const cleaned = deadUrls.length > 0
-      ? linkVerifier.stripDeadLinksFromMarkdown(markdown, deadUrls)
-      : markdown;
+      ? linkVerifier.stripDeadLinksFromMarkdown(rescued, deadUrls)
+      : rescued;
     return {
       markdown: cleaned,
       verification: {
@@ -160,6 +174,7 @@ async function verifyAndCleanExternalLinks(markdown) {
         verified: summary.ok,
         dead: summary.dead,
         deadUrls,
+        rewritten,
         durationMs: Date.now() - t0,
       },
     };
@@ -168,7 +183,8 @@ async function verifyAndCleanExternalLinks(markdown) {
     console.warn('external-link verification failed:', err.message);
     return {
       ...empty,
-      verification: { ...empty.verification, durationMs: Date.now() - t0, error: err.message },
+      markdown: rescued,
+      verification: { ...empty.verification, rewritten, durationMs: Date.now() - t0, error: err.message },
     };
   }
 }
@@ -189,7 +205,7 @@ async function generateArticleWithSeo(input) {
   // are stripped from the markdown; the prose survives. Runs synchronously
   // but with bounded concurrency + short per-URL timeout so 5 links don't
   // add 5×timeout latency. Verifier failure never throws.
-  const initialVerification = await verifyAndCleanExternalLinks(currentData.markdown);
+  const initialVerification = await verifyAndCleanExternalLinks(currentData.markdown, { knownInternalUrls });
   currentData = { ...currentData, markdown: initialVerification.markdown };
   timing.external_link_verification_ms = initialVerification.verification.durationMs;
   const verification = initialVerification.verification;
@@ -222,7 +238,7 @@ async function generateArticleWithSeo(input) {
       // The repair pass may have introduced new external links (or reworked
       // existing ones). Verify + clean again before scoring so the analyzer
       // sees the actual final markdown.
-      const repairedVerification = await verifyAndCleanExternalLinks(repairedData.markdown);
+      const repairedVerification = await verifyAndCleanExternalLinks(repairedData.markdown, { knownInternalUrls });
       repairedData = { ...repairedData, markdown: repairedVerification.markdown };
       timing.external_link_verification_ms += repairedVerification.verification.durationMs;
 

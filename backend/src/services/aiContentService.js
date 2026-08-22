@@ -155,7 +155,9 @@ function buildArticlePrompt(input) {
 
   const internalLinksBlock = Array.isArray(knownInternalUrls) && knownInternalUrls.length
     ? `Available internal pages on the business's own website (use these for internal links — do NOT invent URLs):
-${knownInternalUrls.slice(0, 25).map((u) => `- ${typeof u === 'string' ? u : (u.url || '')}${typeof u === 'object' && u.title ? `  (${u.title})` : ''}`).join('\n')}`
+${knownInternalUrls.slice(0, 25).map((u) => `- ${typeof u === 'string' ? u : (u.url || '')}${typeof u === 'object' && u.title ? `  (${u.title})` : ''}`).join('\n')}
+
+**Write internal links as root-relative paths EXACTLY as shown above** — for example \`[our booking page](/booking)\`, NOT \`[our booking page](https://any-domain.com/booking)\`. Do NOT prepend a hostname. Do NOT guess the site's domain. The paths above ARE the correct format — copy them verbatim.`
     : `Internal pages available: NONE. Do NOT invent internal links. Skip the suggestedInternalLinks array (return []).`;
 
   const user = `You are writing one long-form SEO article for a local service business.
@@ -207,7 +209,7 @@ Choose the combination that best answers the search intent. Do NOT include an FA
 
 # Length
 
-**MUST be at least 1,500 words**. Target 1,800–2,500. Do NOT ship anything under 1,500. Longer is allowed IF the extra content is genuinely useful — but do NOT pad with filler. If the topic is genuinely narrow, cover it in more depth (concrete examples, step-by-step, tables, FAQs) rather than shipping short.
+Target **900–1,800 words** — long enough to be substantial, short enough to stay readable. Do NOT ship anything under 500 words. Longer is allowed IF the extra content is genuinely useful — but do NOT pad with filler. If the topic is genuinely narrow, prefer depth (concrete examples, step-by-step, tables, FAQs) over hitting a big word count. Focused 800-word articles regularly outrank padded 2,000-word articles.
 
 # Keyword usage
 
@@ -300,7 +302,7 @@ function buildArticleRepairPrompt({ previousJson, analysis, keyword, businessNam
   // so it doesn't just polish the existing prose.
   const wordCountIssue = failedChecks.find((c) => c.id === 'word_count');
   const expansionInstruction = wordCountIssue
-    ? `\n**CRITICAL: The article is currently too short.** You MUST substantially expand it to at least 1,500 words by:
+    ? `\n**CRITICAL: The article is currently too short.** You MUST substantially expand it to at least 900 words by:
 - adding entirely new H2 sections that cover angles the current draft skips (specific scenarios, common questions, cost breakdowns, tools, seasonal factors),
 - expanding existing sections with concrete examples, step-by-step details, real numbers, mini-tables where useful,
 - adding an FAQ section (3–6 real questions) if it fits the topic.

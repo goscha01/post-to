@@ -313,6 +313,40 @@ Also a duplicate [link back](https://en.wikipedia.org/wiki/Foo).`;
   ]);
 });
 
+test('rewriteMistakenlyAbsoluteInternalLinks: rescues bogus-hostname links whose path matches the site', () => {
+  // Real prod bug reproduction: model wrote https://spotlesshomes.com/booking
+  // when the real hostname is spotless.homes. The PATH /booking is a real
+  // internal URL. The rewriter should convert to a relative link so the
+  // article gets internal-link credit.
+  const md = 'Book online via [our booking page](https://www.spotlesshomes.com/booking) or read [our about page](https://spotlesshomes.com/about).';
+  const out = verifier.rewriteMistakenlyAbsoluteInternalLinks(md, ['/booking', '/about', '/services/deep-cleaning']);
+  assert.equal(
+    out,
+    'Book online via [our booking page](/booking) or read [our about page](/about).'
+  );
+});
+
+test('rewriteMistakenlyAbsoluteInternalLinks: leaves genuine external links alone', () => {
+  const md = 'See the [Wikipedia entry](https://en.wikipedia.org/wiki/Cleaning) and the [CDC guide](https://www.cdc.gov/hygiene).';
+  const out = verifier.rewriteMistakenlyAbsoluteInternalLinks(md, ['/booking', '/about']);
+  // Neither /wiki/Cleaning nor /hygiene are in the known-paths set, so the
+  // links remain full URLs.
+  assert.equal(out, md);
+});
+
+test('rewriteMistakenlyAbsoluteInternalLinks: preserves images', () => {
+  const md = 'Photo: ![kitchen](https://www.spotlesshomes.com/booking-hero.jpg)';
+  const out = verifier.rewriteMistakenlyAbsoluteInternalLinks(md, ['/booking']);
+  assert.equal(out, md);
+});
+
+test('rewriteMistakenlyAbsoluteInternalLinks: handles trailing-slash variants', () => {
+  const md = 'Visit [our booking](https://www.example.com/booking/) or [about](https://x.com/about).';
+  const out = verifier.rewriteMistakenlyAbsoluteInternalLinks(md, ['/booking', '/about']);
+  assert.match(out, /\[our booking\]\(\/booking\)/);
+  assert.match(out, /\[about\]\(\/about\)/);
+});
+
 test('stripDeadLinksFromMarkdown rewrites [text](dead) → text and preserves live links + images', () => {
   const md = 'See the [EPA guide](https://www.epa.gov/dead) and the [Wikipedia article](https://en.wikipedia.org/wiki/Alive). Image ![alt](https://www.epa.gov/dead-image.jpg).';
   const out = verifier.stripDeadLinksFromMarkdown(md, ['https://www.epa.gov/dead']);

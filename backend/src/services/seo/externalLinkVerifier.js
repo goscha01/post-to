@@ -317,6 +317,54 @@ function stripDeadLinksFromMarkdown(markdown, deadUrls) {
   return out;
 }
 
+// Rewrite `[text](https://<any-host>/some-path)` → `[text](/some-path)`
+// when `/some-path` matches one of the customer's known internal URLs.
+//
+// Observed prod bug: model wrote https://www.spotlesshomes.com/booking
+// (invented hostname — real domain is spotless.homes with a dot). The
+// verifier saw those as external, they weren't on the allowlist, they got
+// stripped, and the article ended up with 0 internal links even though the
+// PATHS were correct.
+//
+// This helper runs BEFORE external-link verification so obvious internal
+// links masquerading as external get rescued into proper relative-path
+// internal links, and the verifier never sees them.
+function rewriteMistakenlyAbsoluteInternalLinks(markdown, knownInternalUrls) {
+  if (!markdown || !Array.isArray(knownInternalUrls) || knownInternalUrls.length === 0) return markdown;
+  // Build the known-paths set + a canonicalised path→canonical map so a
+  // trailing-slash mismatch doesn't defeat the check.
+  const paths = new Set();
+  for (const raw of knownInternalUrls) {
+    const s = typeof raw === 'string' ? raw : (raw?.url || '');
+    if (!s) continue;
+    let p;
+    try { p = new URL(s, 'https://x.example').pathname; }
+    catch { p = s.startsWith('/') ? s : '/' + s; }
+    // Normalise: no trailing slash except for '/'.
+    if (p.length > 1 && p.endsWith('/')) p = p.slice(0, -1);
+    paths.add(p);
+    paths.add(p + '/'); // accept trailing-slash variant too
+  }
+  if (paths.size === 0) return markdown;
+  const re = /(!)?\[([^\]]+)\]\((https?:\/\/[^)\s]+)(?:\s+"[^"]*")?\)/g;
+  return String(markdown).replace(re, (full, bang, text, url) => {
+    if (bang) return full;
+    let parsed;
+    try { parsed = new URL(url); } catch { return full; }
+    let path = parsed.pathname || '/';
+    // Normalise the parsed path so it matches our set.
+    let candidate = path;
+    if (candidate.length > 1 && candidate.endsWith('/')) candidate = candidate.slice(0, -1);
+    if (paths.has(path) || paths.has(candidate)) {
+      // Convert to relative — this makes it a real internal link the
+      // analyzer counts correctly, and the verifier will skip it (external
+      // verifier only looks at http(s):// URLs).
+      return `[${text}](${candidate})`;
+    }
+    return full;
+  });
+}
+
 // Test hook — clear the in-process cache. Not exported publicly; use via
 // _internal in tests.
 function _resetCache() { cache.clear(); }
@@ -326,6 +374,7 @@ module.exports = {
   verifyMany,
   extractExternalLinksFromMarkdown,
   stripDeadLinksFromMarkdown,
+  rewriteMistakenlyAbsoluteInternalLinks,
   isAllowedHost,
   ALLOWED_EXTERNAL_HOSTS,
   ALLOWED_EXTERNAL_SUFFIXES,

@@ -36,8 +36,11 @@ test('enhanced article prompt asks for SEO + structured JSON envelope', () => {
   assert.match(user, /Never emit an H1/i);
   // Mandatory intro rule (added to fix "no intro" cases seen in prod).
   assert.match(user, /MANDATORY first block/i);
-  // Enforced length floor (added after prod articles shipped ~500 words).
-  assert.match(user, /at least 1,500 words|MUST be at least 1,500/i);
+  // Length target — realistic for gpt-4o-mini after multiple rounds of
+  // prod evidence (the "MUST 1,500" language regularly produced padded
+  // filler that hurt more than it helped).
+  assert.match(user, /Target \*\*900[–-]1,800 words\*\*|900[–-]1,800/);
+  assert.match(user, /Do NOT ship anything under 500 words/);
   // Explicit external-links requirement so `external_links_present` doesn't
   // warn on every fresh article.
   assert.match(user, /External links/);
@@ -80,7 +83,7 @@ test('repair prompt: word_count issue triggers explicit expansion instruction', 
     keyword: 'k', businessName: 'Biz',
   });
   assert.match(user, /CRITICAL: The article is currently too short/i);
-  assert.match(user, /1,500 words/);
+  assert.match(user, /900 words/);
   assert.match(user, /adding entirely new H2 sections/i);
 });
 

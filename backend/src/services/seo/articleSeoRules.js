@@ -48,11 +48,16 @@ const THRESHOLDS = {
     idealMax: 8,
   },
   wordCount: {
-    idealMin: 1500,
-    idealMax: 2500,
-    warnMin: 800,
+    // Realistic targets. Google doesn't punish shorter articles that are
+    // focused. gpt-4o-mini reliably ships 600-1000 word articles; pushing
+    // for 1500+ often produces padded filler that hurts more than helps.
+    // If a customer wants long-form specifically, they can upgrade to
+    // AI_ARTICLE_MODEL=gpt-4o which handles the higher target better.
+    idealMin: 900,
+    idealMax: 2200,
+    warnMin: 500,     // articles under 500 are genuinely thin
     warnMax: 4000,
-    hardFloor: 400,   // below this, the article is genuinely thin
+    hardFloor: 300,   // below this, this isn't really an article
   },
   paragraph: {
     warnAvgWords: 120,     // average paragraph length
