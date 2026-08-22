@@ -186,14 +186,20 @@ const evaluators = {
     return fail('Descriptive anchor text', `${generic.length} generic anchor${generic.length === 1 ? '' : 's'}`, `Replace generic anchors like "${generic[0].text}" with descriptive text.`);
   },
 
-  external_links_present({ links, internalHostnames, searchIntent }) {
+  external_links_present({ links, internalHostnames, searchIntent, plainText }) {
     const ext = links.filter((l) => classifyLink(l, internalHostnames) === 'external');
     if (ext.length === 0) {
-      // Don't force links just to satisfy a checkbox. If the topic is
-      // conversational / opinion-shaped, external references aren't
-      // required. Everything else defaults to "consider adding one."
+      // Don't force links just to satisfy a checkbox. Skip the warning when:
+      //   - Topic is conversational / opinion / news — external references
+      //     aren't the point of that article type
+      //   - Article is under ~1000 words — short focused articles typically
+      //     don't need external citations; forcing one hurts more than it
+      //     helps (see also the "reader resources, not citations" prompt
+      //     framing)
       const intentNa = /opinion|announcement|update|news/i.test(String(searchIntent || ''));
       if (intentNa) return na('External links present', 'external references not required for this article type');
+      const wc = u.countWords(plainText);
+      if (wc > 0 && wc < 1000) return na('External links present', `short article (${wc} words) — external references optional`);
       return warn('External links present', '0 external links', 'Consider linking to 1–2 authoritative sources.');
     }
     return pass('External links present', `${ext.length} external link${ext.length === 1 ? '' : 's'}`);
@@ -462,27 +468,27 @@ const evaluators = {
     const exact = u.countKeywordOccurrences(plainText, keyword);
     const semantic = u.countKeywordSemanticHits(plainText, keyword);
     const count = Math.max(exact, semantic);
-    // For density, use exact-count when we have any (traditional metric) —
-    // semantic hits without exact phrases means the density concept doesn't
-    // literally apply, so we skip the density warning and only require
-    // minimum coverage.
-    const density = exact / words;
+    // Density is `count / words` — use the effective count (semantic when
+    // it's higher). Previously used exact/words which under-counted
+    // long-tail keywords: an article that mentions "apartment cleaning" +
+    // "tampa" 3 times in proximity but the literal phrase only once would
+    // show "3× (0.18%)" — count from semantic, density from exact.
+    // Stuffing detection still uses exact-only density since padding
+    // repeat literal phrases is the actual stuffing signal.
+    const effectiveDensity = count / words;
+    const exactDensity = exact / words;
     const t = THRESHOLDS.keyword;
-    const pct = (density * 100).toFixed(2) + '%';
-    if (density >= t.stuffingDensity) {
+    const pct = (effectiveDensity * 100).toFixed(2) + '%';
+    if (exactDensity >= t.stuffingDensity) {
       return fail('Keyword usage', `${exact}× exact (${pct})`, 'Keyword density is unnaturally high — reduce repetition.');
     }
     if (count < t.minOccurrences) {
       return warn('Keyword usage', `${count}×`, `Use the keyword at least ${t.minOccurrences} times naturally.`);
     }
-    if (exact === 0) {
-      // All matches were semantic — that's fine for long-tail keywords.
-      return pass('Keyword usage', `${semantic}× semantic — natural usage`);
-    }
-    if (density < t.idealMinDensity) {
+    if (effectiveDensity < t.idealMinDensity) {
       return warn('Keyword usage', `${count}× (${pct})`, 'A little light — mention the keyword a few more times where natural.');
     }
-    if (density > t.idealMaxDensity) {
+    if (effectiveDensity > t.idealMaxDensity) {
       return warn('Keyword usage', `${count}× (${pct})`, 'Slightly dense — trim a couple mentions.');
     }
     return pass('Keyword usage', `${count}× — natural usage`);

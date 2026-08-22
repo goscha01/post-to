@@ -261,6 +261,48 @@ Following Ann Russell's how-to-clean-everything method keeps a home consistently
   assert.ok(kd.status !== 'failed', `keyword_density should not fail, got ${kd.status} (${kd.value})`);
 });
 
+// Regression: apartment-cleaning-tampa article shipped 557 words with
+// keyword appearing 3× semantically but only 1× literally. Old analyzer
+// showed "3× (0.18%)" — the 3 count came from semantic hits but the
+// density was calculated from exact-only. That produced a "little light"
+// warning even though the topic was clearly present three times.
+test('keyword_density: uses effective count for density calc, not exact-only', () => {
+  const r = analyzer.analyze({
+    keyword: 'apartment cleaning tampa',
+    title: 'Apartment Cleaning Tampa Guide',
+    slug: 'apartment-cleaning-tampa',
+    metaDescription: 'A guide to apartment cleaning in Tampa, including cost, timing, and tips.',
+    // Body has "apartment cleaning tampa" literally once, plus two more
+    // places where all three tokens appear in proximity but as a natural
+    // sentence rather than the exact phrase.
+    markdown: `Keeping your apartment clean in Tampa takes a little routine.
+
+## Why apartment cleaning tampa services help
+
+Professional apartment cleaning teams in Tampa know what to prioritise.
+
+## What we cover
+
+If you're searching for a routine cleaning of your apartment in the Tampa area, expect the following.`.padEnd(3500, ' filler word'),
+    tags: ['tampa'], heroImage: 'x', heroAlt: 'x',
+  });
+  const kd = r.checks.find((c) => c.id === 'keyword_density');
+  assert.equal(kd.status, 'passed', `expected pass, got ${kd.status} (${kd.value})`);
+  // Value should reflect the effective count (semantic), not just the 1 literal.
+  assert.match(kd.value, /3×|3 ×/);
+});
+
+test('external_links_present: N/A for short articles (< 1000 words)', () => {
+  const r = analyzer.analyze({
+    keyword: 'x', title: 'X', slug: 'x', metaDescription: 'x'.repeat(150),
+    markdown: '## Section\n\nA short article with only local content.',
+    tags: ['a'], heroImage: 'x', heroAlt: 'x',
+  });
+  const el = r.checks.find((c) => c.id === 'external_links_present');
+  assert.equal(el.status, 'not_applicable');
+  assert.match(el.recommendation, /short article/i);
+});
+
 test('external_links_verified: N/A when no verification was run', () => {
   const r = analyzer.analyze({
     keyword: 'x', title: 'X', slug: 'x', metaDescription: 'x'.repeat(150),
