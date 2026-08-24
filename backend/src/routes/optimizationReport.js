@@ -20,6 +20,8 @@ const express = require('express');
 const authMiddleware = require('../middleware/authMiddleware');
 const requireBusinessAuth = require('../middleware/businessAuth');
 const optimizationReport = require('../services/optimizationReportService');
+const connections = require('../services/connectionsService');
+const metaAdsService = require('../services/metaAdsService');
 const { getAllBusinessTokens } = require('../utils/businessTokens');
 const logger = require('../utils/logger');
 const { createClient } = require('@supabase/supabase-js');
@@ -141,6 +143,32 @@ async function tokenForOwner(req, ownerGoogleId) {
   return match?.access_token || req.businessToken;
 }
 
+// Resolve the Meta ad-account selection the report should use. Returns:
+//   { adAccountId, accessToken, source: 'query'|'saved_default'|null }
+// Never throws — Meta is optional. If the user requests a specific
+// adAccountId, we validate it against their saved selection so the report
+// endpoint has the same authorization boundary as /api/meta-ads/*.
+async function resolveMeta(req) {
+  const raw = String(req.query.metaAdAccountId || '').trim();
+  const explicit = raw ? metaAdsService.normalizeAdAccountId(raw) : null;
+  const meta = await connections.getMetaOwnerToken(req.user.userId);
+  if (!meta?.accessToken) return { adAccountId: null, accessToken: null, source: null };
+  const selection = await connections.getMetaAdAccountSelection(req.user.userId);
+  // Explicit id from the query must be in the saved selection — mirrors
+  // the authorization contract enforced by /api/meta-ads/* routes.
+  if (explicit) {
+    if (!selection.adAccountIds.includes(explicit)) {
+      return { adAccountId: null, accessToken: null, source: null, error: 'META_AD_ACCOUNT_NOT_AUTHORIZED' };
+    }
+    return { adAccountId: explicit, accessToken: meta.accessToken, source: 'query' };
+  }
+  if (selection.defaultAdAccountId) {
+    return { adAccountId: selection.defaultAdAccountId, accessToken: meta.accessToken, source: 'saved_default' };
+  }
+  // User has connected Meta but never picked an account — skip Meta silently.
+  return { adAccountId: null, accessToken: null, source: null };
+}
+
 router.get('/', async (req, res) => {
   const t0 = Date.now();
   try {
@@ -148,20 +176,35 @@ router.get('/', async (req, res) => {
     const campaignId = parseCampaignId(req);
     const thresholds = parseThresholds(req);
 
-    const [adsCustomer, ga4Property] = await Promise.all([
+    const [adsCustomer, ga4Property, metaResolved] = await Promise.all([
       resolveAdsCustomer(req),
       resolveGa4Property(req),
+      resolveMeta(req),
     ]);
 
-    if (!adsCustomer.customerId) {
+    if (metaResolved.error === 'META_AD_ACCOUNT_NOT_AUTHORIZED') {
+      return res.status(403).json({
+        error:
+          'Requested Meta ad account is not in your saved selection. Re-pick via /api/meta-ads/accounts before requesting it in a report.',
+        code: 'META_AD_ACCOUNT_NOT_AUTHORIZED',
+      });
+    }
+
+    // Report requires AT LEAST one provider (Google Ads OR Meta Ads).
+    // GA4 alone doesn't count — GA4 without a paid channel is just a
+    // web-analytics dump. If both are absent, tell the caller which
+    // connection to add.
+    if (!adsCustomer.customerId && !metaResolved.adAccountId) {
       return res.status(400).json({
-        error: 'No Google Ads customer specified or connected',
+        error:
+          'No paid-channel account connected. Connect Google Ads or select a Meta ad account before requesting the optimization report.',
         needsCustomerSelection: true,
+        needsMetaSelection: true,
       });
     }
 
     const [adsAccessToken, ga4AccessToken] = await Promise.all([
-      tokenForOwner(req, adsCustomer.ownerGoogleId),
+      adsCustomer.customerId ? tokenForOwner(req, adsCustomer.ownerGoogleId) : Promise.resolve(null),
       ga4Property.propertyId ? tokenForOwner(req, ga4Property.ownerGoogleId) : Promise.resolve(null),
     ]);
 
@@ -172,6 +215,8 @@ router.get('/', async (req, res) => {
       campaignId,
       ga4AccessToken,
       propertyId: ga4Property.propertyId,
+      metaAccessToken: metaResolved.accessToken,
+      metaAdAccountId: metaResolved.adAccountId,
       days,
       thresholds,
       userId: req.user.userId,
@@ -187,12 +232,16 @@ router.get('/', async (req, res) => {
       loginCustomerId: adsCustomer.loginCustomerId,
       ga4PropertyId: ga4Property.propertyId,
       ga4PropertyName: ga4Property.displayName,
+      metaAdAccountId: metaResolved.adAccountId,
+      metaSelectionSource: metaResolved.source,
     };
 
     logger.info('optimizationReport.ok', {
       userId: req.user.userId,
       customerId: adsCustomer.customerId,
       propertyId: ga4Property.propertyId || null,
+      metaAdAccountId: metaResolved.adAccountId || null,
+      metaAttributionQuality: report.crossReference?.metaAttribution?.quality || null,
       days,
       campaignId: campaignId || null,
       sectionErrors: (report.errors || []).length,
