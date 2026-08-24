@@ -205,6 +205,11 @@ async function fetchSiteMeta(url) {
 // raw value should call getRawForUser instead.
 const SENSITIVE_METADATA_KEYS = [
   'api_key', 'page_access_token', 'user_access_token',
+  // Long-lived Meta user access token stored on FB Page rows. The
+  // upsertFacebookPage comment already claimed this was stripped on read,
+  // but the key was missing from this list — surfaced during Meta Ads
+  // Phase 1A wiring. Used server-side only via getMetaOwnerToken().
+  'owner_user_token',
   // Blog publisher AWS creds — scoped IAM user per customer, still sensitive.
   's3_access_key_secret',
   // GitHub PAT used to fire repository_dispatch after publish (auto-deploy).
@@ -275,6 +280,120 @@ async function deleteForUser(userId, id) {
     .eq('user_id', userId)
     .eq('id', id);
   if (error) throw error;
+}
+
+// Server-side lookup: given an authenticated app user, return the long-lived
+// Meta user access token they granted at OAuth time, plus their Meta user id.
+// Callers use this to hit Marketing API endpoints on behalf of that user
+// (metaAdsService).
+//
+// The token is stored per Facebook Page row in metadata.owner_user_token —
+// all Page rows from the same OAuth grant share the same token, so we grab
+// the most recently connected Page and use its token. Returns null if the
+// user has no Meta connection at all.
+//
+// SECURITY: this returns a raw bearer token. Never expose it to the client.
+// The returned shape includes only what a service call needs.
+async function getMetaOwnerToken(userId) {
+  if (!userId) return null;
+  const { data, error } = await supabase
+    .from(TABLE)
+    .select('metadata, updated_at')
+    .eq('user_id', userId)
+    .eq('provider', 'facebook')
+    .eq('status', 'active')
+    .order('updated_at', { ascending: false })
+    .limit(1);
+  if (error) throw error;
+  const row = (data || [])[0];
+  if (!row?.metadata?.owner_user_token) return null;
+  return {
+    accessToken: row.metadata.owner_user_token,
+    metaUserId: row.metadata.meta_user_id || null,
+    expiresAt: row.metadata.owner_user_token_expires_at || null,
+  };
+}
+
+// Read the user's Meta Ads account selection. Selection is stored on the
+// facebook connection rows' metadata as `ad_account_ids` (array) + optional
+// `default_ad_account_id`. Written by setMetaAdAccountSelection() to ALL
+// facebook rows in one transaction so any row read returns the same answer.
+//
+// Returns { adAccountIds: [], defaultAdAccountId: null } when no selection
+// exists yet (the user has connected Meta but not picked ad accounts).
+async function getMetaAdAccountSelection(userId) {
+  if (!userId) return { adAccountIds: [], defaultAdAccountId: null };
+  const { data, error } = await supabase
+    .from(TABLE)
+    .select('metadata, updated_at')
+    .eq('user_id', userId)
+    .eq('provider', 'facebook')
+    .eq('status', 'active')
+    .order('updated_at', { ascending: false })
+    .limit(1);
+  if (error) throw error;
+  const row = (data || [])[0];
+  const meta = row?.metadata || {};
+  const raw = Array.isArray(meta.ad_account_ids) ? meta.ad_account_ids : [];
+  // Defensive: strip anything that doesn't look like `act_<digits>`, dedupe.
+  const cleaned = [...new Set(raw.filter((s) => /^act_\d+$/.test(String(s || ''))))];
+  const def = meta.default_ad_account_id;
+  return {
+    adAccountIds: cleaned,
+    defaultAdAccountId:
+      def && cleaned.includes(def) ? def : cleaned[0] || null,
+  };
+}
+
+// Persist the user's Meta Ads account selection to ALL of their active
+// facebook connection rows in one shot. Every facebook row for a user
+// originates from the same Meta OAuth grant and shares the same owner_user_token,
+// so the selection is Meta-identity-scoped and safe to duplicate. Storing on
+// every row means any subsequent read (which uses the most-recently-updated
+// row) returns the same answer.
+//
+// Merges into existing metadata — preserves page_access_token, meta_user_id,
+// owner_user_token, picture_url, category, tasks, and every other pre-Phase-1B
+// metadata field. Never clobbers.
+async function setMetaAdAccountSelection(userId, { adAccountIds, defaultAdAccountId }) {
+  if (!userId) throw new Error('userId required');
+  if (!Array.isArray(adAccountIds)) throw new Error('adAccountIds must be an array');
+  const cleaned = [...new Set(adAccountIds.map((s) => String(s || '').trim()).filter((s) => /^act_\d+$/.test(s)))];
+  const def =
+    defaultAdAccountId && cleaned.includes(defaultAdAccountId)
+      ? defaultAdAccountId
+      : cleaned[0] || null;
+
+  // Fetch every facebook row so we can merge into each metadata object.
+  const { data: rows, error: fetchErr } = await supabase
+    .from(TABLE)
+    .select('id, metadata')
+    .eq('user_id', userId)
+    .eq('provider', 'facebook')
+    .eq('status', 'active');
+  if (fetchErr) throw fetchErr;
+  if (!rows || rows.length === 0) {
+    const e = new Error('No active Facebook connection to attach ad-account selection to');
+    e.code = 'META_NOT_CONNECTED';
+    throw e;
+  }
+
+  // Merge + update each row. Kept as sequential awaits (small N) so a single
+  // failure surfaces immediately rather than being swallowed by Promise.all.
+  for (const row of rows) {
+    const merged = {
+      ...(row.metadata || {}),
+      ad_account_ids: cleaned,
+      default_ad_account_id: def,
+    };
+    const { error: updErr } = await supabase
+      .from(TABLE)
+      .update({ metadata: merged })
+      .eq('id', row.id);
+    if (updErr) throw updErr;
+  }
+
+  return { adAccountIds: cleaned, defaultAdAccountId: def, rowsUpdated: rows.length };
 }
 
 // Insert or refresh a website connection. We dedupe per user on (provider, external_id).
@@ -1025,6 +1144,9 @@ module.exports = {
   upsertFacebookPage,
   upsertInstagramBusiness,
   reconcileFacebookPictures,
+  getMetaOwnerToken,
+  getMetaAdAccountSelection,
+  setMetaAdAccountSelection,
   fetchSiteTheme,
   // exposed for tests / future callers
   _internal: { normalizeUrl, hostOf, extractMeta, extractTheme, fetchSiteMeta, fetchSiteTheme, maskApiKey, normalizeAdAccountId, stripSensitiveMetadata, discoverInternalUrls },

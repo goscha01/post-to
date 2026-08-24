@@ -818,12 +818,28 @@ router.get('/facebook/callback', async (req, res) => {
     // 4. Enumerate Pages the user admins + linked IG business accounts
     const pages = await metaService.listPages(longToken);
 
+    // 5. Introspect the granted scopes so we can verify from Loki whether
+    // ads_read actually made it through the consent screen. Same rationale
+    // as auth.business.tokens_received above for Google scopes. Best-effort
+    // — a debug_token failure never blocks the connect flow.
+    let grantedScopes = [];
+    try {
+      const info = await metaService.debugToken(longToken);
+      grantedScopes = Array.isArray(info?.scopes) ? info.scopes : [];
+    } catch (e) {
+      logger.warn('auth.facebook.debug_token_failed', { error: e.message });
+    }
+
     logger.info('auth.facebook.callback_ok', {
       user_id: extractedUserId,
       meta_user_id: me?.id,
       pages_count: pages.length,
       pages_with_ig: pages.filter(p => p.instagram_business_account).length,
       token_expires_at: expiresAt,
+      granted_scopes: grantedScopes,
+      has_ads_read: grantedScopes.includes('ads_read'),
+      has_pages_show_list: grantedScopes.includes('pages_show_list'),
+      has_instagram_basic: grantedScopes.includes('instagram_basic'),
     });
 
     const created = { pages: 0, instagrams: 0, errors: [] };

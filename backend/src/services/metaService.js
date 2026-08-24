@@ -19,10 +19,18 @@ const logger = require('../utils/logger');
 const GRAPH_VERSION = process.env.META_GRAPH_VERSION || 'v21.0';
 const GRAPH_BASE = `https://graph.facebook.com/${GRAPH_VERSION}`;
 
-// Scopes we request during the OAuth flow. All required for full read + post
-// on FB Pages + IG Business. `business_management` is what unlocks Pages that
-// are administered via a Business Manager rather than the user's personal
-// Facebook profile.
+// Scopes we request during the OAuth flow. Cover FB Pages + IG Business
+// organic posting plus Meta Ads read-only reporting. `business_management`
+// unlocks Pages administered via a Business Manager rather than the user's
+// personal Facebook profile.
+//
+// Phase 1 of the Meta Ads integration is read-only, so we request `ads_read`
+// only — `ads_management` is deliberately excluded and only added in Phase 2
+// after the ads_management App Review is passed. Existing users whose tokens
+// pre-date `ads_read` continue to work for organic FB/IG features; the
+// metaAdsService detects the missing scope and returns a needsReauth signal
+// so the route layer can prompt just for the ads scope specifically rather
+// than treating the whole Meta connection as broken.
 const SCOPES = [
   'pages_show_list',
   'pages_read_engagement',
@@ -31,6 +39,7 @@ const SCOPES = [
   'instagram_basic',
   'instagram_content_publish',
   'business_management',
+  'ads_read',
   'public_profile',
   'email',
 ];
