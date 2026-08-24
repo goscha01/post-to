@@ -825,6 +825,52 @@ test('Meta upstream unknown → META_UPSTREAM_ERROR with fbtraceId', async () =>
 // Sensitive-field leak sanity check across every endpoint
 // --------------------------------------------------------------------------
 
+// --------------------------------------------------------------------------
+// /diagnostics — authorization + shape
+// --------------------------------------------------------------------------
+
+test('GET /diagnostics — requires selection (goes through resolver)', async () => {
+  resetStubs();
+  stubs.getMetaOwnerToken = async () => ({ accessToken: 'EAAG_test', metaUserId: '999' });
+  const app = makeApp();
+  const r = await request(app, 'GET', '/api/meta-ads/diagnostics');
+  assert.equal(r.statusCode, 400);
+  assert.equal(r.body.code, 'META_NO_SELECTION');
+});
+
+test('GET /diagnostics — caps day range at MAX_ADS_DAYS', async () => {
+  resetStubs();
+  stubs.getMetaOwnerToken = async () => ({ accessToken: 'EAAG_test', metaUserId: '999' });
+  stubs.getMetaAdAccountSelection = async () => ({ adAccountIds: ['act_111'], defaultAdAccountId: 'act_111' });
+  const app = makeApp();
+  const r = await request(app, 'GET', '/api/meta-ads/diagnostics?days=180');
+  assert.equal(r.statusCode, 400);
+  assert.equal(r.body.code, 'META_INVALID_DAY_RANGE');
+});
+
+test('GET /diagnostics — returns issue list + counts summary', async () => {
+  resetStubs();
+  stubs.getMetaOwnerToken = async () => ({ accessToken: 'EAAG_test', metaUserId: '999' });
+  stubs.getMetaAdAccountSelection = async () => ({ adAccountIds: ['act_111'], defaultAdAccountId: 'act_111' });
+  svcStubs.getCampaigns = async () => [
+    { id: 'c1', name: 'X', objective: 'OUTCOME_LEADS', effectiveStatus: 'WITH_ISSUES', issuesInfo: [{ error_summary: 'Payment', error_message: 'add card', error_type: 'HARD_ERROR' }] },
+  ];
+  svcStubs.getAdSets = async () => [];
+  svcStubs.getAds = async () => [];
+  svcStubs.getInsights = async () => ({ rows: [], dateRange: { since: '2026-01-01', until: '2026-01-31' } });
+  const app = makeApp();
+  const r = await request(app, 'GET', '/api/meta-ads/diagnostics');
+  assert.equal(r.statusCode, 200);
+  assert.ok(r.body.issues.length >= 1);
+  assert.equal(r.body.counts.high >= 1, true);
+  const meta = r.body.issues.find((i) => i.source === 'meta');
+  assert.ok(meta, 'expected at least one meta-source issue');
+});
+
+// --------------------------------------------------------------------------
+// no leak sanity across every endpoint (including new /diagnostics)
+// --------------------------------------------------------------------------
+
 test('no endpoint leaks access token or sensitive metadata keys', async () => {
   resetStubs();
   stubs.getMetaOwnerToken = async () => ({ accessToken: 'EAAG_supersecret_token', metaUserId: '999' });
@@ -855,6 +901,7 @@ test('no endpoint leaks access token or sensitive metadata keys', async () => {
     '/api/meta-ads/day-hour',
     '/api/meta-ads/creatives',
     '/api/meta-ads/delivery-issues',
+    '/api/meta-ads/diagnostics',
   ];
   for (const p of paths) {
     const r = await request(app, 'GET', p);

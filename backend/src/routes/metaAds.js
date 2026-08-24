@@ -30,6 +30,7 @@
 const express = require('express');
 const authMiddleware = require('../middleware/authMiddleware');
 const svc = require('../services/metaAdsService');
+const diagnostics = require('../services/metaAdsDiagnostics');
 const connections = require('../services/connectionsService');
 const logger = require('../utils/logger');
 
@@ -773,6 +774,81 @@ router.get('/creatives', async (req, res) => {
       error: err.message,
     });
     res.status(500).json({ error: err.message || 'Failed to fetch creatives' });
+  }
+});
+
+// -------- diagnostics --------
+//
+// Aggregate diagnostics across campaigns / ad sets / ads / three insights
+// levels. Fires the same three Meta round-trips as /campaigns + /adsets +
+// /ads plus one more (ad-level insights for frequency/CTR rules) — bundled
+// so the diagnostics tab loads in one request, not five parallel ones.
+router.get('/diagnostics', async (req, res) => {
+  try {
+    // Ad-level insights back the frequency+CTR rules; cap at MAX_ADS_DAYS
+    // for the same reason /ads is capped (payload size on high-cardinality
+    // accounts).
+    const requestedDays = parseDays(req);
+    if (requestedDays > MAX_ADS_DAYS) {
+      return sendErr(res, {
+        status: 400,
+        code: 'META_INVALID_DAY_RANGE',
+        error: `Diagnostics is capped at ${MAX_ADS_DAYS} days because it needs ad-level insights.`,
+      });
+    }
+    const days = requestedDays;
+    const resolved = await resolveDefaultOrRequested(req.user.userId, req.query.adAccountId);
+    if (resolved.error) return sendErr(res, resolved.error);
+    const { accessToken, adAccountId } = resolved;
+
+    let campaigns, adsets, ads, insightsBundleCampaign, insightsBundleAdSet, insightsBundleAd;
+    try {
+      [
+        campaigns,
+        adsets,
+        ads,
+        insightsBundleCampaign,
+        insightsBundleAdSet,
+        insightsBundleAd,
+      ] = await Promise.all([
+        svc.getCampaigns({ accessToken, adAccountId, days }),
+        svc.getAdSets({ accessToken, adAccountId, days }),
+        svc.getAds({ accessToken, adAccountId, days }),
+        svc.getInsights({ accessToken, node: adAccountId, level: 'campaign', days }),
+        svc.getInsights({ accessToken, node: adAccountId, level: 'adset', days }),
+        svc.getInsights({ accessToken, node: adAccountId, level: 'ad', days }),
+      ]);
+    } catch (err) {
+      return sendMetaErr(res, err, { userId: req.user.userId, op: 'diagnostics', adAccountId });
+    }
+
+    const issues = diagnostics.runDiagnostics({
+      campaigns,
+      adsets,
+      ads,
+      insightsBundleCampaign,
+      insightsBundleAdSet,
+      insightsBundleAd,
+      days,
+    });
+
+    // Small severity counts summary for the frontend badge.
+    const counts = { high: 0, medium: 0, low: 0, total: issues.length };
+    for (const i of issues) counts[i.severity] = (counts[i.severity] || 0) + 1;
+
+    res.json({
+      adAccountId,
+      days,
+      dateRange: insightsBundleCampaign.dateRange,
+      counts,
+      issues,
+    });
+  } catch (err) {
+    logger.error('metaAds.diagnostics.failed', {
+      userId: req.user.userId,
+      error: err.message,
+    });
+    res.status(500).json({ error: err.message || 'Failed to compute diagnostics' });
   }
 });
 

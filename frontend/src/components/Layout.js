@@ -10,6 +10,7 @@ import {
   BarChart3,
   LineChart,
   Megaphone,
+  Facebook,
   Bot,
   Sparkles,
   Settings,
@@ -57,7 +58,8 @@ const Layout = ({ children }) => {
       label: 'Marketing',
       items: [
         { name: 'Analytics', href: '/analytics', icon: LineChart },
-        { name: 'Ads', href: '/ads', icon: Megaphone },
+        { name: 'Google Ads', href: '/ads', icon: Megaphone },
+        { name: 'Meta Ads', href: '/meta-ads', icon: Facebook },
         { name: 'OpenAI Ads', href: '/openai-ads', icon: Bot },
         { name: 'Campaign Assistant', href: '/campaign-assistant', icon: Sparkles },
         { name: 'Integrations', href: '/connections', icon: Link2 },
