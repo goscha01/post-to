@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Globe, Building2, Instagram, Facebook, LineChart, Megaphone, Bot, Search, Plus, Trash2, ExternalLink, X, Check, AlertCircle, RefreshCw, Sparkles, Download, Copy, ChevronRight, ChevronDown, ShoppingBag, Heart, Rss, Link2 } from 'lucide-react';
+import axios from '../utils/axiosConfig';
 import { useAuth } from '../contexts/AuthContext';
 import connectionsService from '../services/connectionsService';
 import BlogIntegrationForm, {
@@ -180,6 +181,8 @@ const Connections = () => {
   const [flash, setFlash] = useState('');
   const [pickerOpen, setPickerOpen] = useState(false);
   const [searchParams, setSearchParams] = useSearchParams();
+  // metaAdsScopeState: null (unknown/loading) | 'ok' | 'needs_reconnect'
+  const [metaAdsScopeState, setMetaAdsScopeState] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -197,6 +200,38 @@ const Connections = () => {
   useEffect(() => {
     load();
   }, [load]);
+
+  // Check whether the user's Meta connection has the `ads_read` scope. Fires
+  // whenever the connection list changes so a fresh reconnect flips the
+  // banner off without a manual page refresh. Only runs when at least one
+  // Facebook connection exists — no point diagnosing what isn't connected.
+  useEffect(() => {
+    const hasFacebook = connections.some(c => c.provider === 'facebook');
+    if (!hasFacebook) {
+      setMetaAdsScopeState(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await axios.get('/api/meta-ads/_diagnose');
+        if (cancelled) return;
+        const d = res.data || {};
+        if (d.metaConnected && d.hasAdsReadScope) {
+          setMetaAdsScopeState('ok');
+        } else if (d.metaConnected && !d.hasAdsReadScope) {
+          setMetaAdsScopeState('needs_reconnect');
+        } else {
+          setMetaAdsScopeState(null);
+        }
+      } catch {
+        // If the diagnose endpoint fails (e.g. server env misconfigured),
+        // suppress the banner rather than showing a misleading warning.
+        if (!cancelled) setMetaAdsScopeState(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [connections]);
 
   // Handle Meta OAuth callback redirect: /connections?meta_connected=1&pages=N&ig=N
   // (or ?meta_error=... on failure). Show a brief flash, then strip params.
@@ -265,6 +300,10 @@ const Connections = () => {
         </div>
       )}
 
+      {metaAdsScopeState === 'needs_reconnect' && (
+        <MetaAdsReconnectBanner />
+      )}
+
       {loading ? (
         <div className="text-sm text-gray-500">Loading…</div>
       ) : connections.length === 0 ? (
@@ -294,6 +333,50 @@ const Connections = () => {
           }}
         />
       )}
+    </div>
+  );
+};
+
+// Prominent banner shown when the user has a Facebook connection but the
+// underlying Meta OAuth grant does not include `ads_read`. This is the case
+// for every user whose token predates the Phase 1A scope change. Clicking
+// Reconnect kicks off the standard Meta OAuth flow — the backend already
+// asks for ads_read in the SCOPES array, so a successful re-consent adds
+// the permission without changing any organic-posting behavior.
+const MetaAdsReconnectBanner = () => {
+  const { loginForFacebook } = useAuth();
+  const [busy, setBusy] = useState(false);
+  const onClick = async () => {
+    setBusy(true);
+    try {
+      await loginForFacebook();
+      // On success loginForFacebook redirects the browser — no cleanup needed.
+    } catch {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="mb-4 flex items-start gap-3 p-4 bg-blue-50 border border-blue-200 rounded-md text-sm">
+      <Facebook className="h-5 w-5 text-blue-600 mt-0.5 flex-shrink-0" />
+      <div className="flex-1">
+        <p className="font-medium text-blue-900">
+          Reconnect Meta for Ads reporting
+        </p>
+        <p className="text-blue-800 mt-1">
+          Your Facebook connection is working for organic posting, but doesn't
+          include ads reporting permission (<code className="text-xs bg-blue-100 px-1 py-0.5 rounded">ads_read</code>).
+          Reconnect Meta and approve the Ads permission when Facebook prompts
+          you. Your existing Pages and Instagram accounts remain connected.
+        </p>
+      </div>
+      <button
+        onClick={onClick}
+        disabled={busy}
+        className="flex-shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 disabled:opacity-60"
+      >
+        <RefreshCw className={`h-3.5 w-3.5 ${busy ? 'animate-spin' : ''}`} />
+        {busy ? 'Redirecting…' : 'Reconnect Meta'}
+      </button>
     </div>
   );
 };
