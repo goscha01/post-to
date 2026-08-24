@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   Send, Bot, Sparkles, ThumbsUp, ThumbsDown, Trash2, Plus,
   Loader2, MessageSquare, AlertCircle, ChevronDown, ChevronRight, ListOrdered,
@@ -44,6 +45,54 @@ async function fileToAttachment(file) {
     previewUrl: dataUrl,
   };
 }
+
+// Renders the Meta Review deep-link state above the composer. Loading /
+// ready shows a small blue banner acknowledging that a Meta issue is being
+// discussed. Error shows a red banner with a resolution hint. Idle renders
+// nothing.
+const MetaReviewBanner = ({ state, onDismiss }) => {
+  if (!state || state.status === 'idle') return null;
+  if (state.status === 'loading') {
+    return (
+      <div className="mb-2 flex items-center gap-2 text-xs text-blue-800 bg-blue-50 border border-blue-200 rounded px-2 py-1.5">
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        <span>Loading Meta Ads issue context…</span>
+      </div>
+    );
+  }
+  if (state.status === 'error') {
+    return (
+      <div className="mb-2 flex items-start gap-2 text-xs text-red-800 bg-red-50 border border-red-200 rounded px-2 py-1.5">
+        <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
+        <div className="flex-1">
+          <div className="font-medium">Could not load Meta issue</div>
+          <div className="opacity-80 mt-0.5">{state.message}</div>
+        </div>
+        <button onClick={onDismiss} className="text-red-700 hover:text-red-900" aria-label="Dismiss"><X className="h-3.5 w-3.5" /></button>
+      </div>
+    );
+  }
+  const ctx = state.context || {};
+  const iss = ctx.issue || {};
+  const attribution = ctx.attribution?.quality || null;
+  const source = iss.source === 'meta' ? 'Meta reports:' : 'Post-To detected:';
+  return (
+    <div className="mb-2 flex items-start gap-2 text-xs text-blue-900 bg-blue-50 border border-blue-200 rounded px-2 py-1.5">
+      <Sparkles className="h-3.5 w-3.5 flex-shrink-0 mt-0.5 text-blue-700" />
+      <div className="flex-1">
+        <div className="font-medium">Reviewing Meta Ads issue</div>
+        <div className="opacity-90 mt-0.5">
+          <span className="font-medium">{source}</span> {iss.title}
+          {attribution && (
+            <span className="ml-2 uppercase tracking-wide text-[10px] text-blue-700 border border-blue-300 rounded px-1 py-0.5">attribution: {attribution}</span>
+          )}
+        </div>
+        <div className="opacity-70 mt-0.5">The composer has been pre-filled — review and send when ready.</div>
+      </div>
+      <button onClick={onDismiss} className="text-blue-700 hover:text-blue-900" aria-label="Dismiss"><X className="h-3.5 w-3.5" /></button>
+    </div>
+  );
+};
 
 // Small strip of thumbnails above a composer. Removes on X click.
 const AttachmentStrip = ({ items, onRemove }) => {
@@ -112,6 +161,44 @@ const CampaignAssistant = () => {
   const streamCtrlRef = useRef(null);
   const chatScrollRef = useRef(null);
   const fileInputRef = useRef(null);
+
+  // Meta Ads Diagnostics deep-link (Phase 1E). MetaAds.js links here as
+  //   /campaign-assistant?intent=meta_review&issueId=meta:...
+  // We fetch the current-report issue context (server rejects arbitrary
+  // ids — never trusts URL data) and prefill the composer for the next
+  // user turn. Rendered as a small banner above the composer while active.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [metaReview, setMetaReview] = useState({ status: 'idle' });
+  useEffect(() => {
+    const intent = searchParams.get('intent');
+    const issueId = searchParams.get('issueId');
+    if (intent !== 'meta_review' || !issueId) return;
+    let cancelled = false;
+    setMetaReview({ status: 'loading', issueId });
+    (async () => {
+      try {
+        const ctx = await campaignAssistantService.resolveMetaReviewContext(issueId);
+        if (cancelled) return;
+        setComposer((prev) => (prev && prev.trim() ? prev : ctx.suggestedPrompt || ''));
+        setMetaReview({ status: 'ready', context: ctx });
+        // Strip the URL params so a refresh doesn't re-seed the composer.
+        const next = new URLSearchParams(searchParams);
+        next.delete('intent');
+        next.delete('issueId');
+        setSearchParams(next, { replace: true });
+      } catch (e) {
+        if (cancelled) return;
+        const code = e?.response?.data?.code;
+        setMetaReview({
+          status: 'error',
+          code: code || null,
+          message: e?.response?.data?.error || e?.message || 'Could not load Meta issue.',
+        });
+      }
+    })();
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // -- Initial loads --
   useEffect(() => {
@@ -797,6 +884,10 @@ const CampaignAssistant = () => {
         </div>
 
         <div className="border-t border-gray-200 p-3 bg-white">
+          <MetaReviewBanner
+            state={metaReview}
+            onDismiss={() => setMetaReview({ status: 'idle' })}
+          />
           <AttachmentStrip items={composerAttachments} onRemove={removeAttachment} />
           {composerError && (
             <div className="flex items-start gap-1.5 text-xs text-red-700 mb-2">

@@ -2351,4 +2351,175 @@ router.delete('/plans/:planId', async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// POST /meta-review-context — resolve a Meta diagnostic deep-link into
+// context the frontend can use to seed the composer.
+//
+// The Meta Ads Diagnostics UI (Phase 1C) links here via
+//   /campaign-assistant?intent=meta_review&issueId=meta:...
+// with the issue id as the ONLY caller-supplied identifier. Per Phase 1E
+// spec §6, this endpoint MUST NOT trust arbitrary issue/entity data supplied
+// via URL — it authoritatively resolves the issue against the user's
+// current Meta selection + a fresh Optimization Report and rejects any id
+// that doesn't correspond to a real alert on the user's Meta account.
+//
+// Returns { issue, entityContext, suggestedPrompt } for the frontend to
+// prefill the message composer. The frontend either creates a fresh
+// conversation using the seeded prompt, or adds a message to an
+// existing conversation.
+router.post('/meta-review-context', requireBusinessAuth, async (req, res) => {
+  const userId = req.user.userId;
+  try {
+    const { issueId } = req.body || {};
+    if (!issueId || typeof issueId !== 'string') {
+      return res.status(400).json({ error: 'issueId required' });
+    }
+    // Meta issue ids are always `meta:<something>` — reject anything else
+    // at the boundary so we never even try to look up google-flavored ids
+    // in the Meta section of the report.
+    if (!issueId.startsWith('meta:')) {
+      return res.status(400).json({ error: 'issueId must start with "meta:"', code: 'META_ISSUE_ID_REQUIRED' });
+    }
+
+    // Resolve the user's Meta selection. Reuses the same authorization
+    // contract as /api/meta-ads/* + /api/optimization-report.
+    const metaConn = await connectionsService.getMetaOwnerToken(userId);
+    if (!metaConn?.accessToken) {
+      return res.status(400).json({
+        error: 'Meta not connected',
+        code: 'META_NOT_CONNECTED',
+      });
+    }
+    const selection = await connectionsService.getMetaAdAccountSelection(userId);
+    const metaAdAccountId = selection.defaultAdAccountId;
+    if (!metaAdAccountId) {
+      return res.status(400).json({
+        error: 'No Meta ad account selected. Pick one on /meta-ads first.',
+        code: 'META_NO_SELECTION',
+      });
+    }
+
+    // Freshly generate the report so the issue we look up reflects
+    // current data — a stale conversation snapshot might not include
+    // the issue at all. This is one Meta-scoped fetch, ~1s.
+    const report = await optimizationReport.generateReport({
+      adsAccessToken: null,
+      customerId: null,
+      loginCustomerId: null,
+      campaignId: null,
+      ga4AccessToken: null,
+      propertyId: null,
+      metaAccessToken: metaConn.accessToken,
+      metaAdAccountId,
+      days: 30,
+      thresholds: {},
+      userId,
+    });
+
+    // Look up the issue in the CURRENT report — never accept the URL as
+    // authoritative for issue content.
+    const alerts = Array.isArray(report.alertsByProvider) ? report.alertsByProvider : [];
+    const issue = alerts.find((a) => a && a.provider === 'meta_ads' && a.id === issueId);
+    if (!issue) {
+      logger.warn('campaignAssistant.metaReviewContext.issue_not_found', {
+        userId, issueId, alertCount: alerts.length,
+      });
+      return res.status(404).json({
+        error:
+          'This Meta issue is not present in your current report. It may have already been resolved, or it belongs to a different Meta ad account.',
+        code: 'META_ISSUE_NOT_FOUND',
+      });
+    }
+
+    // Build the entity-context block — parent campaign / ad set / ad
+    // hierarchy so the assistant can give grounded advice without needing
+    // the entire Meta payload back in the loop. Bounded to a few fields
+    // per entity so the follow-on prompt stays cache-friendly.
+    const metaSection = report.metaAds || {};
+    const campaigns = metaSection.campaigns || [];
+    // Meta issues aren't guaranteed to identify parent hierarchy — Phase 1C
+    // diagnostics carry only entityType + entityIds. We fetch the parent
+    // chain from the report if we can, and no-op if we can't.
+    let campaignCtx = null, adSetCtx = null, adCtx = null;
+    const entityId = (issue.entityIds || [])[0] || null;
+    if (issue.entityType === 'campaign' && entityId) {
+      campaignCtx = campaigns.find((c) => c.campaignId === entityId) || null;
+    } else if (issue.entityType === 'adset' && entityId) {
+      // We don't ship adset-level details in the report Meta section — pull
+      // the parent campaign only, via campaigns[].id join.
+      // (The Meta section's `campaigns` array covers campaigns only; ad
+      // sets stay in the /api/meta-ads/adsets tab. This is bounded on
+      // purpose.)
+    } else if (issue.entityType === 'ad' && entityId) {
+      // Same — ad-level context lives in /api/meta-ads/ads.
+    }
+
+    const attribution = report.crossReference?.metaAttribution || {};
+
+    // Return only the safe subset of the issue + narrow entity context so
+    // the frontend can render a small confirmation card + prefill the
+    // composer.
+    const suggestedPrompt = buildMetaReviewPrompt({ issue, campaignCtx, attribution });
+    logger.info('campaignAssistant.metaReviewContext.ok', {
+      userId,
+      issueId,
+      issueType: issue.type,
+      source: issue.source,
+      entityType: issue.entityType,
+      attributionQuality: attribution.quality || null,
+    });
+    return res.json({
+      issue: {
+        id: issue.id,
+        severity: issue.severity,
+        type: issue.type,
+        title: issue.title,
+        guidance: issue.guidance,
+        entityType: issue.entityType,
+        entityIds: issue.entityIds,
+        source: issue.source,
+      },
+      entityContext: {
+        campaign: campaignCtx,
+      },
+      attribution: {
+        quality: attribution.quality || null,
+      },
+      account: {
+        adAccountId: metaSection.account?.adAccountId || metaAdAccountId,
+        name: metaSection.account?.name || null,
+        currency: metaSection.account?.currency || null,
+      },
+      suggestedPrompt,
+    });
+  } catch (err) {
+    logger.error('campaignAssistant.metaReviewContext.failed', {
+      userId, error: err.message, stack: err.stack?.slice(0, 500),
+    });
+    res.status(err.status || 500).json({ error: err.message || 'Failed to resolve Meta issue' });
+  }
+});
+
+// Build the seed message. Kept small on purpose — the assistant has the
+// full report in its cached system prefix, so the prompt just needs to
+// point at the issue and ask the standard review question.
+function buildMetaReviewPrompt({ issue, campaignCtx, attribution }) {
+  const parts = [];
+  parts.push(`Review this Meta Ads issue and explain what's happening, why it matters, and what I should consider changing.`);
+  parts.push(``);
+  parts.push(`Issue id (for reference in the report's alertsByProvider): ${issue.id}`);
+  parts.push(`Meta ${issue.entityType}: ${(issue.entityIds || []).slice(0, 3).join(', ') || '(unknown)'}`);
+  parts.push(`Title: ${issue.title}`);
+  parts.push(`Source: ${issue.source === 'meta' ? 'Meta reported this directly' : 'Post-To detected this from empirical metrics'}`);
+  if (campaignCtx) {
+    parts.push('');
+    parts.push(`Parent campaign context: name="${campaignCtx.name}", objective=${campaignCtx.objective}, status=${campaignCtx.status}, spend=$${(campaignCtx.spend || 0).toFixed(2)}, results=${campaignCtx.results ?? 'null'} (${campaignCtx.resultActionType || 'unmapped'}).`);
+  }
+  if (attribution.quality) {
+    parts.push('');
+    parts.push(`Note the Meta ↔ GA4 attribution quality for this account is "${attribution.quality}" — apply the corresponding reasoning constraints when discussing downstream impact.`);
+  }
+  return parts.join('\n');
+}
+
 module.exports = router;

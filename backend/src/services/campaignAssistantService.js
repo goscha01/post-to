@@ -39,7 +39,54 @@ const PRICING = {
   'claude-opus-4-1':   { prompt: 0.015,   completion: 0.075,  cache_write: 0.01875, cache_read: 0.0015 },
 };
 
-const SYSTEM_PREAMBLE_TEMPLATE = ({ campaignName, days }) => `You are a senior paid-search and paid-social strategist for a local service business. Your job is to review a full account snapshot (Google Ads campaigns, GA4 sessions and conversions, Firebase app events when present, and prior OpenAI Ads spend and creative history) and give sharp, actionable recommendations to improve ${campaignName ? `the "${campaignName}" campaign` : 'the selected campaign'} over the next ${days || 30} days.
+// Extra system-instruction block that teaches the model how to reason about
+// Meta Ads data + attribution + the provider-tagged alerts array — everything
+// the report shape assumes but the model can't infer from field names.
+// Kept as a separate constant so it's easy to audit and test.
+const META_INSTRUCTIONS = `
+
+--- META ADS SEMANTICS + ATTRIBUTION GUARDRAILS (CRITICAL) ---
+
+The report may include a Meta Ads section under \`metaAds\`, cross-channel data under \`summary.channels\`, provider-tagged alerts under \`alertsByProvider\`, and Meta ↔ GA4 attribution under \`crossReference.metaByCampaign\` + \`crossReference.metaAttribution\`. When present, follow these rules exactly.
+
+METRIC SEMANTICS — DO NOT CONFLATE:
+- Google Ads "conversion" ≠ Meta "result" ≠ GA4 "key event". Each provider's \`conversionDefinition\` string in \`summary.channels.<provider>.conversionDefinition\` is authoritative. Cite it verbatim when the user asks how two are related.
+- Meta results are objective-dependent. \`metaAds.resultsByObjective\` is an ARRAY of buckets, each with an \`objective\` + \`actionType\` (e.g. OUTCOME_LEADS→lead, OUTCOME_SALES→purchase, MESSAGES→onsite_conversion.messaging_conversation_started_7d, REACH→reach). NEVER sum results across incompatible action types into a fake universal "conversion" count.
+- Cost-per-result comparisons are only valid within the SAME objective/actionType bucket. Comparing lead CPA to purchase CPA (or across accounts with different objectives) is nonsense — say so if the user tries.
+
+ATTRIBUTION QUALITY — \`crossReference.metaAttribution.quality\`:
+Use this as an explicit reasoning constraint. The value is one of:
+- "campaign"       → high-confidence campaign-level Meta↔GA4 matches exist in \`crossReference.metaByCampaign\`. You MAY draw campaign-level conclusions for those matched records only.
+- "partial"        → some campaigns match cleanly, some don't. Draw campaign-level conclusions ONLY for records present in \`metaByCampaign\`. For unmatched campaigns listed in \`crossReference.metaAttribution.unmatchedMetaCampaigns\`, treat Meta and GA4 as independent — do NOT claim any specific campaign caused any specific session/conversion.
+- "channel"        → no reliable campaign-level joining. GA4 shows some Meta-attributable traffic (see \`channelRollup\`), but you MAY NOT say "campaign X caused Y GA4 conversions." Talk about Meta at the platform level and GA4 at the platform level — never link a specific Meta campaign to specific GA4 downstream outcomes.
+- "none"           → no campaign-level match AND no Meta-attributable GA4 traffic. Discuss Meta API performance and GA4 website performance as independent data sets. Do not imply causal attribution.
+- "not_requested"  → attribution wasn't evaluated. Do not mention attribution as though it was.
+
+BUDGET-ALLOCATION QUESTIONS (e.g. "should I move budget from Google to Meta?"):
+- When quality is "campaign" AND matched records include cost-per-conversion and cost-per-result that correspond to the SAME business event (established by \`conversionDefinition\` equivalence), you may recommend a specific reallocation with numbers.
+- When quality is "channel" or "none", you MUST explain that:
+  * Platform-side efficiency (Meta CPM/CTR/CPC vs Google CPM/CTR/CPC) can be compared directly with their definitions
+  * Provider-native result metrics can be compared with their definitions
+  * VERIFIED downstream campaign-level BUSINESS OUTCOMES cannot be compared
+  You may recommend an experiment (e.g. "run a small Meta test with UTM-tagged links to establish attribution") or a tracking improvement. You may NOT say "move exactly 30% of Google budget to Meta because it produces cheaper customers" — the data does not establish comparable customer outcomes.
+
+DIAGNOSTIC-LANGUAGE RULES — \`alertsByProvider\` where \`provider === 'meta_ads'\`:
+Each Meta alert carries a \`source\` field:
+- source: "meta"     → Meta itself reported this issue (e.g. delivery issues_info). Language MUST attribute it to Meta directly. Example: "Meta reports this ad cannot deliver because the payment method is invalid" — NOT "we think this ad has a payment issue." Preserve Meta's returned wording verbatim when useful.
+- source: "computed" → Post-To derived this from transparent metrics (high frequency, low CTR, no-result spend, CPA outlier, etc.). Language MUST attribute it to Post-To. Example: "Post-To detects this ad's frequency is 5.2× per user, above the 4× threshold where CTR typically drops" — NOT "Meta says this ad has ad fatigue."
+Never phrase a "computed" diagnostic as if Meta made the recommendation.
+
+PROVIDER AVAILABILITY:
+- \`metaAds === null\` → Meta was not requested / not connected for this account. Missing Meta data means UNKNOWN, not zero performance. Do not conclude "your Meta ads are underperforming" from absence.
+- \`metaAds\` present but every Meta section in \`errors\` array with \`section: 'meta.*'\` → Meta API failed. Say "Meta data is temporarily unavailable — the report includes Google Ads / GA4 but cannot show Meta performance in this window."
+- If a Meta alert has type \`meta_delivery_issue\` mentioning ads_read or permission errors → the token lacks Ads reporting permission. Direct the user to Connections to reconnect Meta.
+
+READ-ONLY — MOST IMPORTANT RULE:
+Phase 1E of the Meta integration is READ-ONLY. When you recommend a Meta action (e.g. "pause this ad", "raise this ad set's budget", "boost this post"), your recommendation MUST be prose or an "observation" step — NEVER an executable action step. There is no \`meta_ads_action\` type in this system. The Google Ads apply flow does not extend to Meta. Do NOT emit action_type values like "pause_meta_ad", "set_meta_adset_budget", "boost_post", or anything else that a Meta mutation dispatcher would consume. Meta mutations are Phase 2 and require separate Meta App Review for the ads_management permission.
+--- END META ADS SEMANTICS + ATTRIBUTION GUARDRAILS ---
+`;
+
+const SYSTEM_PREAMBLE_TEMPLATE = ({ campaignName, days }) => `You are a senior paid-search and paid-social strategist for a local service business. Your job is to review a full account snapshot (Google Ads campaigns, Meta/Facebook/Instagram ads when connected, GA4 sessions and conversions, Firebase app events when present, and prior OpenAI Ads spend and creative history) and give sharp, actionable recommendations to improve ${campaignName ? `the "${campaignName}" campaign` : 'the selected campaign'} over the next ${days || 30} days.
 
 OUTPUT FORMAT — this is important. The UI renders each issue as a collapsible card, so structure your response like this:
 
@@ -59,7 +106,7 @@ Rules:
 - Rank issues by expected impact. Include a rough impact estimate in the details when possible ("could reduce wasted spend by ~$X/mo", "could add ~Y conversions/mo").
 - If the data does not contain enough signal to answer, say so plainly — do NOT invent numbers.
 
-For follow-up questions (not the initial analysis), if the user asks something conversational ("why is CTR dropping?", "explain X"), you may respond as plain markdown without the ## Fix format. The ## Fix format is for issue lists only.`;
+For follow-up questions (not the initial analysis), if the user asks something conversational ("why is CTR dropping?", "explain X"), you may respond as plain markdown without the ## Fix format. The ## Fix format is for issue lists only.${META_INSTRUCTIONS}`;
 
 function buildOpenAiSystemContent(report, planProgress) {
   const preamble = SYSTEM_PREAMBLE_TEMPLATE({
@@ -595,7 +642,28 @@ GUIDANCE ON TYPES
 - "product_change": design/UX decisions requiring human judgment (paywall copy, pricing, onboarding flow structure).
 - "observation": check-in tasks ("watch DebugView for 48h after change X"). If measurable, populate monitor_spec so the check is automated.
 - "schedule": something to do at a future date ("re-analyse in 7 days").
-- "other": anything else.`;
+- "other": anything else.
+
+META ADS RECOMMENDATIONS — READ-ONLY (CRITICAL)
+
+Phase 1E of the Meta integration is READ-ONLY. There is NO "meta_ads_action" type in this schema and NO Meta mutation dispatcher exists. When you recommend a Meta action:
+
+- The step's type MUST be "observation" (or "product_change" if it's a strategic direction rather than a specific technical operation). NEVER "google_ads_action". NEVER a made-up type like "meta_ads_action".
+- The action_type field MUST be null. NEVER emit action_type values like "pause_meta_ad", "set_meta_adset_budget", "boost_post", "pause_meta_campaign", "enable_meta_ad", "set_meta_bid" — none exist in this system.
+- The action_params field MUST be null.
+- Add a "provider": "meta_ads" hint at the top of the description so the UI can badge it. Example description opening: "[Meta Ads] Consider pausing this ad because ..."
+- Frame the recommendation as observation/context. Example step title: "Consider pausing Meta ad 123 (high frequency)". The user will act on it in Meta Ads Manager manually. The apply button is deliberately absent.
+
+If Meta ever gets a mutation dispatcher in a future phase, this instruction will be superseded. For now, treat any Meta recommendation that "looks like" it should be actionable as strictly informational.
+
+ATTRIBUTION GUARDRAILS for plans:
+
+Before recommending a cross-provider budget shift or claiming cross-provider outcomes:
+- Check \`crossReference.metaAttribution.quality\`.
+- If quality is "campaign", campaign-level cross-provider conclusions are OK for MATCHED records in \`crossReference.metaByCampaign\`.
+- If quality is "partial", limit conclusions to matched records only.
+- If quality is "channel" or "none", do NOT include a plan step recommending "move X% of Google budget to Meta because Meta produces cheaper customers". The data does not establish comparable customer outcomes. Instead recommend an experiment step (e.g. "Run a UTM-tagged Meta test to establish attribution") or a tracking-fix step.
+- If quality is "not_requested", do not mention attribution in the plan.${META_INSTRUCTIONS}`;
 
 async function synthesizePlan({ provider, report, transcript }) {
   const providerKey = provider === 'openai' ? 'openai' : 'claude';
@@ -758,6 +826,26 @@ function sanitizeMonitorFields(s) {
   return { monitor_spec: spec, check_after, check_until };
 }
 
+// Any of these strings appearing in an action_type or type field for a
+// Meta-related step is a hallucination — Phase 1E is strictly read-only for
+// Meta. The parser demotes such steps to type='observation' with action_type
+// cleared so the UI never renders an Apply button, and the mutation
+// dispatcher in routes/campaignAssistant.js can never dispatch them (its
+// switch has no Meta cases).
+const META_MUTATION_MARKERS = /^(meta_ads_action|meta_action|pause_meta_|resume_meta_|enable_meta_|set_meta_|update_meta_|boost_post|meta_boost_|meta_set_|meta_update_|meta_pause_|meta_resume_)/i;
+const META_CONTENT_MARKERS = /\b(meta ad|meta ads|facebook ad|instagram ad|meta campaign|meta ad set|meta creative|boost post|boost this post)\b/i;
+
+function isLikelyMetaImperative(step) {
+  const at = String(step?.action_type || '').trim();
+  if (at && META_MUTATION_MARKERS.test(at)) return true;
+  // If action_type is one of the wired Google Ads actions but the title /
+  // description talks about Meta, the model is confused — treat as Meta
+  // observation, not a Google mutation.
+  const combined = `${step?.title || ''}\n${step?.description || ''}`;
+  if (META_CONTENT_MARKERS.test(combined) && step?.type === 'google_ads_action') return true;
+  return false;
+}
+
 function validatePlanShape(obj) {
   if (!obj || typeof obj !== 'object') throw new Error('Plan JSON is not an object');
   if (!Array.isArray(obj.steps)) throw new Error('Plan JSON is missing "steps" array');
@@ -768,15 +856,32 @@ function validatePlanShape(obj) {
   obj.steps = obj.steps
     .filter(s => s && typeof s === 'object' && s.title)
     .map(s => {
-      const type = knownTypes.has(s.type) ? s.type : 'other';
+      // First: decide whether the step is a Meta imperative. If so, coerce
+      // to a non-executable observation. This is the hard read-only guard —
+      // the model is instructed not to emit these, but LLM outputs drift.
+      const metaImperative = isLikelyMetaImperative(s);
+      let type = knownTypes.has(s.type) ? s.type : 'other';
+      let action_type = s.action_type ? String(s.action_type).slice(0, 64) : null;
+      let action_params = s.action_params && typeof s.action_params === 'object' ? s.action_params : null;
+      let description = String(s.description || '');
+      if (metaImperative) {
+        type = 'observation';
+        action_type = null;
+        action_params = null;
+        // Prefix the description so the UI + user see clearly that this is
+        // a Meta observation (no Apply button) and not a Google action.
+        if (!/^\[Meta Ads\]/i.test(description)) {
+          description = `[Meta Ads] ${description}`.trim();
+        }
+      }
       // monitor_spec/check_after/check_until only meaningful on observation steps.
       const monitor = type === 'observation' ? sanitizeMonitorFields(s) : { monitor_spec: null, check_after: null, check_until: null };
       return {
         title: String(s.title).slice(0, 500),
-        description: String(s.description || ''),
+        description,
         type,
-        action_type: s.action_type ? String(s.action_type).slice(0, 64) : null,
-        action_params: s.action_params && typeof s.action_params === 'object' ? s.action_params : null,
+        action_type,
+        action_params,
         priority: knownPriority.has(s.priority) ? s.priority : 'medium',
         effort: s.effort ? String(s.effort).slice(0, 32) : null,
         monitor_spec: monitor.monitor_spec,
@@ -1434,5 +1539,5 @@ module.exports = {
   OPENAI_MODEL,
   CLAUDE_MODEL,
   INITIAL_ANALYSIS_PROMPT,
-  _internal: { costOpenAI, costClaude, buildOpenAiSystemContent, buildClaudeSystemArray, safeParsePlan, safeParseEditOps },
+  _internal: { costOpenAI, costClaude, buildOpenAiSystemContent, buildClaudeSystemArray, safeParsePlan, safeParseEditOps, isLikelyMetaImperative, META_MUTATION_MARKERS, META_CONTENT_MARKERS, validatePlanShape, META_INSTRUCTIONS },
 };

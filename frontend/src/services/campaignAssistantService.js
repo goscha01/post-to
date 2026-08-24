@@ -256,6 +256,15 @@ const refreshSnapshot = async (conversationId) => {
   return res.data;   // { report_generated_at, snapshotMeta }
 };
 
+// Resolve a Meta diagnostic deep-link (?intent=meta_review&issueId=...) to
+// the current-report issue context + a suggested user prompt. Server rejects
+// arbitrary issue ids and looks the issue up in a fresh report against the
+// user's Meta selection — never trusts URL data.
+const resolveMetaReviewContext = async (issueId) => {
+  const res = await axios.post('/api/campaign-assistant/meta-review-context', { issueId });
+  return res.data;
+};
+
 const campaignAssistantService = {
   listConversations,
   getConversation,
@@ -274,6 +283,7 @@ const campaignAssistantService = {
   pushBackPlanStep,
   reportPlanStepResults,
   refreshSnapshot,
+  resolveMetaReviewContext,
 };
 
 export default campaignAssistantService;
