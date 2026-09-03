@@ -275,6 +275,19 @@ function withAttachmentsClaude(messages, attachments) {
 
 const MAX_TOOL_ROUNDS = 5;
 
+// Drain a Node readable stream into a UTF-8 string. Used to capture the
+// error body when axios responds with a 4xx to a streaming request —
+// otherwise we lose the provider's actual error message and are stuck
+// with "Request failed with status code 400".
+async function drainStreamToString(stream, maxBytes = 8192) {
+  let out = '';
+  for await (const chunk of stream) {
+    out += chunk.toString('utf8');
+    if (out.length >= maxBytes) return out.slice(0, maxBytes);
+  }
+  return out;
+}
+
 // Run a single OpenAI streaming completion round. Returns everything we
 // need to decide whether to loop again: accumulated text, structured tool
 // calls, and usage. Streams text deltas through onDelta as they arrive so
@@ -289,10 +302,22 @@ function runOpenAiRound({ apiKey, body, onDelta }) {
           'Content-Type': 'application/json',
         },
         responseType: 'stream',
+        // Never throw on status — we drain the body ourselves so we can
+        // surface OpenAI's actual error text instead of "status code 400".
+        validateStatus: () => true,
         timeout: 180_000,
       });
     } catch (err) {
       reject(err);
+      return;
+    }
+
+    if (resp.status >= 400) {
+      const errBody = await drainStreamToString(resp.data).catch(() => '');
+      reject(Object.assign(
+        new Error(`OpenAI ${resp.status}: ${errBody || '(no body)'}`),
+        { status: resp.status, body: errBody }
+      ));
       return;
     }
 
@@ -504,10 +529,20 @@ function runClaudeRound({ apiKey, body, onDelta }) {
           'Content-Type': 'application/json',
         },
         responseType: 'stream',
+        validateStatus: () => true,
         timeout: 180_000,
       });
     } catch (err) {
       reject(err);
+      return;
+    }
+
+    if (resp.status >= 400) {
+      const errBody = await drainStreamToString(resp.data).catch(() => '');
+      reject(Object.assign(
+        new Error(`Anthropic ${resp.status}: ${errBody || '(no body)'}`),
+        { status: resp.status, body: errBody }
+      ));
       return;
     }
 
@@ -660,18 +695,26 @@ async function streamClaude({
       }
 
       // Echo the assistant's full content array back — Anthropic requires
-      // this exact structure when responding with tool_result blocks.
+      // this structure when responding with tool_result blocks. Empty text
+      // blocks (Claude occasionally streams a text placeholder that never
+      // gets any delta before it switches to tool_use) MUST be filtered
+      // out — Anthropic 400s on `{type:'text', text:''}`.
       workingMessages.push({
         role: 'assistant',
-        content: roundResult.blocks.map(b => {
-          if (b.type === 'text') return { type: 'text', text: b.text || '' };
-          return {
-            type: 'tool_use',
-            id: b.id,
-            name: b.name,
-            input: safeParseObject(b.inputJson),
-          };
-        }),
+        content: roundResult.blocks
+          .map(b => {
+            if (b.type === 'text') {
+              const text = b.text || '';
+              return text.length ? { type: 'text', text } : null;
+            }
+            return {
+              type: 'tool_use',
+              id: b.id,
+              name: b.name,
+              input: safeParseObject(b.inputJson),
+            };
+          })
+          .filter(Boolean),
       });
 
       // Execute each tool, then push a single user message containing every
