@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Globe, Building2, Instagram, Facebook, LineChart, Megaphone, Bot, Search, Plus, Trash2, ExternalLink, X, Check, AlertCircle, RefreshCw, Sparkles, Download, Copy, ChevronRight, ChevronDown, ShoppingBag, Heart, Rss, Link2 } from 'lucide-react';
+import { Globe, Building2, Instagram, Facebook, LineChart, Megaphone, Bot, Search, Plus, Trash2, ExternalLink, X, Check, AlertCircle, RefreshCw, Sparkles, Download, Copy, ChevronRight, ChevronDown, ShoppingBag, Heart, Rss, Link2, Apple } from 'lucide-react';
 import axios from '../utils/axiosConfig';
 import { useAuth } from '../contexts/AuthContext';
 import connectionsService from '../services/connectionsService';
+import ascService from '../services/appStoreConnectService';
 import BlogIntegrationForm, {
   PROVIDER_CONFIGS as BLOG_CONFIGS,
   SquarespaceGlyph,
@@ -634,6 +635,7 @@ const ConnectPickerModal = ({ onClose, onConnected }) => {
     pick: 'Connect an account',
     website: 'Connect website',
     openai_ads: 'Connect OpenAI Ads',
+    asc: 'Connect Apple App Store',
     wordpress: 'Connect WordPress',
     shopify: 'Connect Shopify',
     webflow: 'Connect Webflow',
@@ -652,7 +654,7 @@ const ConnectPickerModal = ({ onClose, onConnected }) => {
   // Compact modal for the simple flows (website + OpenAI Ads); wider modal
   // for the publishing-platform wizards that show step guides, code blocks
   // and payload tables. Height is capped by the modal itself (see below).
-  const widthClass = step === 'pick' || step === 'website' || step === 'openai_ads' ? 'max-w-lg' : 'max-w-3xl';
+  const widthClass = step === 'pick' || step === 'website' || step === 'openai_ads' || step === 'asc' ? 'max-w-lg' : 'max-w-3xl';
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
@@ -678,6 +680,7 @@ const ConnectPickerModal = ({ onClose, onConnected }) => {
               onPickAds={handleAds}
               onPickSearchConsole={handleSearchConsole}
               onPickOpenAiAds={() => setStep('openai_ads')}
+              onPickAsc={() => setStep('asc')}
               onPickFacebook={handleFacebook}
               onPickWordpress={() => setStep('wordpress')}
               onPickBlogProvider={(key) => setStep(key)}
@@ -689,6 +692,9 @@ const ConnectPickerModal = ({ onClose, onConnected }) => {
           )}
           {step === 'openai_ads' && (
             <OpenAiAdsForm onCancel={() => setStep('pick')} onConnected={onConnected} />
+          )}
+          {step === 'asc' && (
+            <AscForm onCancel={() => setStep('pick')} onConnected={onConnected} />
           )}
           {step === 'wordpress' && (
             <WordPressWizard onCancel={() => setStep('pick')} onConnected={onConnected} />
@@ -715,7 +721,7 @@ const ConnectPickerModal = ({ onClose, onConnected }) => {
   );
 };
 
-const PickerTiles = ({ onPickWebsite, onPickGoogle, onPickAnalytics, onPickAds, onPickSearchConsole, onPickOpenAiAds, onPickFacebook, onPickWordpress, onPickBlogProvider, onPickAdvanced }) => {
+const PickerTiles = ({ onPickWebsite, onPickGoogle, onPickAnalytics, onPickAds, onPickSearchConsole, onPickOpenAiAds, onPickAsc, onPickFacebook, onPickWordpress, onPickBlogProvider, onPickAdvanced }) => {
   // Grouped so the picker doesn't turn into a 20-tile wall. Publishing
   // Platforms — everything that writes an article to a CMS — is now its own
   // section, matching the reference product layout.
@@ -729,6 +735,7 @@ const PickerTiles = ({ onPickWebsite, onPickGoogle, onPickAnalytics, onPickAds, 
         { key: 'ads', label: 'Google Ads', desc: 'Read-only campaign diagnostics', icon: Megaphone, color: 'text-purple-600', bg: 'bg-purple-50', onClick: onPickAds },
         { key: 'search_console', label: 'Google Search Console', desc: 'Top keywords → blog topics', icon: Search, color: 'text-yellow-700', bg: 'bg-yellow-50', onClick: onPickSearchConsole },
         { key: 'openai_ads', label: 'OpenAI Ads', desc: 'API key from ads.openai.com', icon: Bot, color: 'text-gray-900', bg: 'bg-gray-100', onClick: onPickOpenAiAds },
+        { key: 'asc', label: 'Apple App Store', desc: 'iOS installs, reviews, sales — .p8 key from ASC', icon: Apple, color: 'text-gray-100', bg: 'bg-gray-900', onClick: onPickAsc },
         // One Meta OAuth grant links every FB Page + IG Business account, so both
         // tiles route through the same flow.
         { key: 'facebook', label: 'Facebook', desc: 'Pages you admin — post + read engagement', icon: Facebook, color: 'text-indigo-600', bg: 'bg-indigo-50', onClick: onPickFacebook },
@@ -924,6 +931,116 @@ const OpenAiAdsForm = ({ onCancel, onConnected }) => {
         <button
           type="submit"
           disabled={submitting || !apiKey.trim() || !adAccountId.trim()}
+          className="px-4 py-2 text-sm font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {submitting ? 'Connecting…' : 'Connect'}
+        </button>
+      </div>
+    </form>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// Apple App Store Connect — .p8 + issuer + key + optional vendor number.
+// One-time paste from the ASC UI. Backend probes the credentials with a
+// listApps call before saving so users get instant feedback on bad keys.
+// ---------------------------------------------------------------------------
+const AscForm = ({ onCancel, onConnected }) => {
+  const [issuerId, setIssuerId] = useState('');
+  const [keyId, setKeyId] = useState('');
+  const [p8, setP8] = useState('');
+  const [vendorNumber, setVendorNumber] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [err, setErr] = useState('');
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!issuerId.trim() || !keyId.trim() || !p8.trim()) return;
+    setSubmitting(true);
+    setErr('');
+    try {
+      const res = await ascService.connect({
+        issuerId: issuerId.trim(),
+        keyId: keyId.trim(),
+        p8: p8,
+        vendorNumber: vendorNumber.trim() || undefined,
+      });
+      onConnected(res.connection);
+    } catch (e2) {
+      setErr(e2.response?.data?.error || e2.message || 'Failed to connect Apple App Store');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <form onSubmit={submit}>
+      <div className="mb-3 rounded-md bg-gray-50 border border-gray-200 p-3 text-xs text-gray-600">
+        <p className="font-medium text-gray-800 mb-1">Where to find these</p>
+        <ol className="list-decimal ml-4 space-y-0.5">
+          <li>In ASC, go to <a href="https://appstoreconnect.apple.com/access/integrations/api" target="_blank" rel="noreferrer" className="text-primary-600 hover:underline">Users and Access → Integrations → App Store Connect API</a></li>
+          <li>Click <em>Generate API Key</em> (or <em>+</em>). Role: <strong>Developer</strong> or <strong>Marketing</strong> is enough for read-only.</li>
+          <li>Copy the <strong>Issuer ID</strong> (top of the page) and the <strong>Key ID</strong> (per-key). Download the <strong>.p8 file</strong> — you only get to download it once.</li>
+          <li>Vendor number (optional, needed for sales reports): ASC → <em>Payments &amp; Financial Reports → Payments and Financial Reports</em>, the numeric ID in the top-left dropdown.</li>
+        </ol>
+      </div>
+
+      <label className="block text-sm font-medium text-gray-700 mb-1">Issuer ID</label>
+      <input
+        type="text"
+        value={issuerId}
+        onChange={e => setIssuerId(e.target.value)}
+        placeholder="69a6de70-…-…-…-…"
+        autoFocus
+        className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+      />
+
+      <label className="block text-sm font-medium text-gray-700 mb-1 mt-4">Key ID</label>
+      <input
+        type="text"
+        value={keyId}
+        onChange={e => setKeyId(e.target.value)}
+        placeholder="ABC123XYZ4"
+        className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+      />
+
+      <label className="block text-sm font-medium text-gray-700 mb-1 mt-4">
+        .p8 private key <span className="font-normal text-gray-400">(paste the full file contents)</span>
+      </label>
+      <textarea
+        value={p8}
+        onChange={e => setP8(e.target.value)}
+        placeholder={'-----BEGIN PRIVATE KEY-----\n…\n-----END PRIVATE KEY-----'}
+        rows={6}
+        className="w-full px-3 py-2 border border-gray-300 rounded-md text-xs font-mono focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+      />
+      <p className="text-xs text-gray-500 mt-1">Encrypted server-side (AES-256-GCM); never returned to the browser again.</p>
+
+      <label className="block text-sm font-medium text-gray-700 mb-1 mt-4">
+        Vendor number <span className="font-normal text-gray-400">(optional — enables sales reports)</span>
+      </label>
+      <input
+        type="text"
+        value={vendorNumber}
+        onChange={e => setVendorNumber(e.target.value)}
+        placeholder="81234567"
+        className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+      />
+
+      {err && (
+        <div className="mt-3 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-800">{err}</div>
+      )}
+      <div className="flex justify-end gap-2 mt-5">
+        <button
+          type="button"
+          onClick={onCancel}
+          className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
+        >
+          Back
+        </button>
+        <button
+          type="submit"
+          disabled={submitting || !issuerId.trim() || !keyId.trim() || !p8.trim()}
           className="px-4 py-2 text-sm font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {submitting ? 'Connecting…' : 'Connect'}

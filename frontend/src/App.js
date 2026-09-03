@@ -17,6 +17,7 @@ import Analytics from './components/Analytics';
 import GoogleAds from './components/GoogleAds';
 import MetaAds from './components/MetaAds';
 import OpenAiAds from './components/OpenAiAds';
+import AppStoreConnect from './components/AppStoreConnect';
 import CampaignAssistant from './components/CampaignAssistant';
 import Automations from './components/Automations';
 import Services from './components/Services';
@@ -181,6 +182,16 @@ const AppContent = () => {
             <ProtectedRoute>
               <Layout>
                 <OpenAiAds />
+              </Layout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/app-store"
+          element={
+            <ProtectedRoute>
+              <Layout>
+                <AppStoreConnect />
               </Layout>
             </ProtectedRoute>
           }

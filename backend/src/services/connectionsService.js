@@ -205,6 +205,11 @@ async function fetchSiteMeta(url) {
 // raw value should call getRawForUser instead.
 const SENSITIVE_METADATA_KEYS = [
   'api_key', 'page_access_token', 'user_access_token',
+  // Apple App Store Connect .p8 private key — AES-256-GCM encrypted at
+  // rest via utils/cryptoBox, but still don't ship it in list/get
+  // responses (attackers who can guess the encryption key shouldn't
+  // also get the ciphertext for free).
+  'p8_encrypted',
   // Long-lived Meta user access token stored on FB Page rows. The
   // upsertFacebookPage comment already claimed this was stripped on read,
   // but the key was missing from this list — surfaced during Meta Ads
@@ -734,6 +739,76 @@ async function upsertGoogleAds({
   return data;
 }
 
+// Apple App Store Connect. Bring-your-own-.p8 private key flow (no OAuth).
+// The .p8 arrives already encrypted via cryptoBox (route layer does the
+// encryption before calling us — service is agnostic to the ciphertext
+// format). issuer_id and key_id are NOT sensitive on their own; the p8 is.
+async function upsertAppStoreConnect({
+  userId,
+  issuerId,
+  keyId,
+  p8Encrypted,
+  vendorNumber,
+  appId,
+  appBundleId,
+  displayName,
+}) {
+  if (!userId || !issuerId || !keyId || !p8Encrypted) {
+    throw new Error('userId, issuerId, keyId, p8Encrypted required');
+  }
+  // Multi-account discipline: one connected_accounts row per (issuer_id, key_id)
+  // pair. Apple keys can be regenerated with the same issuer+id — that's fine,
+  // the upsert overwrites the p8_encrypted.
+  const externalId = `asc:${issuerId}:${keyId}`;
+  const metadata = {
+    issuer_id: issuerId,
+    key_id: keyId,
+    p8_encrypted: p8Encrypted,
+    vendor_number: vendorNumber || null,
+    app_id: appId || null,
+    app_bundle_id: appBundleId || null,
+    connected_at: new Date().toISOString(),
+  };
+
+  const { data: existing } = await supabase
+    .from(TABLE)
+    .select('id')
+    .eq('user_id', userId)
+    .eq('provider', 'app_store_connect')
+    .eq('external_id', externalId)
+    .maybeSingle();
+
+  if (existing) {
+    const { data, error } = await supabase
+      .from(TABLE)
+      .update({
+        display_name: displayName || 'Apple App Store',
+        metadata,
+        status: 'active',
+      })
+      .eq('id', existing.id)
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  }
+
+  const { data, error } = await supabase
+    .from(TABLE)
+    .insert({
+      user_id: userId,
+      provider: 'app_store_connect',
+      display_name: displayName || 'Apple App Store',
+      external_id: externalId,
+      metadata,
+      status: 'active',
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
 // OpenAI Ads (ads.openai.com). Unlike the google_* providers, this is a
 // bring-your-own API key flow, not OAuth — users create a key at
 // ads.openai.com/settings and paste it in. The key lives in metadata.api_key
@@ -1141,6 +1216,7 @@ module.exports = {
   upsertGoogleAds,
   upsertGoogleSearchConsole,
   upsertOpenAiAds,
+  upsertAppStoreConnect,
   upsertFacebookPage,
   upsertInstagramBusiness,
   reconcileFacebookPictures,
