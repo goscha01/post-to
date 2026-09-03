@@ -11,6 +11,7 @@
 //
 // SSE frame format:
 //   data: {"type":"delta","provider":"openai","text":"..."}\n\n
+//   data: {"type":"tool_call","provider":"claude","tool":"google_ads_get_ad_status","args":{"adId":"..."},"roundIndex":0}\n\n
 //   data: {"type":"complete","provider":"openai","messageId":"...","costUsd":..,"promptTokens":..,"completionTokens":..,"cacheReadTokens":..,"cacheWriteTokens":..}\n\n
 //   data: {"type":"error","provider":"claude","error":"..."}\n\n
 //   data: {"type":"done"}\n\n     ← both providers finished (success or error)
@@ -22,6 +23,7 @@ const requireBusinessAuth = require('../middleware/businessAuth');
 const optimizationReport = require('../services/optimizationReportService');
 const campaignAssistant = require('../services/campaignAssistantService');
 const campaignMonitor = require('../services/campaignMonitorService');
+const campaignAssistantTools = require('../services/campaignAssistantTools');
 const openAiAds = require('../services/openAiAdsService');
 const connectionsService = require('../services/connectionsService');
 const { getAllBusinessTokens } = require('../utils/businessTokens');
@@ -256,6 +258,46 @@ async function tokenForOwner(req, ownerGoogleId) {
   const tokens = await getAllBusinessTokens(req.user.userId);
   const match = tokens.find(t => t.google_id === ownerGoogleId);
   return match?.access_token || req.businessToken;
+}
+
+// Resolve a Google Ads OAuth token for a conversation without requiring
+// requireBusinessAuth (which /chat deliberately skips — chat should work
+// on report snapshots even after the user disconnects Google). Returns
+// null when the conversation has no Ads customer or we can't find a
+// matching business_profile — the tool executor short-circuits with a
+// helpful error in that case.
+async function resolveGoogleAdsToolContext(userId, conv) {
+  const customerId = conv?.google_ads_customer_id;
+  if (!customerId) return null;
+
+  const { data: rows } = await supabase
+    .from('connected_accounts')
+    .select('metadata')
+    .eq('user_id', userId)
+    .eq('provider', 'google_ads')
+    .eq('external_id', `ads:${customerId}`)
+    .limit(1);
+  const meta = rows?.[0]?.metadata || {};
+  const ownerGoogleId = meta.owner_google_id || null;
+  const loginCustomerId = conv.google_ads_login_customer_id
+    || meta.manager_customer_id
+    || null;
+
+  const tokens = await getAllBusinessTokens(userId);
+  if (!tokens.length) return null;
+  const match = ownerGoogleId
+    ? tokens.find(t => t.google_id === ownerGoogleId)
+    : tokens[0];
+  const accessToken = match?.access_token || tokens[0]?.access_token;
+  if (!accessToken) return null;
+
+  return {
+    accessToken,
+    customerId: String(customerId),
+    loginCustomerId,
+    campaignId: conv.campaign_id || null,
+    userId,
+  };
 }
 
 // Pull a compact OpenAI Ads snapshot for the report. Kept small on purpose —
@@ -623,9 +665,12 @@ router.post('/conversations/:id/chat', async (req, res) => {
   }
 
   // Load conversation (must belong to user) and its full report snapshot.
+  // Extra fields (google_ads_customer_id, google_ads_login_customer_id,
+  // campaign_id) power the Google Ads tool executor so the model can fetch
+  // fresh data mid-turn.
   const { data: conv, error: convErr } = await supabase
     .from('campaign_assistant_conversations')
-    .select('id, report_snapshot, title')
+    .select('id, report_snapshot, title, google_ads_customer_id, google_ads_login_customer_id, campaign_id')
     .eq('user_id', userId)
     .eq('id', conversationId)
     .single();
@@ -792,6 +837,14 @@ router.post('/conversations/:id/chat', async (req, res) => {
   // without it (backward-compatible).
   const planProgress = await loadPlanProgressBlock(conversationId);
 
+  // Resolve Google Ads tool context ONCE per turn (both providers share
+  // the same executor). When null, tools are silently omitted from the
+  // model request — the model falls back to the snapshot.
+  const toolCtx = await resolveGoogleAdsToolContext(userId, conv);
+  const toolExecutor = toolCtx ? campaignAssistantTools.makeExecutor(toolCtx) : null;
+  const openaiTools = toolExecutor ? campaignAssistantTools.toolsForOpenAI() : null;
+  const claudeTools = toolExecutor ? campaignAssistantTools.toolsForClaude() : null;
+
   // Kick off requested providers concurrently.
   if (wantOpenai) {
     campaignAssistant.streamOpenAI({
@@ -799,7 +852,13 @@ router.post('/conversations/:id/chat', async (req, res) => {
       messages: openaiMessages,
       attachments,
       planProgress,
+      tools: openaiTools,
+      toolExecutor,
       onDelta: text => write({ type: 'delta', provider: 'openai', text }),
+      onToolCall: info => write({
+        type: 'tool_call', provider: 'openai',
+        tool: info.tool, args: info.args, roundIndex: info.roundIndex,
+      }),
       onComplete: async result => {
         await persistCompletion(openaiRow, result);
         write({
@@ -832,7 +891,13 @@ router.post('/conversations/:id/chat', async (req, res) => {
       messages: claudeMessages,
       attachments,
       planProgress,
+      tools: claudeTools,
+      toolExecutor,
       onDelta: text => write({ type: 'delta', provider: 'claude', text }),
+      onToolCall: info => write({
+        type: 'tool_call', provider: 'claude',
+        tool: info.tool, args: info.args, roundIndex: info.roundIndex,
+      }),
       onComplete: async result => {
         await persistCompletion(claudeRow, result);
         write({

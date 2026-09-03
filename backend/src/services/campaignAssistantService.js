@@ -108,7 +108,25 @@ Rules:
 
 For follow-up questions (not the initial analysis), if the user asks something conversational ("why is CTR dropping?", "explain X"), you may respond as plain markdown without the ## Fix format. The ## Fix format is for issue lists only.${META_INSTRUCTIONS}`;
 
-function buildOpenAiSystemContent(report, planProgress) {
+// Guidance for when to prefer live tools over the snapshot. Only appended
+// when tools are actually wired for this turn (otherwise it's misleading).
+// Kept short — the tool descriptions themselves carry the "when to use"
+// language; this block just tells the model tools EXIST and warns against
+// overuse. Every tool call = extra latency + tokens.
+const TOOL_USAGE_INSTRUCTIONS = `
+--- LIVE DATA TOOLS AVAILABLE ---
+Google Ads read tools are available for THIS turn. Use them ONLY when the user asks about CURRENT state that the snapshot cannot answer:
+- "check ad 12345", "is ad X running", "why isn't Y delivering" → google_ads_get_ad_status
+- "what changed today", "did anything change recently" → google_ads_get_recent_changes
+- "what's wrong right now", "any current issues" → google_ads_get_diagnostics
+- "which ads are running", "any disapproved ads" → google_ads_list_ads
+- "current campaign metrics", "how is campaign X doing now" → google_ads_get_campaign
+- "any bad search terms", "what's eating my budget lately" → google_ads_get_search_terms
+
+Do NOT call tools for questions the snapshot already answers (historical performance, trend analysis, cross-provider attribution, plan progress). Prefer ONE targeted tool call to a scattershot chain. Never chain more than 3 tool calls in a single turn.
+--- END LIVE DATA TOOLS ---`;
+
+function buildOpenAiSystemContent(report, planProgress, { hasTools = false } = {}) {
   const preamble = SYSTEM_PREAMBLE_TEMPLATE({
     campaignName: report?.account?.descriptiveName || null,
     days: report?.meta?.dateRangeDays,
@@ -123,10 +141,13 @@ function buildOpenAiSystemContent(report, planProgress) {
   if (planProgress) {
     parts.push(planProgress);
   }
+  if (hasTools) {
+    parts.push(TOOL_USAGE_INSTRUCTIONS);
+  }
   return parts.join('\n\n');
 }
 
-function buildClaudeSystemArray(report, planProgress) {
+function buildClaudeSystemArray(report, planProgress, { hasTools = false } = {}) {
   const preamble = SYSTEM_PREAMBLE_TEMPLATE({
     campaignName: report?.account?.descriptiveName || null,
     days: report?.meta?.dateRangeDays,
@@ -147,6 +168,9 @@ function buildClaudeSystemArray(report, planProgress) {
   // so parts after can change every turn without invalidating cache.
   if (planProgress) {
     parts.push({ type: 'text', text: planProgress });
+  }
+  if (hasTools) {
+    parts.push({ type: 'text', text: TOOL_USAGE_INSTRUCTIONS });
   }
   return parts;
 }
@@ -236,9 +260,116 @@ function withAttachmentsClaude(messages, attachments) {
 }
 
 // ---------------------------------------------------------------------------
-// OpenAI streaming
+// Tool-use loop (both providers)
 // ---------------------------------------------------------------------------
-async function streamOpenAI({ report, messages, attachments, planProgress, onDelta, onComplete, onError }) {
+// The `tools` + `toolExecutor` params are optional. When absent, both stream
+// functions behave exactly as before: single round, stream text deltas,
+// call onComplete. When present, the stream loops: if the model returns
+// tool_calls (OpenAI) or tool_use blocks (Claude), we execute each tool,
+// append the results as new messages, and re-invoke the model. Loop caps
+// at MAX_TOOL_ROUNDS to bound cost.
+//
+// onToolCall({ tool, args, roundIndex }) fires as soon as we have a
+// finalized tool call ready to execute — the route uses this to emit an
+// SSE frame ("Checking ad status…") so the UI can show progress.
+
+const MAX_TOOL_ROUNDS = 5;
+
+// Run a single OpenAI streaming completion round. Returns everything we
+// need to decide whether to loop again: accumulated text, structured tool
+// calls, and usage. Streams text deltas through onDelta as they arrive so
+// the UX doesn't wait for the round to end.
+function runOpenAiRound({ apiKey, body, onDelta }) {
+  return new Promise(async (resolve, reject) => {
+    let resp;
+    try {
+      resp = await axios.post(OPENAI_URL, body, {
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        responseType: 'stream',
+        timeout: 180_000,
+      });
+    } catch (err) {
+      reject(err);
+      return;
+    }
+
+    let acc = '';
+    let usage = null;
+    let modelUsed = body.model;
+    let finishReason = null;
+    // Tool calls stream in as {index, id?, function: {name?, arguments?}} — we
+    // reassemble them by their index because arguments come as a JSON string
+    // spread across many deltas.
+    const toolCalls = [];
+    let buf = '';
+    let settled = false;
+
+    const settle = (val, err) => {
+      if (settled) return;
+      settled = true;
+      if (err) reject(err); else resolve(val);
+    };
+
+    resp.data.on('data', chunk => {
+      buf += chunk.toString('utf8');
+      const parts = buf.split('\n');
+      buf = parts.pop() || '';
+      for (const raw of parts) {
+        const line = raw.trim();
+        if (!line || !line.startsWith('data:')) continue;
+        const payload = line.slice(5).trim();
+        if (payload === '[DONE]') continue;
+        try {
+          const j = JSON.parse(payload);
+          const choice = j.choices?.[0];
+          const delta = choice?.delta;
+          if (delta?.content) {
+            acc += delta.content;
+            try { onDelta(delta.content); } catch (_) { /* delta handler must not kill stream */ }
+          }
+          if (Array.isArray(delta?.tool_calls)) {
+            for (const tc of delta.tool_calls) {
+              const idx = typeof tc.index === 'number' ? tc.index : 0;
+              if (!toolCalls[idx]) toolCalls[idx] = { id: '', name: '', args: '' };
+              if (tc.id) toolCalls[idx].id = tc.id;
+              if (tc.function?.name) toolCalls[idx].name = tc.function.name;
+              if (typeof tc.function?.arguments === 'string') {
+                toolCalls[idx].args += tc.function.arguments;
+              }
+            }
+          }
+          if (choice?.finish_reason) finishReason = choice.finish_reason;
+          if (j.usage) usage = j.usage;
+          if (j.model) modelUsed = j.model;
+        } catch (_) { /* ignore malformed frames */ }
+      }
+    });
+
+    resp.data.on('end', () => {
+      settle({
+        content: acc,
+        toolCalls: toolCalls.filter(c => c && c.id && c.name),
+        usage,
+        modelUsed,
+        finishReason,
+      });
+    });
+
+    resp.data.on('error', err => settle(null, err));
+  });
+}
+
+// ---------------------------------------------------------------------------
+// OpenAI streaming (with optional tool-use loop)
+// ---------------------------------------------------------------------------
+async function streamOpenAI({
+  report, messages, attachments, planProgress,
+  tools, toolExecutor,
+  onDelta, onToolCall, onComplete, onError,
+}) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
     onError(new Error('OPENAI_API_KEY is not configured'));
@@ -246,97 +377,227 @@ async function streamOpenAI({ report, messages, attachments, planProgress, onDel
   }
 
   const attach = normalizeAttachments(attachments);
-  const withAttach = withAttachmentsOpenAI(messages, attach);
+  // Attachments only travel on the FIRST user message; on tool follow-up
+  // rounds the working messages array grows with assistant/tool messages
+  // — attaching images to those would be nonsensical.
+  const workingMessages = withAttachmentsOpenAI(messages, attach).slice();
 
-  const body = {
-    model: OPENAI_MODEL,
-    stream: true,
-    stream_options: { include_usage: true },
-    messages: [
-      { role: 'system', content: buildOpenAiSystemContent(report, planProgress) },
-      ...withAttach,
-    ],
-    temperature: 0.5,
-  };
+  const wantTools = Array.isArray(tools) && tools.length > 0 && toolExecutor;
+  const totals = { promptTokens: 0, completionTokens: 0, cachedTokens: 0 };
+  let finalContent = '';
+  let modelUsed = OPENAI_MODEL;
 
-  let resp;
   try {
-    resp = await axios.post(OPENAI_URL, body, {
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      responseType: 'stream',
-      timeout: 180_000,
+    for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+      const body = {
+        model: OPENAI_MODEL,
+        stream: true,
+        stream_options: { include_usage: true },
+        messages: [
+          { role: 'system', content: buildOpenAiSystemContent(report, planProgress, { hasTools: wantTools }) },
+          ...workingMessages,
+        ],
+        temperature: 0.5,
+      };
+      if (wantTools) {
+        body.tools = tools;
+        body.tool_choice = 'auto';
+      }
+
+      const roundResult = await runOpenAiRound({ apiKey, body, onDelta });
+      modelUsed = roundResult.modelUsed || modelUsed;
+      finalContent += roundResult.content || '';
+      const u = roundResult.usage || {};
+      totals.promptTokens += u.prompt_tokens || 0;
+      totals.completionTokens += u.completion_tokens || 0;
+      totals.cachedTokens += u.prompt_tokens_details?.cached_tokens || 0;
+
+      const needsTools = wantTools
+        && roundResult.finishReason === 'tool_calls'
+        && roundResult.toolCalls.length > 0;
+
+      if (!needsTools) {
+        const costUsd = costOpenAI(modelUsed, {
+          promptTokens: totals.promptTokens,
+          completionTokens: totals.completionTokens,
+          cachedPromptTokens: totals.cachedTokens,
+        });
+        onComplete({
+          provider: 'openai',
+          model: modelUsed,
+          content: finalContent,
+          promptTokens: totals.promptTokens,
+          completionTokens: totals.completionTokens,
+          cacheReadTokens: totals.cachedTokens,
+          cacheWriteTokens: 0,
+          totalTokens: totals.promptTokens + totals.completionTokens,
+          costUsd,
+        });
+        return;
+      }
+
+      // Push the assistant's tool-call message onto the working history.
+      workingMessages.push({
+        role: 'assistant',
+        content: roundResult.content || null,
+        tool_calls: roundResult.toolCalls.map(c => ({
+          id: c.id,
+          type: 'function',
+          function: { name: c.name, arguments: c.args || '{}' },
+        })),
+      });
+
+      // Execute each tool sequentially and append tool_result messages.
+      for (const call of roundResult.toolCalls) {
+        let parsedArgs = {};
+        try { parsedArgs = JSON.parse(call.args || '{}'); } catch { parsedArgs = {}; }
+        try { onToolCall?.({ tool: call.name, args: parsedArgs, roundIndex: round }); } catch { /* ignore */ }
+        let result;
+        try {
+          result = await toolExecutor.execute(call.name, parsedArgs);
+        } catch (e) {
+          result = { error: String(e?.message || 'tool execution failed').slice(0, 1000) };
+        }
+        workingMessages.push({
+          role: 'tool',
+          tool_call_id: call.id,
+          // Cap tool result size to avoid pushing the context window over.
+          content: JSON.stringify(result).slice(0, 60_000),
+        });
+      }
+    }
+
+    // Hit MAX_TOOL_ROUNDS without a stop — return what we have so the user
+    // still gets a message rather than nothing.
+    const costUsd = costOpenAI(modelUsed, {
+      promptTokens: totals.promptTokens,
+      completionTokens: totals.completionTokens,
+      cachedPromptTokens: totals.cachedTokens,
+    });
+    onComplete({
+      provider: 'openai',
+      model: modelUsed,
+      content: finalContent || '[Tool loop hit the maximum iteration limit without a final answer.]',
+      promptTokens: totals.promptTokens,
+      completionTokens: totals.completionTokens,
+      cacheReadTokens: totals.cachedTokens,
+      cacheWriteTokens: 0,
+      totalTokens: totals.promptTokens + totals.completionTokens,
+      costUsd,
     });
   } catch (err) {
     onError(err);
-    return;
   }
+}
 
-  let acc = '';
-  let usage = null;
-  let modelUsed = OPENAI_MODEL;
-  let buf = '';
-  let settled = false;
-
-  const settle = (result, err) => {
-    if (settled) return;
-    settled = true;
-    if (err) onError(err);
-    else onComplete(result);
-  };
-
-  resp.data.on('data', chunk => {
-    buf += chunk.toString('utf8');
-    // SSE frames are separated by \n\n; within a frame, lines are prefixed "data:".
-    const parts = buf.split('\n');
-    buf = parts.pop() || '';
-    for (const raw of parts) {
-      const line = raw.trim();
-      if (!line || !line.startsWith('data:')) continue;
-      const payload = line.slice(5).trim();
-      if (payload === '[DONE]') continue;
-      try {
-        const j = JSON.parse(payload);
-        const delta = j.choices?.[0]?.delta?.content;
-        if (delta) {
-          acc += delta;
-          try { onDelta(delta); } catch (_) { /* delta handler must not kill stream */ }
-        }
-        if (j.usage) usage = j.usage;
-        if (j.model) modelUsed = j.model;
-      } catch (_) { /* ignore malformed frames */ }
+// Run a single Claude streaming round. Content blocks stream in as text
+// (text_delta) or tool_use (input_json_delta). We reassemble tool_use
+// blocks so we can execute them after the round ends.
+function runClaudeRound({ apiKey, body, onDelta }) {
+  return new Promise(async (resolve, reject) => {
+    let resp;
+    try {
+      resp = await axios.post(ANTHROPIC_URL, body, {
+        headers: {
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'Content-Type': 'application/json',
+        },
+        responseType: 'stream',
+        timeout: 180_000,
+      });
+    } catch (err) {
+      reject(err);
+      return;
     }
-  });
 
-  resp.data.on('end', () => {
-    const promptTokens = usage?.prompt_tokens || 0;
-    const completionTokens = usage?.completion_tokens || 0;
-    const cached = usage?.prompt_tokens_details?.cached_tokens || 0;
-    const costUsd = costOpenAI(modelUsed, {
-      promptTokens, completionTokens, cachedPromptTokens: cached,
-    });
-    settle({
-      provider: 'openai',
-      model: modelUsed,
-      content: acc,
-      promptTokens,
-      completionTokens,
-      cacheReadTokens: cached,
-      cacheWriteTokens: 0,
-      totalTokens: promptTokens + completionTokens,
-      costUsd,
-    });
-  });
+    let acc = '';
+    let modelUsed = body.model;
+    let stopReason = null;
+    const usage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
+    // blocks[index] = { type, text?, tool_use_id?, name?, inputJson? }
+    const blocks = [];
+    // Preserve the message-order of content blocks for the assistant echo
+    // Anthropic requires when we send back tool_result.
+    let buf = '';
+    let settled = false;
 
-  resp.data.on('error', err => settle(null, err));
+    const settle = (val, err) => {
+      if (settled) return;
+      settled = true;
+      if (err) reject(err); else resolve(val);
+    };
+
+    resp.data.on('data', chunk => {
+      buf += chunk.toString('utf8');
+      const parts = buf.split('\n');
+      buf = parts.pop() || '';
+      for (const raw of parts) {
+        const line = raw.trim();
+        if (!line || !line.startsWith('data:')) continue;
+        const payload = line.slice(5).trim();
+        try {
+          const j = JSON.parse(payload);
+          if (j.type === 'message_start' && j.message) {
+            if (j.message.model) modelUsed = j.message.model;
+            if (j.message.usage) {
+              usage.input_tokens = j.message.usage.input_tokens || 0;
+              usage.cache_read_input_tokens = j.message.usage.cache_read_input_tokens || 0;
+              usage.cache_creation_input_tokens = j.message.usage.cache_creation_input_tokens || 0;
+            }
+          } else if (j.type === 'content_block_start' && j.content_block) {
+            const idx = typeof j.index === 'number' ? j.index : blocks.length;
+            if (j.content_block.type === 'text') {
+              blocks[idx] = { type: 'text', text: '' };
+            } else if (j.content_block.type === 'tool_use') {
+              blocks[idx] = {
+                type: 'tool_use',
+                id: j.content_block.id,
+                name: j.content_block.name,
+                inputJson: '',
+              };
+            }
+          } else if (j.type === 'content_block_delta') {
+            const idx = typeof j.index === 'number' ? j.index : 0;
+            const block = blocks[idx];
+            if (!block) continue;
+            if (j.delta?.type === 'text_delta' && block.type === 'text') {
+              block.text += j.delta.text || '';
+              acc += j.delta.text || '';
+              try { onDelta(j.delta.text || ''); } catch (_) { /* ignore */ }
+            } else if (j.delta?.type === 'input_json_delta' && block.type === 'tool_use') {
+              block.inputJson += j.delta.partial_json || '';
+            }
+          } else if (j.type === 'message_delta') {
+            if (j.usage) usage.output_tokens = j.usage.output_tokens || 0;
+            if (j.delta?.stop_reason) stopReason = j.delta.stop_reason;
+          }
+        } catch (_) { /* ignore malformed frames */ }
+      }
+    });
+
+    resp.data.on('end', () => {
+      settle({
+        acc,
+        blocks: blocks.filter(Boolean),
+        usage,
+        modelUsed,
+        stopReason,
+      });
+    });
+
+    resp.data.on('error', err => settle(null, err));
+  });
 }
 
 // ---------------------------------------------------------------------------
-// Claude (Anthropic) streaming
+// Claude (Anthropic) streaming (with optional tool-use loop)
 // ---------------------------------------------------------------------------
-async function streamClaude({ report, messages, attachments, planProgress, onDelta, onComplete, onError }) {
+async function streamClaude({
+  report, messages, attachments, planProgress,
+  tools, toolExecutor,
+  onDelta, onToolCall, onComplete, onError,
+}) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     onError(new Error('ANTHROPIC_API_KEY is not configured'));
@@ -344,94 +605,121 @@ async function streamClaude({ report, messages, attachments, planProgress, onDel
   }
 
   const attach = normalizeAttachments(attachments);
-  const withAttach = withAttachmentsClaude(messages, attach);
+  const workingMessages = withAttachmentsClaude(messages, attach).slice();
 
-  const body = {
-    model: CLAUDE_MODEL,
-    max_tokens: 4000,
-    stream: true,
-    system: buildClaudeSystemArray(report, planProgress),
-    messages: withAttach,
-    temperature: 0.5,
-  };
+  const wantTools = Array.isArray(tools) && tools.length > 0 && toolExecutor;
+  const totals = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
+  let finalContent = '';
+  let modelUsed = CLAUDE_MODEL;
 
-  let resp;
   try {
-    resp = await axios.post(ANTHROPIC_URL, body, {
-      headers: {
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        'Content-Type': 'application/json',
-      },
-      responseType: 'stream',
-      timeout: 180_000,
+    for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+      const body = {
+        model: CLAUDE_MODEL,
+        max_tokens: 4000,
+        stream: true,
+        system: buildClaudeSystemArray(report, planProgress, { hasTools: wantTools }),
+        messages: workingMessages,
+        temperature: 0.5,
+      };
+      if (wantTools) body.tools = tools;
+
+      const roundResult = await runClaudeRound({ apiKey, body, onDelta });
+      modelUsed = roundResult.modelUsed || modelUsed;
+      finalContent += roundResult.acc || '';
+      const u = roundResult.usage || {};
+      totals.input_tokens += u.input_tokens || 0;
+      totals.output_tokens += u.output_tokens || 0;
+      totals.cache_read_input_tokens += u.cache_read_input_tokens || 0;
+      totals.cache_creation_input_tokens += u.cache_creation_input_tokens || 0;
+
+      const toolBlocks = roundResult.blocks.filter(b => b.type === 'tool_use');
+      const needsTools = wantTools
+        && roundResult.stopReason === 'tool_use'
+        && toolBlocks.length > 0;
+
+      if (!needsTools) {
+        const costUsd = costClaude(modelUsed, {
+          promptTokens: totals.input_tokens,
+          completionTokens: totals.output_tokens,
+          cacheRead: totals.cache_read_input_tokens,
+          cacheWrite: totals.cache_creation_input_tokens,
+        });
+        onComplete({
+          provider: 'claude',
+          model: modelUsed,
+          content: finalContent,
+          promptTokens: totals.input_tokens,
+          completionTokens: totals.output_tokens,
+          cacheReadTokens: totals.cache_read_input_tokens,
+          cacheWriteTokens: totals.cache_creation_input_tokens,
+          totalTokens: totals.input_tokens + totals.output_tokens,
+          costUsd,
+        });
+        return;
+      }
+
+      // Echo the assistant's full content array back — Anthropic requires
+      // this exact structure when responding with tool_result blocks.
+      workingMessages.push({
+        role: 'assistant',
+        content: roundResult.blocks.map(b => {
+          if (b.type === 'text') return { type: 'text', text: b.text || '' };
+          return {
+            type: 'tool_use',
+            id: b.id,
+            name: b.name,
+            input: safeParseObject(b.inputJson),
+          };
+        }),
+      });
+
+      // Execute each tool, then push a single user message containing every
+      // tool_result block (Anthropic's expected shape).
+      const toolResultBlocks = [];
+      for (const block of toolBlocks) {
+        const args = safeParseObject(block.inputJson);
+        try { onToolCall?.({ tool: block.name, args, roundIndex: round }); } catch { /* ignore */ }
+        let result;
+        try {
+          result = await toolExecutor.execute(block.name, args);
+        } catch (e) {
+          result = { error: String(e?.message || 'tool execution failed').slice(0, 1000) };
+        }
+        toolResultBlocks.push({
+          type: 'tool_result',
+          tool_use_id: block.id,
+          content: JSON.stringify(result).slice(0, 60_000),
+        });
+      }
+      workingMessages.push({ role: 'user', content: toolResultBlocks });
+    }
+
+    const costUsd = costClaude(modelUsed, {
+      promptTokens: totals.input_tokens,
+      completionTokens: totals.output_tokens,
+      cacheRead: totals.cache_read_input_tokens,
+      cacheWrite: totals.cache_creation_input_tokens,
+    });
+    onComplete({
+      provider: 'claude',
+      model: modelUsed,
+      content: finalContent || '[Tool loop hit the maximum iteration limit without a final answer.]',
+      promptTokens: totals.input_tokens,
+      completionTokens: totals.output_tokens,
+      cacheReadTokens: totals.cache_read_input_tokens,
+      cacheWriteTokens: totals.cache_creation_input_tokens,
+      totalTokens: totals.input_tokens + totals.output_tokens,
+      costUsd,
     });
   } catch (err) {
     onError(err);
-    return;
   }
+}
 
-  let acc = '';
-  let modelUsed = CLAUDE_MODEL;
-  const usage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
-  let buf = '';
-  let settled = false;
-
-  const settle = (result, err) => {
-    if (settled) return;
-    settled = true;
-    if (err) onError(err);
-    else onComplete(result);
-  };
-
-  resp.data.on('data', chunk => {
-    buf += chunk.toString('utf8');
-    const parts = buf.split('\n');
-    buf = parts.pop() || '';
-    for (const raw of parts) {
-      const line = raw.trim();
-      if (!line || !line.startsWith('data:')) continue;
-      const payload = line.slice(5).trim();
-      try {
-        const j = JSON.parse(payload);
-        if (j.type === 'content_block_delta' && j.delta?.type === 'text_delta') {
-          acc += j.delta.text;
-          try { onDelta(j.delta.text); } catch (_) { /* delta handler must not kill stream */ }
-        } else if (j.type === 'message_start' && j.message) {
-          if (j.message.model) modelUsed = j.message.model;
-          if (j.message.usage) {
-            usage.input_tokens = j.message.usage.input_tokens || 0;
-            usage.cache_read_input_tokens = j.message.usage.cache_read_input_tokens || 0;
-            usage.cache_creation_input_tokens = j.message.usage.cache_creation_input_tokens || 0;
-          }
-        } else if (j.type === 'message_delta' && j.usage) {
-          usage.output_tokens = j.usage.output_tokens || 0;
-        }
-      } catch (_) { /* ignore malformed frames */ }
-    }
-  });
-
-  resp.data.on('end', () => {
-    const costUsd = costClaude(modelUsed, {
-      promptTokens: usage.input_tokens,
-      completionTokens: usage.output_tokens,
-      cacheRead: usage.cache_read_input_tokens,
-      cacheWrite: usage.cache_creation_input_tokens,
-    });
-    settle({
-      provider: 'claude',
-      model: modelUsed,
-      content: acc,
-      promptTokens: usage.input_tokens,
-      completionTokens: usage.output_tokens,
-      cacheReadTokens: usage.cache_read_input_tokens,
-      cacheWriteTokens: usage.cache_creation_input_tokens,
-      totalTokens: usage.input_tokens + usage.output_tokens,
-      costUsd,
-    });
-  });
-
-  resp.data.on('error', err => settle(null, err));
+function safeParseObject(s) {
+  if (!s) return {};
+  try { return JSON.parse(s); } catch { return {}; }
 }
 
 // ---------------------------------------------------------------------------

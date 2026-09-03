@@ -551,6 +551,15 @@ const CampaignAssistant = () => {
           setMessages(prev => prev.map(m =>
             m.id === targetId ? { ...m, content: (m.content || '') + evt.text } : m
           ));
+        } else if (evt.type === 'tool_call') {
+          // Model asked to fetch live Google Ads data — record it so the
+          // provider bubble can show a "Called: <tool>" pill.
+          const targetId = evt.provider === 'openai' ? openaiId : claudeId;
+          setMessages(prev => prev.map(m =>
+            m.id === targetId
+              ? { ...m, tool_calls: [...(m.tool_calls || []), { tool: evt.tool, args: evt.args, roundIndex: evt.roundIndex }] }
+              : m
+          ));
         } else if (evt.type === 'complete') {
           const targetId = evt.provider === 'openai' ? openaiId : claudeId;
           setMessages(prev => prev.map(m => m.id === targetId ? ({
@@ -2347,6 +2356,20 @@ const ProviderColumn = ({ title, provider, msg, onRate, onCopyForReview, convers
         </div>
       ) : (
         <div className="flex-1">
+          {Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0 && (
+            <div className="mb-2 flex flex-wrap gap-1">
+              {msg.tool_calls.map((tc, i) => (
+                <span
+                  key={i}
+                  title={JSON.stringify(tc.args || {})}
+                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-blue-50 border border-blue-200 text-[10px] text-blue-700 font-mono"
+                >
+                  <Loader2 className="h-2.5 w-2.5" />
+                  {String(tc.tool || '').replace(/^google_ads_/, 'ads.')}
+                </span>
+              ))}
+            </div>
+          )}
           {msg.content
             ? <AssistantBody content={msg.content} provider={provider} conversationId={conversationId} />
             : (isStreaming ? <ThinkingIndicator /> : null)}
