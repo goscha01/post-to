@@ -30,6 +30,7 @@ const automationsRoutes = require('./routes/automations');
 const feedsRoutes = require('./routes/feeds');
 const scheduledPublisher = require('./workers/scheduledPublisher');
 const automationScheduler = require('./workers/automationScheduler');
+const ascAnalyticsScheduler = require('./workers/ascAnalyticsScheduler');
 const campaignMonitorService = require('./services/campaignMonitorService');
 const apiLogger = require('./middleware/apiLogger');
 
@@ -207,6 +208,16 @@ app.listen(PORT, () => {
       automationScheduler.start();
     } catch (err) {
       console.error('automation_scheduler.start_error', err?.message);
+    }
+  }
+  // Apple App Store Connect Analytics walker — hourly, pulls new daily
+  // report instances into asc_analytics_cache. Opt-out via
+  // DISABLE_ASC_ANALYTICS_SCHEDULER=1.
+  if (process.env.DISABLE_ASC_ANALYTICS_SCHEDULER !== '1') {
+    try {
+      ascAnalyticsScheduler.start();
+    } catch (err) {
+      console.error('asc_analytics_scheduler.start_error', err?.message);
     }
   }
   // Campaign Assistant auto-monitor tick — every 6h, evaluates due observation

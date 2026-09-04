@@ -115,7 +115,9 @@ For follow-up questions (not the initial analysis), if the user asks something c
 // overuse. Every tool call = extra latency + tokens.
 const TOOL_USAGE_INSTRUCTIONS = `
 --- LIVE DATA TOOLS AVAILABLE ---
-Google Ads read tools are available for THIS turn. Use them ONLY when the user asks about CURRENT state that the snapshot cannot answer:
+Use these read-only tools when the user asks about CURRENT state that the snapshot cannot answer. Prefer ONE targeted tool call over a chain; never chain more than 3 in a single turn.
+
+GOOGLE ADS
 - "check ad 12345", "is ad X running", "why isn't Y delivering" → google_ads_get_ad_status
 - "what changed today", "did anything change recently" → google_ads_get_recent_changes
 - "what's wrong right now", "any current issues" → google_ads_get_diagnostics
@@ -123,7 +125,16 @@ Google Ads read tools are available for THIS turn. Use them ONLY when the user a
 - "current campaign metrics", "how is campaign X doing now" → google_ads_get_campaign
 - "any bad search terms", "what's eating my budget lately" → google_ads_get_search_terms
 
-Do NOT call tools for questions the snapshot already answers (historical performance, trend analysis, cross-provider attribution, plan progress). Prefer ONE targeted tool call to a scattershot chain. Never chain more than 3 tool calls in a single turn.
+APPLE APP STORE (iOS app funnel + reviews)
+- "how does my App Store listing convert?", "install conversion rate" → asc_get_install_funnel
+- "paid vs organic installs", "which source drives installs?" → asc_get_installs_by_source
+- "any bad reviews?", "what are users complaining about?" → asc_get_recent_reviews
+
+CROSS-PROVIDER REASONING is where these tools shine:
+- "is my Google Ads spend actually driving iOS installs?" → call BOTH google_ads_get_campaign (paid cost) AND asc_get_installs_by_source (see if Web Referrer / Campaign source rose with spend). If ASC shows organic (App Store Search / Browse) unchanged while paid rose, ads likely brand-lifted rather than net-new-driven.
+- "should I pause this campaign?" → look at both the Google Ads metrics (CPC, conversions) AND the ASC install data for the same window. Cite ratios (e.g. "$5 Google Ads cost per Web Referrer install") but only when both tools agree on the window.
+
+WHEN TO SKIP TOOLS: historical trend already in snapshot; brand/creative advice; questions about the AI itself.
 --- END LIVE DATA TOOLS ---`;
 
 function buildOpenAiSystemContent(report, planProgress, { hasTools = false } = {}) {

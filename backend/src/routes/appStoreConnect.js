@@ -21,6 +21,7 @@ const express = require('express');
 const authMiddleware = require('../middleware/authMiddleware');
 const { createClient } = require('@supabase/supabase-js');
 const asc = require('../services/appStoreConnectService');
+const ascAnalytics = require('../services/ascAnalyticsService');
 const connections = require('../services/connectionsService');
 const cryptoBox = require('../utils/cryptoBox');
 const logger = require('../utils/logger');
@@ -267,6 +268,101 @@ router.get('/sales', async (req, res) => {
   } catch (err) {
     logger.warn('asc.sales.failed', { userId, error: err.message, status: err.status || null });
     res.status(err.status || 500).json({ error: err.message, appleErrors: err.appleErrors || null });
+  }
+});
+
+// -----------------------------------------------------------------------
+// App Analytics — async report flow (Phase 2)
+// -----------------------------------------------------------------------
+//
+// POST /analytics/bootstrap  — one-time per connection. Tells Apple to start
+//                              generating daily reports. Idempotent.
+// GET  /analytics/status     — report request id + last cron check + row count
+// POST /analytics/walk       — manual trigger (cron does this hourly)
+// GET  /analytics/funnel?days   — install funnel from cache
+// GET  /analytics/sources?days  — installs by source from cache
+//
+// The bootstrap POST is user-triggered; the walk is server-triggered by the
+// ascAnalyticsScheduler worker. The funnel/sources endpoints read from
+// asc_analytics_cache — no Apple calls at request time.
+
+router.post('/analytics/bootstrap', express.json(), async (req, res) => {
+  const userId = req.user.userId;
+  try {
+    const connectionId = String(req.body?.connectionId || req.query.connectionId || '');
+    if (!connectionId) return res.status(400).json({ error: 'connectionId required' });
+    const result = await ascAnalytics.bootstrap(userId, connectionId);
+    res.json(result);
+  } catch (err) {
+    logger.warn('asc_analytics.bootstrap.failed', {
+      userId, error: err.message, status: err.status || null,
+    });
+    res.status(err.status || 500).json({ error: err.message, appleErrors: err.appleErrors || null });
+  }
+});
+
+router.get('/analytics/status', async (req, res) => {
+  const userId = req.user.userId;
+  try {
+    const connectionId = String(req.query.connectionId || '');
+    if (!connectionId) return res.status(400).json({ error: 'connectionId required' });
+    const status = await ascAnalytics.getStatus({ userId, connectionId });
+    if (!status) return res.status(404).json({ error: 'Connection not found' });
+    res.json(status);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Manual walk trigger — mostly useful for testing / on-demand refresh from
+// the dashboard. Cron does this hourly automatically.
+router.post('/analytics/walk', express.json(), async (req, res) => {
+  const userId = req.user.userId;
+  try {
+    const connectionId = String(req.body?.connectionId || req.query.connectionId || '');
+    if (!connectionId) return res.status(400).json({ error: 'connectionId required' });
+    const summary = await ascAnalytics.walk(userId, connectionId);
+    res.json(summary);
+  } catch (err) {
+    logger.warn('asc_analytics.walk.failed', {
+      userId, error: err.message, status: err.status || null,
+    });
+    res.status(err.status || 500).json({ error: err.message, appleErrors: err.appleErrors || null });
+  }
+});
+
+router.get('/analytics/funnel', async (req, res) => {
+  const userId = req.user.userId;
+  try {
+    const connectionId = String(req.query.connectionId || '');
+    if (!connectionId) return res.status(400).json({ error: 'connectionId required' });
+    // Ownership check — getStatus validates the connection belongs to userId.
+    const status = await ascAnalytics.getStatus({ userId, connectionId });
+    if (!status) return res.status(404).json({ error: 'Connection not found' });
+    const funnel = await ascAnalytics.getInstallFunnel({
+      connectionId,
+      days: req.query.days,
+    });
+    res.json(funnel);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/analytics/sources', async (req, res) => {
+  const userId = req.user.userId;
+  try {
+    const connectionId = String(req.query.connectionId || '');
+    if (!connectionId) return res.status(400).json({ error: 'connectionId required' });
+    const status = await ascAnalytics.getStatus({ userId, connectionId });
+    if (!status) return res.status(404).json({ error: 'Connection not found' });
+    const sources = await ascAnalytics.getInstallsBySource({
+      connectionId,
+      days: req.query.days,
+    });
+    res.json(sources);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 

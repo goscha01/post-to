@@ -32,6 +32,9 @@ const axiosStub = {
     if (!next) throw new Error('no stub response set');
     return Promise.resolve(next);
   },
+  // Placeholder — individual tests override this when they need to assert
+  // request bodies (e.g. createOngoingReportRequest).
+  post: () => Promise.reject(new Error('axios.post not stubbed for this test')),
 };
 const axiosPath = require.resolve('axios');
 require.cache[axiosPath] = {
@@ -40,7 +43,7 @@ require.cache[axiosPath] = {
 };
 
 const asc = require('../src/services/appStoreConnectService');
-const { parseSalesTsv, summarizeAppleError, BASE_URL } = asc._internal;
+const { parseSalesTsv, parseAnalyticsCsv, summarizeAppleError, BASE_URL } = asc._internal;
 
 // Generate a real P-256 EC key pair once so signJwt tests use valid crypto.
 const { privateKey, publicKey } = crypto.generateKeyPairSync('ec', {
@@ -324,6 +327,163 @@ test('getSalesReportRange fetches N days ending yesterday, newest first, drops m
   assert.equal(range[1].totals.units, 8);
   // Dates are descending.
   assert.ok(range[0].reportDate > range[1].reportDate);
+});
+
+// ============================================================================
+// parseAnalyticsCsv — tab-separated, header + data rows, preserves empty cells
+// ============================================================================
+
+test('parseAnalyticsCsv turns a TSV blob into row objects keyed by header', () => {
+  const tsv = [
+    'Date\tApp Apple Identifier\tSource Type\tCampaign\tImpressions\tProduct Page Views',
+    '2026-08-30\t111\tApp Store Search\t\t5000\t120',
+    '2026-08-30\t111\tWeb Referrer\tsummer-sale\t800\t150',
+  ].join('\n');
+  const rows = parseAnalyticsCsv(tsv);
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0]['Source Type'], 'App Store Search');
+  assert.equal(rows[0]['Campaign'], '');
+  assert.equal(rows[0]['Impressions'], '5000');
+  assert.equal(rows[1]['Campaign'], 'summer-sale');
+});
+
+test('parseAnalyticsCsv returns [] on empty input', () => {
+  assert.deepEqual(parseAnalyticsCsv(''), []);
+});
+
+test('parseAnalyticsCsv preserves empty trailing cells', () => {
+  const tsv = 'A\tB\tC\n1\t\t3';
+  const rows = parseAnalyticsCsv(tsv);
+  assert.equal(rows[0].A, '1');
+  assert.equal(rows[0].B, '');
+  assert.equal(rows[0].C, '3');
+});
+
+// ============================================================================
+// App Analytics Reports API — createOngoingReportRequest, listReports, etc.
+// ============================================================================
+
+test('createOngoingReportRequest POSTs with the right envelope + returns request id', async () => {
+  beforeEach();
+  // Override axios.post for this suite.
+  const originalPost = axiosStub.post;
+  const postCalls = [];
+  axiosStub.post = (url, body, config) => {
+    postCalls.push({ url, body, config });
+    return Promise.resolve({
+      status: 201,
+      data: { data: { id: 'req-abc-123', attributes: { stoppedDueToInactivity: false } } },
+    });
+  };
+  try {
+    const res = await asc.createOngoingReportRequest(
+      { issuerId: TEST_ISSUER, keyId: TEST_KEY_ID, p8: privateKey },
+      { appId: '111' }
+    );
+    assert.equal(res.id, 'req-abc-123');
+    assert.equal(postCalls.length, 1);
+    assert.equal(postCalls[0].body.data.type, 'analyticsReportRequests');
+    assert.equal(postCalls[0].body.data.attributes.accessType, 'ONGOING');
+    assert.equal(postCalls[0].body.data.relationships.app.data.id, '111');
+    assert.ok(String(postCalls[0].config.headers.Authorization).startsWith('Bearer '));
+  } finally {
+    axiosStub.post = originalPost;
+  }
+});
+
+test('createOngoingReportRequest 409 → err.isConflict = true', async () => {
+  beforeEach();
+  const originalPost = axiosStub.post;
+  axiosStub.post = () => Promise.resolve({
+    status: 409,
+    data: { errors: [{ title: 'CONFLICT', detail: 'ONGOING already exists' }] },
+  });
+  try {
+    await assert.rejects(
+      () => asc.createOngoingReportRequest(
+        { issuerId: TEST_ISSUER, keyId: TEST_KEY_ID, p8: privateKey },
+        { appId: '111' }
+      ),
+      err => err.status === 409 && err.isConflict === true
+    );
+  } finally {
+    axiosStub.post = originalPost;
+  }
+});
+
+test('listReportsInRequest filters by category and maps rows', async () => {
+  beforeEach();
+  setNextResponses({
+    status: 200,
+    data: {
+      data: [
+        { id: 'r1', attributes: { name: 'Engagement Report', category: 'APP_STORE_ENGAGEMENT' } },
+        { id: 'r2', attributes: { name: 'Commerce Report', category: 'APP_STORE_COMMERCE' } },
+      ],
+    },
+  });
+  const reports = await asc.listReportsInRequest(
+    { issuerId: TEST_ISSUER, keyId: TEST_KEY_ID, p8: privateKey },
+    'req-abc-123',
+    { categories: ['APP_STORE_ENGAGEMENT', 'APP_STORE_COMMERCE'] }
+  );
+  assert.equal(reports.length, 2);
+  assert.equal(reports[0].category, 'APP_STORE_ENGAGEMENT');
+  const call = capturedCalls[0];
+  assert.equal(call.url, `${BASE_URL}/v1/analyticsReportRequests/req-abc-123/reports`);
+  assert.equal(call.params['filter[category]'], 'APP_STORE_ENGAGEMENT,APP_STORE_COMMERCE');
+});
+
+test('listInstancesForReport requests DAILY granularity by default', async () => {
+  beforeEach();
+  setNextResponses({
+    status: 200,
+    data: {
+      data: [
+        { id: 'inst-1', attributes: { granularity: 'DAILY', processingDate: '2026-08-30' } },
+      ],
+    },
+  });
+  const instances = await asc.listInstancesForReport(
+    { issuerId: TEST_ISSUER, keyId: TEST_KEY_ID, p8: privateKey },
+    'report-xyz'
+  );
+  assert.equal(instances.length, 1);
+  assert.equal(instances[0].processingDate, '2026-08-30');
+  assert.equal(capturedCalls[0].params['filter[granularity]'], 'DAILY');
+});
+
+test('listSegmentsInInstance returns url + size + checksum', async () => {
+  beforeEach();
+  setNextResponses({
+    status: 200,
+    data: {
+      data: [
+        { attributes: { url: 'https://s3.amazonaws.com/segment.gz', sizeInBytes: 12345, checksum: 'abc123' } },
+      ],
+    },
+  });
+  const segs = await asc.listSegmentsInInstance(
+    { issuerId: TEST_ISSUER, keyId: TEST_KEY_ID, p8: privateKey },
+    'inst-1'
+  );
+  assert.equal(segs.length, 1);
+  assert.equal(segs[0].url, 'https://s3.amazonaws.com/segment.gz');
+  assert.equal(segs[0].sizeInBytes, 12345);
+});
+
+test('downloadSegment fetches the URL WITHOUT an Authorization header (pre-signed)', async () => {
+  beforeEach();
+  const tsv = 'Date\tImpressions\n2026-08-30\t500';
+  const gz = zlib.gzipSync(Buffer.from(tsv, 'utf8'));
+  setNextResponses({ status: 200, data: gz });
+  const rows = await asc.downloadSegment({ url: 'https://s3.amazonaws.com/segment.gz' });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]['Impressions'], '500');
+  const call = capturedCalls[0];
+  assert.equal(call.url, 'https://s3.amazonaws.com/segment.gz');
+  // No Authorization header — the URL is Apple-signed.
+  assert.equal(call.headers?.Authorization, undefined);
 });
 
 test('getSalesReportRange clamps days into [1, 90]', async () => {

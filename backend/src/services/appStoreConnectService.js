@@ -239,11 +239,192 @@ async function getSalesReportRange(creds, { vendorNumber, days = 7 }) {
   return results;
 }
 
+// -----------------------------------------------------------------------
+// App Analytics Reports API (async, 3-step)
+// -----------------------------------------------------------------------
+// Unlike Sales & Trends (single sync gzipped TSV), the rich App Analytics
+// data (impressions, product page views, install sources, retention) lives
+// behind Apple's Analytics Reports API. Flow:
+//
+//   1. createOngoingReportRequest(appId) — one-time per app. Apple starts
+//      generating daily reports from that moment forward. Returns a request
+//      id we persist to connected_accounts.metadata.analytics_report_request_id.
+//   2. listReportsInRequest(requestId, [categories]) — list of report ids by
+//      category (APP_STORE_ENGAGEMENT, APP_STORE_COMMERCE, APP_USAGE,
+//      FRAMEWORK_USAGE). Reports themselves don't have data — they're
+//      report "channels."
+//   3. listInstancesForReport(reportId, {granularity, since}) — one instance
+//      per (granularity × processingDate). This is where "yesterday's data"
+//      shows up.
+//   4. listSegmentsInInstance(instanceId) — S3-signed URLs to download.
+//   5. downloadSegment(url) — HTTPS GET (NO JWT — the URL is pre-signed).
+//      Returns gzipped CSV. gunzip + parseCsv gives us rows.
+//
+// The cron worker (workers/ascAnalyticsScheduler) walks all this every hour
+// and stores rows in asc_analytics_cache. Tools + dashboards read from the
+// cache, never from this API directly.
+//
+// Timing: Apple's SLA for a new ONGOING request is ~24h before the first
+// daily instance appears. After that, each day's instance shows up ~09:00
+// UTC the following day.
+
+async function createOngoingReportRequest(creds, { appId }) {
+  if (!appId) throw new Error('appId required');
+  const token = signJwt(creds);
+  const resp = await axios.post(
+    `${BASE_URL}/v1/analyticsReportRequests`,
+    {
+      data: {
+        type: 'analyticsReportRequests',
+        attributes: { accessType: 'ONGOING' },
+        relationships: { app: { data: { type: 'apps', id: appId } } },
+      },
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      validateStatus: () => true,
+      timeout: 30_000,
+    }
+  );
+  if (resp.status >= 400) {
+    const detail = summarizeAppleError(resp);
+    const err = new Error(`ASC ${resp.status}: ${detail}`);
+    err.status = resp.status;
+    err.appleErrors = resp.data?.errors || null;
+    // 409 Conflict is Apple's response when an ONGOING request already exists
+    // for this (team, app, accessType). Treat as recoverable — the caller
+    // should look up the existing request id via listOngoingReportRequests.
+    err.isConflict = resp.status === 409;
+    throw err;
+  }
+  return {
+    id: resp.data?.data?.id,
+    stoppedDueToInactivity: resp.data?.data?.attributes?.stoppedDueToInactivity || false,
+  };
+}
+
+// If Apple 409'd on createOngoingReportRequest, use this to find the existing
+// request for the same app. Filter by app id via /v1/apps/{id}/analyticsReportRequests.
+async function findOngoingReportRequestForApp(creds, { appId }) {
+  if (!appId) throw new Error('appId required');
+  const resp = await apiGet(creds, `/v1/apps/${appId}/analyticsReportRequests`, {
+    params: {
+      'filter[accessType]': 'ONGOING',
+      limit: 5,
+    },
+  });
+  const rows = resp.data?.data || [];
+  // Prefer the most recent non-stopped one.
+  const active = rows.find(r => !r.attributes?.stoppedDueToInactivity);
+  const chosen = active || rows[0] || null;
+  if (!chosen) return null;
+  return {
+    id: chosen.id,
+    stoppedDueToInactivity: chosen.attributes?.stoppedDueToInactivity || false,
+  };
+}
+
+async function listReportsInRequest(creds, requestId, { categories } = {}) {
+  if (!requestId) throw new Error('requestId required');
+  const params = { limit: 200 };
+  if (Array.isArray(categories) && categories.length) {
+    params['filter[category]'] = categories.join(',');
+  }
+  const resp = await apiGet(creds, `/v1/analyticsReportRequests/${requestId}/reports`, { params });
+  return (resp.data?.data || []).map(r => ({
+    id: r.id,
+    name: r.attributes?.name || null,
+    category: r.attributes?.category || null,
+  }));
+}
+
+async function listInstancesForReport(creds, reportId, { granularity = 'DAILY', processingDateFrom, limit = 200 } = {}) {
+  if (!reportId) throw new Error('reportId required');
+  const params = {
+    'filter[granularity]': granularity,
+    limit,
+  };
+  // Apple accepts filter[processingDate]=YYYY-MM-DD for exact date, no >= filter
+  // in current API version — we fetch all recent instances and filter caller-side.
+  if (processingDateFrom && /^\d{4}-\d{2}-\d{2}$/.test(processingDateFrom)) {
+    params['filter[processingDate]'] = processingDateFrom;
+  }
+  const resp = await apiGet(creds, `/v1/analyticsReports/${reportId}/instances`, { params });
+  return (resp.data?.data || []).map(r => ({
+    id: r.id,
+    processingDate: r.attributes?.processingDate || null,
+    granularity: r.attributes?.granularity || null,
+  }));
+}
+
+async function listSegmentsInInstance(creds, instanceId) {
+  if (!instanceId) throw new Error('instanceId required');
+  const resp = await apiGet(creds, `/v1/analyticsReportInstances/${instanceId}/segments`, {
+    params: { limit: 50 },
+  });
+  return (resp.data?.data || []).map(s => ({
+    url: s.attributes?.url || null,
+    sizeInBytes: s.attributes?.sizeInBytes || 0,
+    checksum: s.attributes?.checksum || null,
+  }));
+}
+
+// Download and gunzip a single segment. Segment URLs are Apple-signed S3
+// links — no JWT header needed (and adding one would break the signed
+// request). Returns parsed rows.
+async function downloadSegment(segment) {
+  if (!segment?.url) throw new Error('segment.url required');
+  const resp = await axios.get(segment.url, {
+    responseType: 'arraybuffer',
+    validateStatus: () => true,
+    timeout: 60_000,
+  });
+  if (resp.status >= 400) {
+    throw Object.assign(
+      new Error(`Segment download ${resp.status}`),
+      { status: resp.status }
+    );
+  }
+  const gz = Buffer.from(resp.data);
+  const csv = (await gunzip(gz)).toString('utf8');
+  return parseAnalyticsCsv(csv);
+}
+
+// Apple's analytics CSVs are actually TAB-separated (despite the naming) —
+// same format as sales reports. First row is header, subsequent rows are
+// data. Rows can contain empty values; we preserve them as empty strings.
+// Numeric coercion is left to the caller (per-report aggregation logic in
+// ascAnalyticsService knows which columns are metrics vs dimensions).
+function parseAnalyticsCsv(csvOrTsv) {
+  const lines = csvOrTsv.split(/\r?\n/).filter(l => l.length > 0);
+  if (lines.length === 0) return [];
+  const header = lines[0].split('\t');
+  const rows = [];
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i].split('\t');
+    const obj = {};
+    for (let j = 0; j < header.length; j++) {
+      obj[header[j]] = cols[j] ?? '';
+    }
+    rows.push(obj);
+  }
+  return rows;
+}
+
 module.exports = {
   signJwt,
   listApps,
   getReviews,
   getSalesReport,
   getSalesReportRange,
-  _internal: { parseSalesTsv, summarizeAppleError, BASE_URL },
+  createOngoingReportRequest,
+  findOngoingReportRequestForApp,
+  listReportsInRequest,
+  listInstancesForReport,
+  listSegmentsInInstance,
+  downloadSegment,
+  _internal: { parseSalesTsv, parseAnalyticsCsv, summarizeAppleError, BASE_URL },
 };

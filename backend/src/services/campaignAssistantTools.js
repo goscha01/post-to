@@ -19,6 +19,8 @@
 // provider-agnostic; toolsForOpenAI() / toolsForClaude() format for each.
 
 const googleAdsService = require('./googleAdsService');
+const ascAnalytics = require('./ascAnalyticsService');
+const asc = require('./appStoreConnectService');
 const logger = require('../utils/logger');
 
 // Bound to what the chat handler considers safe: no 6-month lookbacks, no
@@ -39,6 +41,24 @@ function clampDays(v, fallback) {
 
 function digitsOnly(v) {
   return String(v || '').replace(/[^0-9]/g, '');
+}
+
+// Apple App Store Connect analytics tools operate on THREE data sources:
+//   - The Sales & Trends synchronous report (installs, IAP counts) via ASC
+//     service directly
+//   - The customer reviews REST endpoint (near real-time)
+//   - The App Analytics cache table (impressions, product page views, install
+//     conversion rate, source-type breakdown) — populated by the cron worker
+//
+// Executor calls out to two different modules (asc + ascAnalytics) depending
+// on which data the tool needs; both share the same credential context bound
+// at conversation-load time.
+const ASC_ALLOWED_DAYS = [7, 14, 30, 60, 90];
+const MAX_ASC_REVIEWS = 30;
+
+function ascClampDays(v, fallback) {
+  const n = parseInt(v, 10);
+  return ASC_ALLOWED_DAYS.includes(n) ? n : fallback;
 }
 
 const TOOL_DEFINITIONS = [
@@ -107,6 +127,40 @@ const TOOL_DEFINITIONS = [
       },
     },
   },
+  // -----------------------------------------------------------------------
+  // Apple App Store Connect tools
+  // -----------------------------------------------------------------------
+  {
+    name: 'asc_get_install_funnel',
+    description: 'Apple App Store install funnel: impressions on the listing → product page views → app installs → install conversion rate. Use to answer "how does my App Store listing perform?", "what\'s my install conversion rate?", "is my listing converting well?" Returns totals + per-day breakdown. Reads from the analytics cache — reflects the last successful cron walk (roughly hourly). Data lag from Apple is ~24-36 hours.',
+    parameters: {
+      type: 'object',
+      properties: {
+        days: { type: 'integer', enum: ASC_ALLOWED_DAYS, description: 'Lookback window. Default 14.' },
+      },
+    },
+  },
+  {
+    name: 'asc_get_installs_by_source',
+    description: 'Apple App Store installs and product-page views broken down by source type: App Store Search, App Store Browse, App Referrer, Web Referrer, Campaign, etc. This is THE tool for answering "which of my paid campaigns actually drives installs?" or "what proportion of installs is organic?" Includes the top 10 campaigns under each source when Campaign is populated.',
+    parameters: {
+      type: 'object',
+      properties: {
+        days: { type: 'integer', enum: ASC_ALLOWED_DAYS, description: 'Lookback window. Default 14.' },
+      },
+    },
+  },
+  {
+    name: 'asc_get_recent_reviews',
+    description: 'Recent App Store customer reviews (ratings + text) across all territories. Use when the user asks "any bad reviews recently?", "what are users complaining about?", or wants sentiment context on a performance issue. Returns up to 30 reviews sorted newest-first.',
+    parameters: {
+      type: 'object',
+      properties: {
+        limit: { type: 'integer', description: 'Number of reviews to return, 1-30. Default 20.' },
+        territory: { type: 'string', description: 'Optional ISO-3 country code (e.g. USA, GBR, JPN) to restrict to one territory.' },
+      },
+    },
+  },
 ];
 
 const TOOL_NAMES = TOOL_DEFINITIONS.map(t => t.name);
@@ -132,65 +186,139 @@ function toolsForClaude() {
   }));
 }
 
-// Build an executor bound to the conversation's Google Ads customer + OAuth
-// token + optional default campaignId. execute(name, args) returns a plain
-// object that will be JSON-stringified and sent back as a tool_result.
+// Build an executor bound to the conversation's provider contexts.
+//   ctx.googleAds  = { accessToken, customerId, loginCustomerId, campaignId, userId } | null
+//   ctx.asc        = { creds:{p8,issuerId,keyId}, connectionId, appId, userId } | null
 //
-// Errors are returned as { error: string } rather than thrown — a broken tool
-// should not kill the whole chat turn. The model can read the error and
-// either try a different tool or explain the problem to the user.
+// Tools dispatch by prefix (google_ads_* → Google Ads; asc_* → ASC). If a
+// tool is called with the matching provider unconnected, execute() returns
+// { error: '<provider> not connected...' } rather than throwing — the model
+// then explains the gap to the user.
+//
+// Errors from provider APIs are ALSO returned as { error } instead of
+// thrown, for the same reason: a broken tool should never kill a turn.
 function makeExecutor(context) {
-  const {
-    accessToken,
-    customerId,
-    loginCustomerId = null,
-    campaignId: defaultCampaignId = null,
-    userId = null,
-  } = context || {};
+  const gaCtx = context?.googleAds || null;
+  const ascCtx = context?.asc || null;
+  const anyAvailable = !!(gaCtx?.accessToken && gaCtx?.customerId) || !!(ascCtx?.creds && ascCtx?.connectionId);
 
-  if (!accessToken || !customerId) {
+  if (!anyAvailable) {
     return {
       available: false,
       execute: async () => ({
-        error: 'Google Ads is not connected for this conversation. Ask the user to connect it in Connections.',
+        error: 'No provider (Google Ads or App Store Connect) is connected for this conversation.',
       }),
     };
   }
 
-  const baseOpts = { loginCustomerId };
+  const gaOpts = gaCtx ? { loginCustomerId: gaCtx.loginCustomerId || null } : null;
+  const userIdForLog = gaCtx?.userId || ascCtx?.userId || null;
 
   async function execute(name, args = {}) {
     const t0 = Date.now();
     try {
       const result = await dispatch(name, args);
       logger.info('campaignAssistant.tool_ok', {
-        userId,
-        customerId,
+        userId: userIdForLog,
         tool: name,
         duration_ms: Date.now() - t0,
       });
       return result;
     } catch (err) {
-      const norm = googleAdsService.normalizeApiError(err, {
-        endpoint: name,
-        userId,
-      });
+      // Google Ads errors have a specific normalizer; ASC errors already carry
+      // status + a readable message from asc.summarizeAppleError. Pick the
+      // right path so we log useful context.
+      let message = err?.message || 'tool execution failed';
+      let code = null;
+      if (name.startsWith('google_ads_') && googleAdsService.normalizeApiError) {
+        const norm = googleAdsService.normalizeApiError(err, { endpoint: name, userId: userIdForLog });
+        message = norm.message || message;
+        code = norm.code || null;
+      }
       logger.warn('campaignAssistant.tool_failed', {
-        userId,
-        customerId,
+        userId: userIdForLog,
         tool: name,
-        error: norm.message,
-        code: norm.code,
+        error: String(message).slice(0, 300),
+        status: err?.status || null,
+        code,
         duration_ms: Date.now() - t0,
       });
       return {
-        error: norm.message || 'Google Ads request failed',
-        code: norm.code || null,
+        error: message,
+        code: code || null,
       };
     }
   }
 
   async function dispatch(name, args) {
+    // ---- Google Ads dispatch ----
+    if (name.startsWith('google_ads_')) {
+      if (!gaCtx?.accessToken || !gaCtx?.customerId) {
+        return { error: 'Google Ads is not connected for this conversation. Ask the user to connect it in Connections.' };
+      }
+      return dispatchGoogleAds(name, args);
+    }
+    // ---- App Store Connect dispatch ----
+    if (name.startsWith('asc_')) {
+      if (!ascCtx?.creds || !ascCtx?.connectionId) {
+        return { error: 'Apple App Store Connect is not connected for this conversation. Ask the user to connect it in Connections.' };
+      }
+      return dispatchAsc(name, args);
+    }
+    return { error: `Unknown tool: ${name}` };
+  }
+
+  async function dispatchAsc(name, args) {
+    switch (name) {
+      case 'asc_get_install_funnel': {
+        const days = ascClampDays(args.days, 14);
+        const funnel = await ascAnalytics.getInstallFunnel({
+          connectionId: ascCtx.connectionId,
+          days,
+        });
+        // If no data has landed yet, tell the model plainly so it doesn't
+        // interpret zero-metrics as "your app has no impressions."
+        if (funnel.dataCoverageDays === 0) {
+          return {
+            days,
+            note: 'No analytics data cached yet. Apple takes 24-48 hours after the initial bootstrap to produce the first daily report; the hourly cron will populate the cache as reports become available. Ask the user to check back tomorrow, or use asc_get_recent_reviews for immediately-available data.',
+            totals: funnel.totals,
+          };
+        }
+        return funnel;
+      }
+      case 'asc_get_installs_by_source': {
+        const days = ascClampDays(args.days, 14);
+        const res = await ascAnalytics.getInstallsBySource({
+          connectionId: ascCtx.connectionId,
+          days,
+        });
+        if (!res.sources.length) {
+          return {
+            days,
+            note: 'No source-attribution data cached yet. See asc_get_install_funnel note about the initial bootstrap lag.',
+            sources: [],
+          };
+        }
+        return res;
+      }
+      case 'asc_get_recent_reviews': {
+        const limit = Math.min(Math.max(parseInt(args.limit, 10) || 20, 1), MAX_ASC_REVIEWS);
+        const territory = args.territory ? String(args.territory).toUpperCase().slice(0, 3) : null;
+        if (!ascCtx.appId) return { error: 'ASC connection has no primary appId' };
+        const reviews = await asc.getReviews(ascCtx.creds, {
+          appId: ascCtx.appId, limit, territory,
+        });
+        return { count: reviews.length, territory, reviews };
+      }
+      default:
+        return { error: `Unknown ASC tool: ${name}` };
+    }
+  }
+
+  async function dispatchGoogleAds(name, args) {
+    const { accessToken, customerId, campaignId: defaultCampaignId } = gaCtx;
+    const baseOpts = gaOpts;
     switch (name) {
       case 'google_ads_get_ad_status': {
         const adId = digitsOnly(args.adId);

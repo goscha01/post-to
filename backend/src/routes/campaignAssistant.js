@@ -24,6 +24,7 @@ const optimizationReport = require('../services/optimizationReportService');
 const campaignAssistant = require('../services/campaignAssistantService');
 const campaignMonitor = require('../services/campaignMonitorService');
 const campaignAssistantTools = require('../services/campaignAssistantTools');
+const cryptoBox = require('../utils/cryptoBox');
 const openAiAds = require('../services/openAiAdsService');
 const connectionsService = require('../services/connectionsService');
 const { getAllBusinessTokens } = require('../utils/businessTokens');
@@ -296,6 +297,38 @@ async function resolveGoogleAdsToolContext(userId, conv) {
     customerId: String(customerId),
     loginCustomerId,
     campaignId: conv.campaign_id || null,
+    userId,
+  };
+}
+
+// Resolve an App Store Connect tool context for a conversation. Unlike
+// Google Ads (scoped per-conversation via google_ads_customer_id on the
+// conv row), the ASC connection is user-global — we grab the most recent
+// active ASC connection this user has. Returns null when there's no
+// connection or the .p8 can't be decrypted.
+async function resolveAscToolContext(userId) {
+  const { data: rows } = await supabase
+    .from('connected_accounts')
+    .select('id, metadata')
+    .eq('user_id', userId)
+    .eq('provider', 'app_store_connect')
+    .eq('status', 'active')
+    .order('created_at', { ascending: false })
+    .limit(1);
+  const row = rows?.[0];
+  if (!row) return null;
+  const meta = row.metadata || {};
+  if (!meta.p8_encrypted || !meta.issuer_id || !meta.key_id || !meta.app_id) return null;
+  let p8;
+  try { p8 = cryptoBox.decrypt(meta.p8_encrypted); }
+  catch (err) {
+    logger.warn('campaignAssistant.asc_decrypt_failed', { userId, connectionId: row.id, error: err.message });
+    return null;
+  }
+  return {
+    creds: { p8, issuerId: meta.issuer_id, keyId: meta.key_id },
+    connectionId: row.id,
+    appId: meta.app_id,
     userId,
   };
 }
@@ -837,11 +870,17 @@ router.post('/conversations/:id/chat', async (req, res) => {
   // without it (backward-compatible).
   const planProgress = await loadPlanProgressBlock(conversationId);
 
-  // Resolve Google Ads tool context ONCE per turn (both providers share
-  // the same executor). When null, tools are silently omitted from the
-  // model request — the model falls back to the snapshot.
-  const toolCtx = await resolveGoogleAdsToolContext(userId, conv);
-  const toolExecutor = toolCtx ? campaignAssistantTools.makeExecutor(toolCtx) : null;
+  // Resolve provider tool contexts ONCE per turn (both providers share the
+  // same executor). Missing contexts short-circuit at dispatch time inside
+  // the executor with an "X not connected" error, so we don't need to strip
+  // tools from the request just because one provider is unwired.
+  const [gaToolCtx, ascToolCtx] = await Promise.all([
+    resolveGoogleAdsToolContext(userId, conv),
+    resolveAscToolContext(userId),
+  ]);
+  const toolExecutor = (gaToolCtx || ascToolCtx)
+    ? campaignAssistantTools.makeExecutor({ googleAds: gaToolCtx, asc: ascToolCtx })
+    : null;
   const openaiTools = toolExecutor ? campaignAssistantTools.toolsForOpenAI() : null;
   const claudeTools = toolExecutor ? campaignAssistantTools.toolsForClaude() : null;
 

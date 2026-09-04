@@ -49,6 +49,33 @@ const remove = async (connectionId) => {
   return res.data;
 };
 
+// ---- Analytics (Phase 2, async report flow) ----
+
+const analyticsStatus = async (connectionId) => {
+  const res = await axios.get('/api/asc/analytics/status', { params: { connectionId } });
+  return res.data;
+};
+
+const analyticsBootstrap = async (connectionId) => {
+  const res = await axios.post('/api/asc/analytics/bootstrap', { connectionId });
+  return res.data;
+};
+
+const analyticsWalk = async (connectionId) => {
+  const res = await axios.post('/api/asc/analytics/walk', { connectionId });
+  return res.data;
+};
+
+const analyticsFunnel = async (connectionId, days = 14) => {
+  const res = await axios.get('/api/asc/analytics/funnel', { params: { connectionId, days } });
+  return res.data;
+};
+
+const analyticsSources = async (connectionId, days = 14) => {
+  const res = await axios.get('/api/asc/analytics/sources', { params: { connectionId, days } });
+  return res.data;
+};
+
 export default {
   connect,
   listConnected,
@@ -57,4 +84,9 @@ export default {
   getReviews,
   getSales,
   remove,
+  analyticsStatus,
+  analyticsBootstrap,
+  analyticsWalk,
+  analyticsFunnel,
+  analyticsSources,
 };

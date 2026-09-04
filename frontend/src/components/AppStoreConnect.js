@@ -8,6 +8,9 @@ import {
   Link2,
   RefreshCw,
   Loader2,
+  TrendingUp,
+  Activity,
+  Zap,
 } from 'lucide-react';
 import ascService from '../services/appStoreConnectService';
 
@@ -106,6 +109,14 @@ const AppStoreConnect = () => {
   const [loadingReviews, setLoadingReviews] = useState(false);
   const [loadingApps, setLoadingApps] = useState(false);
 
+  // Analytics (Phase 2)
+  const [analyticsStatus, setAnalyticsStatus] = useState(null);
+  const [funnel, setFunnel] = useState(null);
+  const [sources, setSources] = useState(null);
+  const [loadingAnalytics, setLoadingAnalytics] = useState(false);
+  const [bootstrapping, setBootstrapping] = useState(false);
+  const [walking, setWalking] = useState(false);
+
   const selectedConnection = useMemo(
     () => connections.find(c => c.connectionId === selectedConnectionId) || null,
     [connections, selectedConnectionId]
@@ -193,12 +204,66 @@ const AppStoreConnect = () => {
     }
   }, [selectedConnectionId, selectedAppId]);
 
+  const loadAnalytics = useCallback(async () => {
+    if (!selectedConnectionId) return;
+    try {
+      setLoadingAnalytics(true);
+      setError('');
+      const status = await ascService.analyticsStatus(selectedConnectionId);
+      setAnalyticsStatus(status);
+      if (status.bootstrapped && status.cachedInstances > 0) {
+        const [f, s] = await Promise.all([
+          ascService.analyticsFunnel(selectedConnectionId, days),
+          ascService.analyticsSources(selectedConnectionId, days),
+        ]);
+        setFunnel(f);
+        setSources(s);
+      } else {
+        setFunnel(null);
+        setSources(null);
+      }
+    } catch (e) {
+      setError(e?.response?.data?.error || e.message);
+    } finally {
+      setLoadingAnalytics(false);
+    }
+  }, [selectedConnectionId, days]);
+
+  const doBootstrap = async () => {
+    if (!selectedConnectionId) return;
+    setBootstrapping(true);
+    setError('');
+    try {
+      await ascService.analyticsBootstrap(selectedConnectionId);
+      await loadAnalytics();
+    } catch (e) {
+      setError(e?.response?.data?.error || e.message);
+    } finally {
+      setBootstrapping(false);
+    }
+  };
+
+  const doWalk = async () => {
+    if (!selectedConnectionId) return;
+    setWalking(true);
+    setError('');
+    try {
+      await ascService.analyticsWalk(selectedConnectionId);
+      await loadAnalytics();
+    } catch (e) {
+      setError(e?.response?.data?.error || e.message);
+    } finally {
+      setWalking(false);
+    }
+  };
+
   // Fire the tab's loader when tab / selection changes.
   useEffect(() => {
     if (!selectedConnectionId) return;
     if (tab === 'overview') loadSales();
     if (tab === 'reviews') loadReviews();
-  }, [tab, selectedConnectionId, selectedAppId, days, loadSales, loadReviews]);
+    if (tab === 'analytics') loadAnalytics();
+  }, [tab, selectedConnectionId, selectedAppId, days, loadSales, loadReviews, loadAnalytics]);
 
   // Aggregate sales rows into daily install totals (product type = new app install: 1, 1F, 1T)
   const dailyInstalls = useMemo(() => {
@@ -342,6 +407,7 @@ const AppStoreConnect = () => {
       <div className="flex gap-1 border-b border-gray-200">
         {[
           { id: 'overview', label: 'Overview' },
+          { id: 'analytics', label: 'Analytics' },
           { id: 'reviews', label: 'Reviews' },
           { id: 'apps', label: 'Apps' },
         ].map(t => (
@@ -444,6 +510,156 @@ const AppStoreConnect = () => {
               {r.body && <p className="text-sm text-gray-700 whitespace-pre-wrap mt-0.5">{r.body}</p>}
             </div>
           ))}
+        </div>
+      )}
+
+      {tab === 'analytics' && (
+        <div className="space-y-4">
+          {loadingAnalytics && !analyticsStatus && (
+            <div className="text-sm text-gray-500 flex items-center gap-2">
+              <Loader2 className="h-4 w-4 animate-spin" /> Loading analytics status…
+            </div>
+          )}
+
+          {analyticsStatus && !analyticsStatus.bootstrapped && (
+            <div className="bg-white border border-gray-200 rounded-lg p-6 flex flex-col items-start gap-3">
+              <div className="h-10 w-10 rounded-lg bg-blue-50 flex items-center justify-center">
+                <Activity className="h-5 w-5 text-blue-600" />
+              </div>
+              <h3 className="text-base font-semibold text-gray-900">Enable App Analytics</h3>
+              <p className="text-sm text-gray-600">
+                One-time setup. This tells Apple to start generating daily reports
+                for your listing metrics (impressions, product page views, install
+                conversion rate, source-type breakdown). The first daily report
+                appears <strong>24-48 hours</strong> after enabling; subsequent
+                reports arrive daily.
+              </p>
+              <button
+                onClick={doBootstrap}
+                disabled={bootstrapping}
+                className="inline-flex items-center gap-2 px-3 py-2 bg-primary-600 text-white text-sm font-medium rounded-md hover:bg-primary-700 disabled:opacity-50"
+              >
+                {bootstrapping ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
+                {bootstrapping ? 'Enabling…' : 'Enable App Analytics'}
+              </button>
+            </div>
+          )}
+
+          {analyticsStatus?.bootstrapped && analyticsStatus.cachedInstances === 0 && (
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-900">
+              <p className="font-medium">Waiting for Apple's first report</p>
+              <p className="mt-1 text-amber-800">
+                App Analytics enabled at {fmtDate(analyticsStatus.bootstrapAt)}.
+                Apple hasn't delivered a daily report yet — this takes 24-48 hours
+                after enabling. The hourly cron will populate this tab automatically
+                as reports arrive.
+                {analyticsStatus.lastCheckAt && <> Last checked {new Date(analyticsStatus.lastCheckAt).toLocaleString()}.</>}
+              </p>
+              <button
+                onClick={doWalk}
+                disabled={walking}
+                className="mt-2 inline-flex items-center gap-1.5 px-2.5 py-1 text-xs text-amber-900 border border-amber-300 rounded-md hover:bg-amber-100 disabled:opacity-50"
+              >
+                {walking ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                {walking ? 'Checking Apple…' : 'Check now'}
+              </button>
+            </div>
+          )}
+
+          {funnel && funnel.dataCoverageDays > 0 && (
+            <>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <StatCard label="Impressions" value={fmtInt(funnel.totals.impressions)} sub={`last ${days} days`} />
+                <StatCard label="Page views" value={fmtInt(funnel.totals.productPageViews)} sub="unique-device" />
+                <StatCard label="Installs" value={fmtInt(funnel.totals.installs)} sub="new + first-time" />
+                <StatCard
+                  label="Conversion rate"
+                  value={funnel.totals.conversionRate != null
+                    ? `${(funnel.totals.conversionRate * 100).toFixed(1)}%`
+                    : '—'}
+                  sub="installs / unique PPV"
+                />
+              </div>
+
+              <div>
+                <h3 className="text-xs font-semibold text-gray-600 uppercase tracking-wide mb-2 flex items-center gap-1.5">
+                  <TrendingUp className="h-3.5 w-3.5" />
+                  Daily funnel
+                </h3>
+                <Table>
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <Th>Date</Th>
+                      <Th className="text-right">Impressions</Th>
+                      <Th className="text-right">Unique dev.</Th>
+                      <Th className="text-right">Page views</Th>
+                      <Th className="text-right">Installs</Th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {funnel.perDay.map(d => (
+                      <tr key={d.date}>
+                        <Td>{d.date}</Td>
+                        <Td className="text-right">{fmtInt(d.impressions)}</Td>
+                        <Td className="text-right text-gray-500">{fmtInt(d.impressionsUniqueDevice)}</Td>
+                        <Td className="text-right">{fmtInt(d.productPageViews)}</Td>
+                        <Td className="text-right font-medium">{fmtInt(d.installs)}</Td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </Table>
+              </div>
+            </>
+          )}
+
+          {sources && sources.sources.length > 0 && (
+            <div>
+              <h3 className="text-xs font-semibold text-gray-600 uppercase tracking-wide mb-2">
+                Installs by source (paid vs organic)
+              </h3>
+              <Table>
+                <thead className="bg-gray-50">
+                  <tr>
+                    <Th>Source</Th>
+                    <Th className="text-right">Impressions</Th>
+                    <Th className="text-right">Page views</Th>
+                    <Th>Top campaigns</Th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {sources.sources.map(s => (
+                    <tr key={s.sourceType}>
+                      <Td className="font-medium">{s.sourceType}</Td>
+                      <Td className="text-right">{fmtInt(s.impressions)}</Td>
+                      <Td className="text-right">{fmtInt(s.productPageViews)}</Td>
+                      <Td className="text-xs text-gray-500">
+                        {s.topCampaigns.length > 0
+                          ? s.topCampaigns.slice(0, 3).map(c => `${c.campaign} (${fmtInt(c.productPageViews)} PPV)`).join(', ')
+                          : '—'}
+                      </Td>
+                    </tr>
+                  ))}
+                </tbody>
+              </Table>
+            </div>
+          )}
+
+          {analyticsStatus?.bootstrapped && analyticsStatus.cachedInstances > 0 && (
+            <div className="flex items-center justify-between text-xs text-gray-500 pt-2 border-t border-gray-100">
+              <span>
+                {analyticsStatus.cachedInstances} cached daily instances ·
+                last check {analyticsStatus.lastCheckAt ? new Date(analyticsStatus.lastCheckAt).toLocaleString() : 'never'}
+              </span>
+              <button
+                onClick={doWalk}
+                disabled={walking}
+                className="inline-flex items-center gap-1.5 px-2 py-1 border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50"
+              >
+                {walking ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                {walking ? 'Checking…' : 'Refresh from Apple'}
+              </button>
+            </div>
+          )}
         </div>
       )}
 

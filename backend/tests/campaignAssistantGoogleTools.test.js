@@ -116,8 +116,8 @@ function resetStub(overrides = {}) {
 // Tool schema shape
 // ============================================================================
 
-test('exposes 6 Google Ads tools with stable names', () => {
-  assert.equal(tools.TOOL_NAMES.length, 6);
+test('exposes 6 Google Ads + 3 ASC tools with stable names', () => {
+  assert.equal(tools.TOOL_NAMES.length, 9);
   const expected = [
     'google_ads_get_ad_status',
     'google_ads_get_campaign',
@@ -125,13 +125,16 @@ test('exposes 6 Google Ads tools with stable names', () => {
     'google_ads_get_recent_changes',
     'google_ads_get_diagnostics',
     'google_ads_list_ads',
+    'asc_get_install_funnel',
+    'asc_get_installs_by_source',
+    'asc_get_recent_reviews',
   ];
   for (const n of expected) assert.ok(tools.TOOL_NAMES.includes(n), `missing tool: ${n}`);
 });
 
 test('toolsForOpenAI produces {type:function, function:{name, description, parameters}}', () => {
   const arr = tools.toolsForOpenAI();
-  assert.equal(arr.length, 6);
+  assert.equal(arr.length, 9);
   for (const t of arr) {
     assert.equal(t.type, 'function');
     assert.ok(t.function.name);
@@ -142,7 +145,7 @@ test('toolsForOpenAI produces {type:function, function:{name, description, param
 
 test('toolsForClaude produces {name, description, input_schema} (no wrapper)', () => {
   const arr = tools.toolsForClaude();
-  assert.equal(arr.length, 6);
+  assert.equal(arr.length, 9);
   for (const t of arr) {
     assert.ok(t.name);
     assert.ok(t.description);
@@ -156,28 +159,37 @@ test('toolsForClaude produces {name, description, input_schema} (no wrapper)', (
 // ============================================================================
 
 test('makeExecutor returns unavailable when accessToken missing', async () => {
-  const exec = tools.makeExecutor({ customerId: '123' });
+  const exec = tools.makeExecutor({ googleAds: { customerId: '123' } });
   assert.equal(exec.available, false);
   const r = await exec.execute('google_ads_get_ad_status', { adId: '999' });
   assert.ok(r.error);
-  assert.match(r.error, /not connected/i);
+  assert.match(r.error, /no provider/i);
 });
 
 test('makeExecutor returns unavailable when customerId missing', async () => {
-  const exec = tools.makeExecutor({ accessToken: 'tok' });
+  const exec = tools.makeExecutor({ googleAds: { accessToken: 'tok' } });
   assert.equal(exec.available, false);
+});
+
+test('google_ads_* tool returns "not connected" error when ASC ctx set but no Google Ads', async () => {
+  resetStub();
+  const exec = tools.makeExecutor({
+    asc: { creds: { p8: 'x', issuerId: 'i', keyId: 'k' }, connectionId: 'c1', appId: '111' },
+  });
+  const r = await exec.execute('google_ads_get_ad_status', { adId: '999' });
+  assert.match(r.error, /Google Ads is not connected/);
 });
 
 test('unknown tool name returns { error }', async () => {
   resetStub();
-  const exec = tools.makeExecutor({ accessToken: 'tok', customerId: '123' });
+  const exec = tools.makeExecutor({ googleAds: { accessToken: 'tok', customerId: '123' } });
   const r = await exec.execute('google_ads_fake_tool', {});
   assert.match(r.error, /Unknown tool/);
 });
 
 test('get_ad_status finds a matching ad and returns { found:true, ad }', async () => {
   resetStub();
-  const exec = tools.makeExecutor({ accessToken: 'tok', customerId: '123', loginCustomerId: '456' });
+  const exec = tools.makeExecutor({ googleAds: { accessToken: 'tok', customerId: '123', loginCustomerId: '456' } });
   const r = await exec.execute('google_ads_get_ad_status', { adId: '819046265947' });
   assert.equal(r.found, true);
   assert.equal(r.adId, '819046265947');
@@ -190,7 +202,7 @@ test('get_ad_status finds a matching ad and returns { found:true, ad }', async (
 
 test('get_ad_status accepts adId with non-digit noise (strips to digits)', async () => {
   resetStub();
-  const exec = tools.makeExecutor({ accessToken: 'tok', customerId: '123' });
+  const exec = tools.makeExecutor({ googleAds: { accessToken: 'tok', customerId: '123' } });
   const r = await exec.execute('google_ads_get_ad_status', { adId: '819-046-265-947' });
   assert.equal(r.found, true);
   assert.equal(r.adId, '819046265947');
@@ -198,7 +210,7 @@ test('get_ad_status accepts adId with non-digit noise (strips to digits)', async
 
 test('get_ad_status returns { found:false, note } when ad not in last 30d', async () => {
   resetStub();
-  const exec = tools.makeExecutor({ accessToken: 'tok', customerId: '123' });
+  const exec = tools.makeExecutor({ googleAds: { accessToken: 'tok', customerId: '123' } });
   const r = await exec.execute('google_ads_get_ad_status', { adId: '999999' });
   assert.equal(r.found, false);
   assert.ok(r.note);
@@ -206,14 +218,14 @@ test('get_ad_status returns { found:false, note } when ad not in last 30d', asyn
 
 test('get_ad_status requires adId', async () => {
   resetStub();
-  const exec = tools.makeExecutor({ accessToken: 'tok', customerId: '123' });
+  const exec = tools.makeExecutor({ googleAds: { accessToken: 'tok', customerId: '123' } });
   const r = await exec.execute('google_ads_get_ad_status', {});
   assert.match(r.error, /adId required/);
 });
 
 test('get_campaign clamps invalid days to 30', async () => {
   resetStub();
-  const exec = tools.makeExecutor({ accessToken: 'tok', customerId: '123' });
+  const exec = tools.makeExecutor({ googleAds: { accessToken: 'tok', customerId: '123' } });
   await exec.execute('google_ads_get_campaign', { campaignId: '111', days: 999 });
   const c = calls.find(x => x.name === 'getCampaigns');
   assert.equal(c.args.days, 30);
@@ -221,7 +233,7 @@ test('get_campaign clamps invalid days to 30', async () => {
 
 test('get_campaign accepts valid days from the enum', async () => {
   resetStub();
-  const exec = tools.makeExecutor({ accessToken: 'tok', customerId: '123' });
+  const exec = tools.makeExecutor({ googleAds: { accessToken: 'tok', customerId: '123' } });
   await exec.execute('google_ads_get_campaign', { campaignId: '111', days: 7 });
   const c = calls.find(x => x.name === 'getCampaigns');
   assert.equal(c.args.days, 7);
@@ -229,7 +241,7 @@ test('get_campaign accepts valid days from the enum', async () => {
 
 test('get_search_terms sorts by cost desc and caps at 50', async () => {
   resetStub();
-  const exec = tools.makeExecutor({ accessToken: 'tok', customerId: '123' });
+  const exec = tools.makeExecutor({ googleAds: { accessToken: 'tok', customerId: '123' } });
   const r = await exec.execute('google_ads_get_search_terms', {});
   assert.equal(r.count, 50);
   assert.equal(r.truncated, true);
@@ -241,7 +253,7 @@ test('get_search_terms sorts by cost desc and caps at 50', async () => {
 test('get_search_terms uses conversation default campaignId when caller omits', async () => {
   resetStub();
   const exec = tools.makeExecutor({
-    accessToken: 'tok', customerId: '123', campaignId: '888',
+    googleAds: { accessToken: 'tok', customerId: '123', campaignId: '888' },
   });
   await exec.execute('google_ads_get_search_terms', {});
   const c = calls.find(x => x.name === 'getSearchTerms');
@@ -251,7 +263,7 @@ test('get_search_terms uses conversation default campaignId when caller omits', 
 test('get_search_terms caller campaignId overrides conversation default', async () => {
   resetStub();
   const exec = tools.makeExecutor({
-    accessToken: 'tok', customerId: '123', campaignId: '888',
+    googleAds: { accessToken: 'tok', customerId: '123', campaignId: '888' },
   });
   await exec.execute('google_ads_get_search_terms', { campaignId: '777' });
   const c = calls.find(x => x.name === 'getSearchTerms');
@@ -260,7 +272,7 @@ test('get_search_terms caller campaignId overrides conversation default', async 
 
 test('get_recent_changes caps at 100 events', async () => {
   resetStub();
-  const exec = tools.makeExecutor({ accessToken: 'tok', customerId: '123' });
+  const exec = tools.makeExecutor({ googleAds: { accessToken: 'tok', customerId: '123' } });
   const r = await exec.execute('google_ads_get_recent_changes', { days: 14 });
   assert.equal(r.count, 100);
   assert.equal(r.truncated, true);
@@ -268,7 +280,7 @@ test('get_recent_changes caps at 100 events', async () => {
 
 test('get_diagnostics forwards result under { diagnostics }', async () => {
   resetStub();
-  const exec = tools.makeExecutor({ accessToken: 'tok', customerId: '123' });
+  const exec = tools.makeExecutor({ googleAds: { accessToken: 'tok', customerId: '123' } });
   const r = await exec.execute('google_ads_get_diagnostics', { days: 7 });
   assert.equal(r.days, 7);
   assert.ok(r.diagnostics);
@@ -277,7 +289,7 @@ test('get_diagnostics forwards result under { diagnostics }', async () => {
 
 test('list_ads sorts by impressions desc, caps at 100', async () => {
   resetStub();
-  const exec = tools.makeExecutor({ accessToken: 'tok', customerId: '123' });
+  const exec = tools.makeExecutor({ googleAds: { accessToken: 'tok', customerId: '123' } });
   const r = await exec.execute('google_ads_list_ads', {});
   assert.equal(r.count, 2);
   assert.equal(r.ads[0].adId, '819046265947'); // impressions 1000 > 500
@@ -293,7 +305,7 @@ test('service error is caught and returned as { error }, not thrown', async () =
       response: { status: 403 },
     })),
   });
-  const exec = tools.makeExecutor({ accessToken: 'tok', customerId: '123' });
+  const exec = tools.makeExecutor({ googleAds: { accessToken: 'tok', customerId: '123' } });
   const r = await exec.execute('google_ads_get_diagnostics', {});
   assert.ok(r.error);
   assert.match(r.error, /DEVELOPER_TOKEN_NOT_APPROVED/);
