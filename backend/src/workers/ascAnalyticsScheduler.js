@@ -16,8 +16,6 @@
 // from moving on to the next connection. Errors are logged with the
 // connection id and moved on. Retries on the next tick.
 
-const path = require('path');
-const fs = require('fs');
 const { createClient } = require('@supabase/supabase-js');
 const { Client: PgClient } = require('pg');
 const ascAnalytics = require('../services/ascAnalyticsService');
@@ -36,13 +34,45 @@ const supabase = createClient(
 // URL, so we run the idempotent migration from here at boot instead. Cheap
 // (single connection, CREATE TABLE IF NOT EXISTS), safe (idempotent), and
 // removes the "please paste this SQL in the dashboard" friction.
-const MIGRATION_SQL_PATH = path.join(__dirname, '..', '..', '..', 'supabase', 'asc-analytics-cache.sql');
+// Embedded inline (not read from ../../../supabase/asc-analytics-cache.sql)
+// because Railway only builds the backend/ folder — the supabase/ dir at
+// repo root isn't present in the deployed container. Keep this in sync with
+// supabase/asc-analytics-cache.sql; the file version is what dev machines
+// run via scripts/apply-asc-analytics-migration.js. All idempotent.
+const MIGRATION_SQL = `
+CREATE TABLE IF NOT EXISTS asc_analytics_cache (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id UUID NOT NULL,
+  connection_id UUID NOT NULL,
+  app_id VARCHAR(64) NOT NULL,
+  report_category VARCHAR(64) NOT NULL,
+  granularity VARCHAR(16) NOT NULL,
+  processing_date DATE NOT NULL,
+  instance_id VARCHAR(128) NOT NULL,
+  rows JSONB NOT NULL,
+  row_count INTEGER,
+  segments_meta JSONB,
+  fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_asc_cache_conn_instance
+  ON asc_analytics_cache (connection_id, instance_id);
+
+CREATE INDEX IF NOT EXISTS idx_asc_cache_app_cat_date
+  ON asc_analytics_cache (app_id, report_category, granularity, processing_date DESC);
+
+CREATE INDEX IF NOT EXISTS idx_asc_cache_conn_date
+  ON asc_analytics_cache (connection_id, processing_date DESC);
+
+ALTER TABLE asc_analytics_cache ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Allow all operations on asc_analytics_cache" ON asc_analytics_cache;
+CREATE POLICY "Allow all operations on asc_analytics_cache"
+  ON asc_analytics_cache FOR ALL USING (true);
+`;
 
 // Idempotent — always logs at least one of {already_present, applied,
-// apply_failed, skipped}. Previous version used {head:true, count:'exact'}
-// which returned no error even for missing tables in some client versions,
-// causing a silent no-op at boot. Now uses a plain SELECT that surfaces the
-// PostgREST 42P01 / schema-cache miss reliably.
+// apply_failed, skipped}.
 async function ensureTable() {
   logger.info('asc_analytics_scheduler.ensure_start', {});
   const { error: probeErr } = await supabase
@@ -66,21 +96,12 @@ async function ensureTable() {
     });
     return { ok: false, ran: false };
   }
-  let sql;
-  try { sql = fs.readFileSync(MIGRATION_SQL_PATH, 'utf8'); }
-  catch (err) {
-    logger.warn('asc_analytics_scheduler.migration_read_failed', { error: err.message });
-    return { ok: false, ran: false };
-  }
 
   const client = new PgClient({ connectionString: dbUrl, ssl: { rejectUnauthorized: false } });
   try {
     await client.connect();
-    await client.query(sql);
-    logger.info('asc_analytics_scheduler.migration_applied', {
-      path: MIGRATION_SQL_PATH,
-      host: safeHost(dbUrl),
-    });
+    await client.query(MIGRATION_SQL);
+    logger.info('asc_analytics_scheduler.migration_applied', { host: safeHost(dbUrl) });
     return { ok: true, ran: true };
   } catch (err) {
     logger.warn('asc_analytics_scheduler.migration_apply_failed', {
