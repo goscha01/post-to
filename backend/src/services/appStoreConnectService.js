@@ -75,13 +75,29 @@ async function apiGet(creds, path, { params, responseType = 'json' } = {}) {
 }
 
 function summarizeAppleError(resp) {
-  const errors = resp.data?.errors;
+  // For arraybuffer responses (sales reports), resp.data is a Buffer — we
+  // have to decode it to UTF-8 and re-parse the JSON before we can walk
+  // errors[]. Without this coercion, the log line was "{\"type\":\"Buffer\",
+  // \"data\":[...]}" which hides Apple's actual complaint.
+  let data = resp.data;
+  if (Buffer.isBuffer(data) || data instanceof Uint8Array || (data && data.type === 'Buffer' && Array.isArray(data.data))) {
+    try {
+      const text = Buffer.isBuffer(data) || data instanceof Uint8Array
+        ? Buffer.from(data).toString('utf8')
+        : Buffer.from(data.data).toString('utf8');
+      try { data = JSON.parse(text); }
+      catch { return text.slice(0, 400); }
+    } catch { /* fall through */ }
+  }
+  const errors = data?.errors;
   if (Array.isArray(errors) && errors.length) {
     const e = errors[0];
-    return [e.title, e.detail].filter(Boolean).join(' — ') || 'unknown error';
+    const summary = [e.title, e.detail, e.code ? `(code: ${e.code})` : null]
+      .filter(Boolean).join(' — ');
+    return summary || 'unknown error';
   }
-  if (typeof resp.data === 'string') return resp.data.slice(0, 400);
-  try { return JSON.stringify(resp.data).slice(0, 400); }
+  if (typeof data === 'string') return data.slice(0, 400);
+  try { return JSON.stringify(data).slice(0, 400); }
   catch { return '(no body)'; }
 }
 

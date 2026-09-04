@@ -37,16 +37,23 @@ const supabase = createClient(
 // (single connection, CREATE TABLE IF NOT EXISTS), safe (idempotent), and
 // removes the "please paste this SQL in the dashboard" friction.
 const MIGRATION_SQL_PATH = path.join(__dirname, '..', '..', '..', 'supabase', 'asc-analytics-cache.sql');
+
+// Idempotent — always logs at least one of {already_present, applied,
+// apply_failed, skipped}. Previous version used {head:true, count:'exact'}
+// which returned no error even for missing tables in some client versions,
+// causing a silent no-op at boot. Now uses a plain SELECT that surfaces the
+// PostgREST 42P01 / schema-cache miss reliably.
 async function ensureTable() {
-  // Fast-path: try a bounded SELECT via the JS client — if the table exists,
-  // no work to do. Silent 42P01 (undefined_table) means run the migration.
+  logger.info('asc_analytics_scheduler.ensure_start', {});
   const { error: probeErr } = await supabase
     .from('asc_analytics_cache')
-    .select('id', { count: 'exact', head: true })
-    .limit(0);
-  if (!probeErr) return { ok: true, ran: false };
-  // Any error other than "relation does not exist" — surface and give up.
-  const missing = /does not exist|undefined_table|PGRST20[24]|schema cache/i.test(probeErr.message || '');
+    .select('id')
+    .limit(1);
+  if (!probeErr) {
+    logger.info('asc_analytics_scheduler.ensure_already_present', {});
+    return { ok: true, ran: false };
+  }
+  const missing = /does not exist|undefined_table|PGRST20[24]|schema cache|not find the table/i.test(probeErr.message || '');
   if (!missing) {
     logger.warn('asc_analytics_scheduler.ensure_probe_failed', { error: probeErr.message });
     return { ok: false, ran: false, error: probeErr.message };
@@ -70,14 +77,25 @@ async function ensureTable() {
   try {
     await client.connect();
     await client.query(sql);
-    logger.info('asc_analytics_scheduler.migration_applied', { path: MIGRATION_SQL_PATH });
+    logger.info('asc_analytics_scheduler.migration_applied', {
+      path: MIGRATION_SQL_PATH,
+      host: safeHost(dbUrl),
+    });
     return { ok: true, ran: true };
   } catch (err) {
-    logger.warn('asc_analytics_scheduler.migration_apply_failed', { error: err.message });
+    logger.warn('asc_analytics_scheduler.migration_apply_failed', {
+      error: err.message,
+      host: safeHost(dbUrl),
+    });
     return { ok: false, ran: false, error: err.message };
   } finally {
     await client.end().catch(() => {});
   }
+}
+
+function safeHost(url) {
+  try { return new URL(url).hostname; }
+  catch { return null; }
 }
 
 const POLL_INTERVAL_MS = Number(process.env.ASC_ANALYTICS_SCHEDULER_INTERVAL_MS) || 60 * 60 * 1000;

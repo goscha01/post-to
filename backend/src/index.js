@@ -212,8 +212,12 @@ app.listen(PORT, () => {
   }
   // Apple App Store Connect Analytics walker — hourly, pulls new daily
   // report instances into asc_analytics_cache. Opt-out via
-  // DISABLE_ASC_ANALYTICS_SCHEDULER=1.
+  // DISABLE_ASC_ANALYTICS_SCHEDULER=1. ensureTable runs eagerly at boot
+  // (not deferred by the scheduler's setTimeout) so the table exists
+  // before any user hits an analytics endpoint or tool.
   if (process.env.DISABLE_ASC_ANALYTICS_SCHEDULER !== '1') {
+    ascAnalyticsScheduler.ensureTable()
+      .catch(err => console.error('asc_analytics_scheduler.ensure_error', err?.message));
     try {
       ascAnalyticsScheduler.start();
     } catch (err) {
