@@ -89,24 +89,35 @@ async function ensureTable() {
     return { ok: false, ran: false, error: probeErr.message };
   }
 
-  const dbUrl = process.env.SUPABASE_DATABASE_URL;
+  // Prefer SUPABASE_POOLER_URL over SUPABASE_DATABASE_URL. Railway's shared
+  // cluster doesn't have IPv6 outbound, and Supabase's direct DB host
+  // (db.<ref>.supabase.co) resolves IPv6-only on free tier since Feb 2024.
+  // The Supavisor pooler (aws-0-<region>.pooler.supabase.com) is IPv4
+  // reachable and the recommended production connection anyway.
+  const dbUrl = process.env.SUPABASE_POOLER_URL || process.env.SUPABASE_DATABASE_URL;
   if (!dbUrl) {
     logger.warn('asc_analytics_scheduler.migration_skipped', {
-      reason: 'SUPABASE_DATABASE_URL not set — cannot self-apply migration',
+      reason: 'Neither SUPABASE_POOLER_URL nor SUPABASE_DATABASE_URL set — cannot self-apply migration',
     });
     return { ok: false, ran: false };
   }
+  const usingPooler = !!process.env.SUPABASE_POOLER_URL;
 
   const client = new PgClient({ connectionString: dbUrl, ssl: { rejectUnauthorized: false } });
   try {
     await client.connect();
     await client.query(MIGRATION_SQL);
-    logger.info('asc_analytics_scheduler.migration_applied', { host: safeHost(dbUrl) });
+    logger.info('asc_analytics_scheduler.migration_applied', {
+      host: safeHost(dbUrl),
+      via: usingPooler ? 'pooler' : 'direct',
+    });
     return { ok: true, ran: true };
   } catch (err) {
     logger.warn('asc_analytics_scheduler.migration_apply_failed', {
       error: err.message,
       host: safeHost(dbUrl),
+      via: usingPooler ? 'pooler' : 'direct',
+      hint: usingPooler ? null : 'Direct DB URL fails from Railway (IPv6-only). Set SUPABASE_POOLER_URL (Supabase Dashboard → Settings → Database → Connection pooling → Transaction mode) to use the IPv4-reachable Supavisor pooler instead.',
     });
     return { ok: false, ran: false, error: err.message };
   } finally {
