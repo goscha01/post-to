@@ -7,11 +7,13 @@
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
     "build": "echo 'No build step required'",
-    "test": "node --test tests/"
+    "test": "node --test tests/",
+    "postinstall": "node -e \"if(process.env.RAILWAY_ENVIRONMENT==='prod'){try{require('child_process').execSync('npx --yes @fixprompt/cli deploy-start --status success',{stdio:'inherit'})}catch(e){console.warn('[fixprompt] deploy marker failed:',e.message)}}\""
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1098.0",
     "@aws-sdk/s3-request-presigner": "^3.1098.0",
+    "@fixprompt/node": "^0.0.2",
     "@geos/loghub-client": "github:goscha01/geos-loghub-client",
     "@supabase/supabase-js": "^2.57.4",
     "axios": "^1.6.0",
