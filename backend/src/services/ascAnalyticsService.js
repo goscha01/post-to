@@ -19,7 +19,7 @@
 //
 // Categories we cache today:
 //   APP_STORE_ENGAGEMENT — impressions, PPVs, source breakdown, campaign attribution
-//   APP_STORE_COMMERCE   — app units, redownloads, proceeds, territory
+//   COMMERCE   — app units, redownloads, proceeds, territory
 //
 // Categories we skip for now (interesting later, not needed for MVP):
 //   APP_USAGE            — sessions, active devices, retention (per-device
@@ -37,8 +37,13 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY
 );
 
-// Categories fetched by walk(). Order matters only for logging.
-const CATEGORIES = ['APP_STORE_ENGAGEMENT', 'APP_STORE_COMMERCE'];
+// Categories fetched by walk(). Apple's valid categories are:
+//   APP_USAGE, APP_STORE_ENGAGEMENT, COMMERCE, FRAMEWORK_USAGE, PERFORMANCE
+// (Apple renamed APP_STORE_COMMERCE → COMMERCE in a recent API rev — our
+// initial impl used the old name and got PARAMETER_ERROR.INVALID at walk
+// time. If a category rename ever happens again, update this list and the
+// getInstallFunnel filter together.)
+const CATEGORIES = ['APP_STORE_ENGAGEMENT', 'COMMERCE'];
 
 // How many past daily instances to walk on each cron pass. Apple returns
 // instances in descending processingDate order; we ask for the top N and
@@ -285,7 +290,7 @@ async function getInstallFunnel({ connectionId, days = 14 }) {
   // conversion rate. Load in parallel with engagement in a real optimization
   // pass; here we do it sequentially for readability.
   const commerce = await loadCategoryRows({
-    connectionId, category: 'APP_STORE_COMMERCE', days,
+    connectionId, category: 'COMMERCE', days,
   });
   let appUnits = 0, redownloads = 0;
   const perDayInstalls = new Map();

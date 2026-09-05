@@ -418,20 +418,20 @@ test('listReportsInRequest filters by category and maps rows', async () => {
     data: {
       data: [
         { id: 'r1', attributes: { name: 'Engagement Report', category: 'APP_STORE_ENGAGEMENT' } },
-        { id: 'r2', attributes: { name: 'Commerce Report', category: 'APP_STORE_COMMERCE' } },
+        { id: 'r2', attributes: { name: 'Commerce Report', category: 'COMMERCE' } },
       ],
     },
   });
   const reports = await asc.listReportsInRequest(
     { issuerId: TEST_ISSUER, keyId: TEST_KEY_ID, p8: privateKey },
     'req-abc-123',
-    { categories: ['APP_STORE_ENGAGEMENT', 'APP_STORE_COMMERCE'] }
+    { categories: ['APP_STORE_ENGAGEMENT', 'COMMERCE'] }
   );
   assert.equal(reports.length, 2);
   assert.equal(reports[0].category, 'APP_STORE_ENGAGEMENT');
   const call = capturedCalls[0];
   assert.equal(call.url, `${BASE_URL}/v1/analyticsReportRequests/req-abc-123/reports`);
-  assert.equal(call.params['filter[category]'], 'APP_STORE_ENGAGEMENT,APP_STORE_COMMERCE');
+  assert.equal(call.params['filter[category]'], 'APP_STORE_ENGAGEMENT,COMMERCE');
 });
 
 test('listInstancesForReport requests DAILY granularity by default', async () => {

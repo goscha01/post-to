@@ -266,7 +266,7 @@ async function getSalesReportRange(creds, { vendorNumber, days = 7 }) {
 //      generating daily reports from that moment forward. Returns a request
 //      id we persist to connected_accounts.metadata.analytics_report_request_id.
 //   2. listReportsInRequest(requestId, [categories]) — list of report ids by
-//      category (APP_STORE_ENGAGEMENT, APP_STORE_COMMERCE, APP_USAGE,
+//      category (APP_STORE_ENGAGEMENT, COMMERCE, APP_USAGE,
 //      FRAMEWORK_USAGE). Reports themselves don't have data — they're
 //      report "channels."
 //   3. listInstancesForReport(reportId, {granularity, since}) — one instance
