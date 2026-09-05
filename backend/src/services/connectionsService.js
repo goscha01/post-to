@@ -809,6 +809,64 @@ async function upsertAppStoreConnect({
   return data;
 }
 
+// Update an existing ASC connection in place (used when the user rotates
+// their .p8 key or changes vendor number). Only mutates fields whose
+// arguments are non-undefined; undefined args mean "keep existing." Issuer
+// ID is treated as immutable by the caller (the route locks it) but this
+// service function will honor it if provided.
+async function updateAppStoreConnect({
+  userId,
+  connectionId,
+  issuerId,
+  keyId,
+  p8Encrypted,
+  vendorNumber,
+  appId,
+  appBundleId,
+  displayName,
+}) {
+  if (!userId || !connectionId) throw new Error('userId and connectionId required');
+  const { data: existing, error: fetchErr } = await supabase
+    .from(TABLE)
+    .select('id, display_name, metadata')
+    .eq('user_id', userId)
+    .eq('id', connectionId)
+    .eq('provider', 'app_store_connect')
+    .maybeSingle();
+  if (fetchErr) throw fetchErr;
+  if (!existing) throw new Error('ASC connection not found');
+
+  const meta = { ...(existing.metadata || {}) };
+  if (issuerId) meta.issuer_id = issuerId;
+  if (keyId) meta.key_id = keyId;
+  if (p8Encrypted) meta.p8_encrypted = p8Encrypted;
+  if (vendorNumber !== undefined) meta.vendor_number = vendorNumber || null;
+  if (appId !== undefined) meta.app_id = appId || null;
+  if (appBundleId !== undefined) meta.app_bundle_id = appBundleId || null;
+  meta.updated_at = new Date().toISOString();
+
+  // Recompute external_id so uniqueness (issuer_id, key_id) stays true even
+  // when the key rotates. If a user creates a new Admin key with a new key_id,
+  // this UPDATE stays on the same row — no dead row left behind.
+  const externalId = `asc:${meta.issuer_id}:${meta.key_id}`;
+
+  const patch = {
+    metadata: meta,
+    external_id: externalId,
+    status: 'active',
+  };
+  if (displayName) patch.display_name = displayName;
+
+  const { data, error } = await supabase
+    .from(TABLE)
+    .update(patch)
+    .eq('id', connectionId)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
 // OpenAI Ads (ads.openai.com). Unlike the google_* providers, this is a
 // bring-your-own API key flow, not OAuth — users create a key at
 // ads.openai.com/settings and paste it in. The key lives in metadata.api_key
@@ -1217,6 +1275,7 @@ module.exports = {
   upsertGoogleSearchConsole,
   upsertOpenAiAds,
   upsertAppStoreConnect,
+  updateAppStoreConnect,
   upsertFacebookPage,
   upsertInstagramBusiness,
   reconcileFacebookPictures,

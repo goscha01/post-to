@@ -367,6 +367,92 @@ router.get('/analytics/sources', async (req, res) => {
 });
 
 // -----------------------------------------------------------------------
+// PATCH /:connectionId — update credentials in place (key rotation)
+// -----------------------------------------------------------------------
+// Use case: user generated a new API key with broader permissions (e.g.
+// upgrading Developer → Admin so App Analytics + Sales & Trends work).
+// Issuer ID is treated as immutable (identity of the connection); if you
+// truly need a different issuer, delete and re-create.
+//
+// Accepts partial updates. If p8 is provided, keyId MUST be provided too
+// (each .p8 file is bound to a specific key id). We validate the new creds
+// by probing listApps before writing — bad keys 401 immediately, no
+// half-written state.
+router.patch('/:connectionId', express.json({ limit: '1mb' }), async (req, res) => {
+  const userId = req.user.userId;
+  try {
+    const existing = await connections.getRawForUser(userId, req.params.connectionId);
+    if (!existing || existing.provider !== 'app_store_connect') {
+      return res.status(404).json({ error: 'ASC connection not found' });
+    }
+    const issuerId = existing.metadata.issuer_id;  // immutable via edit
+    const keyIdIn = normalizeInput(req.body?.keyId);
+    const vendorNumberIn = normalizeInput(req.body?.vendorNumber);
+    const appIdIn = normalizeInput(req.body?.appId);
+    const p8In = req.body?.p8;
+
+    let p8Encrypted = null;   // null = keep existing
+    let apps = null;
+    let primaryApp = null;
+
+    if (p8In) {
+      if (!keyIdIn) {
+        return res.status(400).json({ error: 'keyId is required when replacing the .p8 (each key file is bound to one key id)' });
+      }
+      const p8 = normalizeP8(p8In);
+      // Probe with the NEW creds before writing anything.
+      try {
+        apps = await asc.listApps({ issuerId, keyId: keyIdIn, p8 });
+      } catch (err) {
+        logger.warn('asc.update.probe_failed', {
+          userId, issuerId, keyId: keyIdIn,
+          status: err.status || null, error: err.message,
+        });
+        return res.status(err.status || 400).json({
+          error: err.message,
+          appleErrors: err.appleErrors || null,
+        });
+      }
+      p8Encrypted = cryptoBox.encrypt(p8);
+    } else if (keyIdIn && keyIdIn !== existing.metadata.key_id) {
+      return res.status(400).json({ error: 'Must provide a new .p8 when changing keyId' });
+    }
+
+    // Prefer the existing primary app id if it's still visible to the new key;
+    // fall back to whatever the caller passed or the first app.
+    if (apps) {
+      const preferId = appIdIn || existing.metadata.app_id;
+      primaryApp = apps.find(a => a.id === preferId) || apps[0] || null;
+    }
+    const displayName = primaryApp?.name || primaryApp?.bundleId || existing.display_name;
+
+    const row = await connections.updateAppStoreConnect({
+      userId,
+      connectionId: req.params.connectionId,
+      issuerId,
+      keyId: keyIdIn || existing.metadata.key_id,
+      p8Encrypted: p8Encrypted || undefined,       // undefined = keep existing
+      vendorNumber: vendorNumberIn !== '' ? (vendorNumberIn || null) : existing.metadata.vendor_number,
+      appId: primaryApp?.id || existing.metadata.app_id,
+      appBundleId: primaryApp?.bundleId || existing.metadata.app_bundle_id,
+      displayName,
+    });
+
+    logger.info('asc.updated', {
+      userId,
+      connectionId: row.id,
+      rotatedKey: !!p8Encrypted,
+      appsCount: apps ? apps.length : null,
+    });
+
+    res.json({ connection: row, apps });
+  } catch (err) {
+    logger.error('asc.update.failed', { userId, error: err.message });
+    res.status(500).json({ error: err.message || 'Failed to update ASC credentials' });
+  }
+});
+
+// -----------------------------------------------------------------------
 // DELETE /:connectionId — remove an ASC connection
 // -----------------------------------------------------------------------
 router.delete('/:connectionId', async (req, res) => {

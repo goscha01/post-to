@@ -11,6 +11,9 @@ import {
   TrendingUp,
   Activity,
   Zap,
+  KeyRound,
+  Trash2,
+  X,
 } from 'lucide-react';
 import ascService from '../services/appStoreConnectService';
 
@@ -116,6 +119,10 @@ const AppStoreConnect = () => {
   const [loadingAnalytics, setLoadingAnalytics] = useState(false);
   const [bootstrapping, setBootstrapping] = useState(false);
   const [walking, setWalking] = useState(false);
+
+  // Credential-edit modal (for rotating .p8 keys, e.g. upgrading Developer
+  // role to Admin so App Analytics works).
+  const [editOpen, setEditOpen] = useState(false);
 
   const selectedConnection = useMemo(
     () => connections.find(c => c.connectionId === selectedConnectionId) || null,
@@ -389,6 +396,15 @@ const AppStoreConnect = () => {
           >
             <RefreshCw className={`h-4 w-4 ${loadingSales || loadingReviews ? 'animate-spin' : ''}`} />
           </button>
+          {selectedConnectionId && (
+            <button
+              onClick={() => setEditOpen(true)}
+              className="p-1.5 border border-gray-300 rounded-md text-gray-600 hover:bg-gray-50"
+              title="Replace credentials (rotate .p8 key)"
+            >
+              <KeyRound className="h-4 w-4" />
+            </button>
+          )}
         </div>
       </div>
 
@@ -690,6 +706,208 @@ const AppStoreConnect = () => {
           </tbody>
         </Table>
       )}
+
+      {editOpen && selectedConnection && (
+        <EditCredsModal
+          connection={selectedConnection}
+          onClose={() => setEditOpen(false)}
+          onSaved={async () => {
+            setEditOpen(false);
+            // Reload connections + apps so downstream selectors see the new key.
+            const list = await ascService.listConnected();
+            setConnections(list);
+            const appsRes = await ascService.listApps(selectedConnectionId);
+            setApps(appsRes.apps || []);
+            setSelectedAppId(appsRes.primaryAppId || appsRes.apps?.[0]?.id || null);
+            if (tab === 'analytics') loadAnalytics();
+            if (tab === 'overview') loadSales();
+            if (tab === 'reviews') loadReviews();
+          }}
+          onRemoved={async () => {
+            setEditOpen(false);
+            const list = await ascService.listConnected();
+            setConnections(list);
+            setSelectedConnectionId(list[0]?.connectionId || null);
+            setApps([]);
+            setSelectedAppId(null);
+            setSales(null);
+            setReviews([]);
+            setFunnel(null);
+            setSources(null);
+            setAnalyticsStatus(null);
+          }}
+        />
+      )}
+    </div>
+  );
+};
+
+// Modal for rotating the .p8 key on an existing connection. Issuer ID is
+// locked — if the user truly needs a different issuer they should delete
+// and re-add. Vendor number editable inline. Includes a "Remove connection"
+// action so users can clean up without leaving the App Store page.
+const EditCredsModal = ({ connection, onClose, onSaved, onRemoved }) => {
+  const [keyId, setKeyId] = useState('');
+  const [p8, setP8] = useState('');
+  const [vendorNumber, setVendorNumber] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const [err, setErr] = useState('');
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!keyId.trim() || !p8.trim()) {
+      setErr('New Key ID and new .p8 are both required.');
+      return;
+    }
+    setSubmitting(true);
+    setErr('');
+    try {
+      await ascService.updateCreds(connection.connectionId, {
+        keyId: keyId.trim(),
+        p8,
+        ...(vendorNumber.trim() ? { vendorNumber: vendorNumber.trim() } : {}),
+      });
+      onSaved();
+    } catch (e2) {
+      setErr(e2.response?.data?.error || e2.message || 'Failed to update credentials');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const remove = async () => {
+    setRemoving(true);
+    setErr('');
+    try {
+      await ascService.remove(connection.connectionId);
+      onRemoved();
+    } catch (e2) {
+      setErr(e2.response?.data?.error || e2.message || 'Failed to remove');
+    } finally {
+      setRemoving(false);
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-lg shadow-xl w-full max-w-lg flex flex-col max-h-[90vh]"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 flex-shrink-0">
+          <h2 className="text-lg font-semibold text-gray-900">Replace App Store Connect credentials</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+        <form onSubmit={submit} className="p-6 flex-1 overflow-y-auto">
+          <div className="mb-3 rounded-md bg-gray-50 border border-gray-200 p-3 text-xs text-gray-600">
+            <p className="font-medium text-gray-800 mb-1">Why you'd rotate the key</p>
+            <p>
+              The App Analytics + Sales &amp; Trends endpoints need <strong>Admin</strong> role on the API key.
+              Keys generated with <em>Developer</em> or <em>Marketing</em> role only can list apps + read reviews.
+              Generate a new key at <a href="https://appstoreconnect.apple.com/access/integrations/api" target="_blank" rel="noreferrer" className="text-primary-600 hover:underline">ASC → Integrations</a> with Access = <strong>Admin</strong>, then paste it here.
+            </p>
+          </div>
+
+          <label className="block text-sm font-medium text-gray-700 mb-1">Issuer ID <span className="font-normal text-gray-400">(locked — delete + re-add to change)</span></label>
+          <input
+            type="text"
+            value={connection.issuerId || ''}
+            disabled
+            className="w-full px-3 py-2 border border-gray-200 bg-gray-50 rounded-md text-sm font-mono text-gray-500"
+          />
+
+          <label className="block text-sm font-medium text-gray-700 mb-1 mt-4">New Key ID</label>
+          <input
+            type="text"
+            value={keyId}
+            onChange={e => setKeyId(e.target.value)}
+            placeholder="ABC123XYZ4"
+            autoFocus
+            className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+          />
+          <p className="text-xs text-gray-500 mt-1">Current: <span className="font-mono">{connection.keyId || '—'}</span></p>
+
+          <label className="block text-sm font-medium text-gray-700 mb-1 mt-4">New .p8 private key</label>
+          <textarea
+            value={p8}
+            onChange={e => setP8(e.target.value)}
+            placeholder={'-----BEGIN PRIVATE KEY-----\n…\n-----END PRIVATE KEY-----'}
+            rows={6}
+            className="w-full px-3 py-2 border border-gray-300 rounded-md text-xs font-mono focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+          />
+          <p className="text-xs text-gray-500 mt-1">Encrypted server-side; validated by a listApps probe before saving.</p>
+
+          <label className="block text-sm font-medium text-gray-700 mb-1 mt-4">
+            Vendor number <span className="font-normal text-gray-400">(optional — leave blank to keep current)</span>
+          </label>
+          <input
+            type="text"
+            value={vendorNumber}
+            onChange={e => setVendorNumber(e.target.value)}
+            placeholder={connection.hasVendorNumber ? 'Currently set' : '81234567'}
+            className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+          />
+
+          {err && (
+            <div className="mt-3 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-800">{err}</div>
+          )}
+
+          <div className="flex justify-between items-center mt-5 pt-4 border-t border-gray-100">
+            {confirmRemove ? (
+              <div className="flex items-center gap-2 text-xs">
+                <span className="text-red-700 font-medium">Remove this connection?</span>
+                <button
+                  type="button"
+                  onClick={remove}
+                  disabled={removing}
+                  className="px-2 py-1 text-white bg-red-600 hover:bg-red-700 rounded-md text-xs font-medium disabled:opacity-50"
+                >
+                  {removing ? 'Removing…' : 'Yes, remove'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmRemove(false)}
+                  className="px-2 py-1 text-gray-600 hover:bg-gray-100 rounded-md text-xs"
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setConfirmRemove(true)}
+                className="inline-flex items-center gap-1.5 px-2 py-1 text-xs text-red-600 hover:text-red-800"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                Remove connection
+              </button>
+            )}
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={submitting || !keyId.trim() || !p8.trim()}
+                className="px-4 py-2 text-sm font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {submitting ? 'Validating…' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </form>
+      </div>
     </div>
   );
 };

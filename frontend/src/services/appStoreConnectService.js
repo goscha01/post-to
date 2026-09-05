@@ -49,6 +49,21 @@ const remove = async (connectionId) => {
   return res.data;
 };
 
+// PATCH — used when the user rotates their .p8 key (e.g. upgrading a
+// Developer-role key to Admin so App Analytics works). Issuer ID is
+// immutable via this endpoint — delete + re-add if you truly need to
+// change it. Passing a new p8 requires a new keyId (each .p8 is bound
+// to one key id).
+const updateCreds = async (connectionId, { keyId, p8, vendorNumber, appId }) => {
+  const res = await axios.patch(`/api/asc/${connectionId}`, {
+    ...(keyId ? { keyId } : {}),
+    ...(p8 ? { p8 } : {}),
+    ...(vendorNumber !== undefined ? { vendorNumber } : {}),
+    ...(appId ? { appId } : {}),
+  });
+  return res.data;
+};
+
 // ---- Analytics (Phase 2, async report flow) ----
 
 const analyticsStatus = async (connectionId) => {
@@ -84,6 +99,7 @@ export default {
   getReviews,
   getSales,
   remove,
+  updateCreds,
   analyticsStatus,
   analyticsBootstrap,
   analyticsWalk,
