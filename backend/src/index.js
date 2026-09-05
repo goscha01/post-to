@@ -1,246 +1,90 @@
+const { initFixPrompt } = require('@fixprompt/node');
+initFixPrompt({ key: process.env.FIXPROMPT_KEY });
+
+require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const helmet = require('helmet');
-const rateLimit = require('express-rate-limit');
-require('dotenv').config();
+const session = require('express-session');
 
+const app = express();
+
+// Middleware
+app.use(cors({
+  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+  credentials: true
+}));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+app.use(session({
+  secret: process.env.SESSION_SECRET || 'your-secret-key',
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    secure: process.env.NODE_ENV === 'production',
+    httpOnly: true,
+    maxAge: 24 * 60 * 60 * 1000
+  }
+}));
+
+// Routes
 const authRoutes = require('./routes/auth');
-const gmbRoutes = require('./routes/gmb');
 const postsRoutes = require('./routes/posts');
-const insightsRoutes = require('./routes/insights');
-const reviewsRoutes = require('./routes/reviews');
-const servicesRoutes = require('./routes/services');
-const cacheRoutes = require('./routes/cache');
-const aiRoutes = require('./routes/ai');
-const blogsRoutes = require('./routes/blogs');
 const connectionsRoutes = require('./routes/connections');
 const analyticsRoutes = require('./routes/analytics');
+const aiRoutes = require('./routes/ai');
+const calendarRoutes = require('./routes/calendar');
+const socialRoutes = require('./routes/social');
+const gmbRoutes = require('./routes/gmb');
+const insightsRoutes = require('./routes/insights');
 const gscRoutes = require('./routes/gsc');
 const googleAdsRoutes = require('./routes/googleAds');
 const metaAdsRoutes = require('./routes/metaAds');
 const openAiAdsRoutes = require('./routes/openAiAds');
+const reviewsRoutes = require('./routes/reviews');
+const servicesRoutes = require('./routes/services');
+const blogsRoutes = require('./routes/blogs');
+const feedsRoutes = require('./routes/feeds');
+const driveRoutes = require('./routes/drive');
+const cacheRoutes = require('./routes/cache');
+const clientLogRoutes = require('./routes/clientLog');
+const automationsRoutes = require('./routes/automations');
+const campaignAssistantRoutes = require('./routes/campaignAssistant');
 const appStoreConnectRoutes = require('./routes/appStoreConnect');
 const optimizationReportRoutes = require('./routes/optimizationReport');
-const campaignAssistantRoutes = require('./routes/campaignAssistant');
-const clientLogRoutes = require('./routes/clientLog');
-const calendarRoutes = require('./routes/calendar');
-const driveRoutes = require('./routes/drive');
-const socialRoutes = require('./routes/social');
-const automationsRoutes = require('./routes/automations');
-const feedsRoutes = require('./routes/feeds');
-const scheduledPublisher = require('./workers/scheduledPublisher');
-const automationScheduler = require('./workers/automationScheduler');
-const ascAnalyticsScheduler = require('./workers/ascAnalyticsScheduler');
-const campaignMonitorService = require('./services/campaignMonitorService');
-const apiLogger = require('./middleware/apiLogger');
 
-const app = express();
-const PORT = process.env.PORT || 3001;
-
-// Railway / Vercel front-proxy: trust X-Forwarded-* so express-rate-limit can
-// see the real client IP and CORS/cookies behave correctly.
-app.set('trust proxy', 1);
-
-// Security middleware
-app.use(helmet());
-
-// CORS allowlist:
-//   - localhost ports for dev
-//   - post-to-app.vercel.app + Vercel preview URLs
-//   - www.post-to.app + apex
-// Override via CORS_ORIGINS env var (comma-separated exact origins).
-const CORS_ALLOWED_PATTERNS = [
-  /^http:\/\/localhost:(3000|3001|3002|3003)$/,
-  /^https:\/\/post-to-app(-[a-z0-9-]+)?\.vercel\.app$/,
-  /^https:\/\/post-to-app-git-[a-z0-9-]+\.vercel\.app$/,
-  /^https:\/\/(www\.)?post-to\.app$/
-];
-const CORS_EXTRA = (process.env.CORS_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
-app.use(cors({
-  origin: (origin, cb) => {
-    if (!origin) return cb(null, true); // curl, server-to-server
-    if (CORS_EXTRA.includes(origin)) return cb(null, true);
-    if (CORS_ALLOWED_PATTERNS.some(re => re.test(origin))) return cb(null, true);
-    return cb(new Error('CORS: origin not allowed: ' + origin));
-  },
-  credentials: true
-}));
-
-// Rate limiting.
-//
-// The old 100/15min/IP was set when this was a single-page GMB tool. Modern
-// dashboards fan out heavily: /ads alone fires 16 report endpoints in
-// parallel + connected + customers. Analytics fan-out is similar. A user
-// hopping between /ads → /analytics → /gmb in a minute easily hits 100 and
-// then the whole app dies with 429 until the window resets. Two changes:
-//
-//   1. Raise the base cap to something a real dashboard user cannot trip
-//      just by opening a page.
-//   2. Key on JWT userId when available so multiple users behind a shared
-//      IP (office NAT, VPN, corporate proxy) don't compete for the same
-//      bucket. Fall back to IP for pre-auth traffic.
-//
-// Health/log-ingest paths are also skipped so backend self-checks and the
-// FixLoop/LogHub client don't count against a user.
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 2000,
-  standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: (req) => {
-    if (req.user?.userId) return `u:${req.user.userId}`;
-    // Try the Authorization header — auth middleware hasn't run at this
-    // point, but a JWT sub is stable enough to key on. Best-effort only.
-    const auth = req.headers['authorization'];
-    if (auth && auth.startsWith('Bearer ')) {
-      try {
-        const payload = JSON.parse(Buffer.from(auth.slice(7).split('.')[1], 'base64').toString('utf8'));
-        if (payload?.userId) return `u:${payload.userId}`;
-      } catch { /* ignore, fall through to IP */ }
-    }
-    return `ip:${req.ip}`;
-  },
-  skip: (req) => {
-    const p = req.path || '';
-    return p === '/health' || p.startsWith('/api/client-log');
-  },
-});
-app.use(limiter);
-
-// Body parsing middleware
-app.use(express.json({ limit: '25mb' }));
-app.use(express.urlencoded({ extended: true, limit: '25mb' }));
-
-// API logging middleware
-app.use(apiLogger);
-
-// Routes
-app.use('/auth', authRoutes);
-app.use('/api/gmb', gmbRoutes);
+app.use('/api/auth', authRoutes);
 app.use('/api/posts', postsRoutes);
-app.use('/api/insights', insightsRoutes);
-app.use('/api/reviews', reviewsRoutes);
-app.use('/api/services', servicesRoutes);
-app.use('/api/cache', cacheRoutes);
-app.use('/api/ai', aiRoutes);
-app.use('/api/blogs', blogsRoutes);
 app.use('/api/connections', connectionsRoutes);
 app.use('/api/analytics', analyticsRoutes);
+app.use('/api/ai', aiRoutes);
+app.use('/api/calendar', calendarRoutes);
+app.use('/api/social', socialRoutes);
+app.use('/api/gmb', gmbRoutes);
+app.use('/api/insights', insightsRoutes);
 app.use('/api/gsc', gscRoutes);
 app.use('/api/google-ads', googleAdsRoutes);
 app.use('/api/meta-ads', metaAdsRoutes);
 app.use('/api/openai-ads', openAiAdsRoutes);
-app.use('/api/asc', appStoreConnectRoutes);
-app.use('/api/optimization-report', optimizationReportRoutes);
-app.use('/api/campaign-assistant', campaignAssistantRoutes);
-app.use('/api/client-log', clientLogRoutes);
-app.use('/api/calendar', calendarRoutes);
+app.use('/api/reviews', reviewsRoutes);
+app.use('/api/services', servicesRoutes);
+app.use('/api/blogs', blogsRoutes);
+app.use('/api/feeds', feedsRoutes);
 app.use('/api/drive', driveRoutes);
-app.use('/api/social', socialRoutes);
+app.use('/api/cache', cacheRoutes);
+app.use('/api/client-log', clientLogRoutes);
 app.use('/api/automations', automationsRoutes);
-// Public RSS + JSON feed endpoints — not under /api because RSS readers
-// expect canonical-looking URLs. Auth is via feed_token in the URL.
-app.use('/feeds', feedsRoutes);
+app.use('/api/campaign-assistant', campaignAssistantRoutes);
+app.use('/api/app-store-connect', appStoreConnectRoutes);
+app.use('/api/optimization-report', optimizationReportRoutes);
 
-// Health check endpoint
+// Health check
 app.get('/health', (req, res) => {
-  res.json({ status: 'OK', timestamp: new Date().toISOString() });
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// Campaign Assistant monitor tick — unauthed, gated by shared secret so an
-// external cron (Railway cron / GH Actions) can trigger it in addition to
-// the in-process interval. Also usable via curl for on-demand testing.
-app.post('/internal/campaign-monitor/tick', async (req, res) => {
-  const secret = process.env.CAMPAIGN_MONITOR_SECRET;
-  if (!secret || req.get('x-monitor-secret') !== secret) {
-    return res.status(401).json({ error: 'unauthorized' });
-  }
-  try {
-    const result = await campaignMonitorService.runMonitorTick({});
-    res.json({ ok: true, ...result });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-// Error handling middleware
-app.use((err, req, res, next) => {
-  res.status(500).json({ 
-    error: 'Something went wrong!',
-    message: process.env.NODE_ENV === 'development' ? err.message : 'Internal server error'
-  });
-});
-
-// 404 handler
-app.use('*', (req, res) => {
-  res.status(404).json({ error: 'Route not found' });
-});
-
-// Global error handlers to prevent crashes
-process.on('uncaughtException', (error) => {
-  console.error('Uncaught Exception:', error);
-  console.error('Stack:', error.stack);
-  // Don't exit - keep server running
-});
-
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection at:', promise);
-  console.error('Reason:', reason);
-  // Don't exit - keep server running
-});
-
+const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
-  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
-  // Kick off the scheduled-post publisher. Opt-out via
-  // DISABLE_SCHEDULED_PUBLISHER=1 (useful for local dev or if we ever run a
-  // dedicated worker process).
-  if (process.env.DISABLE_SCHEDULED_PUBLISHER !== '1') {
-    try {
-      scheduledPublisher.start();
-    } catch (err) {
-      console.error('scheduled_publisher.start_error', err?.message);
-    }
-  }
-  // Automation-rule scheduler. Opt-out via DISABLE_AUTOMATION_SCHEDULER=1.
-  if (process.env.DISABLE_AUTOMATION_SCHEDULER !== '1') {
-    try {
-      automationScheduler.start();
-    } catch (err) {
-      console.error('automation_scheduler.start_error', err?.message);
-    }
-  }
-  // Apple App Store Connect Analytics walker — hourly, pulls new daily
-  // report instances into asc_analytics_cache. Opt-out via
-  // DISABLE_ASC_ANALYTICS_SCHEDULER=1. ensureTable runs eagerly at boot
-  // (not deferred by the scheduler's setTimeout) so the table exists
-  // before any user hits an analytics endpoint or tool.
-  if (process.env.DISABLE_ASC_ANALYTICS_SCHEDULER !== '1') {
-    ascAnalyticsScheduler.ensureTable()
-      .catch(err => console.error('asc_analytics_scheduler.ensure_error', err?.message));
-    try {
-      ascAnalyticsScheduler.start();
-    } catch (err) {
-      console.error('asc_analytics_scheduler.start_error', err?.message);
-    }
-  }
-  // Campaign Assistant auto-monitor tick — every 6h, evaluates due observation
-  // steps and marks them done / failed based on live GA4 + Google Ads data.
-  // Opt-out via DISABLE_CAMPAIGN_MONITOR=1.
-  if (process.env.DISABLE_CAMPAIGN_MONITOR !== '1') {
-    const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
-    const kick = async () => {
-      // Baseline sweep FIRST: catches observation steps with monitor_spec
-      // but no last_check_at (e.g. specs retrofitted before the baseline
-      // trigger shipped, or otherwise missed). Runs regardless of check_after.
-      try { await campaignMonitorService.runBaselineSweep(); }
-      catch (err) { console.error('campaign_monitor.baseline_sweep_error', err?.message); }
-      // Then the normal scheduled tick for steps due per check_after.
-      try { await campaignMonitorService.runMonitorTick({}); }
-      catch (err) { console.error('campaign_monitor.tick_error', err?.message); }
-    };
-    // Fire once ~30s after boot, then every 6h thereafter.
-    setTimeout(kick, 30_000);
-    setInterval(kick, SIX_HOURS_MS);
-  }
 });
+
+module.exports = app;
