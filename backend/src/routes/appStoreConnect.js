@@ -158,6 +158,9 @@ router.get('/connected', async (req, res) => {
           keyId: r.metadata?.key_id || null,
           appId: r.metadata?.app_id || null,
           appBundleId: r.metadata?.app_bundle_id || null,
+          // Vendor number is a numeric account ID (not a credential like
+          // the .p8). Returning it so the edit modal can show what's saved.
+          vendorNumber: r.metadata?.vendor_number || null,
           hasVendorNumber: !!r.metadata?.vendor_number,
           status: r.status,
           connectedAt: r.metadata?.connected_at || r.created_at,

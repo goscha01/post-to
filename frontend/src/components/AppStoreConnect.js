@@ -749,7 +749,10 @@ const AppStoreConnect = () => {
 const EditCredsModal = ({ connection, onClose, onSaved, onRemoved }) => {
   const [keyId, setKeyId] = useState('');
   const [p8, setP8] = useState('');
-  const [vendorNumber, setVendorNumber] = useState('');
+  // Vendor number is safe to prefill — it's not a credential, just an
+  // account identifier. Users need to SEE what's saved before they can
+  // decide whether to change it.
+  const [vendorNumber, setVendorNumber] = useState(connection.vendorNumber || '');
   const [submitting, setSubmitting] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
@@ -845,15 +848,16 @@ const EditCredsModal = ({ connection, onClose, onSaved, onRemoved }) => {
           <p className="text-xs text-gray-500 mt-1">Encrypted server-side; validated by a listApps probe before saving.</p>
 
           <label className="block text-sm font-medium text-gray-700 mb-1 mt-4">
-            Vendor number <span className="font-normal text-gray-400">(optional — leave blank to keep current)</span>
+            Vendor number <span className="font-normal text-gray-400">(optional — enables sales reports)</span>
           </label>
           <input
             type="text"
             value={vendorNumber}
             onChange={e => setVendorNumber(e.target.value)}
-            placeholder={connection.hasVendorNumber ? 'Currently set' : '81234567'}
+            placeholder="81234567"
             className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
           />
+          <p className="text-xs text-gray-500 mt-1">Find in ASC → Payments &amp; Financial Reports → top-left dropdown.</p>
 
           {err && (
             <div className="mt-3 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-800">{err}</div>
