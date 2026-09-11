@@ -741,7 +741,13 @@ const CampaignAssistant = () => {
           steps: prev.steps.map(s => s.id === stepId ? { ...s, ...res.step } : s),
         }));
       }
-      return { ok: true, decision: res.decision, deleted: res.deleted };
+      return {
+        ok: true,
+        decision: res.decision,
+        deleted: res.deleted,
+        toolTrace: res.toolTrace || [],
+        userReport: res.userReport || results,
+      };
     } catch (err) {
       const msg = err.response?.data?.error || err.message || 'Failed to report results';
       return { ok: false, error: msg };
@@ -1732,10 +1738,11 @@ const PlanStepRow = ({ step, index, onToggleStatus, onUpdateNotes, onApplyStep, 
     const res = await onReportResults(results);
     setReportingResults(false);
     setResultsResponse(res);
-    // Keep the panel open on success so the user can read the AI's
-    // reasoning; they close manually. Clear the input so the read state
-    // is unambiguous.
-    if (res.ok) setResultsDraft('');
+    // On success: keep the panel open AND keep the user's report visible
+    // as a "You reported:" bubble (backend echoes it back in userReport)
+    // so the conversation thread doesn't disappear. Clearing the textarea
+    // silently lost the user's context — see the reported UX bug.
+    // The textarea only clears when the user hits "Close" or "Cancel".
   };
 
   return (
@@ -1884,7 +1891,11 @@ const PlanStepRow = ({ step, index, onToggleStatus, onUpdateNotes, onApplyStep, 
             <DevTaskPanel step={step} onClose={() => setDevTaskOpen(false)} />
           )}
 
-          {/* Results — user reports outcome, AI decides fate */}
+          {/* Results — user reports outcome, AI decides fate.
+              On success the panel switches from a draft/submit form into
+              a thread: "You reported" → tool calls the AI ran (if any) →
+              decision banner. The user can send another update from the
+              same panel; the previous thread stays visible above. */}
           {resultsOpen && onReportResults && (
             <div className="mt-2 border border-teal-200 bg-teal-50 rounded p-2 text-xs">
               <div className="flex items-center justify-between mb-1.5">
@@ -1892,51 +1903,72 @@ const PlanStepRow = ({ step, index, onToggleStatus, onUpdateNotes, onApplyStep, 
                   📋 Report results
                 </div>
                 <button
-                  onClick={() => { setResultsOpen(false); setResultsResponse(null); }}
+                  onClick={() => { setResultsOpen(false); setResultsResponse(null); setResultsDraft(''); }}
                   className="text-[11px] text-teal-700 hover:text-teal-900"
                 >
                   Close
                 </button>
               </div>
-              <p className="text-[11px] text-teal-800 mb-1.5">
-                Paste what happened when you tried this — positive or negative. AI reads the results
-                and decides: <b>close</b> (done), <b>refactor</b> (reshape it), <b>postpone</b> (skip
-                for now), or <b>delete</b> (was wrong assumption). Applies immediately; the reasoning
-                stays as a note.
-              </p>
-              <textarea
-                value={resultsDraft}
-                onChange={(e) => setResultsDraft(e.target.value)}
-                rows={4}
-                disabled={reportingResults}
-                placeholder="What happened when you tried this? (paste your coding agent's response, describe the QA outcome, note the metric change, etc.)"
-                className="w-full text-xs border border-teal-300 rounded px-2 py-1 bg-white focus:outline-none focus:ring-1 focus:ring-teal-400 disabled:opacity-60"
-              />
-              <div className="mt-1.5 flex items-center gap-2">
-                <button
-                  onClick={handleSubmitResults}
-                  disabled={reportingResults || !resultsDraft.trim()}
-                  className="px-2.5 py-1 bg-teal-600 text-white text-[11px] font-medium rounded hover:bg-teal-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
-                >
-                  {reportingResults ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
-                  {reportingResults ? 'AI deciding…' : 'Submit & let AI decide'}
-                </button>
-                <button
-                  onClick={() => { setResultsOpen(false); setResultsResponse(null); }}
-                  disabled={reportingResults}
-                  className="px-2.5 py-1 border border-gray-300 text-gray-700 text-[11px] font-medium rounded hover:bg-gray-50 disabled:opacity-50"
-                >
-                  Cancel
-                </button>
-              </div>
-              {resultsResponse && !resultsResponse.ok && (
-                <div className="mt-2 text-[11px] text-red-800 flex items-start gap-1.5">
-                  <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
-                  <span>{resultsResponse.error || 'Failed to report results.'}</span>
-                </div>
+
+              {!resultsResponse?.ok && (
+                <>
+                  <p className="text-[11px] text-teal-800 mb-1.5">
+                    Paste what happened when you tried this — positive or negative. AI reads the
+                    results, calls Google Ads / App Store Connect tools if it needs data, then decides:
+                    {' '}<b>close</b> (done), <b>refactor</b> (reshape it), <b>postpone</b> (skip
+                    for now), or <b>delete</b> (was wrong assumption). Applies immediately; the reasoning
+                    stays as a note.
+                  </p>
+                  <textarea
+                    value={resultsDraft}
+                    onChange={(e) => setResultsDraft(e.target.value)}
+                    rows={4}
+                    disabled={reportingResults}
+                    placeholder="What happened when you tried this? (paste your coding agent's response, describe the QA outcome, note the metric change, etc.)"
+                    className="w-full text-xs border border-teal-300 rounded px-2 py-1 bg-white focus:outline-none focus:ring-1 focus:ring-teal-400 disabled:opacity-60"
+                  />
+                  <div className="mt-1.5 flex items-center gap-2">
+                    <button
+                      onClick={handleSubmitResults}
+                      disabled={reportingResults || !resultsDraft.trim()}
+                      className="px-2.5 py-1 bg-teal-600 text-white text-[11px] font-medium rounded hover:bg-teal-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
+                    >
+                      {reportingResults ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+                      {reportingResults ? 'AI deciding…' : 'Submit & let AI decide'}
+                    </button>
+                    <button
+                      onClick={() => { setResultsOpen(false); setResultsResponse(null); setResultsDraft(''); }}
+                      disabled={reportingResults}
+                      className="px-2.5 py-1 border border-gray-300 text-gray-700 text-[11px] font-medium rounded hover:bg-gray-50 disabled:opacity-50"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                  {resultsResponse && !resultsResponse.ok && (
+                    <div className="mt-2 text-[11px] text-red-800 flex items-start gap-1.5">
+                      <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
+                      <span>{resultsResponse.error || 'Failed to report results.'}</span>
+                    </div>
+                  )}
+                </>
               )}
+
               {resultsResponse?.ok && resultsResponse.decision && (
-                <ResultsDecisionBanner decision={resultsResponse.decision} deleted={resultsResponse.deleted} />
+                <>
+                  <ResultsThread
+                    userReport={resultsResponse.userReport || resultsDraft}
+                    toolTrace={resultsResponse.toolTrace || []}
+                  />
+                  <ResultsDecisionBanner decision={resultsResponse.decision} deleted={resultsResponse.deleted} />
+                  <div className="mt-1.5 flex items-center gap-2">
+                    <button
+                      onClick={() => { setResultsResponse(null); setResultsDraft(''); }}
+                      className="px-2.5 py-1 border border-teal-300 text-teal-800 text-[11px] font-medium rounded hover:bg-teal-100"
+                    >
+                      Submit another update
+                    </button>
+                  </div>
+                </>
               )}
             </div>
           )}
@@ -2149,6 +2181,62 @@ const ActionParamsSummary = ({ actionType, params }) => {
     );
   }
   return <pre className="text-[10px] text-gray-700 whitespace-pre-wrap">{JSON.stringify(params, null, 2)}</pre>;
+};
+
+// ---------------------------------------------------------------------------
+// ResultsThread — renders the user's submitted report + any tools the AI
+// called on top of the eventual decision banner. This is the "thread" the
+// user asked to keep visible after submit; previously the textarea just
+// cleared and the report vanished.
+// ---------------------------------------------------------------------------
+const ResultsThread = ({ userReport, toolTrace }) => {
+  if (!userReport && (!toolTrace || toolTrace.length === 0)) return null;
+  return (
+    <div className="space-y-1.5">
+      {userReport && (
+        <div className="border border-teal-200 bg-white rounded p-2">
+          <div className="text-[10px] uppercase tracking-wide font-semibold text-teal-700 mb-0.5">
+            You reported
+          </div>
+          <div className="text-[11px] text-gray-800 whitespace-pre-wrap">{userReport}</div>
+        </div>
+      )}
+      {Array.isArray(toolTrace) && toolTrace.length > 0 && (
+        <div className="border border-teal-200 bg-white rounded p-2">
+          <div className="text-[10px] uppercase tracking-wide font-semibold text-teal-700 mb-1">
+            AI ran {toolTrace.length} tool{toolTrace.length === 1 ? '' : 's'}
+          </div>
+          <ul className="space-y-1">
+            {toolTrace.map((t, i) => (
+              <li key={i} className="text-[11px]">
+                <div className="flex items-center gap-1.5">
+                  <span className={`inline-block w-1.5 h-1.5 rounded-full ${t.isError ? 'bg-red-500' : 'bg-emerald-500'}`} />
+                  <code className="font-mono text-gray-800">{t.tool}</code>
+                  <span className="text-gray-400">·</span>
+                  <span className="text-gray-500">round {t.roundIndex + 1}</span>
+                </div>
+                {t.args && Object.keys(t.args).length > 0 && (
+                  <div className="ml-3 text-[10px] text-gray-500 font-mono truncate" title={JSON.stringify(t.args)}>
+                    args: {JSON.stringify(t.args)}
+                  </div>
+                )}
+                {t.resultPreview && (
+                  <details className="ml-3 mt-0.5">
+                    <summary className="text-[10px] text-gray-500 cursor-pointer hover:text-gray-700">
+                      {t.isError ? 'error' : 'result'} (click to expand)
+                    </summary>
+                    <pre className="mt-0.5 text-[10px] text-gray-700 whitespace-pre-wrap bg-gray-50 border border-gray-200 rounded p-1 overflow-x-auto">
+                      {t.resultPreview}
+                    </pre>
+                  </details>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
 };
 
 // ---------------------------------------------------------------------------

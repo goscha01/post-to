@@ -1876,6 +1876,16 @@ Rules:
 - For "refactor": newTitle must be 5-12 words, imperative. newDescription must be 2-4 sentences with concrete next actions.
 - Be decisive. Do not hedge.
 
+USE YOUR TOOLS FIRST — do not ask the user for data you can fetch
+
+You have direct access to the same Google Ads + App Store Connect tools the main campaign assistant uses. Before deciding "postpone" because you're "missing data", CALL THE TOOLS to fetch that data yourself. Examples:
+- User says "check the ad status" or "you have access to the ad data" → call google_ads_get_ad_status / google_ads_list_ads.
+- User says "look at the install funnel" or "check ASC" → call asc_get_install_funnel / asc_get_installs_by_source.
+- User says "did the metric improve?" → call google_ads_get_campaign / google_ads_get_recent_changes to check.
+- User says "you have access to Google Analytics" or names any data source you have tools for → USE THE TOOL, don't ask them.
+
+Only postpone if the required data source is genuinely unconnected (a tool call returned a "not connected" error), the user is explicitly waiting on an upstream fix, or the task cannot be verified without human action outside your reach.
+
 REJECTION-WITH-ALTERNATIVES PATTERN — very common, choose REFACTOR
 
 When the user's report is a coding agent (or human) explaining that the task PREMISE is wrong AND offering one or more concrete alternatives (patterns like "I can't do X, but I could do A / B / C" or "The task assumes Y but Y doesn't exist; would you like me to build Z instead?"), the correct action is REFACTOR, not close and not delete.
@@ -1888,13 +1898,33 @@ For these cases:
 
 Only choose CLOSE for this pattern if the agent's report shows the underlying problem itself was already addressed by other work (not just that the specific task is unactionable).
 
-Output valid JSON only, no code fences, matching:
+FINAL RESPONSE FORMAT
+
+After any tool calls, emit ONLY a single JSON object as your final text (no prose before or after, no code fences):
 {
   "action": "close" | "refactor" | "postpone" | "delete",
-  "reasoning": "1-3 sentences citing the user's report.",
+  "reasoning": "1-3 sentences citing the user's report AND any tool results you fetched.",
   "newTitle": "..." (only when action == "refactor"),
   "newDescription": "..." (only when action == "refactor")
 }`;
+
+// Cap tool rounds for the results-decision endpoint. Lower than the main
+// assistant's 5 because this is a decision loop, not a chat — the model
+// should fetch data, then decide.
+const RESULTS_MAX_TOOL_ROUNDS = 3;
+
+// Tolerant JSON parser — the model sometimes wraps the decision in fences
+// or emits prose before/after. Extract the first {...} it finds.
+function parseDecisionJson(raw) {
+  let trimmed = String(raw || '').trim();
+  const fence = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  if (fence) trimmed = fence[1].trim();
+  try { return JSON.parse(trimmed); } catch (_) { /* fall through */ }
+  const start = trimmed.indexOf('{');
+  const end = trimmed.lastIndexOf('}');
+  if (start === -1 || end <= start) throw new Error('AI response was not valid JSON');
+  return JSON.parse(trimmed.slice(start, end + 1));
+}
 
 router.post('/plan-steps/:stepId/report-results', async (req, res) => {
   const userId = req.user.userId;
@@ -1920,16 +1950,32 @@ router.post('/plan-steps/:stepId/report-results', async (req, res) => {
       return res.status(404).json({ error: 'Step not found' });
     }
 
-    // Call Claude for the decision. Small non-streaming JSON call.
+    // Load the owning conversation so we can hydrate provider tool contexts.
+    // The results-decision AI shares the main assistant's Google Ads + ASC
+    // tools — if the user's report references data ("check GA", "you have
+    // access to install funnel"), the model calls the tool instead of
+    // bouncing the ask back to the user as a postpone.
+    const { data: conv } = await supabase
+      .from('campaign_assistant_conversations')
+      .select('id, google_ads_customer_id, google_ads_login_customer_id, campaign_id')
+      .eq('id', plan.conversation_id)
+      .single();
+    const [gaToolCtx, ascToolCtx] = await Promise.all([
+      conv ? resolveGoogleAdsToolContext(userId, conv) : Promise.resolve(null),
+      resolveAscToolContext(userId),
+    ]);
+    const toolExecutor = (gaToolCtx || ascToolCtx)
+      ? campaignAssistantTools.makeExecutor({ googleAds: gaToolCtx, asc: ascToolCtx })
+      : null;
+    const claudeTools = toolExecutor ? campaignAssistantTools.toolsForClaude() : null;
+
     const anthropicKey = process.env.ANTHROPIC_API_KEY;
     if (!anthropicKey) return res.status(500).json({ error: 'ANTHROPIC_API_KEY not configured' });
-    const body = {
-      model: campaignAssistant.CLAUDE_MODEL,
-      max_tokens: 800,
-      system: RESULTS_DECISION_PROMPT,
-      messages: [{
-        role: 'user',
-        content: `STEP TITLE: ${step.title}
+
+    const axios = require('axios');
+    const workingMessages = [{
+      role: 'user',
+      content: `STEP TITLE: ${step.title}
 STEP DESCRIPTION: ${step.description || '(no description)'}
 STEP TYPE: ${step.type}${step.action_type ? ` (action_type: ${step.action_type})` : ''}
 CURRENT PLAN: ${plan.title || '(untitled)'}
@@ -1938,40 +1984,131 @@ USER'S REPORT OF WHAT HAPPENED:
 ${results}
 
 Decide now.`,
-      }],
-      temperature: 0.2,
-    };
-    const axios = require('axios');
-    let decision;
-    try {
-      const resp = await axios.post('https://api.anthropic.com/v1/messages', body, {
-        headers: {
-          'x-api-key': anthropicKey,
-          'anthropic-version': '2023-06-01',
-          'Content-Type': 'application/json',
-        },
-        timeout: 60_000,
-      });
-      const raw = resp.data?.content?.[0]?.text || '';
-      // Tolerant parse — the same helper the plan synthesizer uses would
-      // be nice but this is inline; strip fences, find first {..}, parse.
-      let trimmed = raw.trim();
-      const fence = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
-      if (fence) trimmed = fence[1].trim();
-      let parsed;
-      try { parsed = JSON.parse(trimmed); }
-      catch (_) {
-        const start = trimmed.indexOf('{');
-        const end = trimmed.lastIndexOf('}');
-        if (start === -1 || end <= start) throw new Error('AI response was not valid JSON');
-        parsed = JSON.parse(trimmed.slice(start, end + 1));
+    }];
+
+    // Tool-use loop. Each round: call Claude → if tool_use blocks, execute
+    // them, append results, loop. If pure text (or stop_reason='end_turn'),
+    // parse the final JSON decision.
+    // toolTrace captures what tools we ran + their results so the UI can
+    // render the thread the user asked for.
+    const toolTrace = [];
+    let decision = null;
+    let lastText = '';
+
+    for (let round = 0; round < RESULTS_MAX_TOOL_ROUNDS; round++) {
+      const body = {
+        model: campaignAssistant.CLAUDE_MODEL,
+        max_tokens: 1200,
+        system: RESULTS_DECISION_PROMPT,
+        messages: workingMessages,
+        temperature: 0.2,
+      };
+      if (claudeTools) {
+        body.tools = claudeTools;
+        body.tool_choice = { type: 'auto' };
       }
-      decision = parsed;
-    } catch (err) {
-      logger.error('campaignAssistant.results_decision_failed', {
-        userId, stepId, error: err.message,
-      });
-      return res.status(500).json({ error: `AI could not decide: ${err.message}` });
+
+      let resp;
+      try {
+        resp = await axios.post('https://api.anthropic.com/v1/messages', body, {
+          headers: {
+            'x-api-key': anthropicKey,
+            'anthropic-version': '2023-06-01',
+            'Content-Type': 'application/json',
+          },
+          timeout: 60_000,
+        });
+      } catch (err) {
+        logger.error('campaignAssistant.results_decision_failed', {
+          userId, stepId, round, error: err.message,
+        });
+        return res.status(500).json({ error: `AI could not decide: ${err.message}` });
+      }
+
+      const contentBlocks = resp.data?.content || [];
+      const stopReason = resp.data?.stop_reason;
+      const toolUseBlocks = contentBlocks.filter(b => b.type === 'tool_use');
+      const textBlocks = contentBlocks.filter(b => b.type === 'text');
+      lastText = textBlocks.map(b => b.text || '').join('\n').trim();
+
+      // Not stopping for tool use → this is the final message. Parse JSON.
+      if (stopReason !== 'tool_use' || toolUseBlocks.length === 0) {
+        try {
+          decision = parseDecisionJson(lastText);
+        } catch (err) {
+          logger.error('campaignAssistant.results_decision_parse_failed', {
+            userId, stepId, error: err.message, rawPreview: lastText.slice(0, 300),
+          });
+          return res.status(500).json({ error: `AI could not decide: ${err.message}` });
+        }
+        break;
+      }
+
+      // Push the assistant turn verbatim, then execute tools and append
+      // tool_result blocks in a single user turn (Claude convention).
+      workingMessages.push({ role: 'assistant', content: contentBlocks });
+      const toolResultBlocks = [];
+      for (const tu of toolUseBlocks) {
+        let result;
+        try {
+          result = await toolExecutor.execute(tu.name, tu.input || {});
+        } catch (e) {
+          result = { error: String(e?.message || 'tool execution failed').slice(0, 1000) };
+        }
+        const preview = JSON.stringify(result).slice(0, 800);
+        toolTrace.push({
+          roundIndex: round,
+          tool: tu.name,
+          args: tu.input || {},
+          resultPreview: preview,
+          isError: !!(result && result.error),
+        });
+        toolResultBlocks.push({
+          type: 'tool_result',
+          tool_use_id: tu.id,
+          content: JSON.stringify(result).slice(0, 60_000),
+        });
+      }
+      workingMessages.push({ role: 'user', content: toolResultBlocks });
+    }
+
+    if (!decision) {
+      // Hit the round cap without a final JSON. Force one more round with
+      // tool_choice='none' asking for the decision now. We still pass
+      // `tools` because the message history contains tool_use blocks
+      // Claude needs their schema to validate — but forbid new tool calls.
+      try {
+        const finalBody = {
+          model: campaignAssistant.CLAUDE_MODEL,
+          max_tokens: 800,
+          system: RESULTS_DECISION_PROMPT,
+          messages: [
+            ...workingMessages,
+            { role: 'user', content: 'Enough tool calls — emit the final JSON decision now.' },
+          ],
+          temperature: 0.2,
+        };
+        if (claudeTools) {
+          finalBody.tools = claudeTools;
+          finalBody.tool_choice = { type: 'none' };
+        }
+        const finalResp = await axios.post('https://api.anthropic.com/v1/messages', finalBody, {
+          headers: {
+            'x-api-key': anthropicKey,
+            'anthropic-version': '2023-06-01',
+            'Content-Type': 'application/json',
+          },
+          timeout: 60_000,
+        });
+        const raw = (finalResp.data?.content || [])
+          .filter(b => b.type === 'text').map(b => b.text || '').join('\n');
+        decision = parseDecisionJson(raw);
+      } catch (err) {
+        logger.error('campaignAssistant.results_decision_final_failed', {
+          userId, stepId, error: err.message,
+        });
+        return res.status(500).json({ error: `AI could not decide: ${err.message}` });
+      }
     }
 
     const action = String(decision?.action || '').toLowerCase();
@@ -1980,7 +2117,10 @@ Decide now.`,
     }
     const reasoning = String(decision.reasoning || '').slice(0, 4000);
     const nowIso = new Date().toISOString();
-    const notePrefix = `[RESULTS ${nowIso} — AI action: ${action}]\nUser reported: ${results}\nAI reasoning: ${reasoning}`;
+    const toolTraceNote = toolTrace.length
+      ? `\nAI ran tools: ${toolTrace.map(t => t.tool + (t.isError ? ' (error)' : '')).join(', ')}`
+      : '';
+    const notePrefix = `[RESULTS ${nowIso} — AI action: ${action}]\nUser reported: ${results}\nAI reasoning: ${reasoning}${toolTraceNote}`;
     const combinedNotes = step.notes
       ? `${notePrefix}\n\n---\n\n${step.notes}`
       : notePrefix;
@@ -2014,6 +2154,7 @@ Decide now.`,
     logger.info('campaignAssistant.plan_step_results_reported', {
       userId, stepId, action,
       hasRefactorTitle: action === 'refactor' && !!decision.newTitle,
+      toolCalls: toolTrace.length,
     });
 
     res.json({
@@ -2025,6 +2166,12 @@ Decide now.`,
         newTitle: decision.newTitle || null,
         newDescription: decision.newDescription || null,
       },
+      // Trace of any tools the decision AI called so the UI can render the
+      // thread: user report → tool calls (with previewed results) → decision.
+      toolTrace,
+      // Echo back the user's report so the client can render it as a
+      // stable "You reported:" bubble even if it clears local draft state.
+      userReport: results,
     });
   } catch (err) {
     logger.error('campaignAssistant.plan_step_results_failed', {

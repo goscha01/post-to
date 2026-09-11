@@ -233,9 +233,9 @@ const reportPlanStepResults = async (stepId, results) => {
   const res = await axios.post(
     `/api/campaign-assistant/plan-steps/${stepId}/report-results`,
     { results },
-    { timeout: 90_000 }   // AI decision call takes 5-15s
+    { timeout: 180_000 }   // AI may run up to 3 tool rounds (Google Ads / ASC) before deciding
   );
-  return res.data;   // { step | null, deleted, decision: {action, reasoning, newTitle?, newDescription?} }
+  return res.data;   // { step|null, deleted, decision, toolTrace: [...], userReport }
 };
 
 const applyPlanStep = async (stepId) => {
