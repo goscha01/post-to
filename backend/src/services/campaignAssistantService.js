@@ -1708,7 +1708,7 @@ HARD RULES:
 - If a step is "pending" and the campaign snapshot / transcript shows the underlying work has been completed (e.g. user reported it, the metric moved, the change history confirms it), use "mark" with status="done".
 - If a step is "failed" and the discussion suggests a different approach might work, use "refactor" — don't add a new step for the retry.
 - For "refactor" and "mark" and "drop": step_id MUST match an existing step's UUID from the CURRENT PLAN block. If uncertain, prefer no-op over guessing.
-- Empty operations array is a valid, correct output — it means the plan is fine as-is and nothing new needs to happen.
+- Empty operations array is a valid, correct output — it means the plan is fine as-is and nothing new needs to happen. EXCEPTION: if any step in the CURRENT PLAN is tagged [RETROFIT CANDIDATE: <action_type>], the operations array MUST include a refactor op for each such step (see Retrofit rule below). Empty ops in the face of a retrofit candidate is a bug.
 
 AIM FOR MINIMAL EDITS. If the discussion contains one new piece of info, expect 1-2 ops. Only when the whole strategy has shifted should you have >5 ops.
 
@@ -1760,11 +1760,44 @@ AUTOMATION CATALOG (for populating action_type + action_params on google_ads_act
 - action_type: "mark_ga4_conversion_event"
     action_params: { "propertyId": "<numeric>", "eventName": "<event_name>" }
 
-Retrofit rule: if a legacy step in the CURRENT PLAN has type="google_ads_action" (or type="schedule" with a deferred wired action) but action_type is null, AND its title/description maps to one of the entries above, emit a "refactor" op that sets action_type + action_params. This flips the step from "manual — user has to click through Google Ads UI" to "one-click Apply" without changing the underlying task.
+Retrofit rule (MANDATORY when applicable): if a legacy step in the CURRENT PLAN is tagged [RETROFIT CANDIDATE: <action_type>], you MUST emit a "refactor" op that sets that action_type + the correct action_params derived from the step's title/description AND the CAMPAIGN DATA. Do this even if the step's title/description looks fine as-is. Do NOT count "AIM FOR MINIMAL EDITS" against retrofit ops — retrofits are always high value because they flip a step from "manual, user must click through Google Ads UI" to "one-click Apply" with zero UX cost.
+
+To derive action_params from CURRENT PLAN + CAMPAIGN DATA:
+- Numeric IDs (conversion action ID, campaign ID, ad group ID) are usually cited in the step description ("conversion action ID 7577838456", "campaign ID 12345"). Extract them and build the full resource name using the customer ID from CAMPAIGN DATA (customer.customer_id).
+- Numeric values (default_value, dailyBudgetUsd) are cited in the title/description ("from $1 to $21.80" → defaultValue=21.80).
+- If a required param cannot be derived from the plan+data confidently, emit the refactor with the fields you HAVE and skip the ones you can't (the applier will reject unclear params, but partial retrofit is better than none — you can also cite the missing piece in the refactor "reason").
+
+For steps NOT tagged [RETROFIT CANDIDATE], the "may retrofit if you spot a match" version of this rule still applies but is discretionary.
 
 Schedule steps: type="schedule" MAY carry action_type + action_params + check_after. When check_after is set on a schedule step, the Apply button is gated until that date passes. Use this for deferred mutations ("demote First Open 30 days after ATT ships").
 
 CURRENT PLAN STATE will be given in the user message. Use the step_id values shown there.`;
+
+// Deterministic keyword detector — flags a step as a retrofit candidate for
+// a specific wired action_type. Emits nothing if the step already has
+// action_type set OR is in a terminal state OR is a type we can't wire.
+// Not meant to be exhaustive — the AI still handles nuanced cases; this is
+// a hint that says "this one is obvious, don't skip it."
+function detectRetrofitCandidate(step) {
+  if (!step) return null;
+  if (step.action_type) return null;
+  const status = step.status || 'pending';
+  if (['done', 'applied', 'skipped'].includes(status)) return null;
+  const type = step.type || '';
+  if (!['google_ads_action', 'app_code_change', 'schedule'].includes(type)) return null;
+  const text = `${step.title || ''} ${step.description || ''}`.toLowerCase();
+  // Order matters — more specific first.
+  if (/default value|conversion.*value|value.*conversion/.test(text) && /\$\s*\d/.test(text)) return 'set_conversion_action_value';
+  if (/primary conversion|primary.*key event|promote.*purchase.*primary|demote.*first[_ ]open/.test(text)) return 'set_primary_conversion_action';
+  if (/daily budget|budget.*\$\s*\d|set.*budget/.test(text)) return 'set_campaign_budget';
+  if (/pause.*campaign|campaign.*pause/.test(text) && !/enable|resume|unpause/.test(text)) return 'pause_campaign';
+  if (/(resume|enable|unpause).*campaign|campaign.*(resume|enable|unpause)/.test(text)) return 'enable_campaign';
+  if (/negative keyword|add.*negatives|exclude.*keyword/.test(text)) return 'add_negative_keywords';
+  if (/(mark|add).*(key event|conversion event)|conversion.*event.*(mark|enable)/.test(text)) return 'mark_ga4_conversion_event';
+  if (/geo.*(presence|target.*mode|PRESENCE)/.test(text)) return 'set_geo_target_type';
+  if (/exclude.*location|excluded.*location/.test(text)) return 'add_excluded_locations';
+  return null;
+}
 
 async function synthesizeEditOps({ report, transcript, currentPlan, currentSteps }) {
   const t0 = Date.now();
@@ -1773,12 +1806,16 @@ async function synthesizeEditOps({ report, transcript, currentPlan, currentSteps
 
   // Format the current plan state for the AI to reference. Exposing `type` and
   // whether monitor_spec is set lets the AI spot observation steps that are
-  // eligible for auto-monitor retrofit via refactor.
+  // eligible for auto-monitor retrofit via refactor. Also flag automation
+  // retrofit candidates so the AI can't skip them (it was ignoring them and
+  // returning empty ops).
   const stepLines = (currentSteps || []).map((s, i) => {
     const monitorFlag = s.type === 'observation'
       ? (s.monitor_spec ? ' [monitor: yes]' : ' [monitor: NO — eligible for retrofit]')
       : '';
-    return `  [step_id: ${s.id}] [position: ${i}] [status: ${s.status || 'pending'}] [type: ${s.type || 'other'}]${monitorFlag} ${s.title}` +
+    const retrofitFlag = detectRetrofitCandidate(s);
+    const retrofitTag = retrofitFlag ? ` [RETROFIT CANDIDATE: ${retrofitFlag}]` : '';
+    return `  [step_id: ${s.id}] [position: ${i}] [status: ${s.status || 'pending'}] [type: ${s.type || 'other'}]${monitorFlag}${retrofitTag} ${s.title}` +
       (s.description ? `\n     desc: ${s.description.replace(/\s+/g, ' ').slice(0, 400)}` : '') +
       (s.notes ? `\n     notes: ${s.notes.replace(/\s+/g, ' ').slice(0, 400)}` : '');
   }).join('\n');
