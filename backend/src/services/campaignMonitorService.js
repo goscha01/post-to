@@ -16,6 +16,7 @@ const { createClient } = require('@supabase/supabase-js');
 const { getAllBusinessTokens } = require('../utils/businessTokens');
 const analyticsService = require('./analyticsService');
 const googleAdsService = require('./googleAdsService');
+const ascAnalyticsService = require('./ascAnalyticsService');
 const logger = require('../utils/logger');
 
 const supabase = createClient(
@@ -23,7 +24,12 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY
 );
 
-const SUPPORTED_SOURCES = new Set(['ga4_event_rate', 'ga4_event_count', 'google_ads_geo_share']);
+const SUPPORTED_SOURCES = new Set([
+  'ga4_event_rate',
+  'ga4_event_count',
+  'google_ads_geo_share',
+  'asc_install_conversion_rate',
+]);
 const SUPPORTED_OPS = new Set(['<', '<=', '>', '>=', '==']);
 
 // -- Threshold evaluator ------------------------------------------------------
@@ -99,6 +105,47 @@ async function evalGoogleAdsGeoShare({ token, customerId, loginCustomerId, campa
   };
 }
 
+// App Store install conversion rate: installs / unique product page views
+// over a lookback window. Reads from the ASC analytics cache populated by
+// the hourly cron. Use to auto-monitor App Store listing optimisation
+// steps ("watch conversion rate to climb above 25% after new screenshots").
+async function evalAscInstallConversionRate({ connectionId, params }) {
+  const days = Math.max(1, Math.min(90, Number(params.days) || 14));
+  const funnel = await ascAnalyticsService.getInstallFunnel({ connectionId, days });
+  if (funnel.dataCoverageDays === 0) {
+    return {
+      value: null,
+      summary: `ASC install conversion over ${days}d: no analytics data cached yet (Apple lag ~24-48h)`,
+    };
+  }
+  const rate = funnel.totals?.conversionRate;
+  if (rate == null) {
+    return {
+      value: null,
+      summary: `ASC install conversion over ${days}d: 0 unique product-page views (nothing to divide)`,
+    };
+  }
+  return {
+    value: rate,
+    summary: `Installs=${funnel.totals.installs} / uniquePPV=${funnel.totals.productPageViewsUniqueDevice} over ${days}d → conversionRate=${(rate * 100).toFixed(2)}%`,
+  };
+}
+
+// Resolve the user's active App Store Connect connection ID. Mirrors the
+// campaign-assistant route's resolveAscToolContext but simpler — the monitor
+// only needs the connection ID (analytics service loads creds itself).
+async function resolveActiveAscConnectionId(userId) {
+  const { data } = await supabase
+    .from('connected_accounts')
+    .select('id')
+    .eq('user_id', userId)
+    .eq('provider', 'app_store_connect')
+    .eq('status', 'active')
+    .order('created_at', { ascending: false })
+    .limit(1);
+  return data?.[0]?.id || null;
+}
+
 // -- Dispatch ----------------------------------------------------------------
 
 // Given a provider + external ID, look up the connected_account and return
@@ -133,6 +180,19 @@ async function evaluateSpec({ spec, userId, conversation }) {
     return { error: `unsupported source: ${source}` };
   }
   const params = spec.params || {};
+
+  try {
+    // ASC install conversion rate uses ASC .p8 creds, not Google OAuth
+    // tokens. Handle it before the business-tokens check so a user with only
+    // ASC connected can still run ASC monitors.
+    if (source === 'asc_install_conversion_rate') {
+      const connectionId = await resolveActiveAscConnectionId(userId);
+      if (!connectionId) return { error: 'no active App Store Connect connection for user' };
+      return await evalAscInstallConversionRate({ connectionId, params });
+    }
+  } catch (err) {
+    return { error: err.message || String(err) };
+  }
 
   const tokens = await getAllBusinessTokens(userId);
   if (!tokens || tokens.length === 0) return { error: 'no business tokens for user' };
@@ -284,6 +344,8 @@ function safeParseMonitorSpec(rawSpec) {
     if (!params.country_criterion_id) return null;
     cleanParams.country_criterion_id = String(params.country_criterion_id).slice(0, 20);
     cleanParams.days = clampInt(params.days, 1, 90, 7);
+  } else if (source === 'asc_install_conversion_rate') {
+    cleanParams.days = clampInt(params.days, 1, 90, 14);
   }
   return {
     source,

@@ -929,6 +929,9 @@ WIRED (user can apply immediately with our infrastructure):
 - type: "google_ads_action", action_type: "set_primary_conversion_action"
     action_params: { "campaignId": "<numeric>", "conversionActionResourceName": "customers/<cid>/conversionActions/<actionId>" }
     Notes: applies at ACCOUNT level (affects every campaign not overriding via campaign_conversion_goal).
+- type: "google_ads_action", action_type: "set_conversion_action_value"
+    action_params: { "conversionActionResourceName": "customers/<cid>/conversionActions/<actionId>", "defaultValue": <number> }
+    Notes: updates value_settings.default_value on a Conversion Action. Use this when the snapshot shows a purchase / subscription action with a placeholder default (e.g. $1) but recent conversions_value / conversions ratio implies the real average transaction value is much higher. Value-based bidding (Maximize Conversion Value / tROAS) underbids on high-value users when default_value is stale. Reversible: Google Ads UI → Goals → Conversions → this action → Value.
 - type: "google_ads_action", action_type: "set_geo_target_type"
     action_params: { "campaignId": "<numeric>", "positiveType": "PRESENCE" | "PRESENCE_OR_INTEREST" | "SEARCH_INTEREST" | "DONT_CARE" }
     Notes: recommend PRESENCE when GA4 shows traffic from cities outside the campaign target country (indicates PRESENCE_OR_INTEREST leak).
@@ -982,6 +985,12 @@ WIRED SOURCES:
     threshold: { "op": "<" | "<=", "value": <fraction 0..1> }
     Example (Seoul/South Korea traffic drops after geo change): { source: "google_ads_geo_share", params: { country_criterion_id: "2410", days: 7 }, threshold: { op: "<", value: 0.05 }, target_description: "South Korea impression share drops below 5% after PRESENCE-only change" }
 
+- source: "asc_install_conversion_rate" — App Store installs / unique product-page views over a lookback (Apple analytics cache)
+    params: { "days": <1-90> }
+    threshold: { "op": ">=" | ">" | "<=" | "<", "value": <fraction 0..1, typical range 0.15..0.40> }
+    Example (product page CTR climbs above 25% after new screenshots): { source: "asc_install_conversion_rate", params: { days: 7 }, threshold: { op: ">=", value: 0.25 }, target_description: "App Store install conversion climbs above 25%" }
+    Notes: Apple has 24-48h data lag; set check_after at least 48h after the listing change ships. Values > 0.60 are almost always noise (low PPV denominator).
+
 RULES for monitor_spec:
 - ONLY populate for type="observation". For other types, leave null.
 - If the observation isn't measurable via one of the wired sources (e.g. "read the DebugView console qualitatively"), leave monitor_spec null. Manual observation stays manual — don't fake a spec.
@@ -993,7 +1002,7 @@ GUIDANCE ON TYPES
 - "app_code_change": code changes to the mobile/web app (React Native, Swift, Kotlin, web). Also covers Firebase/GA4 CONFIG that changes measurement behaviour even without code edits (mark_ga4_conversion_event, set_remote_config_parameter).
 - "product_change": design/UX decisions requiring human judgment (paywall copy, pricing, onboarding flow structure).
 - "observation": check-in tasks ("watch DebugView for 48h after change X"). If measurable, populate monitor_spec so the check is automated.
-- "schedule": something to do at a future date ("re-analyse in 7 days").
+- "schedule": something to do at a future date ("re-analyse in 7 days", "demote First Open 30 days after ATT ships"). Schedule steps MAY carry an \`action_type\` + \`action_params\` (any wired action from the AUTOMATION CATALOG). When they do, set \`check_after\` to the ISO date the action should unlock — the Apply button stays disabled until that date arrives, then the user (or a future cron) can execute the mutation. Use this instead of "google_ads_action" whenever the action is deliberately deferred; the plan panel will show a "Scheduled · unlocks in N days" badge.
 - "other": anything else.
 
 META ADS RECOMMENDATIONS — READ-ONLY (CRITICAL)
@@ -1709,7 +1718,12 @@ AUTO-MONITOR CATALOG (for populating monitor_spec on observation steps — via "
     threshold: { op:"<"|"<=", value:<0..1 fraction> }
     Example: South Korea drops below 5% → source=google_ads_geo_share, params={country_criterion_id:"2410", days:7}, threshold={op:"<", value:0.05}
 
-check_after = earliest ISO timestamp checking makes sense (change_date + data_lag, typically +24-48h).
+- source: "asc_install_conversion_rate" — App Store installs / unique PPVs
+    params: { days:1..90 }
+    threshold: { op:">="|">"|"<="|"<", value:<0..1 fraction> }
+    Example: install CR climbs above 25% after new screenshots → source=asc_install_conversion_rate, params={days:7}, threshold={op:">=", value:0.25}
+
+check_after = earliest ISO timestamp checking makes sense (change_date + data_lag, typically +24-48h; +48-72h for ASC).
 check_until = deadline ISO timestamp (change_date + observation window, e.g. +14d).
 target_description = human-readable one-liner matching the threshold intent.
 

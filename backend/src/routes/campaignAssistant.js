@@ -2374,7 +2374,7 @@ router.post('/plan-steps/:stepId/apply', async (req, res) => {
     // through the conversation.
     const { data: step, error: stepErr } = await supabase
       .from('campaign_assistant_action_plan_steps')
-      .select('id, plan_id, title, type, action_type, action_params, status')
+      .select('id, plan_id, title, type, action_type, action_params, status, check_after')
       .eq('id', stepId)
       .single();
     if (stepErr || !step) return res.status(404).json({ error: 'Step not found' });
@@ -2388,8 +2388,22 @@ router.post('/plan-steps/:stepId/apply', async (req, res) => {
       return res.status(404).json({ error: 'Step not found' });
     }
 
-    if (step.type !== 'google_ads_action' && step.type !== 'app_code_change') {
+    // Types allowed to apply: google_ads_action (writes), app_code_change
+    // (GA4/Firebase config mutations that look like code but aren't), and
+    // schedule (deferred actions that carry their own wired action_type +
+    // an ISO `check_after` date). Schedule steps are gated on the date so
+    // premature clicks are rejected.
+    const applicableTypes = new Set(['google_ads_action', 'app_code_change', 'schedule']);
+    if (!applicableTypes.has(step.type)) {
       return res.status(400).json({ error: `Cannot apply step of type "${step.type}"` });
+    }
+    if (step.type === 'schedule' && step.check_after) {
+      const dueMs = new Date(step.check_after).getTime();
+      if (Number.isFinite(dueMs) && Date.now() < dueMs) {
+        return res.status(400).json({
+          error: `Scheduled step is not yet due (check_after=${step.check_after}). Wait until the scheduled date, then re-run.`,
+        });
+      }
     }
     if (step.status === 'applied') {
       return res.status(409).json({ error: 'Step already applied' });
@@ -2481,6 +2495,33 @@ router.post('/plan-steps/:stepId/apply', async (req, res) => {
             summary: result.noop
               ? `No-op — ${result.reason}. Nothing to do.`
               : `Marked ${result.name || rn} as primary conversion action (account-level — affects every campaign not overriding via campaign_conversion_goal).`,
+            result,
+            noop: !!result.noop,
+          };
+          break;
+        }
+        case 'set_conversion_action_value': {
+          const adsCustomer = await resolveAdsCustomer(userId, conv.google_ads_customer_id);
+          if (!adsCustomer.customerId) throw new Error('No connected Google Ads customer for this conversation');
+          const accessToken = await tokenForOwner(req, adsCustomer.ownerGoogleId);
+          if (!accessToken) throw new Error('No Google access token available; reconnect Google Business.');
+          const loginCustomerId = adsCustomer.loginCustomerId || conv.google_ads_login_customer_id || null;
+          const params = step.action_params || {};
+          const rn = params.conversionActionResourceName || params.conversion_action_resource_name || null;
+          const defaultValue = Number(params.defaultValue ?? params.default_value);
+          if (!rn) throw new Error('action_params.conversionActionResourceName is required (format: customers/<cid>/conversionActions/<id>)');
+          if (!Number.isFinite(defaultValue) || defaultValue < 0) throw new Error('action_params.defaultValue must be a non-negative number');
+          const result = await googleAdsSvc.setConversionActionValue({
+            accessToken,
+            customerId: adsCustomer.customerId,
+            loginCustomerId,
+            conversionActionResourceName: rn,
+            defaultValue,
+          });
+          executed = {
+            summary: result.noop
+              ? `No-op — ${result.reason}. Nothing to do.`
+              : `Updated ${result.name || rn} default value from ${result.previousValue} → ${result.newValue}. Reversible in Google Ads UI → Goals → Conversions → this action → Value.`,
             result,
             noop: !!result.noop,
           };
@@ -2626,7 +2667,7 @@ router.post('/plan-steps/:stepId/apply', async (req, res) => {
         }
         default:
           return res.status(400).json({
-            error: `Action type "${step.action_type}" is recognised in the plan schema but not yet wired to a live mutation. Implemented: add_negative_keywords, pause_campaign, enable_campaign, set_primary_conversion_action, set_campaign_budget, set_geo_target_type, add_excluded_locations, mark_ga4_conversion_event.`,
+            error: `Action type "${step.action_type}" is recognised in the plan schema but not yet wired to a live mutation. Implemented: add_negative_keywords, pause_campaign, enable_campaign, set_primary_conversion_action, set_conversion_action_value, set_campaign_budget, set_geo_target_type, add_excluded_locations, mark_ga4_conversion_event.`,
           });
       }
     } catch (mutationErr) {

@@ -1677,6 +1677,7 @@ const APPLYABLE_ACTION_TYPES = new Set([
   'pause_campaign',
   'enable_campaign',
   'set_primary_conversion_action',
+  'set_conversion_action_value',
   'set_campaign_budget',
   'set_geo_target_type',
   'add_excluded_locations',
@@ -1692,6 +1693,7 @@ function reversibilityHint(actionType) {
     case 'pause_campaign':                 return 'Reversible in Google Ads UI · Campaigns → toggle status back to Enabled';
     case 'enable_campaign':                return 'Reversible in Google Ads UI · Campaigns → toggle status back to Paused';
     case 'set_primary_conversion_action':  return 'Reversible in Google Ads UI · Tools → Conversions → uncheck Primary';
+    case 'set_conversion_action_value':    return 'Reversible in Google Ads UI · Goals → Conversions → this action → Value';
     case 'set_campaign_budget':            return 'Reversible in Google Ads UI · Campaigns → Settings → Budget';
     case 'set_geo_target_type':            return 'Reversible in Google Ads UI · Campaigns → Settings → Locations → Location options';
     case 'add_excluded_locations':         return 'Reversible in Google Ads UI · Campaigns → Locations → remove exclusion';
@@ -1717,8 +1719,20 @@ const PlanStepRow = ({ step, index, onToggleStatus, onUpdateNotes, onApplyStep, 
   const isDone = step.status === 'done' || step.status === 'applied';
   const isApplied = step.status === 'applied';
   const isFailed = step.status === 'failed';
-  const isAutomatable = step.type === 'google_ads_action' && step.action_type;
-  const isReadyToApply = isAutomatable && APPLYABLE_ACTION_TYPES.has(step.action_type);
+  // A step is automatable if it has a Google Ads mutation type OR a schedule
+  // type carrying an action_type + due date. Schedule steps whose date hasn't
+  // passed yet stay "Scheduled" — the Apply button appears when they come due.
+  const scheduleDueMs = step.type === 'schedule' && step.check_after
+    ? new Date(step.check_after).getTime()
+    : null;
+  const isScheduleDue = step.type === 'schedule'
+    ? (scheduleDueMs == null || Date.now() >= scheduleDueMs)
+    : true;
+  const isAutomatable = (step.type === 'google_ads_action'
+    || (step.type === 'schedule' && step.action_type)) && step.action_type;
+  const isReadyToApply = isAutomatable
+    && APPLYABLE_ACTION_TYPES.has(step.action_type)
+    && isScheduleDue;
   const isDevTask = step.type === 'app_code_change';
 
   const handleApply = async () => {
@@ -1774,7 +1788,12 @@ const PlanStepRow = ({ step, index, onToggleStatus, onUpdateNotes, onApplyStep, 
             {step.effort && (
               <span className="text-[10px] text-gray-500">· {step.effort}</span>
             )}
-            {isAutomatable && !isReadyToApply && (
+            {isAutomatable && !isReadyToApply && !isScheduleDue && (
+              <span className="text-[10px] text-purple-700 bg-purple-50 px-1.5 py-0.5 rounded" title={`Scheduled for ${new Date(scheduleDueMs).toLocaleString()}. Apply button will unlock automatically when the date arrives.`}>
+                Scheduled · unlocks {relFuture(new Date(scheduleDueMs))}
+              </span>
+            )}
+            {isAutomatable && !isReadyToApply && isScheduleDue && (
               <span className="text-[10px] text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded" title={`Google Ads mutation "${step.action_type}" recognised in the plan schema but not yet wired to a live API call.`}>
                 Automatable (not wired)
               </span>
@@ -2119,6 +2138,28 @@ const ActionParamsSummary = ({ actionType, params }) => {
         </div>
         <div className="text-[11px] text-gray-500 mt-1 italic">
           Sets <code>primary_for_goal = true</code> at ACCOUNT level. Affects every campaign in the account not overriding via campaign_conversion_goal. Reversible: Google Ads UI → Tools → Conversions → this action → Primary → Off.
+        </div>
+      </div>
+    );
+  }
+  if (actionType === 'set_conversion_action_value') {
+    const rn = params.conversionActionResourceName || params.conversion_action_resource_name || '';
+    const actionId = rn.split('/').pop();
+    const value = params.defaultValue ?? params.default_value;
+    return (
+      <div className="text-gray-800 space-y-0.5">
+        <div><span className="text-gray-500">Conversion action:</span>{' '}
+          <span className="px-1.5 py-0.5 bg-white border border-blue-200 rounded text-blue-900 text-[11px]">
+            {actionId || '(missing)'}
+          </span>
+        </div>
+        <div><span className="text-gray-500">New default value:</span>{' '}
+          <span className="px-1.5 py-0.5 bg-white border border-blue-200 rounded text-blue-900 text-[11px]">
+            {value != null ? Number(value).toFixed(2) : '(missing)'}
+          </span>
+        </div>
+        <div className="text-[11px] text-gray-500 mt-1 italic">
+          Updates <code>value_settings.default_value</code>. Fixes value-based bidding when the default is stale (e.g. placeholder $1). Reversible: Google Ads UI → Goals → Conversions → this action → Value.
         </div>
       </div>
     );

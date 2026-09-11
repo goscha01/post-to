@@ -1508,6 +1508,84 @@ async function setConversionActionPrimary({
   };
 }
 
+// Update the DEFAULT value on a Conversion Action (value_settings.default_value).
+// Used when the AI recommends "set purchase conversion default from $1 to $21.80"
+// because value-based bidding was underbidding on high-value users.
+//
+// Two-step:
+//   1. Query the action for current default value + currency. If the new
+//      value is within 1 cent of current, no-op.
+//   2. Mutate conversionActions with an update on value_settings.default_value
+//      (updateMask = 'valueSettings.defaultValue').
+// Reversible: Google Ads UI → Goals → Conversions → click the action → Value.
+async function setConversionActionValue({
+  accessToken, customerId, loginCustomerId,
+  conversionActionResourceName, defaultValue,
+}) {
+  const cid = stripCid(customerId);
+  if (!cid) throw new Error('customerId required');
+  const rn = String(conversionActionResourceName || '').trim();
+  if (!rn) throw new Error('conversionActionResourceName required');
+  if (!/^customers\/\d+\/conversionActions\/\d+$/.test(rn)) {
+    throw new Error(`Invalid conversion action resource name: "${rn}"`);
+  }
+  const actionId = rn.split('/').pop();
+  const value = Number(defaultValue);
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error('defaultValue must be a non-negative number');
+  }
+  if (value > 100000) {
+    throw new Error('defaultValue sanity limit (100,000). Set higher in Google Ads UI if intentional.');
+  }
+
+  // Pre-flight: read current value + currency for the no-op check + audit log.
+  const currentRows = await search(accessToken, cid, `
+    SELECT
+      conversion_action.id,
+      conversion_action.name,
+      conversion_action.value_settings.default_value,
+      conversion_action.value_settings.always_use_default_value
+    FROM conversion_action
+    WHERE conversion_action.id = ${actionId}
+    LIMIT 1
+  `, { loginCustomerId });
+  const current = currentRows[0]?.conversionAction || {};
+  const currentValue = Number(current.valueSettings?.defaultValue) || 0;
+  const actionName = current.name || null;
+  if (Math.abs(currentValue - value) < 0.01) {
+    return {
+      noop: true,
+      reason: `Default value already ${currentValue} for "${actionName || actionId}"`,
+      resourceName: rn,
+      name: actionName,
+      previousValue: currentValue,
+      newValue: value,
+    };
+  }
+
+  const url = `${BASE_URL}/customers/${cid}/conversionActions:mutate`;
+  const body = {
+    operations: [{
+      update: {
+        resourceName: rn,
+        valueSettings: { defaultValue: value },
+      },
+      updateMask: 'valueSettings.defaultValue',
+    }],
+  };
+  const { data } = await axios.post(url, body, {
+    headers: headers(accessToken, loginCustomerId),
+    timeout: 30_000,
+  });
+  return {
+    noop: false,
+    resourceName: data?.results?.[0]?.resourceName || rn,
+    name: actionName,
+    previousValue: currentValue,
+    newValue: value,
+  };
+}
+
 // Change the DAILY budget on a campaign. Two-step:
 //   1. Query the campaign to get its linked campaign_budget resource + its
 //      explicitly_shared flag (shared budgets affect multiple campaigns —
@@ -1827,6 +1905,7 @@ module.exports = {
   pauseCampaign,
   enableCampaign,
   setConversionActionPrimary,
+  setConversionActionValue,
   setCampaignDailyBudget,
   setCampaignGeoTargetType,
   addCampaignExcludedLocations,
