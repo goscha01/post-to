@@ -1660,6 +1660,7 @@ router.post('/conversations/:id/plans', async (req, res) => {
   const userId = req.user.userId;
   const conversationId = req.params.id;
   const t0 = Date.now();
+  console.log(`[HTTP] POST /conversations/${conversationId}/plans user=${userId}`);
 
   try {
     const { data: conv, error: convErr } = await supabase
@@ -1687,8 +1688,10 @@ router.post('/conversations/:id/plans', async (req, res) => {
 
     if (livingPlan) {
       // Path 2: EDIT-OPS FLOW — mutate the living plan in place.
+      console.log(`[HTTP] regen livingPlan=${livingPlan.id} → edit-ops path`);
       return await handleEditOpsRegen({ req, res, userId, conversationId, conv, livingPlan, transcript, t0 });
     }
+    console.log(`[HTTP] regen no livingPlan → first-time full dialogue path`);
 
     // Path 1: FIRST-TIME PLAN — full 4-round dialogue.
     const priorOutcomes = await buildPriorPlanOutcomes(conversationId);
@@ -1824,6 +1827,7 @@ router.post('/conversations/:id/plans', async (req, res) => {
     };
     res.json({ plan: planWithAudit, steps });
   } catch (err) {
+    console.log(`[HTTP] regen FAILED conv=${conversationId} err=${err.message} stack=${(err.stack || '').split('\n')[1]?.trim()}`);
     logger.error('campaignAssistant.plan_create_failed', {
       userId, conversationId, error: err.message, duration_ms: Date.now() - t0,
     });
