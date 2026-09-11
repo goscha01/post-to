@@ -1235,8 +1235,19 @@ function validatePlanShape(obj) {
           description = `[Meta Ads] ${description}`.trim();
         }
       }
-      // monitor_spec/check_after/check_until only meaningful on observation steps.
-      const monitor = type === 'observation' ? sanitizeMonitorFields(s) : { monitor_spec: null, check_after: null, check_until: null };
+      // monitor_spec+check_after+check_until make sense on observation steps
+      // (auto-monitor eval). check_after ALSO makes sense on schedule steps
+      // (unlocks Apply). Preserve check_after standalone for schedule; only
+      // strip on the truly-irrelevant types.
+      let monitor;
+      if (type === 'observation') {
+        monitor = sanitizeMonitorFields(s);
+      } else if (type === 'schedule') {
+        const ca = isIso(s.check_after) ? new Date(s.check_after).toISOString() : null;
+        monitor = { monitor_spec: null, check_after: ca, check_until: null };
+      } else {
+        monitor = { monitor_spec: null, check_after: null, check_until: null };
+      }
       return {
         title: String(s.title).slice(0, 500),
         description,
@@ -1676,11 +1687,11 @@ OUTPUT SCHEMA — valid JSON only, no prose, no code fences:
 {
   "summary": string (1-2 sentences describing what changed and why — shown to the user post-regen),
   "operations": [
-    // Add a NEW step that doesn't exist in the current plan. For type="observation" that maps to a wired monitor source, populate monitor_spec + check_after + check_until (see the AUTO-MONITOR CATALOG that was in the initial-plan prompt: sources = ga4_event_rate | ga4_event_count | google_ads_geo_share, threshold = {op, value}, dates as ISO 8601).
+    // Add a NEW step that doesn't exist in the current plan. For type="observation" that maps to a wired monitor source, populate monitor_spec + check_after + check_until (see the AUTO-MONITOR CATALOG below). For type="google_ads_action" or type="schedule" that maps to a wired mutation, populate action_type + action_params (see the AUTOMATION CATALOG below).
     {"op":"add","position":<0-based insertion index in the current step list>,"step":{"title","description","type","action_type"|null,"action_params"|null,"priority","effort","monitor_spec"|null,"check_after"|null,"check_until"|null},"reason":"why this is new work"},
 
-    // Refactor an existing step's title/description, OR retrofit auto-monitor fields onto an existing observation step that lacks them. Any of newTitle/newDescription/monitor_spec may be omitted; at least one must be present.
-    {"op":"refactor","step_id":"<uuid>","newTitle":"...","newDescription":"...","monitor_spec":{...} | null,"check_after":"<ISO 8601>" | null,"check_until":"<ISO 8601>" | null,"reason":"why the reshape"},
+    // Refactor an existing step's title/description AND/OR retrofit action_type + action_params onto it (to flip a manual step into a one-click apply) AND/OR retrofit auto-monitor fields onto an existing observation step. Any of newTitle/newDescription/action_type/action_params/monitor_spec may be omitted; at least one must be present. Use this to make legacy steps applyable when a matching mutation is now wired.
+    {"op":"refactor","step_id":"<uuid>","newTitle":"...","newDescription":"...","action_type":"<wired action_type>" | null,"action_params":{...} | null,"monitor_spec":{...} | null,"check_after":"<ISO 8601>" | null,"check_until":"<ISO 8601>" | null,"reason":"why the reshape"},
 
     // Mark a step's status transition (PROGRESSION-ONLY — no 'pending' allowed here)
     {"op":"mark","step_id":"<uuid>","status":"done"|"applied"|"skipped"|"failed","reason":"why the transition"},
@@ -1728,6 +1739,30 @@ check_until = deadline ISO timestamp (change_date + observation window, e.g. +14
 target_description = human-readable one-liner matching the threshold intent.
 
 Retrofit is HIGH-VALUE: any observation step marked [monitor: NO — eligible for retrofit] that measures a wired source should get monitor_spec added via refactor so it stops requiring manual re-check.
+
+AUTOMATION CATALOG (for populating action_type + action_params on google_ads_action / schedule steps — via "add" for new steps, via "refactor" to retrofit existing legacy steps that were emitted before we wired the mutation):
+
+- action_type: "add_negative_keywords"
+    action_params: { "campaignId": "<numeric>", "keywords": ["cheap","free"], "matchType": "BROAD"|"PHRASE"|"EXACT" }
+- action_type: "pause_campaign" | "enable_campaign"
+    action_params: { "campaignId": "<numeric>" }
+- action_type: "set_primary_conversion_action"
+    action_params: { "campaignId": "<numeric>", "conversionActionResourceName": "customers/<cid>/conversionActions/<actionId>" }
+- action_type: "set_conversion_action_value"
+    action_params: { "conversionActionResourceName": "customers/<cid>/conversionActions/<actionId>", "defaultValue": <number> }
+    Use for "update purchase default value from $X to $Y" recommendations. Fixes value-based bidding underbidding when the default is stale.
+- action_type: "set_campaign_budget"
+    action_params: { "campaignId": "<numeric>", "dailyBudgetUsd": <number> }
+- action_type: "set_geo_target_type"
+    action_params: { "campaignId": "<numeric>", "positiveType": "PRESENCE"|"PRESENCE_OR_INTEREST"|"SEARCH_INTEREST"|"DONT_CARE" }
+- action_type: "add_excluded_locations"
+    action_params: { "campaignId": "<numeric>", "locationIds": ["<geo_target_constant_id>",...] }
+- action_type: "mark_ga4_conversion_event"
+    action_params: { "propertyId": "<numeric>", "eventName": "<event_name>" }
+
+Retrofit rule: if a legacy step in the CURRENT PLAN has type="google_ads_action" (or type="schedule" with a deferred wired action) but action_type is null, AND its title/description maps to one of the entries above, emit a "refactor" op that sets action_type + action_params. This flips the step from "manual — user has to click through Google Ads UI" to "one-click Apply" without changing the underlying task.
+
+Schedule steps: type="schedule" MAY carry action_type + action_params + check_after. When check_after is set on a schedule step, the Apply button is gated until that date passes. Use this for deferred mutations ("demote First Open 30 days after ATT ships").
 
 CURRENT PLAN STATE will be given in the user message. Use the step_id values shown there.`;
 
@@ -1852,7 +1887,17 @@ function safeParseEditOps(text) {
       const knownTypes = new Set(['google_ads_action', 'app_code_change', 'product_change', 'observation', 'schedule', 'other']);
       const knownPriority = new Set(['high', 'medium', 'low']);
       const type = knownTypes.has(op.step.type) ? op.step.type : 'other';
-      const monitor = type === 'observation' ? sanitizeMonitorFields(op.step) : { monitor_spec: null, check_after: null, check_until: null };
+      // Preserve check_after for schedule steps (unlocks Apply date) even
+      // when there's no monitor_spec — same rule as validatePlanShape.
+      let monitor;
+      if (type === 'observation') {
+        monitor = sanitizeMonitorFields(op.step);
+      } else if (type === 'schedule') {
+        const ca = isIso(op.step.check_after) ? new Date(op.step.check_after).toISOString() : null;
+        monitor = { monitor_spec: null, check_after: ca, check_until: null };
+      } else {
+        monitor = { monitor_spec: null, check_after: null, check_until: null };
+      }
       clean.step = {
         title: String(op.step.title).slice(0, 500),
         description: String(op.step.description || ''),
@@ -1879,7 +1924,21 @@ function safeParseEditOps(text) {
         clean.newCheckAfter = monitor.check_after;
         clean.newCheckUntil = monitor.check_until;
       }
-      if (!clean.newTitle && !clean.newDescription && !clean.newMonitorSpec) continue;
+      // Allow refactor to retrofit action_type + action_params — flips a
+      // legacy manual step ("go update this in Google Ads UI") into a
+      // one-click Apply when a matching wired mutation now exists.
+      if (op.action_type) {
+        clean.newActionType = String(op.action_type).slice(0, 64);
+        clean.newActionParams = op.action_params && typeof op.action_params === 'object'
+          ? op.action_params
+          : null;
+      }
+      // Schedule steps: allow refactor to set check_after independent of
+      // monitor_spec so the Apply-unlock date can be retrofitted.
+      if (!monitor.monitor_spec && isIso(op.check_after)) {
+        clean.newCheckAfter = new Date(op.check_after).toISOString();
+      }
+      if (!clean.newTitle && !clean.newDescription && !clean.newMonitorSpec && !clean.newActionType && !clean.newCheckAfter) continue;
     } else if (op.op === 'mark') {
       if (!op.step_id || !VALID_EDIT_STATUS.has(op.status)) continue;
       clean.step_id = String(op.step_id);

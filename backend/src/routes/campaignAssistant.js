@@ -1455,6 +1455,24 @@ async function applyEditOps(livingPlanId, operations) {
             patch.applied_error = null;
           }
         }
+        // Refactor may also retrofit action_type + action_params onto an
+        // existing step. This is what flips a legacy manual step into a
+        // one-click Apply after we wire a matching mutation (e.g. legacy
+        // "Update purchase default value" steps → set_conversion_action_value).
+        if (op.newActionType) {
+          patch.action_type = op.newActionType;
+          patch.action_params = op.newActionParams || null;
+          // Reset applied/failed states so the newly-wired button works.
+          if (['applied', 'failed'].includes(step.status)) {
+            patch.status = 'pending';
+            patch.applied_at = null;
+            patch.applied_error = null;
+          }
+        }
+        // Standalone check_after retrofit for schedule steps (no monitor_spec).
+        if (op.newCheckAfter && !op.newMonitorSpec) {
+          patch.check_after = op.newCheckAfter;
+        }
         // Append refactor reason to notes as an audit trail.
         const noteAddition = `[Refactored by AI regen ${nowIso}]${op.reason ? ' ' + op.reason : ''}`;
         const { data: latest } = await supabase
