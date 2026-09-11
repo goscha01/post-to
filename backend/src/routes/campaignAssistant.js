@@ -1606,6 +1606,22 @@ async function handleEditOpsRegen({ req, res, userId, conversationId, conv, livi
       costUsd: editResult.usage.costUsd,
       duration_ms: Date.now() - t0,
     });
+    // stdout mirror — post-to's logger only ships to LogHub, and LogHub
+    // isn't ingesting from post-to right now, so this is our only real
+    // observability into what the regen AI is actually doing.
+    console.log(`[plan_regen] planId=${livingPlan.id} applied=${JSON.stringify(applied)} skipped=${skipped.length} opsRequested=${(editResult.operations || []).length}`);
+    // Log the refactor ops in detail so we can see which steps got
+    // action_type retrofits (or not).
+    for (const op of (editResult.operations || [])) {
+      if (op.op === 'refactor') {
+        console.log(`[plan_regen] refactor step_id=${op.step_id} newActionType=${op.newActionType || 'none'} newTitle=${op.newTitle ? op.newTitle.slice(0,60) : 'none'}`);
+      } else if (op.op === 'add') {
+        console.log(`[plan_regen] add title="${(op.step?.title || '').slice(0,60)}" type=${op.step?.type} action_type=${op.step?.action_type || 'none'}`);
+      }
+    }
+    if (skipped.length > 0) {
+      console.log(`[plan_regen] skipped ops: ${JSON.stringify(skipped.slice(0, 10))}`);
+    }
 
     const { raw_response, ...planPublic } = refreshedPlan;
     res.json({
@@ -2368,6 +2384,81 @@ Please respond with: (a) do you agree the original step was wrong, (b) is there 
     res.json({ step: updated, chatPrompt });
   } catch (err) {
     logger.error('campaignAssistant.plan_step_pushback_failed', {
+      userId, stepId, error: err.message,
+    });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /plan-steps/:stepId/set-action — force-set action_type + action_params
+// on an existing step. Escape hatch for when the regen AI doesn't retrofit a
+// legacy step to a newly-wired mutation. Owner-only. Whitelisted action_types.
+// ---------------------------------------------------------------------------
+const FORCE_SETTABLE_ACTION_TYPES = new Set([
+  'add_negative_keywords',
+  'pause_campaign',
+  'enable_campaign',
+  'set_primary_conversion_action',
+  'set_conversion_action_value',
+  'set_campaign_budget',
+  'set_geo_target_type',
+  'add_excluded_locations',
+  'mark_ga4_conversion_event',
+]);
+router.post('/plan-steps/:stepId/set-action', async (req, res) => {
+  const userId = req.user.userId;
+  const stepId = req.params.stepId;
+  const actionType = String(req.body?.action_type || '').trim();
+  const actionParams = req.body?.action_params && typeof req.body.action_params === 'object'
+    ? req.body.action_params
+    : null;
+  if (!FORCE_SETTABLE_ACTION_TYPES.has(actionType)) {
+    return res.status(400).json({ error: `action_type must be one of: ${[...FORCE_SETTABLE_ACTION_TYPES].join(', ')}` });
+  }
+  try {
+    const { data: step, error: stepErr } = await supabase
+      .from('campaign_assistant_action_plan_steps')
+      .select('id, plan_id, type, action_type, status')
+      .eq('id', stepId)
+      .single();
+    if (stepErr || !step) return res.status(404).json({ error: 'Step not found' });
+    const { data: plan, error: planErr } = await supabase
+      .from('campaign_assistant_action_plans')
+      .select('id, user_id')
+      .eq('id', step.plan_id)
+      .single();
+    if (planErr || !plan || plan.user_id !== userId) {
+      return res.status(404).json({ error: 'Step not found' });
+    }
+    const patch = {
+      action_type: actionType,
+      action_params: actionParams,
+    };
+    // Bump the step type to google_ads_action if it was one of the
+    // observation/other placeholders — otherwise the frontend's isAutomatable
+    // gate will still reject it. Leave app_code_change / schedule alone;
+    // both are accepted by the apply route.
+    if (!['google_ads_action', 'app_code_change', 'schedule'].includes(step.type)) {
+      patch.type = 'google_ads_action';
+    }
+    // Reset applied/failed states so the newly-wired button is clickable.
+    if (['applied', 'failed'].includes(step.status)) {
+      patch.status = 'pending';
+      patch.applied_at = null;
+      patch.applied_error = null;
+    }
+    const { data: updated, error: updErr } = await supabase
+      .from('campaign_assistant_action_plan_steps')
+      .update(patch)
+      .eq('id', stepId)
+      .select()
+      .single();
+    if (updErr) throw updErr;
+    console.log(`[set_action] stepId=${stepId} → action_type=${actionType}`);
+    res.json({ step: updated });
+  } catch (err) {
+    logger.error('campaignAssistant.plan_step_set_action_failed', {
       userId, stepId, error: err.message,
     });
     res.status(500).json({ error: err.message });
