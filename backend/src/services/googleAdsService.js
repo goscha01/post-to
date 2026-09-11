@@ -1722,6 +1722,85 @@ async function addCampaignExcludedLocations({
   return { created, skipped };
 }
 
+// ---------- Account links (READ) ----------
+//
+// List product links attached to this Google Ads customer — Firebase, GA4,
+// Play, Merchant Center, etc. Answers the AI's most common blocked check:
+// "is this Firebase project linked to this Ads customer?" without needing
+// a service account for Firebase itself. Firebase link = the presence of a
+// FIREBASE productLinks row whose `firebase.project` matches the user's
+// Firebase project name.
+//
+// Google Ads API resource: `product_link`. GAQL enum values in
+// product_link.type include GOOGLE_ANALYTICS, MERCHANT_CENTER, ADVERTISING_PARTNER,
+// DATA_PARTNER, HOTELS_CENTER, and FIREBASE (all publicly documented). We
+// return the whole normalized row so the model can inspect linkage state.
+async function getAccountLinks(accessToken, customerId, { loginCustomerId } = {}) {
+  const cid = stripCid(customerId);
+  if (!cid) throw new Error('customerId required');
+  // product_link is the current resource (v14+); older account_link is legacy.
+  const rows = await search(accessToken, cid, `
+    SELECT
+      product_link.resource_name,
+      product_link.product_link_id,
+      product_link.type,
+      product_link.google_ads.customer,
+      product_link.data_partner.data_partner_id,
+      product_link.google_ads.status,
+      product_link.merchant_center.merchant_center_id,
+      product_link.merchant_center.status,
+      product_link.advertising_partner.customer,
+      product_link.advertising_partner.status
+    FROM product_link
+  `, { loginCustomerId });
+
+  // Firebase links live on the Firebase/GA4 side; on the Ads side they surface
+  // as third_party_app_analytics_link (subordinate to a customer_data_source
+  // or app_analytics_provider). Fetch those too so we can answer "is this
+  // Firebase app linked".
+  const thirdParty = await search(accessToken, cid, `
+    SELECT
+      third_party_app_analytics_link.resource_name,
+      third_party_app_analytics_link.shareable_link_id
+    FROM third_party_app_analytics_link
+  `, { loginCustomerId }).catch(() => []);
+
+  const links = rows.map(r => {
+    const pl = r.productLink || {};
+    const type = pl.type || 'UNKNOWN';
+    return {
+      resourceName: pl.resourceName || null,
+      linkId: pl.productLinkId || null,
+      type,
+      googleAdsCustomer: pl.googleAds?.customer || null,
+      googleAdsStatus: pl.googleAds?.status || null,
+      merchantCenterId: pl.merchantCenter?.merchantCenterId || null,
+      merchantCenterStatus: pl.merchantCenter?.status || null,
+      advertisingPartnerCustomer: pl.advertisingPartner?.customer || null,
+      dataPartnerId: pl.dataPartner?.dataPartnerId || null,
+    };
+  });
+
+  const thirdPartyLinks = thirdParty.map(r => ({
+    resourceName: r.thirdPartyAppAnalyticsLink?.resourceName || null,
+    shareableLinkId: r.thirdPartyAppAnalyticsLink?.shareableLinkId || null,
+  }));
+
+  return {
+    customerId: cid,
+    productLinks: links,
+    thirdPartyAppAnalyticsLinks: thirdPartyLinks,
+    counts: {
+      total: links.length,
+      byType: links.reduce((acc, l) => {
+        acc[l.type] = (acc[l.type] || 0) + 1;
+        return acc;
+      }, {}),
+      thirdPartyAppAnalytics: thirdPartyLinks.length,
+    },
+  };
+}
+
 module.exports = {
   listAccessibleCustomers,
   describeCustomers,
@@ -1742,6 +1821,7 @@ module.exports = {
   getQuality,
   getChangeHistory,
   getDiagnostics,
+  getAccountLinks,
   addCampaignNegativeKeywords,
   setCampaignStatus,
   pauseCampaign,

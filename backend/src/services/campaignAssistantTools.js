@@ -18,9 +18,11 @@
 // JSON Schema for function parameters, so the definition list here is
 // provider-agnostic; toolsForOpenAI() / toolsForClaude() format for each.
 
+const axios = require('axios');
 const googleAdsService = require('./googleAdsService');
 const ascAnalytics = require('./ascAnalyticsService');
 const asc = require('./appStoreConnectService');
+const analytics = require('./analyticsService');
 const logger = require('../utils/logger');
 
 // Bound to what the chat handler considers safe: no 6-month lookbacks, no
@@ -161,6 +163,37 @@ const TOOL_DEFINITIONS = [
       },
     },
   },
+  // -----------------------------------------------------------------------
+  // Cross-service verification tools (added to eliminate "click X in Console"
+  // asks — the AI verifies programmatically before recommending manual work).
+  // -----------------------------------------------------------------------
+  {
+    name: 'ga4_list_key_events',
+    description: 'List the GA4 property\'s current Key Events (formerly "conversion events"). Use to verify whether a specific event (e.g. "purchase", "subscription_started") is ALREADY marked as a Key Event before asking the user to mark it manually in the GA4 Admin UI. If the target event is already in the returned list, the plan step is a no-op and should be closed.',
+    parameters: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  {
+    name: 'google_ads_get_account_links',
+    description: 'List account/product links attached to this Google Ads customer (Firebase, GA4, Merchant Center, Play, third-party app analytics). Use to VERIFY LINKAGE claims from the Google Ads side WITHOUT needing Firebase Console access — e.g. answers "is my Firebase project linked to this Ads customer?" and "is my GA4 property linked?". Returns counts by link type + normalized rows so you can cross-check specific link IDs. Prefer this over telling the user to open Firebase Console.',
+    parameters: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  {
+    name: 'http_get_own_webhook',
+    description: 'HTTP GET one of the user\'s own backend endpoints (Railway / Vercel / Fly / Render / Cloud Run) that has been referenced in the current action plan. Use to verify webhook health, hit a diagnostics endpoint the user built for exactly this purpose, or fetch a JSON aggregation the plan itself referenced (e.g. GET /webhooks/apple/aggregations/2026-09-10). SAFETY: URLs are validated against an allowlist derived from the plan\'s own text — you cannot fetch arbitrary URLs. Only https. Response body truncated to 8KB. Do NOT use for third-party APIs (Firebase, Google, Apple) — those have dedicated tools.',
+    parameters: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'Full https URL to GET. Must exactly match a host referenced in the plan text.' },
+      },
+      required: ['url'],
+    },
+  },
 ];
 
 const TOOL_NAMES = TOOL_DEFINITIONS.map(t => t.name);
@@ -197,22 +230,43 @@ function toolsForClaude() {
 //
 // Errors from provider APIs are ALSO returned as { error } instead of
 // thrown, for the same reason: a broken tool should never kill a turn.
+// Trusted PaaS hosts we allow http_get_own_webhook to reach. The URL's
+// hostname must both (a) end with one of these AND (b) appear inside the
+// plan text passed via context.webhookAllowlist. Two gates so the model
+// can't hit arbitrary PaaS-hosted apps that happen to be someone else's.
+const TRUSTED_HOST_SUFFIXES = [
+  '.up.railway.app',
+  '.railway.app',
+  '.vercel.app',
+  '.fly.dev',
+  '.onrender.com',
+  '.herokuapp.com',
+  '.run.app',
+];
+
 function makeExecutor(context) {
   const gaCtx = context?.googleAds || null;
   const ascCtx = context?.asc || null;
-  const anyAvailable = !!(gaCtx?.accessToken && gaCtx?.customerId) || !!(ascCtx?.creds && ascCtx?.connectionId);
+  const ga4Ctx = context?.ga4 || null;
+  const webhookAllowlist = Array.isArray(context?.webhookAllowlist)
+    ? context.webhookAllowlist.map(h => String(h || '').toLowerCase()).filter(Boolean)
+    : [];
+  const anyAvailable = !!(gaCtx?.accessToken && gaCtx?.customerId)
+    || !!(ascCtx?.creds && ascCtx?.connectionId)
+    || !!(ga4Ctx?.accessToken && ga4Ctx?.propertyId)
+    || webhookAllowlist.length > 0;
 
   if (!anyAvailable) {
     return {
       available: false,
       execute: async () => ({
-        error: 'No provider (Google Ads or App Store Connect) is connected for this conversation.',
+        error: 'No provider (Google Ads, App Store Connect, GA4, or own-webhook) is connected for this conversation.',
       }),
     };
   }
 
   const gaOpts = gaCtx ? { loginCustomerId: gaCtx.loginCustomerId || null } : null;
-  const userIdForLog = gaCtx?.userId || ascCtx?.userId || null;
+  const userIdForLog = gaCtx?.userId || ascCtx?.userId || ga4Ctx?.userId || null;
 
   async function execute(name, args = {}) {
     const t0 = Date.now();
@@ -265,7 +319,79 @@ function makeExecutor(context) {
       }
       return dispatchAsc(name, args);
     }
+    // ---- GA4 dispatch ----
+    if (name.startsWith('ga4_')) {
+      if (!ga4Ctx?.accessToken || !ga4Ctx?.propertyId) {
+        return { error: 'Google Analytics (GA4) is not connected for this conversation. Ask the user to connect their GA4 property in Connections.' };
+      }
+      return dispatchGa4(name, args);
+    }
+    // ---- Own-webhook HTTP GET dispatch ----
+    if (name.startsWith('http_')) {
+      return dispatchHttp(name, args);
+    }
     return { error: `Unknown tool: ${name}` };
+  }
+
+  async function dispatchGa4(name, args) {
+    switch (name) {
+      case 'ga4_list_key_events': {
+        const res = await analytics.listConversionEvents(ga4Ctx.accessToken, ga4Ctx.propertyId);
+        return res;
+      }
+      default:
+        return { error: `Unknown GA4 tool: ${name}` };
+    }
+  }
+
+  async function dispatchHttp(name, args) {
+    switch (name) {
+      case 'http_get_own_webhook': {
+        const raw = String(args?.url || '').trim();
+        if (!raw) return { error: 'url required' };
+        let u;
+        try { u = new URL(raw); } catch { return { error: 'invalid URL' }; }
+        if (u.protocol !== 'https:') return { error: 'only https URLs are allowed' };
+        if (u.username || u.password) return { error: 'credentials in URL not allowed' };
+        const host = u.hostname.toLowerCase();
+        // Block bare IPs to defeat SSRF via DNS rebinding / hardcoded IPs.
+        if (/^[0-9.]+$/.test(host) || host.includes(':')) return { error: 'IP addresses not allowed' };
+        const suffixOk = TRUSTED_HOST_SUFFIXES.some(s => host.endsWith(s));
+        if (!suffixOk) return { error: `host ${host} is not on the trusted PaaS suffix list` };
+        if (!webhookAllowlist.includes(host)) {
+          return { error: `host ${host} is not referenced in the current plan — the AI can only fetch URLs the plan already discusses` };
+        }
+        try {
+          const resp = await axios.get(u.toString(), {
+            timeout: 8_000,
+            maxContentLength: 512 * 1024,
+            maxRedirects: 2,
+            validateStatus: () => true,
+            responseType: 'text',
+            transformResponse: [d => d],
+          });
+          const bodyText = String(resp.data || '').slice(0, 8_192);
+          const truncated = String(resp.data || '').length > 8_192;
+          const contentType = String(resp.headers?.['content-type'] || '').toLowerCase();
+          let parsed = null;
+          if (contentType.includes('application/json')) {
+            try { parsed = JSON.parse(bodyText); } catch { /* leave as text */ }
+          }
+          return {
+            url: u.toString(),
+            status: resp.status,
+            contentType,
+            truncated,
+            bodyBytes: String(resp.data || '').length,
+            body: parsed || bodyText,
+          };
+        } catch (err) {
+          return { error: `webhook GET failed: ${err.code || err.message || 'unknown'}` };
+        }
+      }
+      default:
+        return { error: `Unknown HTTP tool: ${name}` };
+    }
   }
 
   async function dispatchAsc(name, args) {
@@ -409,6 +535,13 @@ function makeExecutor(context) {
           truncated: (rows || []).length > MAX_ADS,
           ads: sorted,
         };
+      }
+
+      case 'google_ads_get_account_links': {
+        const res = await googleAdsService.getAccountLinks(
+          accessToken, customerId, baseOpts
+        );
+        return res;
       }
 
       default:

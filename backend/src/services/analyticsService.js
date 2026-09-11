@@ -401,6 +401,40 @@ async function markConversionEvent(accessToken, propertyId, eventName) {
   }
 }
 
+// ---------- Reads (helpers for the campaign assistant) ----------
+//
+// List the property's current Key Events (conversion events). Used by the
+// AI to check "is 'purchase' already a Key Event?" before either marking
+// it or telling the user to click a Console button. Returns the raw
+// resource names so the model can also cross-reference deletion targets.
+async function listConversionEvents(accessToken, propertyId) {
+  const pid = String(propertyId || '').replace(/^properties\//, '').trim();
+  if (!pid) throw new Error('propertyId required');
+  const auth = oauthClientFor(accessToken);
+  const admin = google.analyticsadmin({ version: 'v1beta', auth });
+  const events = [];
+  let pageToken;
+  do {
+    const { data } = await admin.properties.conversionEvents.list({
+      parent: `properties/${pid}`,
+      pageSize: 200,
+      pageToken,
+    });
+    for (const e of data?.conversionEvents || []) {
+      events.push({
+        resourceName: e.name || null,
+        eventName: e.eventName || null,
+        createTime: e.createTime || null,
+        deletable: e.deletable !== false,
+        custom: !!e.custom,
+        countingMethod: e.countingMethod || null,
+      });
+    }
+    pageToken = data?.nextPageToken || null;
+  } while (pageToken);
+  return { propertyId: pid, count: events.length, events };
+}
+
 module.exports = {
   listProperties,
   getOverview,
@@ -411,6 +445,7 @@ module.exports = {
   getEvents,
   getCampaigns,
   markConversionEvent,
+  listConversionEvents,
   normalizeApiError,
   // exposed for tests
   _internal: { runReport, shapeReport, dateRangeFromDays, HIGHLIGHTED_EVENTS },

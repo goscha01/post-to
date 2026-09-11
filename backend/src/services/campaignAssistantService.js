@@ -940,6 +940,16 @@ PLANNED (recognised — use these action_type names so the plan is future-ready 
 - type: "google_ads_action", action_type: "pause_ad_group"
     action_params: { "adGroupId": "<numeric>" }
 
+VERIFICATION TOOLS — prefer these over "click X in Console" instructions
+
+The assistant has these READ tools it can run itself. When a step's purpose is to VERIFY state (linkage, event marking, webhook health), phrase the description so the assistant can verify programmatically FIRST; only ask the user to open a Console UI as a fallback if the tool returns a mismatch:
+
+- google_ads_get_account_links — lists Firebase / GA4 / Merchant Center / Play links from the Google Ads side. Use this instead of telling the user to open Firebase Console just to check "is my Firebase project linked to this Ads customer?". The link appears in Google Ads's product_link table when Firebase is correctly linked; if it's missing, THEN the user needs to open Firebase Console.
+- ga4_list_key_events — lists the property's current Key Events. Use this instead of telling the user "go to GA4 Admin > Events and check if purchase is marked as a Key Event". The assistant will list them and either apply mark_ga4_conversion_event if missing or close the step if present.
+- http_get_own_webhook — HTTPS GET a URL the plan itself references (Railway / Vercel / Fly / Render / Cloud Run only). Use this instead of telling the user to run curl themselves. E.g. instead of "hit GET https://myapp.up.railway.app/webhooks/apple/aggregations/2026-09-10 and count DID_RENEW events", write the step as an observation whose description explicitly names the URL — the report-results AI will fetch it when the user reports back.
+
+RULE: when the step is a check that maps to one of these tools, the description should (a) reference the tool by name so the results-decision AI knows to call it, and (b) frame the manual/Console fallback as conditional ("if the tool returns X, then open Firebase Console → …"). Do NOT default to Console instructions when a tool exists.
+
 CONFIG CHANGES (Firebase / GA4 — planned, use these names when suggesting):
 - type: "app_code_change", action_type: "mark_ga4_conversion_event"
     action_params: { "propertyId": "<numeric>", "eventName": "subscription_started" }

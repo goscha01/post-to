@@ -116,8 +116,8 @@ function resetStub(overrides = {}) {
 // Tool schema shape
 // ============================================================================
 
-test('exposes 6 Google Ads + 3 ASC tools with stable names', () => {
-  assert.equal(tools.TOOL_NAMES.length, 9);
+test('exposes 7 Google Ads + 3 ASC + 1 GA4 + 1 HTTP tools with stable names', () => {
+  assert.equal(tools.TOOL_NAMES.length, 12);
   const expected = [
     'google_ads_get_ad_status',
     'google_ads_get_campaign',
@@ -125,16 +125,19 @@ test('exposes 6 Google Ads + 3 ASC tools with stable names', () => {
     'google_ads_get_recent_changes',
     'google_ads_get_diagnostics',
     'google_ads_list_ads',
+    'google_ads_get_account_links',
     'asc_get_install_funnel',
     'asc_get_installs_by_source',
     'asc_get_recent_reviews',
+    'ga4_list_key_events',
+    'http_get_own_webhook',
   ];
   for (const n of expected) assert.ok(tools.TOOL_NAMES.includes(n), `missing tool: ${n}`);
 });
 
 test('toolsForOpenAI produces {type:function, function:{name, description, parameters}}', () => {
   const arr = tools.toolsForOpenAI();
-  assert.equal(arr.length, 9);
+  assert.equal(arr.length, 12);
   for (const t of arr) {
     assert.equal(t.type, 'function');
     assert.ok(t.function.name);
@@ -145,7 +148,7 @@ test('toolsForOpenAI produces {type:function, function:{name, description, param
 
 test('toolsForClaude produces {name, description, input_schema} (no wrapper)', () => {
   const arr = tools.toolsForClaude();
-  assert.equal(arr.length, 9);
+  assert.equal(arr.length, 12);
   for (const t of arr) {
     assert.ok(t.name);
     assert.ok(t.description);

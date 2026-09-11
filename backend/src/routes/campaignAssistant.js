@@ -333,6 +333,66 @@ async function resolveAscToolContext(userId) {
   };
 }
 
+// Resolve a GA4 tool context for a conversation. Uses the conversation's
+// bound GA4 property (web preferred, falls back to app property) and finds
+// the matching business token by owner_google_id. Returns null when no
+// GA4 property is bound or no matching access token is available.
+async function resolveGa4ToolContext(userId, conv) {
+  const propertyIdRaw = conv?.ga4_property_id || conv?.ga4_app_property_id || null;
+  if (!propertyIdRaw) return null;
+  const ga4Prop = await resolveGa4Property(userId, propertyIdRaw);
+  if (!ga4Prop.propertyId) return null;
+  const tokens = await getAllBusinessTokens(userId);
+  if (!tokens.length) return null;
+  const match = ga4Prop.ownerGoogleId
+    ? tokens.find(t => t.google_id === ga4Prop.ownerGoogleId)
+    : tokens[0];
+  const accessToken = match?.access_token || tokens[0]?.access_token;
+  if (!accessToken) return null;
+  return {
+    accessToken,
+    propertyId: ga4Prop.propertyId,
+    userId,
+  };
+}
+
+// Trusted PaaS host suffixes for the webhook allowlist derivation. Duplicated
+// from campaignAssistantTools.js so we don't circular-import — kept small
+// and stable on purpose.
+const WEBHOOK_TRUSTED_SUFFIXES = [
+  '.up.railway.app',
+  '.railway.app',
+  '.vercel.app',
+  '.fly.dev',
+  '.onrender.com',
+  '.herokuapp.com',
+  '.run.app',
+];
+
+// Build a hostname allowlist for http_get_own_webhook from the plan's own
+// text. If the plan itself doesn't mention a webhook URL, the AI can't
+// invent one and ask us to fetch it. Two gates: PaaS-suffix in the tool
+// executor AND hostname-in-plan-text here.
+async function resolveWebhookAllowlist(planId) {
+  if (!planId) return [];
+  const { data: steps } = await supabase
+    .from('campaign_assistant_action_plan_steps')
+    .select('title, description, notes')
+    .eq('plan_id', planId);
+  const blob = (steps || [])
+    .map(s => [s.title, s.description, s.notes].filter(Boolean).join('\n'))
+    .join('\n');
+  const hosts = new Set();
+  // Rough URL extractor — good enough for hostnames.
+  const re = /https?:\/\/([a-z0-9.-]+\.[a-z]{2,})/gi;
+  let m;
+  while ((m = re.exec(blob)) !== null) {
+    const host = m[1].toLowerCase().replace(/[^a-z0-9.-]/g, '');
+    if (WEBHOOK_TRUSTED_SUFFIXES.some(s => host.endsWith(s))) hosts.add(host);
+  }
+  return Array.from(hosts);
+}
+
 // Pull a compact OpenAI Ads snapshot for the report. Kept small on purpose —
 // this ends up in the model's system prompt on every turn.
 async function fetchOpenAiAdsHistory({ userId, connectionId, days }) {
@@ -874,12 +934,29 @@ router.post('/conversations/:id/chat', async (req, res) => {
   // same executor). Missing contexts short-circuit at dispatch time inside
   // the executor with an "X not connected" error, so we don't need to strip
   // tools from the request just because one provider is unwired.
-  const [gaToolCtx, ascToolCtx] = await Promise.all([
+  // webhook allowlist is derived from the LATEST plan's step text so the AI
+  // can only hit URLs the plan itself references.
+  const latestPlanId = await supabase
+    .from('campaign_assistant_action_plans')
+    .select('id')
+    .eq('conversation_id', conversationId)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .then(r => r.data?.[0]?.id || null)
+    .catch(() => null);
+  const [gaToolCtx, ascToolCtx, ga4ToolCtx, webhookAllowlist] = await Promise.all([
     resolveGoogleAdsToolContext(userId, conv),
     resolveAscToolContext(userId),
+    resolveGa4ToolContext(userId, conv),
+    resolveWebhookAllowlist(latestPlanId),
   ]);
-  const toolExecutor = (gaToolCtx || ascToolCtx)
-    ? campaignAssistantTools.makeExecutor({ googleAds: gaToolCtx, asc: ascToolCtx })
+  const toolExecutor = (gaToolCtx || ascToolCtx || ga4ToolCtx || webhookAllowlist.length)
+    ? campaignAssistantTools.makeExecutor({
+        googleAds: gaToolCtx,
+        asc: ascToolCtx,
+        ga4: ga4ToolCtx,
+        webhookAllowlist,
+      })
     : null;
   const openaiTools = toolExecutor ? campaignAssistantTools.toolsForOpenAI() : null;
   const claudeTools = toolExecutor ? campaignAssistantTools.toolsForClaude() : null;
@@ -1878,7 +1955,16 @@ Rules:
 
 USE YOUR TOOLS FIRST — do not ask the user for data you can fetch
 
-You have direct access to the same Google Ads + App Store Connect tools the main campaign assistant uses. Before deciding "postpone" because you're "missing data", CALL THE TOOLS to fetch that data yourself. Examples:
+You have direct access to the same tools the main campaign assistant uses:
+- google_ads_* — ad status, campaign, search terms, recent changes, diagnostics, list ads, account links (Firebase/GA4/Merchant Center linkage)
+- asc_* — install funnel, installs by source, recent App Store reviews
+- ga4_list_key_events — list the property's current Key Events (formerly conversion events)
+- http_get_own_webhook — HTTPS GET a URL that already appears in the current action plan's text (Railway / Vercel / Fly / Render / Cloud Run only)
+
+Before deciding "postpone" because you're "missing data", CALL THE TOOLS to fetch that data yourself. Examples:
+- User says "check if purchase is a Key Event" or "look in GA4 Admin" → call ga4_list_key_events; if 'purchase' is in the list → close, if not → refactor to mark_ga4_conversion_event.
+- User says "check Firebase Console" or "is Firebase linked to Google Ads?" → call google_ads_get_account_links and inspect FIREBASE / third_party_app_analytics_link rows FIRST. Only fall back to "user must open Firebase Console" if the tool shows no matching link.
+- User says "hit the webhook" or "check the aggregation endpoint" → call http_get_own_webhook with the URL the plan already references.
 - User says "check the ad status" or "you have access to the ad data" → call google_ads_get_ad_status / google_ads_list_ads.
 - User says "look at the install funnel" or "check ASC" → call asc_get_install_funnel / asc_get_installs_by_source.
 - User says "did the metric improve?" → call google_ads_get_campaign / google_ads_get_recent_changes to check.
@@ -1951,21 +2037,29 @@ router.post('/plan-steps/:stepId/report-results', async (req, res) => {
     }
 
     // Load the owning conversation so we can hydrate provider tool contexts.
-    // The results-decision AI shares the main assistant's Google Ads + ASC
-    // tools — if the user's report references data ("check GA", "you have
-    // access to install funnel"), the model calls the tool instead of
-    // bouncing the ask back to the user as a postpone.
+    // The results-decision AI shares the main assistant's tools — Google
+    // Ads, ASC, GA4 (Key Events read), and own-webhook GET — so when the
+    // user's report references data ("check GA Admin", "hit the webhook",
+    // "you have access to install funnel"), the model calls the tool
+    // instead of bouncing the ask back as a postpone.
     const { data: conv } = await supabase
       .from('campaign_assistant_conversations')
-      .select('id, google_ads_customer_id, google_ads_login_customer_id, campaign_id')
+      .select('id, google_ads_customer_id, google_ads_login_customer_id, campaign_id, ga4_property_id, ga4_app_property_id')
       .eq('id', plan.conversation_id)
       .single();
-    const [gaToolCtx, ascToolCtx] = await Promise.all([
+    const [gaToolCtx, ascToolCtx, ga4ToolCtx, webhookAllowlist] = await Promise.all([
       conv ? resolveGoogleAdsToolContext(userId, conv) : Promise.resolve(null),
       resolveAscToolContext(userId),
+      conv ? resolveGa4ToolContext(userId, conv) : Promise.resolve(null),
+      resolveWebhookAllowlist(plan.id),
     ]);
-    const toolExecutor = (gaToolCtx || ascToolCtx)
-      ? campaignAssistantTools.makeExecutor({ googleAds: gaToolCtx, asc: ascToolCtx })
+    const toolExecutor = (gaToolCtx || ascToolCtx || ga4ToolCtx || webhookAllowlist.length)
+      ? campaignAssistantTools.makeExecutor({
+          googleAds: gaToolCtx,
+          asc: ascToolCtx,
+          ga4: ga4ToolCtx,
+          webhookAllowlist,
+        })
       : null;
     const claudeTools = toolExecutor ? campaignAssistantTools.toolsForClaude() : null;
 
