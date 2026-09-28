@@ -589,6 +589,7 @@ const AppStoreConnect = () => {
             <>
               {(() => {
                 const engagementPendingDays = funnel.perDay.filter(d => !d.engagementDataAvailable).length;
+                const commercePendingDays = funnel.perDay.filter(d => !d.commerceDataAvailable).length;
                 const stDays = funnel.perDay.filter(d => d.installsFromSalesAndTrends).length;
                 return (
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -618,9 +619,9 @@ const AppStoreConnect = () => {
                       value={funnel.totals.conversionRate != null
                         ? `${(funnel.totals.conversionRate * 100).toFixed(1)}%`
                         : '—'}
-                      sub={engagementPendingDays > 0
-                        ? 'excludes pending days'
-                        : 'installs / page views'}
+                      sub={funnel.totals.conversionRate == null && commercePendingDays > 0
+                        ? 'Apple analytics pending'
+                        : 'attributed installs / PPV'}
                     />
                   </div>
                 );

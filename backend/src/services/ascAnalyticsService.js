@@ -314,7 +314,13 @@ function bucketByRowDate(perDay, dateKey) {
     b = {
       impressions: 0,
       productPageViews: 0,
-      installs: 0,
+      // Two separate install sources kept independently so the conversion
+      // rate can use the Analytics-attributed number (page-view → install)
+      // while the display summary can use the Sales & Trends number
+      // (all-source, authoritative). Mixing them into one field is what
+      // made conversion rates come out >100%.
+      analyticsInstalls: 0,
+      salesInstalls: null,        // null = S&T did not cover this day
       redownloads: 0,
       // Presence flags. True iff Apple has published ANY row of that
       // category for the day — lets the client render "—" (not "0") for
@@ -322,9 +328,6 @@ function bucketByRowDate(perDay, dateKey) {
       // zeros aren't confused with pending data.
       engagementDataAvailable: false,
       commerceDataAvailable: false,
-      // True once Sales & Trends installs have been overlaid for the day
-      // (S&T is authoritative when present).
-      installsFromSalesAndTrends: false,
     };
     perDay.set(dateKey, b);
   }
@@ -356,10 +359,10 @@ function accumulateCommerce(perDay, instanceRows) {
     b.commerceDataAvailable = true;
     if (r['Download Type'] !== undefined) {
       const c = toInt(r.Counts);
-      if (INSTALL_DOWNLOAD_TYPES.has(r['Download Type'])) b.installs += c;
+      if (INSTALL_DOWNLOAD_TYPES.has(r['Download Type'])) b.analyticsInstalls += c;
       else if (REDOWNLOAD_TYPES.has(r['Download Type'])) b.redownloads += c;
     } else {
-      b.installs += toInt(r['App Units']);
+      b.analyticsInstalls += toInt(r['App Units']);
       b.redownloads += toInt(r['Redownloads']);
     }
   }
@@ -423,9 +426,8 @@ async function getInstallFunnel({ connectionId, days = 14, userId }) {
       }
       for (const [date, sales] of salesByDate) {
         const b = bucketByRowDate(perDayMap, date);
-        b.installs = sales.installs;
+        b.salesInstalls = sales.installs;
         b.redownloads = sales.redownloads;
-        b.installsFromSalesAndTrends = true;
       }
       salesInstallsSource = salesByDate.size > 0 ? 'sales_and_trends' : 'analytics_commerce_only';
       logger.info('asc_analytics.funnel.sales_overlay', {
@@ -448,25 +450,33 @@ async function getInstallFunnel({ connectionId, days = 14, userId }) {
   const perDay = [...perDayMap.entries()]
     .filter(([date]) => date >= cutoffIso)
     .sort((a, b) => b[0].localeCompare(a[0]))
-    .map(([date, b]) => ({
-      date,
-      // Impressions/PPV are null (not 0) when Apple hasn't published any
-      // engagement rows for the date yet — the client shows "—" for null
-      // and "0" for a genuine zero. Installs stay as a number when we
-      // have Sales & Trends OR Analytics-COMMERCE data; only null when
-      // both sources are absent.
-      impressions: b.engagementDataAvailable ? b.impressions : null,
-      impressionsUniqueDevice: 0,
-      productPageViews: b.engagementDataAvailable ? b.productPageViews : null,
-      productPageViewsUniqueDevice: 0,
-      installs: (b.installsFromSalesAndTrends || b.commerceDataAvailable) ? b.installs : null,
-      engagementDataAvailable: b.engagementDataAvailable,
-      commerceDataAvailable: b.commerceDataAvailable,
-      installsFromSalesAndTrends: b.installsFromSalesAndTrends,
-    }));
+    .map(([date, b]) => {
+      // Display install value: prefer S&T when it covered this day (fresher,
+      // authoritative). Otherwise use Analytics-COMMERCE. Null when neither
+      // source has data yet — client renders as "—".
+      const stCovered = b.salesInstalls !== null;
+      const displayInstalls = stCovered
+        ? b.salesInstalls
+        : (b.commerceDataAvailable ? b.analyticsInstalls : null);
+      return {
+        date,
+        impressions: b.engagementDataAvailable ? b.impressions : null,
+        impressionsUniqueDevice: 0,
+        productPageViews: b.engagementDataAvailable ? b.productPageViews : null,
+        productPageViewsUniqueDevice: 0,
+        installs: displayInstalls,
+        // Analytics-attributed installs (First-time download in the ASC
+        // Analytics COMMERCE report). NOT the same as displayInstalls when
+        // S&T fills the gap. Used for conversion rate only.
+        analyticsInstalls: b.commerceDataAvailable ? b.analyticsInstalls : null,
+        engagementDataAvailable: b.engagementDataAvailable,
+        commerceDataAvailable: b.commerceDataAvailable,
+        installsFromSalesAndTrends: stCovered,
+      };
+    });
 
-  // Sum nulls as 0 for totals. The perDay flags remain for the client to
-  // decide how to render each cell.
+  // Sum nulls as 0 for totals. Display totals use the S&T-preferred number
+  // so the summary card matches Overview.
   const totals = perDay.reduce((acc, d) => ({
     impressions: acc.impressions + (d.impressions || 0),
     productPageViews: acc.productPageViews + (d.productPageViews || 0),
@@ -474,15 +484,22 @@ async function getInstallFunnel({ connectionId, days = 14, userId }) {
     redownloads: acc.redownloads + (perDayMap.get(d.date)?.redownloads || 0),
   }), { impressions: 0, productPageViews: 0, installs: 0, redownloads: 0 });
 
-  // Conversion rate is only meaningful over days where BOTH installs and PPV
-  // are available from the same source. If we use whole-window totals, we
-  // divide S&T installs (complete, all-source, including installs that
-  // never touched a product page) by Analytics PPV (delayed, partial) and
-  // get impossible numbers like 225%. Compute over the intersection only.
-  const attributableDays = perDay.filter(d => d.engagementDataAvailable && d.installs !== null);
-  const attributableInstalls = attributableDays.reduce((s, d) => s + (d.installs || 0), 0);
+  // Conversion rate must use ANALYTICS-ATTRIBUTED installs, not S&T
+  // installs. S&T counts every install regardless of path (search "Get"
+  // without page view, iCloud restores, universal-purchase auto-installs),
+  // so S&T-installs / Analytics-PPV is structurally > 100% and meaningless
+  // as a funnel conversion metric. Analytics-attributed installs come from
+  // the ASC Analytics COMMERCE report (First-time download rows), which
+  // Apple aggregates against the same user journeys as the PPV events.
+  //
+  // Only include days where BOTH engagement AND commerce data are available
+  // — otherwise we'd be dividing incomplete data by complete data.
+  const attributableDays = perDay.filter(d =>
+    d.engagementDataAvailable && d.commerceDataAvailable
+  );
+  const attributableInstalls = attributableDays.reduce((s, d) => s + (d.analyticsInstalls || 0), 0);
   const attributablePpv = attributableDays.reduce((s, d) => s + (d.productPageViews || 0), 0);
-  const conversionRate = attributablePpv > 0
+  const conversionRate = (attributableDays.length > 0 && attributablePpv > 0)
     ? attributableInstalls / attributablePpv
     : null;
 
