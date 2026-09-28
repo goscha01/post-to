@@ -27,6 +27,7 @@ const campaignAssistantTools = require('../services/campaignAssistantTools');
 const cryptoBox = require('../utils/cryptoBox');
 const openAiAds = require('../services/openAiAdsService');
 const connectionsService = require('../services/connectionsService');
+const metaAdsService = require('../services/metaAdsService');
 const { getAllBusinessTokens } = require('../utils/businessTokens');
 const logger = require('../utils/logger');
 
@@ -259,6 +260,32 @@ async function tokenForOwner(req, ownerGoogleId) {
   const tokens = await getAllBusinessTokens(req.user.userId);
   const match = tokens.find(t => t.google_id === ownerGoogleId);
   return match?.access_token || req.businessToken;
+}
+
+// Resolve an optional Meta ad-account selection for a conversation. Returns
+// { adAccountId, accessToken } when Meta is connected AND (either the
+// caller supplied a valid saved id OR falls back to the user's saved
+// default). Returns { adAccountId: null, accessToken: null } when Meta is
+// absent — the conversation is created without Meta context, no error.
+// Returns { error: 'META_AD_ACCOUNT_NOT_AUTHORIZED' } only when the caller
+// explicitly requested an id that isn't in their saved selection.
+async function resolveMetaSelection(userId, requestedId) {
+  const explicit = requestedId ? metaAdsService.normalizeAdAccountId(requestedId) : null;
+  const meta = await connectionsService.getMetaOwnerToken(userId);
+  if (!meta?.accessToken) return { adAccountId: null, accessToken: null };
+  const selection = await connectionsService.getMetaAdAccountSelection(userId);
+  if (explicit) {
+    if (!selection.adAccountIds.includes(explicit)) {
+      return { adAccountId: null, accessToken: null, error: 'META_AD_ACCOUNT_NOT_AUTHORIZED' };
+    }
+    return { adAccountId: explicit, accessToken: meta.accessToken };
+  }
+  // No explicit id from the caller — use saved default if present, else skip
+  // Meta cleanly (the user hasn't picked an account yet).
+  if (selection.defaultAdAccountId) {
+    return { adAccountId: selection.defaultAdAccountId, accessToken: meta.accessToken };
+  }
+  return { adAccountId: null, accessToken: null };
 }
 
 // Resolve a Google Ads OAuth token for a conversation without requiring
@@ -514,10 +541,24 @@ router.post('/conversations', requireBusinessAuth, async (req, res) => {
     const {
       customerId, campaignId, campaignName,
       propertyId, firebasePropertyId, openAiAdsConnectionId,
+      metaAdAccountId,
       title,
     } = req.body || {};
     const days = parseDays(req.body?.days, 30);
     const campaignIdClean = digitsOnly(campaignId);
+
+    // Meta is optional. If the caller passes an id, validate it's in the
+    // user's saved selection (same auth contract as /api/meta-ads/*) and
+    // resolve the long-lived Meta user token. Any failure here leaves Meta
+    // out of the report — never blocks the conversation.
+    const metaResolved = await resolveMetaSelection(userId, metaAdAccountId);
+    if (metaResolved.error === 'META_AD_ACCOUNT_NOT_AUTHORIZED') {
+      return res.status(403).json({
+        error:
+          'Requested Meta ad account is not in your saved selection. Pick it on /meta-ads first.',
+        code: 'META_AD_ACCOUNT_NOT_AUTHORIZED',
+      });
+    }
 
     const [adsCustomer, ga4Prop, ga4AppProp] = await Promise.all([
       resolveAdsCustomer(userId, customerId),
@@ -554,6 +595,8 @@ router.post('/conversations', requireBusinessAuth, async (req, res) => {
       firebaseAccessToken: ga4AppToken,
       firebasePropertyId: ga4AppProp.propertyId,
       openAiAdsHistory,
+      metaAccessToken: metaResolved.accessToken,
+      metaAdAccountId: metaResolved.adAccountId,
       days,
       userId,
     });
@@ -566,6 +609,7 @@ router.post('/conversations', requireBusinessAuth, async (req, res) => {
       ga4PropertyName: ga4Prop.displayName,
       firebasePropertyId: ga4AppProp.propertyId,
       firebasePropertyName: ga4AppProp.displayName,
+      metaAdAccountId: metaResolved.adAccountId,
     };
 
     const now = new Date().toISOString();
@@ -581,6 +625,7 @@ router.post('/conversations', requireBusinessAuth, async (req, res) => {
         ga4_property_id: ga4Prop.propertyId,
         ga4_app_property_id: ga4AppProp.propertyId,
         openai_ads_connection_id: openAiAdsConnectionId || null,
+        meta_ads_account_id: metaResolved.adAccountId,
         days,
         report_snapshot: report,
         report_generated_at: now,
@@ -646,7 +691,7 @@ router.post('/conversations/:id/refresh-snapshot', requireBusinessAuth, async (r
   try {
     const { data: conv, error: convErr } = await supabase
       .from('campaign_assistant_conversations')
-      .select('id, google_ads_customer_id, google_ads_login_customer_id, campaign_id, campaign_name, ga4_property_id, ga4_app_property_id, openai_ads_connection_id, days, title')
+      .select('id, google_ads_customer_id, google_ads_login_customer_id, campaign_id, campaign_name, ga4_property_id, ga4_app_property_id, openai_ads_connection_id, meta_ads_account_id, days, title')
       .eq('user_id', userId)
       .eq('id', conversationId)
       .single();
@@ -655,10 +700,15 @@ router.post('/conversations/:id/refresh-snapshot', requireBusinessAuth, async (r
       return res.status(400).json({ error: 'Conversation is missing customer/campaign IDs — cannot refresh' });
     }
 
-    const [adsCustomer, ga4Prop, ga4AppProp] = await Promise.all([
+    const [adsCustomer, ga4Prop, ga4AppProp, metaResolved] = await Promise.all([
       resolveAdsCustomer(userId, conv.google_ads_customer_id),
       resolveGa4Property(userId, conv.ga4_property_id),
       resolveGa4Property(userId, conv.ga4_app_property_id),
+      // Use the conversation's saved meta_ads_account_id when present.
+      // Meta may have been disconnected since — resolveMetaSelection returns
+      // { adAccountId: null } silently in that case and Meta drops out of
+      // the refreshed report without breaking anything else.
+      resolveMetaSelection(userId, conv.meta_ads_account_id),
     ]);
     if (!adsCustomer.customerId) {
       return res.status(400).json({ error: 'Google Ads customer no longer connected — reconnect Google Business' });
@@ -684,6 +734,8 @@ router.post('/conversations/:id/refresh-snapshot', requireBusinessAuth, async (r
       firebaseAccessToken: ga4AppToken,
       firebasePropertyId: ga4AppProp.propertyId,
       openAiAdsHistory,
+      metaAccessToken: metaResolved.accessToken,
+      metaAdAccountId: metaResolved.adAccountId,
       days: conv.days || 30,
       userId,
     });
@@ -695,6 +747,7 @@ router.post('/conversations/:id/refresh-snapshot', requireBusinessAuth, async (r
       ga4PropertyName: ga4Prop.displayName,
       firebasePropertyId: ga4AppProp.propertyId,
       firebasePropertyName: ga4AppProp.displayName,
+      metaAdAccountId: metaResolved.adAccountId,
     };
 
     const now = new Date().toISOString();

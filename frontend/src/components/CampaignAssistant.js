@@ -10,6 +10,7 @@ import googleAdsService from '../services/googleAdsService';
 import analyticsService from '../services/analyticsService';
 import connectionsService from '../services/connectionsService';
 import campaignAssistantService from '../services/campaignAssistantService';
+import metaAdsService from '../services/metaAdsService';
 
 const DAYS_OPTIONS = [7, 14, 30, 60, 90];
 
@@ -132,6 +133,13 @@ const CampaignAssistant = () => {
   const [selectedFirebasePropertyId, setSelectedFirebasePropertyId] = useState('');
   const [openAiAdsConnections, setOpenAiAdsConnections] = useState([]);
   const [selectedOpenAiAdsConnectionId, setSelectedOpenAiAdsConnectionId] = useState('');
+  // Meta Ads (Phase 1E-followup): setup form can optionally scope the
+  // conversation to a Meta ad account so the assistant sees Meta data.
+  // Loaded from /api/meta-ads/accounts — the endpoint returns whatever
+  // accounts the user has saved via the MetaAds dashboard, so this list
+  // is empty until the user has picked one there.
+  const [metaAdAccounts, setMetaAdAccounts] = useState([]);
+  const [selectedMetaAdAccountId, setSelectedMetaAdAccountId] = useState('');
   const [days, setDays] = useState(30);
   const [creating, setCreating] = useState(false);
   const [setupError, setSetupError] = useState(null);
@@ -206,10 +214,15 @@ const CampaignAssistant = () => {
     (async () => {
       setCustomersLoading(true);
       try {
-        const [connectedCustomers, gaProps, connections] = await Promise.all([
+        const [connectedCustomers, gaProps, connections, metaAccts] = await Promise.all([
           googleAdsService.listConnectedCustomers().catch(() => []),
           analyticsService.listConnectedProperties().catch(() => []),
           connectionsService.list().catch(() => []),
+          // /api/meta-ads/accounts returns { accounts, selection, code? }.
+          // Best-effort: any failure (Meta not connected, missing ads_read,
+          // no selection saved) leaves the list empty — the field is hidden
+          // when there's nothing to pick.
+          metaAdsService.listAvailableAccounts().catch(() => ({ accounts: [], selection: { adAccountIds: [], defaultAdAccountId: null } })),
         ]);
         if (cancelled) return;
         // Only show customers the user has explicitly connected to Post To.
@@ -225,6 +238,15 @@ const CampaignAssistant = () => {
         setOpenAiAdsConnections(
           (connections || []).filter(c => c.provider === 'openai_ads')
         );
+        // Meta: only offer accounts the user has saved via /meta-ads.
+        // Default the selector to the saved default so "start new analysis"
+        // includes Meta automatically for users who already picked one.
+        const savedIds = new Set(metaAccts?.selection?.adAccountIds || []);
+        const availableMeta = (metaAccts?.accounts || []).filter(a => savedIds.has(a.id));
+        setMetaAdAccounts(availableMeta);
+        const defaultMeta = metaAccts?.selection?.defaultAdAccountId
+          || (availableMeta[0]?.id || '');
+        setSelectedMetaAdAccountId(defaultMeta);
       } catch (err) {
         console.error('Failed to load setup lists', err);
       } finally {
@@ -317,6 +339,7 @@ const CampaignAssistant = () => {
         propertyId: selectedGa4PropertyId || null,
         firebasePropertyId: selectedFirebasePropertyId || null,
         openAiAdsConnectionId: selectedOpenAiAdsConnectionId || null,
+        metaAdAccountId: selectedMetaAdAccountId || null,
         days,
         title: selectedCampaign?.name || `Campaign ${selectedCampaignId}`,
       });
@@ -334,7 +357,8 @@ const CampaignAssistant = () => {
     }
   }, [
     selectedCustomerId, selectedCampaignId, selectedGa4PropertyId,
-    selectedFirebasePropertyId, selectedOpenAiAdsConnectionId, selectedCampaign, days,
+    selectedFirebasePropertyId, selectedOpenAiAdsConnectionId,
+    selectedMetaAdAccountId, selectedCampaign, days,
   ]);
 
   // -- Action plan handlers (declared BEFORE openConversation because
@@ -815,6 +839,9 @@ const CampaignAssistant = () => {
           openAiAdsConnections={openAiAdsConnections}
           selectedOpenAiAdsConnectionId={selectedOpenAiAdsConnectionId}
           onSelectOpenAiAds={setSelectedOpenAiAdsConnectionId}
+          metaAdAccounts={metaAdAccounts}
+          selectedMetaAdAccountId={selectedMetaAdAccountId}
+          onSelectMetaAdAccount={setSelectedMetaAdAccountId}
           days={days}
           onSelectDays={setDays}
           selectedCustomerEmail={selectedCustomerEmail}
@@ -990,6 +1017,7 @@ const SetupCard = ({
   ga4Properties, selectedGa4PropertyId, onSelectGa4Property,
   selectedFirebasePropertyId, onSelectFirebaseProperty,
   openAiAdsConnections, selectedOpenAiAdsConnectionId, onSelectOpenAiAds,
+  metaAdAccounts, selectedMetaAdAccountId, onSelectMetaAdAccount,
   days, onSelectDays, selectedCustomerEmail,
   creating, streaming, onStart, error,
 }) => {
@@ -1143,6 +1171,28 @@ const SetupCard = ({
           {openAiAdsConnections.map(c => (
             <option key={c.id} value={c.id}>
               {c.display_name || c.metadata?.ad_account_id || c.id}
+            </option>
+          ))}
+        </select>
+      </Field>
+    )}
+
+    {metaAdAccounts && metaAdAccounts.length > 0 && (
+      <Field
+        label="Meta ad account (Facebook + Instagram)"
+        optional
+        hint="Pick a Meta ad account you've saved on /meta-ads to include Meta data in the assistant's context."
+      >
+        <select
+          value={selectedMetaAdAccountId}
+          onChange={(e) => onSelectMetaAdAccount(e.target.value)}
+          disabled={busy}
+          className="w-full text-sm border border-gray-300 rounded-md px-2 py-1.5"
+        >
+          <option value="">— None —</option>
+          {metaAdAccounts.map(a => (
+            <option key={a.id} value={a.id}>
+              {(a.name || a.id) + ' — ' + a.id}
             </option>
           ))}
         </select>

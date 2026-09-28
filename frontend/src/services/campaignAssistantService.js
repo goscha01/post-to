@@ -21,11 +21,13 @@ const getConversation = async (id) => {
 const createConversation = async ({
   customerId, campaignId, campaignName,
   propertyId, firebasePropertyId, openAiAdsConnectionId,
+  metaAdAccountId,
   days, title,
 }) => {
   const res = await axios.post('/api/campaign-assistant/conversations', {
     customerId, campaignId, campaignName,
     propertyId, firebasePropertyId, openAiAdsConnectionId,
+    metaAdAccountId: metaAdAccountId || undefined,
     days, title,
   }, { timeout: 90_000 });
   return res.data;
