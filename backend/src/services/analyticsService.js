@@ -118,26 +118,17 @@ function shapeReport(response) {
 // distinct-user count who fired *any* of them in the period — i.e. our paid MAU.
 const PAID_USER_EVENTS = ['purchase', 'subscription_active'];
 
-// Ordered funnel between "opened app" (activeUsers, implicit stage 1) and
-// "paid" (PAID_USER_EVENTS, implicit stage 6). We measure distinct users per
-// event so the drop-off between stages is comparable.
-//
-// ProofPix has NO signup/login event for regular users (login only fires from
-// the admin panel — see AdminContext.js), so activation via first_photo_taken
-// is the "became a user" signal.
-const FUNNEL_STAGE_EVENTS = [
-  'first_photo_taken',
-  'paywall_view',
-  'plan_selected',
-  'trial_started',
-];
-
 async function getOverview(accessToken, propertyId, days) {
   const dateRanges = dateRangeFromDays(days);
 
   // Three parallel Data API calls. Kept separate because GA4 forbids mixing
   // dimensionFilter scopes (per-event filter would corrupt the base totals).
-  const [overviewRes, paidUsersRes, funnelStagesRes] = await Promise.all([
+  //
+  // The ordered funnel with drop-off lives in a separate endpoint
+  // (getInAppFunnel → runFunnelReport). This overview keeps the scalar tiles
+  // the UI shows above the funnel: totals, paid-user split, and activated
+  // count (needed for the Lead → User / User → Paid rate tiles).
+  const [overviewRes, paidUsersRes, activatedUsersRes] = await Promise.all([
     runReport(accessToken, propertyId, {
       dateRanges,
       metrics: [
@@ -165,12 +156,11 @@ async function getOverview(accessToken, propertyId, days) {
     }),
     runReport(accessToken, propertyId, {
       dateRanges,
-      dimensions: [{ name: 'eventName' }],
       metrics: [{ name: 'activeUsers' }],
       dimensionFilter: {
         filter: {
           fieldName: 'eventName',
-          inListFilter: { values: FUNNEL_STAGE_EVENTS },
+          stringFilter: { matchType: 'EXACT', value: 'first_photo_taken' },
         },
       },
     }),
@@ -178,28 +168,12 @@ async function getOverview(accessToken, propertyId, days) {
 
   const overviewTotals = (shapeReport(overviewRes).rows[0] || {});
   const paidUsers = Number(shapeReport(paidUsersRes).rows[0]?.activeUsers || 0);
-  // eventName → distinct activeUsers who fired it in-period. Events with zero
-  // fires are absent from the response; the Map .get() call defaults them to 0.
-  const stageUsers = new Map(
-    shapeReport(funnelStagesRes).rows.map(r => [r.eventName, Number(r.activeUsers || 0)])
-  );
+  const activatedUsers = Number(shapeReport(activatedUsersRes).rows[0]?.activeUsers || 0);
 
   const totalUsers = Number(overviewTotals.activeUsers || 0);
   // Free = total − paid. Clamp to 0 so a race between the two independent
   // reports (rare — different sampling seeds) can't surface a negative count.
   const freeUsers = Math.max(0, totalUsers - paidUsers);
-  const activatedUsers = stageUsers.get('first_photo_taken') || 0;
-
-  // Ordered funnel stages the UI renders as a drop-off chart. Each stage
-  // carries the source event so the frontend can show it in a tooltip.
-  const funnel = [
-    { key: 'users',     label: 'Users',         users: totalUsers,                                event: '(activeUsers)' },
-    { key: 'activated', label: 'Activated',     users: activatedUsers,                            event: 'first_photo_taken' },
-    { key: 'paywall',   label: 'Saw Paywall',   users: stageUsers.get('paywall_view')   || 0,     event: 'paywall_view' },
-    { key: 'plan',      label: 'Tapped Plan',   users: stageUsers.get('plan_selected')  || 0,     event: 'plan_selected' },
-    { key: 'trial',     label: 'Started Trial', users: stageUsers.get('trial_started')  || 0,     event: 'trial_started' },
-    { key: 'paid',      label: 'Paid',          users: paidUsers,                                 event: 'subscription_active | purchase' },
-  ];
 
   // NOTE: When there are no dimensions GA4 returns a single row with all metrics.
   // Handle the empty-property case by defaulting each field to 0.
@@ -222,7 +196,6 @@ async function getOverview(accessToken, propertyId, days) {
     //   User → Paid  = paid / activated             (of everyone who tried it, who paid)
     leadToUserRate: totalUsers > 0 ? activatedUsers / totalUsers : 0,
     userToPaidRate: activatedUsers > 0 ? paidUsers / activatedUsers : 0,
-    funnel,
     rangeDays: Math.max(1, Math.min(365, parseInt(days, 10) || 30)),
   };
 }
@@ -359,6 +332,96 @@ async function getEvents(accessToken, propertyId, days) {
   }));
   const highlighted = rows.filter(r => r.highlighted);
   return { rows, highlighted };
+}
+
+// ---------- Ordered funnel (GA4 Data API v1alpha runFunnelReport) ----------
+//
+// The stable v1beta Data API only supports flat reports, not funnels. Ordered
+// drop-off (each step requires the user to have completed all prior steps)
+// requires the v1alpha endpoint `properties.runFunnelReport`, which the
+// googleapis npm package doesn't yet expose (128.0.0 as of writing). We hit
+// the REST endpoint directly via the OAuth2 client's `.request()` — same
+// auth, no SDK dep.
+//
+// The funnel is intentionally hard-coded to ProofPix's canonical acquisition
+// path (first open → onboarding screens → paywall → home → camera → activation
+// → paid). Making the steps user-configurable is a future extension — we'd
+// store the ordered step list per property and let the UI edit it.
+const IN_APP_FUNNEL_STEPS = [
+  { key: 'first_open',     label: 'First open',            filter: eventNameFilter('first_open') },
+  { key: 'onb_welcome',    label: 'Onboarding: welcome',   filter: screenViewFilter('onboarding_welcome') },
+  { key: 'onb_user_info',  label: 'Onboarding: user info', filter: screenViewFilter('onboarding_user_info') },
+  { key: 'onb_permissions',label: 'Onboarding: permissions', filter: screenViewFilter('onboarding_permissions') },
+  { key: 'paywall',        label: 'Saw paywall',           filter: screenViewFilter('paywall') },
+  { key: 'home',           label: 'Reached home',          filter: screenViewFilter('home') },
+  { key: 'camera',         label: 'Opened camera',         filter: screenViewFilter('camera') },
+  { key: 'first_photo',    label: 'Took first photo',      filter: eventNameFilter('first_photo_taken') },
+  { key: 'paid',           label: 'Paid',                  filter: eventNameFilter('purchase') },
+];
+
+function eventNameFilter(eventName) {
+  return { funnelEventFilter: { eventName } };
+}
+
+// screen_view + screen_name param match. GA4 Data API funnel filters nest
+// event-parameter filters inside funnelParameterFilterExpression.
+function screenViewFilter(screenName) {
+  return {
+    funnelEventFilter: {
+      eventName: 'screen_view',
+      funnelParameterFilterExpression: {
+        funnelParameterFilter: {
+          eventParameterName: 'screen_name',
+          stringFilter: { matchType: 'EXACT', value: screenName },
+        },
+      },
+    },
+  };
+}
+
+async function getInAppFunnel(accessToken, propertyId, days) {
+  const auth = oauthClientFor(accessToken);
+  const body = {
+    dateRanges: dateRangeFromDays(days),
+    funnel: {
+      // isOpenFunnel=false → strict ordered funnel: step N users must have
+      // fired the events for steps 1..N-1 in order. This is what makes the
+      // drop-off comparisons monotonic (never negative).
+      isOpenFunnel: false,
+      steps: IN_APP_FUNNEL_STEPS.map(s => ({
+        name: s.label,
+        filterExpression: s.filter,
+      })),
+    },
+  };
+  const url = `https://analyticsdata.googleapis.com/v1alpha/properties/${propertyId}:runFunnelReport`;
+  const { data: response } = await auth.request({ url, method: 'POST', data: body });
+
+  // funnelTable rows are one-per-step; dim=funnelStepName, metric=activeUsers.
+  // Match rows back to our step definitions by step name.
+  const rowsByStepName = new Map();
+  for (const row of response?.funnelTable?.rows || []) {
+    const stepName = row.dimensionValues?.[0]?.value;
+    const users = Number(row.metricValues?.[0]?.value || 0);
+    if (stepName) rowsByStepName.set(stepName, users);
+  }
+  const funnel = IN_APP_FUNNEL_STEPS.map(s => ({
+    key: s.key,
+    label: s.label,
+    users: rowsByStepName.get(s.label) || 0,
+    event: describeStepFilter(s.filter),
+  }));
+  return { funnel, rangeDays: Math.max(1, Math.min(365, parseInt(days, 10) || 30)) };
+}
+
+// Reverse the filter object back into a human-readable "source event" tag for
+// the UI tooltip. Kept dumb — just introspects the structure we build above.
+function describeStepFilter(filter) {
+  const f = filter?.funnelEventFilter;
+  if (!f) return '(unknown)';
+  const paramValue = f.funnelParameterFilterExpression?.funnelParameterFilter?.stringFilter?.value;
+  if (f.eventName === 'screen_view' && paramValue) return `screen_view · ${paramValue}`;
+  return f.eventName || '(unknown)';
 }
 
 async function getCampaigns(accessToken, propertyId, days) {
@@ -527,6 +590,7 @@ module.exports = {
   getGeography,
   getEvents,
   getCampaigns,
+  getInAppFunnel,
   markConversionEvent,
   listConversionEvents,
   normalizeApiError,

@@ -75,6 +75,28 @@ const getGeography = async (propertyId, days) => {
   return res.data;
 };
 
+// Ordered in-app funnel (GA4 runFunnelReport). Returns
+// { propertyId, days, inAppFunnel: { funnel: [{ key, label, users, event }], rangeDays } }
+const getInAppFunnel = async (propertyId, days) => {
+  const res = await axios.get('/api/analytics/in-app-funnel', withPropertyDays(propertyId, days));
+  return res.data;
+};
+
+// App Store Connect helpers — iOS top-of-funnel (impressions → PPVs → installs).
+// Kept in this service (not a separate ascService) so the Analytics page has
+// one import surface for all its data.
+const listAscConnections = async () => {
+  const res = await axios.get('/api/asc/connected');
+  return res.data?.connections || [];
+};
+
+const getAscInstallFunnel = async (connectionId, days) => {
+  const res = await axios.get('/api/asc/analytics/funnel', {
+    params: { connectionId, ...(days ? { days } : {}) },
+  });
+  return res.data;
+};
+
 const analyticsService = {
   listAvailableProperties,
   selectProperty,
@@ -87,6 +109,9 @@ const analyticsService = {
   getCampaigns,
   getDevices,
   getGeography,
+  getInAppFunnel,
+  listAscConnections,
+  getAscInstallFunnel,
 };
 
 export default analyticsService;

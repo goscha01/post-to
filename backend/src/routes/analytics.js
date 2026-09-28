@@ -464,12 +464,13 @@ router.get('/connected', async (req, res) => {
 
 // ---------- Report endpoints ----------
 
-router.get('/overview',      reportHandler(analytics.getOverview,       'overview'));
-router.get('/traffic',       reportHandler(analytics.getTrafficSources, 'traffic'));
-router.get('/landing-pages', reportHandler(analytics.getLandingPages,   'landingPages'));
-router.get('/events',        reportHandler(analytics.getEvents,         'events'));
-router.get('/campaigns',     reportHandler(analytics.getCampaigns,      'campaigns'));
-router.get('/devices',       reportHandler(analytics.getDevices,        'devices'));
-router.get('/geography',     reportHandler(analytics.getGeography,      'geography'));
+router.get('/overview',        reportHandler(analytics.getOverview,       'overview'));
+router.get('/traffic',         reportHandler(analytics.getTrafficSources, 'traffic'));
+router.get('/landing-pages',   reportHandler(analytics.getLandingPages,   'landingPages'));
+router.get('/events',          reportHandler(analytics.getEvents,         'events'));
+router.get('/campaigns',       reportHandler(analytics.getCampaigns,      'campaigns'));
+router.get('/devices',         reportHandler(analytics.getDevices,        'devices'));
+router.get('/geography',       reportHandler(analytics.getGeography,      'geography'));
+router.get('/in-app-funnel',   reportHandler(analytics.getInAppFunnel,    'inAppFunnel'));
 
 module.exports = router;

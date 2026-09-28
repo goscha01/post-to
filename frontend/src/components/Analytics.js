@@ -17,6 +17,9 @@ import {
   Plus,
   Link2,
   Download,
+  Eye,
+  MousePointer2,
+  Apple,
   X,
   Check,
 } from 'lucide-react';
@@ -71,6 +74,12 @@ const Analytics = () => {
   const [campaigns, setCampaigns] = useState([]);
   const [devices, setDevices] = useState([]);
   const [geography, setGeography] = useState([]);
+  const [inAppFunnel, setInAppFunnel] = useState(null);
+  // ASC (App Store Connect — iOS top-of-funnel) is fetched independently of
+  // the GA4 property. `null` before load, `{ connected: false }` when the
+  // user has no ASC connection, `{ connected: true, totals, connectionName }`
+  // otherwise. Kept separate so a missing ASC connection doesn't block GA4.
+  const [ascState, setAscState] = useState(null);
 
   const [loading, setLoading] = useState(true);
   const [loadingReports, setLoadingReports] = useState(false);
@@ -99,6 +108,8 @@ const Analytics = () => {
         : { propertyId: selectedPropertyId },
       rangeDays: days,
       overview,
+      appStore: ascState?.connected ? ascState.totals : null,
+      inAppFunnel: inAppFunnel?.funnel || null,
       trafficSources: traffic,
       landingPages: landing,
       campaigns,
@@ -154,8 +165,11 @@ const Analytics = () => {
     setLoadingReports(true);
     setError('');
     setPropertyPermission(null);
+    // The in-app funnel hits GA4's v1alpha runFunnelReport endpoint, which can
+    // fail on properties that don't yet have any funnel-eligible data. Fetched
+    // with .catch so a funnel failure doesn't blank out the whole dashboard.
     try {
-      const [o, t, l, e, c, d, g] = await Promise.all([
+      const [o, t, l, e, c, d, g, f] = await Promise.all([
         analyticsService.getOverview(propertyId, rangeDays),
         analyticsService.getTraffic(propertyId, rangeDays),
         analyticsService.getLandingPages(propertyId, rangeDays),
@@ -163,6 +177,10 @@ const Analytics = () => {
         analyticsService.getCampaigns(propertyId, rangeDays),
         analyticsService.getDevices(propertyId, rangeDays),
         analyticsService.getGeography(propertyId, rangeDays),
+        analyticsService.getInAppFunnel(propertyId, rangeDays).catch(err => {
+          console.warn('[Analytics] in-app funnel failed:', err?.response?.data || err?.message);
+          return null;
+        }),
       ]);
       setOverview(o.overview);
       setTraffic(t.traffic || []);
@@ -171,6 +189,7 @@ const Analytics = () => {
       setCampaigns(c.campaigns || []);
       setDevices(d.devices || []);
       setGeography(g.geography || []);
+      setInAppFunnel(f?.inAppFunnel || null);
     } catch (err) {
       const status = err.response?.status;
       const data = err.response?.data || {};
@@ -201,6 +220,39 @@ const Analytics = () => {
       loadReports(selectedPropertyId, days);
     }
   }, [selectedPropertyId, days, loadReports]);
+
+  // ASC (App Store Connect) top-of-funnel. Fires on mount + whenever `days`
+  // changes. Independent of GA4 — a user can have GA4 but no ASC (or vice
+  // versa) and the page still renders whichever section has data.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const connections = await analyticsService.listAscConnections();
+        if (cancelled) return;
+        if (!connections || connections.length === 0) {
+          setAscState({ connected: false });
+          return;
+        }
+        // Use the first connection. Multi-app users can pick via the App Store
+        // page for now — a picker here is a follow-up if it comes up.
+        const conn = connections[0];
+        const funnel = await analyticsService.getAscInstallFunnel(conn.connectionId, days);
+        if (cancelled) return;
+        setAscState({
+          connected: true,
+          connectionName: conn.displayName || conn.appBundleId || conn.connectionId,
+          totals: funnel?.totals || null,
+          days: funnel?.days || days,
+        });
+      } catch (err) {
+        if (cancelled) return;
+        console.warn('[Analytics] ASC funnel failed:', err?.response?.data || err?.message);
+        setAscState({ connected: false, error: err?.response?.data?.error || err?.message });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [days]);
 
   return (
     <div>
@@ -316,7 +368,9 @@ const Analytics = () => {
 
           <OverviewCards overview={overview} loading={loadingReports} />
 
-          <FunnelSection funnel={overview?.funnel} loading={loadingReports} />
+          <AppStoreSection ascState={ascState} />
+
+          <FunnelSection funnel={inAppFunnel?.funnel} loading={loadingReports} />
 
           {events.highlighted && events.highlighted.length > 0 && (
             <HighlightedEvents events={events.highlighted} />
@@ -527,14 +581,97 @@ const OverviewCards = ({ overview, loading }) => {
   );
 };
 
-// Renders the ordered funnel from `overview.funnel` (see backend
-// analyticsService.getOverview). Each row shows distinct-user count,
-// % of top-of-funnel, and the drop-off from the previous stage.
+// App Store Connect top-of-funnel (iOS only). Impressions → PPVs → Installs
+// pulled from Apple Analytics + Sales & Trends via
+// backend/src/services/ascAnalyticsService.js.
+//
+// States:
+//   - ascState = null                        → still loading (skip render)
+//   - ascState.connected = false             → "Connect App Store" placeholder
+//   - ascState.connected = true, totals=null → connection exists but Apple
+//                                              hasn't published data yet
+//   - ascState.connected = true, totals set  → render the 3 tiles
+const AppStoreSection = ({ ascState }) => {
+  if (!ascState) return null;
+  const cardWrap = 'bg-white border border-gray-200 rounded-lg p-4';
+  if (!ascState.connected) {
+    return (
+      <div className="mt-6">
+        <Section
+          title="App Store (iOS)"
+          subtitle="Top of funnel — impressions → page visitors → downloads"
+        >
+          <div className="p-6 text-sm text-gray-500 flex items-start gap-3">
+            <Apple className="h-5 w-5 text-gray-400 mt-0.5 flex-shrink-0" />
+            <div>
+              Connect App Store Connect to see how many people saw your listing,
+              visited the page, and downloaded the app.
+              {ascState.error && (
+                <div className="mt-1 text-xs text-red-500">{ascState.error}</div>
+              )}
+            </div>
+          </div>
+        </Section>
+      </div>
+    );
+  }
+  const t = ascState.totals || { impressions: 0, productPageViews: 0, installs: 0, conversionRate: null };
+  const cards = [
+    { key: 'impressions', label: 'Impressions',        icon: Eye,           value: fmtInt(t.impressions),
+      hint: 'App Store listing shown in search or browse' },
+    { key: 'ppv',         label: 'Store Page Visitors', icon: MousePointer2, value: fmtInt(t.productPageViews),
+      hint: 'Users who tapped into the listing page' },
+    { key: 'installs',    label: 'Downloads',           icon: Download,      value: fmtInt(t.installs),
+      hint: 'First-time installs (Sales & Trends)' },
+  ];
+  return (
+    <div className="mt-6">
+      <Section
+        title="App Store (iOS)"
+        subtitle={
+          <>
+            Top of funnel — impressions → page visitors → downloads ·{' '}
+            <span className="text-gray-400">
+              from {ascState.connectionName} · Android not tracked (Play Console not integrated)
+            </span>
+          </>
+        }
+      >
+        <div className="p-4 grid grid-cols-1 md:grid-cols-3 gap-3">
+          {cards.map(c => {
+            const Icon = c.icon;
+            return (
+              <div key={c.key} className={cardWrap} title={c.hint}>
+                <div className="flex items-center gap-2 text-xs font-medium text-gray-500 uppercase tracking-wide">
+                  <Icon className="h-3.5 w-3.5" />
+                  {c.label}
+                </div>
+                <div className="mt-2 text-2xl font-semibold text-gray-900">{c.value}</div>
+              </div>
+            );
+          })}
+        </div>
+        {t.conversionRate !== null && t.conversionRate !== undefined && (
+          <div className="px-4 pb-4 text-xs text-gray-500">
+            Store conversion rate (installs / page visitors, attributable days only):{' '}
+            <span className="font-medium text-gray-700">{fmtPercent(t.conversionRate)}</span>
+          </div>
+        )}
+      </Section>
+    </div>
+  );
+};
+
+// Renders the ordered in-app funnel from GA4 runFunnelReport (backend
+// analyticsService.getInAppFunnel). Each row shows distinct-user count,
+// % of top-of-funnel, and the drop-off from the previous stage. Since the
+// backend uses isOpenFunnel=false, users at step N MUST have completed
+// steps 1..N-1 in order — drop-off is monotonic and real.
 const FunnelSection = ({ funnel, loading }) => {
   if (loading) {
     return (
       <div className="mt-6">
-        <Section title="Conversion Funnel" subtitle="From lead to paid — where users drop off">
+        <Section title="In-App Funnel (all platforms)" subtitle="Ordered — each step requires the previous. Real drop-off via GA4 runFunnelReport.">
           <TableLoading />
         </Section>
       </div>
@@ -543,7 +680,7 @@ const FunnelSection = ({ funnel, loading }) => {
   if (!funnel || funnel.length === 0) {
     return (
       <div className="mt-6">
-        <Section title="Conversion Funnel" subtitle="From lead to paid — where users drop off">
+        <Section title="In-App Funnel (all platforms)" subtitle="Ordered — each step requires the previous. Real drop-off via GA4 runFunnelReport.">
           <TableEmpty />
         </Section>
       </div>
@@ -552,7 +689,7 @@ const FunnelSection = ({ funnel, loading }) => {
   const topUsers = Number(funnel[0]?.users || 0);
   return (
     <div className="mt-6">
-      <Section title="Conversion Funnel" subtitle="From lead to paid — where users drop off">
+      <Section title="In-App Funnel (all platforms)" subtitle="Ordered — each step requires the previous. Real drop-off via GA4 runFunnelReport.">
         <div className="p-4 space-y-3">
           {funnel.map((stage, i) => {
             const users = Number(stage.users || 0);
