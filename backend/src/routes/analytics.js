@@ -1,7 +1,7 @@
 // Google Analytics 4 read-only endpoints.
 //
 // Auth stack:
-//   - authMiddleware       → user JWT (populates req.user.userId)
+//   - authMiddleware       → user JWT (populates req.user.userId + workspaceOwnerId)
 //   - requireBusinessAuth  → GA4 tokens live on the same OAuth grant as GMB
 //                            (analytics.readonly is included in BUSINESS_SCOPES).
 //                            The middleware handles proactive refresh + populates
@@ -44,6 +44,10 @@ const { createClient } = require('@supabase/supabase-js');
 
 const router = express.Router();
 
+// NOTE: req.user.userId in this file resolves to the workspace owner (see
+// supabase/team-invitations.sql) so an invited team member queries the owner's
+// connected_accounts + GA4 OAuth tokens rather than their own.
+
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY
@@ -62,7 +66,7 @@ async function tokenForProperty(req, propertyId) {
   const { data: rows } = await supabase
     .from('connected_accounts')
     .select('metadata')
-    .eq('user_id', req.user.userId)
+    .eq('user_id', (req.user.workspaceOwnerId || req.user.userId))
     .eq('provider', 'google_analytics')
     .eq('external_id', `ga4:${propertyId}`)
     .limit(1);
@@ -70,7 +74,7 @@ async function tokenForProperty(req, propertyId) {
   const ownerEmail = rows && rows[0]?.metadata?.owner_email;
 
   if (ownerGoogleId) {
-    const tokens = await getAllBusinessTokens(req.user.userId);
+    const tokens = await getAllBusinessTokens((req.user.workspaceOwnerId || req.user.userId));
     const match = tokens.find(t => t.google_id === ownerGoogleId);
     if (match?.access_token) {
       return { access_token: match.access_token, email: match.email, google_id: match.google_id };
@@ -128,7 +132,7 @@ router.get('/_diagnose', async (req, res) => {
     const hasAnalytics = grantedScopes.includes('https://www.googleapis.com/auth/analytics.readonly');
     const hasBusiness = grantedScopes.includes('https://www.googleapis.com/auth/business.manage');
     logger.info('analytics.diagnose', {
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
       granted_scopes: grantedScopes,
       hasAnalytics,
       hasBusiness,
@@ -152,7 +156,7 @@ router.get('/_diagnose', async (req, res) => {
     });
   } catch (err) {
     logger.error('analytics.diagnose.failed', {
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
       error: err.message,
     });
     res.status(500).json({ error: err.message || 'Failed to introspect token' });
@@ -171,7 +175,7 @@ async function resolvePropertyId(req) {
 
   const connectionId = (req.query.connectionId || '').toString().trim();
   if (connectionId) {
-    const row = await connections.getForUser(req.user.userId, connectionId);
+    const row = await connections.getForUser((req.user.workspaceOwnerId || req.user.userId), connectionId);
     if (row && row.provider === 'google_analytics') {
       return row.metadata?.property_id || null;
     }
@@ -181,7 +185,7 @@ async function resolvePropertyId(req) {
   const { data } = await supabase
     .from('connected_accounts')
     .select('metadata, created_at')
-    .eq('user_id', req.user.userId)
+    .eq('user_id', (req.user.workspaceOwnerId || req.user.userId))
     .eq('provider', 'google_analytics')
     .order('created_at', { ascending: false })
     .limit(1);
@@ -222,7 +226,7 @@ function reportHandler(serviceFn, name) {
       const t0 = Date.now();
       const result = await serviceFn(token, propertyId, days);
       logger.info(`analytics.${name}.ok`, {
-        userId: req.user.userId,
+        userId: (req.user.workspaceOwnerId || req.user.userId),
         propertyId,
         days,
         duration_ms: Date.now() - t0,
@@ -230,7 +234,7 @@ function reportHandler(serviceFn, name) {
         viaFallback: !!isFallback,
       });
       if (isFallback && tokenInfo) {
-        await backfillOwnerOnProperty(req.user.userId, propertyId, tokenInfo);
+        await backfillOwnerOnProperty((req.user.workspaceOwnerId || req.user.userId), propertyId, tokenInfo);
       }
       return result;
     };
@@ -241,7 +245,7 @@ function reportHandler(serviceFn, name) {
     } catch (err) {
       const norm = analytics.normalizeApiError(err, {
         endpoint: name,
-        userId: req.user.userId,
+        userId: (req.user.workspaceOwnerId || req.user.userId),
         propertyId,
         ownerEmail: primary.email,
       });
@@ -256,7 +260,7 @@ function reportHandler(serviceFn, name) {
     }
 
     // Fan out across the other connected business tokens.
-    const allTokens = await getAllBusinessTokens(req.user.userId);
+    const allTokens = await getAllBusinessTokens((req.user.workspaceOwnerId || req.user.userId));
     for (const t of allTokens) {
       if (t.access_token === primary.access_token) continue;
       try {
@@ -265,7 +269,7 @@ function reportHandler(serviceFn, name) {
       } catch (err) {
         const norm = analytics.normalizeApiError(err, {
           endpoint: name,
-          userId: req.user.userId,
+          userId: (req.user.workspaceOwnerId || req.user.userId),
           propertyId,
           ownerEmail: t.email,
           fallbackAttempt: true,
@@ -285,7 +289,7 @@ function reportHandler(serviceFn, name) {
     // so the frontend can show a specific action panel (add Viewer in GA4
     // Admin OR connect a different Google account).
     logger.warn('analytics.property_permission_denied_all_accounts', {
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
       propertyId,
       endpoint: name,
       triedAccounts: tried,
@@ -307,7 +311,7 @@ router.get('/properties', async (req, res) => {
     // different set of GA4 properties (its own analytics access). We tag each
     // returned property with owner_google_id + owner_email so the caller can
     // save + route later reports to the right token.
-    const tokens = await getAllBusinessTokens(req.user.userId);
+    const tokens = await getAllBusinessTokens((req.user.workspaceOwnerId || req.user.userId));
     // Fallback: no tokens in business_profiles[] yet — use req.businessToken
     // (older users may not have the multi-profile shape yet).
     const effectiveTokens = tokens.length > 0 ? tokens : [{
@@ -351,7 +355,7 @@ router.get('/properties', async (req, res) => {
     });
 
     logger.info('analytics.properties.list_ok', {
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
       count: deduped.length,
       accounts_tried: effectiveTokens.length,
       accounts_failed: errors.length,
@@ -371,7 +375,7 @@ router.get('/properties', async (req, res) => {
   } catch (err) {
     const norm = analytics.normalizeApiError(err, {
       endpoint: 'properties.list',
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
     });
     res.status(norm.status || 500).json({ error: norm.message });
   }
@@ -384,7 +388,7 @@ router.post('/properties', express.json(), async (req, res) => {
       return res.status(400).json({ error: 'propertyId required' });
     }
     const row = await connections.upsertGoogleAnalytics({
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
       propertyId: String(propertyId).trim(),
       displayName: displayName || `GA4 Property ${propertyId}`,
       accountId: accountId ? String(accountId).trim() : null,
@@ -392,7 +396,7 @@ router.post('/properties', express.json(), async (req, res) => {
       ownerEmail: ownerEmail || null,
     });
     logger.info('analytics.property.connected', {
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
       propertyId,
       connectionId: row.id,
       ownerGoogleId: ownerGoogleId || null,
@@ -400,7 +404,7 @@ router.post('/properties', express.json(), async (req, res) => {
     res.status(201).json({ connection: row });
   } catch (err) {
     logger.error('analytics.property.connect_failed', {
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
       error: err.message,
     });
     res.status(500).json({ error: err.message || 'Failed to save property' });
@@ -412,7 +416,7 @@ router.post('/properties', express.json(), async (req, res) => {
 // account" and to display owner emails on the property picker.
 router.get('/accounts', async (req, res) => {
   try {
-    const tokens = await getAllBusinessTokens(req.user.userId);
+    const tokens = await getAllBusinessTokens((req.user.workspaceOwnerId || req.user.userId));
     res.json({
       accounts: tokens.map(t => ({
         googleId: t.google_id,
@@ -422,7 +426,7 @@ router.get('/accounts', async (req, res) => {
     });
   } catch (err) {
     logger.error('analytics.accounts.failed', {
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
       error: err.message,
     });
     res.status(500).json({ error: err.message || 'Failed to list accounts' });
@@ -434,7 +438,7 @@ router.get('/accounts', async (req, res) => {
 // /api/connections.
 router.get('/connected', async (req, res) => {
   try {
-    const rows = await connections.listForUser(req.user.userId);
+    const rows = await connections.listForUser((req.user.workspaceOwnerId || req.user.userId));
     res.json({
       properties: rows
         .filter(r => r.provider === 'google_analytics')
@@ -451,7 +455,7 @@ router.get('/connected', async (req, res) => {
     });
   } catch (err) {
     logger.error('analytics.connected.failed', {
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
       error: err.message,
     });
     res.status(500).json({ error: 'Failed to list connected properties' });

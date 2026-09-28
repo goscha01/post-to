@@ -15,6 +15,7 @@
     "@aws-sdk/s3-request-presigner": "^3.1098.0",
     "@fixprompt/node": "^0.0.2",
     "@geos/loghub-client": "github:goscha01/geos-loghub-client",
+    "@sendgrid/mail": "^8.1.6",
     "@supabase/supabase-js": "^2.57.4",
     "axios": "^1.6.0",
     "bcryptjs": "^2.4.3",

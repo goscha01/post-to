@@ -5,6 +5,10 @@ const logger = require('../utils/logger');
 
 const router = express.Router();
 
+// NOTE: userId in this file resolves to the workspace owner (see
+// supabase/team-invitations.sql). An invited team member queries the OWNER's
+// scheduled_posts + connections rather than their own.
+
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY
@@ -22,7 +26,7 @@ router.use(authMiddleware);
 // status='scheduled' AND scheduled_time <= now() and posts them to GMB.
 
 router.post('/schedule', async (req, res) => {
-  const userId = req.user?.userId;
+  const userId = req.user?.workspaceOwnerId || req.user?.userId;
   try {
     const {
       content,
@@ -100,7 +104,7 @@ router.post('/schedule', async (req, res) => {
 });
 
 router.patch('/schedule/:id', async (req, res) => {
-  const userId = req.user?.userId;
+  const userId = req.user?.workspaceOwnerId || req.user?.userId;
   const { id } = req.params;
   try {
     const patch = {};
@@ -140,7 +144,7 @@ router.patch('/schedule/:id', async (req, res) => {
 });
 
 router.delete('/schedule/:id', async (req, res) => {
-  const userId = req.user?.userId;
+  const userId = req.user?.workspaceOwnerId || req.user?.userId;
   const { id } = req.params;
   try {
     // Ownership + state guard: allow cancel only when 'scheduled'. Rows
@@ -200,7 +204,7 @@ function firstMediaUrl(row) {
 //                                          Body: { scheduledTime }
 
 router.post('/drafts', async (req, res) => {
-  const userId = req.user?.userId;
+  const userId = req.user?.workspaceOwnerId || req.user?.userId;
   try {
     const {
       content = '',
@@ -256,7 +260,7 @@ router.post('/drafts', async (req, res) => {
 });
 
 router.get('/drafts', async (req, res) => {
-  const userId = req.user?.userId;
+  const userId = req.user?.workspaceOwnerId || req.user?.userId;
   try {
     const { data, error } = await supabase
       .from('scheduled_posts')
@@ -277,7 +281,7 @@ router.get('/drafts', async (req, res) => {
 });
 
 router.patch('/drafts/:id', async (req, res) => {
-  const userId = req.user?.userId;
+  const userId = req.user?.workspaceOwnerId || req.user?.userId;
   const { id } = req.params;
   try {
     const patch = {};
@@ -318,7 +322,7 @@ router.patch('/drafts/:id', async (req, res) => {
 });
 
 router.delete('/drafts/:id', async (req, res) => {
-  const userId = req.user?.userId;
+  const userId = req.user?.workspaceOwnerId || req.user?.userId;
   const { id } = req.params;
   try {
     const { data, error } = await supabase
@@ -343,7 +347,7 @@ router.delete('/drafts/:id', async (req, res) => {
 // draft on success, avoiding a partial state where the draft is gone but
 // the post never lands.
 router.post('/drafts/:id/promote', async (req, res) => {
-  const userId = req.user?.userId;
+  const userId = req.user?.workspaceOwnerId || req.user?.userId;
   const { id } = req.params;
   try {
     const { scheduledTime } = req.body || {};
@@ -379,7 +383,7 @@ router.post('/drafts/:id/promote', async (req, res) => {
 // Returns published (social_media_posts) + scheduled (scheduled_posts) items
 // within the requested window. Auth-only — reads Supabase, no Google APIs.
 router.get('/', async (req, res) => {
-  const userId = req.user?.userId;
+  const userId = req.user?.workspaceOwnerId || req.user?.userId;
   const now = new Date();
   // Default window: previous month → 2 months out. Covers the typical
   // month-view + week-view scroll without a re-fetch.

@@ -18,6 +18,11 @@ const fs = require('fs');
 const path = require('path');
 const router = express.Router();
 
+// NOTE: uses of req.user.userId in this file were swept to the workspace-owner
+// id so an invited team member's actions land under the owner's posts /
+// scheduled_posts rows and use the owner's OAuth tokens. See
+// supabase/team-invitations.sql.
+
 // Initialize Supabase client with service role for server-side operations
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -496,7 +501,7 @@ router.get('/location/:locationId', async (req, res) => {
   try {
     const { locationId } = req.params;
     const { cached_only } = req.query; // Add query parameter for cache-only requests
-    const userId = req.user?.userId;
+    const userId = req.user?.workspaceOwnerId || req.user?.userId;
     const accountId = req.headers['x-gmb-account-id'];
 
     // Requiring the header (no hardcoded fallback to a specific business) is
@@ -665,7 +670,7 @@ router.get('/location/:locationId', async (req, res) => {
           realPosts.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
           // Save existing posts to database
-          const savedPosts = await saveExistingPostsToDatabase(req.user.userId, realPosts, 'google');
+          const savedPosts = await saveExistingPostsToDatabase((req.user.workspaceOwnerId || req.user.userId), realPosts, 'google');
 
           // Enrich each post with the ORIGINAL source URL the user
           // submitted at publish time, so a "Copy" of the post can be
@@ -753,7 +758,7 @@ router.get('/location/:locationId', async (req, res) => {
 //   post_id       = Meta post/media ID
 //   published_at  = Meta created_time / timestamp
 router.post('/social/sync/:connectionId', async (req, res) => {
-  const userId = req.user?.userId;
+  const userId = req.user?.workspaceOwnerId || req.user?.userId;
   const { connectionId } = req.params;
   try {
     const row = await connections.getRawForUser(userId, connectionId);
@@ -883,7 +888,7 @@ router.post('/', upload.array('images', 10), parseMultipartJsonFields, [
 ], invalidateCacheMiddleware({ pattern: 'user:*:posts*' }), async (req, res) => {
   const t0 = Date.now();
   const step = (name, attrs) => logger.info(`posts.create.${name}`, {
-    user_id: req.user?.userId,
+    user_id: (req.user?.workspaceOwnerId || req.user?.userId),
     ms_since_start: Date.now() - t0,
     ...(attrs || {}),
   });
@@ -914,7 +919,7 @@ router.post('/', upload.array('images', 10), parseMultipartJsonFields, [
   const capTimer = setTimeout(() => {
     if (responded) return;
     logger.error('posts.create.hard_cap_reached', {
-      user_id: req.user?.userId,
+      user_id: (req.user?.workspaceOwnerId || req.user?.userId),
       elapsed_ms: Date.now() - t0,
     });
     try { handlerAbort.abort(); } catch { /* noop */ }
@@ -932,7 +937,7 @@ router.post('/', upload.array('images', 10), parseMultipartJsonFields, [
   if (!errors.isEmpty()) {
     // Log the specific fields that failed so future 400s aren't opaque.
     logger.warn('posts.create.validation_failed', {
-      user_id: req.user?.userId,
+      user_id: (req.user?.workspaceOwnerId || req.user?.userId),
       elapsed_ms: Date.now() - t0,
       errors: errors.array().slice(0, 10),
     });
@@ -1093,7 +1098,7 @@ router.post('/', upload.array('images', 10), parseMultipartJsonFields, [
             if (!fileId) return m;
             rewriteCount += 1;
             const signed = driveRouter.buildSignedDriveProxyUrl({
-              userId: req.user?.userId,
+              userId: (req.user?.workspaceOwnerId || req.user?.userId),
               fileId,
               baseUrl: publicBaseUrl,
               ttlSeconds: 3600,
@@ -1110,7 +1115,7 @@ router.post('/', upload.array('images', 10), parseMultipartJsonFields, [
           const dropped = gmbPostData.media.length - 1;
           gmbPostData.media = gmbPostData.media.slice(0, 1);
           logger.info('posts.create.media_truncated', {
-            user_id: req.user?.userId,
+            user_id: (req.user?.workspaceOwnerId || req.user?.userId),
             dropped_count: dropped,
           });
         }
@@ -1124,7 +1129,7 @@ router.post('/', upload.array('images', 10), parseMultipartJsonFields, [
         // 60000ms exceeded" silent kill.
         try {
           const gmbCallFanout = await tryWithEachBusinessToken(
-            req.user?.userId,
+            (req.user?.workspaceOwnerId || req.user?.userId),
             accessToken,
             async (tok) => {
               // Chain the per-attempt AbortController to the
@@ -1149,14 +1154,14 @@ router.post('/', upload.array('images', 10), parseMultipartJsonFields, [
                   }
                 );
                 logger.info('posts.gmb.attempt_ok', {
-                  user_id: req.user?.userId,
+                  user_id: (req.user?.workspaceOwnerId || req.user?.userId),
                   elapsed_ms: Date.now() - attemptStart,
                   status: resp?.status,
                 });
                 return resp;
               } catch (err) {
                 logger.warn('posts.gmb.attempt_error', {
-                  user_id: req.user?.userId,
+                  user_id: (req.user?.workspaceOwnerId || req.user?.userId),
                   status: err?.response?.status || null,
                   code: err?.code || null,
                   message: (err?.message || '').slice(0, 300),
@@ -1189,7 +1194,7 @@ router.post('/', upload.array('images', 10), parseMultipartJsonFields, [
             posted_at: new Date().toISOString()
           };
           
-          const savedPost = await savePostToDatabase(req.user.userId, postData);
+          const savedPost = await savePostToDatabase((req.user.workspaceOwnerId || req.user.userId), postData);
 
           // Remember the original source URL the user submitted so a later
           // "Copy" of this post re-publishes at full quality (bypassing
@@ -1204,7 +1209,7 @@ router.post('/', upload.array('images', 10), parseMultipartJsonFields, [
                 .from('published_media_source')
                 .upsert(
                   {
-                    user_id: req.user.userId,
+                    user_id: (req.user.workspaceOwnerId || req.user.userId),
                     provider: 'gmb',
                     provider_post_id: providerPostId,
                     source_url: originalSource,
@@ -1214,14 +1219,14 @@ router.post('/', upload.array('images', 10), parseMultipartJsonFields, [
                 );
               if (srcErr) throw srcErr;
               logger.info('posts.gmb.source_saved', {
-                user_id: req.user.userId,
+                user_id: (req.user.workspaceOwnerId || req.user.userId),
                 provider_post_id: providerPostId,
                 has_drive_file_id: !!driveFileId,
               });
             }
           } catch (srcErr) {
             logger.warn('posts.gmb.source_save_failed', {
-              user_id: req.user?.userId,
+              user_id: (req.user?.workspaceOwnerId || req.user?.userId),
               error: srcErr.message,
             });
           }
@@ -1249,7 +1254,7 @@ router.post('/', upload.array('images', 10), parseMultipartJsonFields, [
             gmbError?.message ||
             'GMB rejected the post';
           logger.warn('posts.create.gmb_rejected', {
-            user_id: req.user?.userId,
+            user_id: (req.user?.workspaceOwnerId || req.user?.userId),
             gmb_status: gmbError?.response?.status || null,
             gmb_error: detailedMsg.slice(0, 300),
             elapsed_ms: Date.now() - t0,
@@ -1288,7 +1293,7 @@ router.post('/', upload.array('images', 10), parseMultipartJsonFields, [
       posted_at: scheduledTime ? new Date(scheduledTime).toISOString() : new Date().toISOString()
     };
     
-    const savedPost = await savePostToDatabase(req.user.userId, postData);
+    const savedPost = await savePostToDatabase((req.user.workspaceOwnerId || req.user.userId), postData);
     
     res.json({ 
       success: true, 
@@ -1442,7 +1447,7 @@ router.delete('/:postId', invalidateCacheMiddleware({ pattern: 'user:*:posts*' }
     // as "already gone" and lied to the frontend — nothing was actually
     // deleted. Try every token; only give up if ALL of them return 404.
     let last404 = false;
-    const deleteAttempt = await tryWithEachBusinessToken(req.user?.userId, accessToken, async (tok) => {
+    const deleteAttempt = await tryWithEachBusinessToken((req.user?.workspaceOwnerId || req.user?.userId), accessToken, async (tok) => {
       try {
         const resp = await axios.delete(
           `https://mybusiness.googleapis.com/v4/accounts/${gmbAccountId}/locations/${gmbLocationId}/localPosts/${postId}`,
@@ -1460,7 +1465,7 @@ router.delete('/:postId', invalidateCacheMiddleware({ pattern: 'user:*:posts*' }
 
     if (deleteAttempt.ok) {
       logger.info('posts.gmb.delete_ok', {
-        user_id: req.user?.userId,
+        user_id: (req.user?.workspaceOwnerId || req.user?.userId),
         post_id: postId,
         gmb_account_id: gmbAccountId,
         gmb_location_id: gmbLocationId,
@@ -1478,7 +1483,7 @@ router.delete('/:postId', invalidateCacheMiddleware({ pattern: 'user:*:posts*' }
     const status = gmbError?.response?.status || 500;
     const gmbBody = gmbError?.response?.data;
     logger.error('posts.gmb.delete_failed', {
-      user_id: req.user?.userId,
+      user_id: (req.user?.workspaceOwnerId || req.user?.userId),
       post_id: postId,
       gmb_account_id: gmbAccountId,
       gmb_location_id: gmbLocationId,
@@ -1510,7 +1515,7 @@ router.delete('/:postId', invalidateCacheMiddleware({ pattern: 'user:*:posts*' }
 router.get('/accounts/:accountId/locations/:locationId/media', cacheMiddleware({ ttl: 1800 }), async (req, res) => {
   try {
     let { accountId, locationId } = req.params;
-    const userId = req.user?.userId;
+    const userId = req.user?.workspaceOwnerId || req.user?.userId;
 
     // Remove "accounts/" and "locations/" prefixes if present
     accountId = accountId.replace('accounts/', '');

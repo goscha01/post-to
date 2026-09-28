@@ -22,8 +22,10 @@ import CampaignAssistant from './components/CampaignAssistant';
 import Automations from './components/Automations';
 import Services from './components/Services';
 import Billing from './components/Billing';
+import Team from './components/Team';
+import AcceptInvite from './components/AcceptInvite';
 import Layout from './components/Layout';
-import BusinessSuccessCallback from './components/BusinessSuccessCallback'; 
+import BusinessSuccessCallback from './components/BusinessSuccessCallback';
 import './App.css';
 
 // Protected Route Component
@@ -226,6 +228,19 @@ const AppContent = () => {
             </ProtectedRoute>
           }
         />
+        <Route
+          path="/team"
+          element={
+            <ProtectedRoute>
+              <Layout>
+                <Team />
+              </Layout>
+            </ProtectedRoute>
+          }
+        />
+        {/* /invite/accept is PUBLIC — the invitee may not be logged in yet.
+            AcceptInvite handles both signed-in and signed-out states. */}
+        <Route path="/invite/accept" element={<AcceptInvite />} />
       </Routes>
     </Router>
   );
@@ -261,6 +276,17 @@ const AuthCallback = () => {
 
   useEffect(() => {
     if (isAuthenticated) {
+      // If the user came from an /invite/accept link, bounce them back to
+      // finish the accept flow. Existing users need to explicitly click
+      // Accept; new users are auto-consumed server-side but landing them on
+      // /invite/accept is still fine — the page will show "already accepted"
+      // and route them to /dashboard on the next tick.
+      const pendingInviteToken = localStorage.getItem('post_to_pending_invite_token');
+      if (pendingInviteToken) {
+        localStorage.removeItem('post_to_pending_invite_token');
+        navigate(`/invite/accept?token=${encodeURIComponent(pendingInviteToken)}`);
+        return;
+      }
       navigate('/dashboard');
     }
   }, [isAuthenticated, navigate]);

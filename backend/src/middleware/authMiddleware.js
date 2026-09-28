@@ -19,11 +19,11 @@ const authMiddleware = async (req, res, next) => {
 
     // Verify JWT token
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    
+
     // Check if user exists in database
     const { data: user, error } = await supabase
       .from('users')
-      .select('id, email, google_id, access_token')
+      .select('id, email, google_id, access_token, active_workspace_owner_id')
       .eq('id', decoded.userId)
       .single();
 
@@ -40,12 +40,43 @@ const authMiddleware = async (req, res, next) => {
     // features (ASC, Meta Ads, etc.) that have no relation to Google OAuth.
     // JWT validity above is the real auth artifact.
 
+    // Resolve the workspace the caller is acting inside. Preference order:
+    //   1. active_workspace_owner_id on the users row (set by /api/team on
+    //      accept + /workspaces/switch). Persists across sessions.
+    //   2. workspaceOwnerId claim in the JWT (freshly-minted token from
+    //      /invite/accept or /workspaces/switch — usable before the FE
+    //      round-trips to refresh state).
+    //   3. Fallback to the caller's own userId (solo user).
+    //
+    // Membership re-check: if the caller was viewing a shared workspace but
+    // has since been removed from it, drop back to their own workspace so
+    // requests don't 500 on stale-membership.
+    let workspaceOwnerId = user.active_workspace_owner_id || decoded.workspaceOwnerId || user.id;
+    if (workspaceOwnerId !== user.id) {
+      const { data: membership } = await supabase
+        .from('team_memberships')
+        .select('id')
+        .eq('owner_user_id', workspaceOwnerId)
+        .eq('member_user_id', user.id)
+        .maybeSingle();
+      if (!membership) {
+        workspaceOwnerId = user.id;
+        // Clear the stale pointer so subsequent requests skip this check.
+        // Best-effort: don't await the result.
+        supabase.from('users')
+          .update({ active_workspace_owner_id: null })
+          .eq('id', user.id)
+          .then(() => {}, () => {});
+      }
+    }
+
     // Add user info to request
     req.user = {
       userId: user.id,
       email: user.email,
       googleId: user.google_id,
-      accessToken: user.access_token
+      accessToken: user.access_token,
+      workspaceOwnerId,
     };
 
     next();

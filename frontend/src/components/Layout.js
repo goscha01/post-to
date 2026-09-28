@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+import teamService from '../services/teamService';
 import {
   Home,
   Building2,
@@ -22,7 +23,10 @@ import {
   Menu,
   X,
   LogOut,
-  User
+  User,
+  Users,
+  Check,
+  ChevronDown,
 } from 'lucide-react';
 
 const Layout = ({ children }) => {
@@ -30,6 +34,56 @@ const Layout = ({ children }) => {
   const location = useLocation();
   const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  // Workspace switcher state. Fetched once on mount. Hidden entirely for solo
+  // users (only their own workspace). See backend/src/routes/team.js /workspaces.
+  const [workspaces, setWorkspaces] = useState([]);
+  const [switcherOpen, setSwitcherOpen] = useState(false);
+  const [switching, setSwitching] = useState(false);
+  const switcherRef = useRef(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    teamService.listWorkspaces()
+      .then((ws) => { if (!cancelled) setWorkspaces(ws); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    // Close on outside click.
+    const onDocClick = (e) => {
+      if (switcherRef.current && !switcherRef.current.contains(e.target)) {
+        setSwitcherOpen(false);
+      }
+    };
+    if (switcherOpen) document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, [switcherOpen]);
+
+  const activeWorkspace = workspaces.find(w => w.is_active) || workspaces.find(w => w.is_own);
+
+  const onSwitch = async (ownerUserId) => {
+    if (switching) return;
+    if (activeWorkspace?.owner_user_id === ownerUserId) {
+      setSwitcherOpen(false);
+      return;
+    }
+    setSwitching(true);
+    try {
+      const res = await teamService.switchWorkspace(ownerUserId);
+      if (res?.token) {
+        localStorage.setItem('gmb_token', res.token);
+      }
+      // Full reload so AuthProvider re-hydrates + every page refetches under
+      // the new workspace scope.
+      window.location.href = '/dashboard';
+    } catch (e) {
+      setSwitching(false);
+      setSwitcherOpen(false);
+      alert(e.response?.data?.error || 'Failed to switch workspace');
+    }
+  };
 
   // Debug user data
 
@@ -70,6 +124,7 @@ const Layout = ({ children }) => {
     {
       label: 'Account',
       items: [
+        { name: 'Team', href: '/team', icon: Users },
         { name: 'Billing', href: '/billing', icon: CreditCard },
       ],
     },
@@ -228,6 +283,63 @@ const Layout = ({ children }) => {
 
           <div className="flex flex-1 gap-x-4 self-stretch lg:gap-x-6">
             <div className="flex flex-1"></div>
+            {/* Workspace switcher — hidden for solo users. */}
+            {workspaces.length > 1 && activeWorkspace && (
+              <div className="relative flex items-center" ref={switcherRef}>
+                <button
+                  type="button"
+                  onClick={() => setSwitcherOpen(o => !o)}
+                  className="flex items-center gap-2 px-3 py-1.5 border border-gray-200 rounded-lg text-sm text-gray-700 hover:bg-gray-50"
+                  disabled={switching}
+                >
+                  {activeWorkspace.owner_picture_url ? (
+                    <img src={activeWorkspace.owner_picture_url} alt="" className="h-5 w-5 rounded-full" />
+                  ) : (
+                    <div className="h-5 w-5 rounded-full bg-gray-200 flex items-center justify-center">
+                      <User className="h-3 w-3 text-gray-500" />
+                    </div>
+                  )}
+                  <span className="max-w-[180px] truncate">
+                    {activeWorkspace.is_own ? 'My workspace' : `${activeWorkspace.owner_name}'s workspace`}
+                  </span>
+                  <ChevronDown className="h-4 w-4 text-gray-400" />
+                </button>
+                {switcherOpen && (
+                  <div className="absolute right-0 top-full mt-2 w-72 bg-white border border-gray-200 rounded-lg shadow-lg py-1 z-50">
+                    <div className="px-3 py-2 text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                      Switch workspace
+                    </div>
+                    {workspaces.map(ws => (
+                      <button
+                        key={ws.owner_user_id}
+                        onClick={() => onSwitch(ws.owner_user_id)}
+                        className={`w-full flex items-center gap-3 px-3 py-2 text-sm text-left hover:bg-gray-50 ${
+                          ws.is_active ? 'bg-primary-50' : ''
+                        }`}
+                        disabled={switching}
+                      >
+                        {ws.owner_picture_url ? (
+                          <img src={ws.owner_picture_url} alt="" className="h-7 w-7 rounded-full" />
+                        ) : (
+                          <div className="h-7 w-7 rounded-full bg-gray-200 flex items-center justify-center">
+                            <User className="h-4 w-4 text-gray-500" />
+                          </div>
+                        )}
+                        <div className="flex-1 min-w-0">
+                          <div className="text-sm font-medium text-gray-900 truncate">
+                            {ws.is_own ? 'My workspace' : `${ws.owner_name}'s workspace`}
+                          </div>
+                          <div className="text-xs text-gray-500 truncate">
+                            {ws.owner_email || ''}{ws.is_own ? '' : ` · ${ws.role}`}
+                          </div>
+                        </div>
+                        {ws.is_active && <Check className="h-4 w-4 text-primary-600 flex-shrink-0" />}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
 

@@ -17,13 +17,18 @@ const logger = require('../utils/logger');
 const router = express.Router();
 router.use(authMiddleware);
 
+// NOTE: uses of req.user.userId in this file resolve to the workspace owner
+// (see supabase/team-invitations.sql) so an invited team member sees + manages
+// the same connected accounts (Google Business, FB Pages, IG, websites) as
+// the owner.
+
 router.get('/', async (req, res) => {
   try {
     // Self-heal: mirror any OAuth grants in users.business_profiles that
     // pre-date the upsertGoogleBusiness callback wire-up so the Connections
     // page shows every connected Google account, not just recent ones.
     try {
-      await connections.reconcileGoogleBusiness(req.user.userId);
+      await connections.reconcileGoogleBusiness((req.user.workspaceOwnerId || req.user.userId));
     } catch (e) {
       // Non-fatal — the list still returns whatever's already there.
     }
@@ -31,11 +36,11 @@ router.get('/', async (req, res) => {
     // picture field syntax was fixed (2026-07-28). Idempotent + cheap
     // (zero writes when every row already has a picture).
     try {
-      await connections.reconcileFacebookPictures(req.user.userId);
+      await connections.reconcileFacebookPictures((req.user.workspaceOwnerId || req.user.userId));
     } catch (e) {
       // Non-fatal.
     }
-    const rows = await connections.listForUser(req.user.userId);
+    const rows = await connections.listForUser((req.user.workspaceOwnerId || req.user.userId));
     res.json({ connections: rows });
   } catch (err) {
     logger.error('connections.list_failed', { error: err.message });
@@ -53,11 +58,11 @@ router.post(
     }
     try {
       const row = await connections.upsertWebsite({
-        userId: req.user.userId,
+        userId: (req.user.workspaceOwnerId || req.user.userId),
         url: req.body.url,
       });
       logger.info('connections.website.connected', {
-        userId: req.user.userId,
+        userId: (req.user.workspaceOwnerId || req.user.userId),
         connectionId: row.id,
         host: row.metadata?.host,
         fetch_ok: row.metadata?.fetch_ok,
@@ -85,13 +90,13 @@ router.post(
     }
     try {
       const row = await connections.upsertOpenAiAds({
-        userId: req.user.userId,
+        userId: (req.user.workspaceOwnerId || req.user.userId),
         apiKey: req.body.apiKey,
         adAccountId: req.body.adAccountId,
         accountName: req.body.accountName,
       });
       logger.info('connections.openai_ads.connected', {
-        userId: req.user.userId,
+        userId: (req.user.workspaceOwnerId || req.user.userId),
         connectionId: row.id,
         ad_account_id: row.metadata?.ad_account_id,
       });
@@ -121,9 +126,9 @@ function makePlatformRoute({ path, validators, provider, mapBody, extraLog }) {
     }
     try {
       const fnName = 'connect' + provider;
-      const row = await publishing[fnName]({ userId: req.user.userId, ...mapBody(req.body) });
+      const row = await publishing[fnName]({ userId: (req.user.workspaceOwnerId || req.user.userId), ...mapBody(req.body) });
       logger.info(`connections.${provider.toLowerCase()}.connected`, {
-        userId: req.user.userId,
+        userId: (req.user.workspaceOwnerId || req.user.userId),
         connectionId: row.id,
         ...(extraLog ? extraLog(row) : {}),
       });
@@ -131,7 +136,7 @@ function makePlatformRoute({ path, validators, provider, mapBody, extraLog }) {
     } catch (err) {
       const status = err.status || 500;
       logger.warn(`connections.${provider.toLowerCase()}.failed`, {
-        userId: req.user.userId,
+        userId: (req.user.workspaceOwnerId || req.user.userId),
         status,
         code: err.code,
         error: err.message,
@@ -225,11 +230,11 @@ makePlatformRoute({
 // creation semantically ("please enable feeds for me").
 router.post('/rss', async (req, res) => {
   try {
-    const row = await publishing.connectRssFeeds({ userId: req.user.userId });
-    logger.info('connections.rss.connected', { userId: req.user.userId, connectionId: row.id });
+    const row = await publishing.connectRssFeeds({ userId: (req.user.workspaceOwnerId || req.user.userId) });
+    logger.info('connections.rss.connected', { userId: (req.user.workspaceOwnerId || req.user.userId), connectionId: row.id });
     res.status(201).json({ connection: row });
   } catch (err) {
-    logger.warn('connections.rss.failed', { userId: req.user.userId, error: err.message });
+    logger.warn('connections.rss.failed', { userId: (req.user.workspaceOwnerId || req.user.userId), error: err.message });
     res.status(err.status || 500).json({ error: err.message, code: err.code });
   }
 });
@@ -262,7 +267,7 @@ router.post(
 // entirely.
 router.post('/:id/refresh-urls', async (req, res) => {
   try {
-    const result = await connections.refreshWebsiteUrls({ userId: req.user.userId, id: req.params.id });
+    const result = await connections.refreshWebsiteUrls({ userId: (req.user.workspaceOwnerId || req.user.userId), id: req.params.id });
     res.json({ ok: true, count: result.count });
   } catch (err) {
     logger.error('connections.refresh_urls_failed', { error: err.message, id: req.params.id });
@@ -272,11 +277,11 @@ router.post('/:id/refresh-urls', async (req, res) => {
 
 router.delete('/:id', async (req, res) => {
   try {
-    const existing = await connections.getForUser(req.user.userId, req.params.id);
+    const existing = await connections.getForUser((req.user.workspaceOwnerId || req.user.userId), req.params.id);
     if (!existing) return res.status(404).json({ error: 'Connection not found' });
-    await connections.deleteForUser(req.user.userId, req.params.id);
+    await connections.deleteForUser((req.user.workspaceOwnerId || req.user.userId), req.params.id);
     logger.info('connections.deleted', {
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
       connectionId: req.params.id,
       provider: existing.provider,
     });

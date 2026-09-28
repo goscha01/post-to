@@ -8,6 +8,12 @@ const { tryWithEachBusinessToken } = require('../utils/businessTokens');
 const logger = require('../utils/logger');
 const router = express.Router();
 
+// NOTE: this file uses `userId = req.user?.workspaceOwnerId || req.user?.userId`
+// throughout, because an invited team member (see supabase/team-invitations.sql)
+// operates on the OWNER's GMB data — OAuth tokens, cache, and account rows
+// all live under the workspace owner's id. Routes not yet swept fall back to
+// the acting user's id.
+
 // Initialize Supabase client with service role for server-side operations
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -123,7 +129,7 @@ async function getCachedAccounts(userId) {
 // no entries in business_profiles (e.g., legacy user pre-migration).
 router.get('/accounts', async (req, res) => {
   try {
-    const userId = req.user?.userId;
+    const userId = req.user?.workspaceOwnerId || req.user?.userId;
     const { cached_only } = req.query;
 
     if (cached_only === 'true') {
@@ -310,7 +316,7 @@ async function getCachedLocations(accountId, userId) {
 router.get('/accounts/:accountId/locations', async (req, res) => {
   try {
     let { accountId } = req.params;
-    const userId = req.user?.userId;
+    const userId = req.user?.workspaceOwnerId || req.user?.userId;
     const { cached_only } = req.query;
 
     accountId = accountId.replace('accounts/', '');
@@ -527,7 +533,7 @@ router.get('/accounts/:accountId/locations/:locationId/media', async (req, res) 
     let { accountId, locationId } = req.params;
     const { cached_only } = req.query;
     const accessToken = req.businessToken;
-    const userId = req.user?.userId;
+    const userId = req.user?.workspaceOwnerId || req.user?.userId;
 
     accountId = accountId.replace('accounts/', '');
     locationId = locationId.replace('locations/', '');

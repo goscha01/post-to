@@ -300,6 +300,58 @@ router.get('/google/oauth/callback', async (req, res) => {
 
       if (createError) throw createError;
       user = newUser;
+
+      // Auto-consume any pending team invitation matching this new user's
+      // email. Closes the "signed up via invite link but never hit accept"
+      // orphan window — otherwise the new user lands on an empty Post To
+      // account and the OWNER's /team page still shows a pending invite.
+      // Mirrors LB's autoConsumeInviteForNewUser.
+      try {
+        const normalizedEmail = String(userInfo.data.email || '').trim().toLowerCase();
+        const { data: pendingInvite } = await supabase
+          .from('team_invitations')
+          .select('id, owner_user_id, role, name, expires_at')
+          .eq('email', normalizedEmail)
+          .is('accepted_at', null)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (pendingInvite && new Date(pendingInvite.expires_at) >= new Date()) {
+          // Seed owner membership + create member membership + mark invite accepted.
+          await supabase.from('team_memberships').upsert(
+            { owner_user_id: pendingInvite.owner_user_id, member_user_id: pendingInvite.owner_user_id, role: 'owner' },
+            { onConflict: 'owner_user_id,member_user_id', ignoreDuplicates: true }
+          );
+          await supabase.from('team_memberships').upsert(
+            { owner_user_id: pendingInvite.owner_user_id, member_user_id: user.id, role: pendingInvite.role },
+            { onConflict: 'owner_user_id,member_user_id' }
+          );
+          await supabase
+            .from('users')
+            .update({
+              active_workspace_owner_id: pendingInvite.owner_user_id,
+              // Copy invite.name if the fresh Google name is blank (rare, but
+              // matches LB semantics).
+              ...(pendingInvite.name && (!user.name || !user.name.trim())
+                ? { name: pendingInvite.name }
+                : {}),
+            })
+            .eq('id', user.id);
+          await supabase
+            .from('team_invitations')
+            .update({ accepted_at: new Date().toISOString() })
+            .eq('id', pendingInvite.id);
+          user.active_workspace_owner_id = pendingInvite.owner_user_id;
+          logger.info('auth.invite_auto_consumed', {
+            new_user_id: user.id,
+            workspace_owner_id: pendingInvite.owner_user_id,
+            role: pendingInvite.role,
+          });
+        }
+      } catch (e) {
+        // Non-fatal: signup still succeeds, user can accept manually via the link.
+        logger.warn('auth.invite_auto_consume_failed', { error: e.message });
+      }
     } else {
       // Update existing user
       const { error: updateError } = await supabase
@@ -327,18 +379,19 @@ router.get('/google/oauth/callback', async (req, res) => {
 
     // Generate JWT token
     const jwtToken = jwt.sign(
-      { 
-        userId: user.id, 
+      {
+        userId: user.id,
         email: user.email,
         googleId: user.google_id,
         name: user.name,
         picture_url: user.picture_url,
-        has_business_access: user.has_business_access || false
+        has_business_access: user.has_business_access || false,
+        workspaceOwnerId: user.active_workspace_owner_id || user.id,
       },
       process.env.JWT_SECRET,
       { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
     );
-    
+
 
     // Redirect to frontend
     const redirectUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/callback?token=${jwtToken}`;
@@ -540,13 +593,14 @@ router.get('/google/business/callback', async (req, res) => {
 
     // Generate JWT token with updated user info
     const jwtToken = jwt.sign(
-      { 
-        userId: user.id, 
+      {
+        userId: user.id,
         email: user.email,
         googleId: user.google_id,
         name: user.name,
         picture_url: user.picture_url,
-        has_business_access: true
+        has_business_access: true,
+        workspaceOwnerId: user.active_workspace_owner_id || user.id,
       },
       process.env.JWT_SECRET,
       { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
@@ -575,7 +629,7 @@ router.post('/refresh', smartRateLimitMiddleware('token_refresh'), async (req, r
     // Find user by business refresh token (since we're using Google refresh token from business auth)
     const { data: user, error: userError } = await supabase
       .from('users')
-      .select('id, email, google_id, name, picture_url, has_business_access, business_refresh_token')
+      .select('id, email, google_id, name, picture_url, has_business_access, business_refresh_token, active_workspace_owner_id')
       .eq('business_refresh_token', refreshToken)
       .single();
 
@@ -603,13 +657,14 @@ router.post('/refresh', smartRateLimitMiddleware('token_refresh'), async (req, r
 
     // Generate new JWT token instead of returning Google access token
     const jwtToken = jwt.sign(
-      { 
-        userId: user.id, 
+      {
+        userId: user.id,
         email: user.email,
         googleId: user.google_id,
         name: user.name,
         picture_url: user.picture_url,
-        has_business_access: user.has_business_access || false
+        has_business_access: user.has_business_access || false,
+        workspaceOwnerId: user.active_workspace_owner_id || user.id,
       },
       process.env.JWT_SECRET,
       { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
