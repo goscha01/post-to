@@ -279,12 +279,14 @@ async function getRawForUser(userId, id) {
 }
 
 async function deleteForUser(userId, id) {
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from(TABLE)
     .delete()
     .eq('user_id', userId)
-    .eq('id', id);
+    .eq('id', id)
+    .select('id');
   if (error) throw error;
+  return Array.isArray(data) && data.length > 0;
 }
 
 // Server-side lookup: given an authenticated app user, return the long-lived

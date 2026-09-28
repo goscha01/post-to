@@ -458,13 +458,16 @@ router.patch('/:connectionId', express.json({ limit: '1mb' }), async (req, res) 
 // -----------------------------------------------------------------------
 // DELETE /:connectionId — remove an ASC connection
 // -----------------------------------------------------------------------
+// Idempotent: if the row is already gone, still return ok so the client
+// can clear its stale state. A previous bug returned undefined from
+// deleteForUser + treated it as 404, silently deleting the row while the
+// UI stayed stuck on it — never route back into that shape.
 router.delete('/:connectionId', async (req, res) => {
   const userId = req.user.userId;
   try {
-    const ok = await connections.deleteForUser(userId, req.params.connectionId);
-    if (!ok) return res.status(404).json({ error: 'Connection not found' });
-    logger.info('asc.deleted', { userId, connectionId: req.params.connectionId });
-    res.json({ ok: true });
+    const existed = await connections.deleteForUser(userId, req.params.connectionId);
+    logger.info('asc.deleted', { userId, connectionId: req.params.connectionId, existed });
+    res.json({ ok: true, existed });
   } catch (err) {
     logger.error('asc.delete.failed', { userId, error: err.message });
     res.status(500).json({ error: err.message || 'Failed to delete' });
