@@ -3,11 +3,11 @@ import { useAuth } from '../contexts/AuthContext';
 import {
   BarChart3,
   Users,
+  UserPlus,
+  UserCheck,
   MousePointerClick,
   TrendingUp,
-  DollarSign,
-  Clock,
-  Target,
+  CreditCard,
   Globe,
   Smartphone,
   Monitor,
@@ -62,7 +62,7 @@ const Analytics = () => {
 
   const [connectedProperties, setConnectedProperties] = useState([]);
   const [selectedPropertyId, setSelectedPropertyId] = useState(null);
-  const [days, setDays] = useState(30);
+  const [days, setDays] = useState(7);
 
   const [overview, setOverview] = useState(null);
   const [traffic, setTraffic] = useState([]);
@@ -490,13 +490,19 @@ const EmptyState = ({ onConnect }) => (
 const OverviewCards = ({ overview, loading }) => {
   const cards = [
     { key: 'users', label: 'Users', icon: Users, value: fmtInt(overview?.users) },
-    { key: 'newUsers', label: 'New Users', icon: Users, value: fmtInt(overview?.newUsers) },
+    { key: 'newUsers', label: 'New Users', icon: UserPlus, value: fmtInt(overview?.newUsers) },
     { key: 'sessions', label: 'Sessions', icon: MousePointerClick, value: fmtInt(overview?.sessions) },
     { key: 'engagedSessions', label: 'Engaged Sessions', icon: TrendingUp, value: fmtInt(overview?.engagedSessions) },
-    { key: 'engagementRate', label: 'Engagement Rate', icon: TrendingUp, value: fmtPercent(overview?.engagementRate) },
-    { key: 'avgEngagement', label: 'Avg Engagement', icon: Clock, value: fmtDuration(overview?.averageEngagementTime) },
-    { key: 'conversions', label: 'Conversions', icon: Target, value: fmtInt(overview?.conversions) },
-    { key: 'revenue', label: 'Revenue', icon: DollarSign, value: fmtMoney(overview?.totalRevenue) },
+    // Free / paid split. Paid = distinct users who fired `subscription_active`
+    // or `purchase` in-period (ProofPix's paid-user signals — see backend
+    // PAID_USER_EVENTS). Free = total − paid.
+    { key: 'freeUsers', label: 'Free Users', icon: Users, value: fmtInt(overview?.freeUsers) },
+    { key: 'paidUsers', label: 'Paid Users', icon: UserCheck, value: fmtInt(overview?.paidUsers) },
+    // Two funnel conversions.
+    //   Lead → User: signup rate = account_created / users
+    //   User → Paid: paid conversion = purchase / account_created
+    { key: 'leadToUser', label: 'Lead → User', icon: UserPlus, value: fmtPercent(overview?.leadToUserRate) },
+    { key: 'userToPaid', label: 'User → Paid', icon: CreditCard, value: fmtPercent(overview?.userToPaidRate) },
   ];
 
   return (

@@ -109,37 +109,102 @@ function shapeReport(response) {
 
 // ---------- Dashboard reports ----------
 
+// Events that identify a currently-paid user in ProofPix:
+//   - purchase: server-side event from the Apple Server Notifications V2 webhook
+//     (proof-pix-proxy) — fires only for confirmed paid periods, never trials
+//   - subscription_active: client-side event that fires on any cold start when
+//     the app sees an active entitlement (paid or trial-with-conversion)
+// activeUsers with a dimensionFilter on eventName IN these values returns the
+// distinct-user count who fired *any* of them in the period — i.e. our paid MAU.
+const PAID_USER_EVENTS = ['purchase', 'subscription_active'];
+
+// The two funnel events we track for lead→user and user→paid rates.
+//   - account_created: signup (client-side, fires once on account creation)
+//   - purchase: confirmed paid conversion (server-side, non-trial only)
+const FUNNEL_EVENTS = ['account_created', 'purchase'];
+
 async function getOverview(accessToken, propertyId, days) {
-  const response = await runReport(accessToken, propertyId, {
-    dateRanges: dateRangeFromDays(days),
-    metrics: [
-      { name: 'activeUsers' },
-      { name: 'newUsers' },
-      { name: 'sessions' },
-      { name: 'engagedSessions' },
-      { name: 'averageSessionDuration' },
-      { name: 'userEngagementDuration' },
-      { name: 'engagementRate' },
-      { name: 'conversions' },
-      { name: 'totalRevenue' },
-      { name: 'screenPageViews' },
-    ],
-  });
-  const shaped = shapeReport(response);
-  const totals = (shaped.rows[0] || {});
+  const dateRanges = dateRangeFromDays(days);
+
+  // Three parallel Data API calls. Kept separate because GA4 forbids mixing
+  // dimensionFilter scopes (per-event filter would corrupt the base totals).
+  const [overviewRes, funnelRes, paidUsersRes] = await Promise.all([
+    runReport(accessToken, propertyId, {
+      dateRanges,
+      metrics: [
+        { name: 'activeUsers' },
+        { name: 'newUsers' },
+        { name: 'sessions' },
+        { name: 'engagedSessions' },
+        { name: 'averageSessionDuration' },
+        { name: 'userEngagementDuration' },
+        { name: 'engagementRate' },
+        { name: 'conversions' },
+        { name: 'totalRevenue' },
+        { name: 'screenPageViews' },
+      ],
+    }),
+    runReport(accessToken, propertyId, {
+      dateRanges,
+      dimensions: [{ name: 'eventName' }],
+      metrics: [{ name: 'eventCount' }],
+      dimensionFilter: {
+        filter: {
+          fieldName: 'eventName',
+          inListFilter: { values: FUNNEL_EVENTS },
+        },
+      },
+    }),
+    runReport(accessToken, propertyId, {
+      dateRanges,
+      metrics: [{ name: 'activeUsers' }],
+      dimensionFilter: {
+        filter: {
+          fieldName: 'eventName',
+          inListFilter: { values: PAID_USER_EVENTS },
+        },
+      },
+    }),
+  ]);
+
+  const overviewTotals = (shapeReport(overviewRes).rows[0] || {});
+  const funnelRows = shapeReport(funnelRes).rows;
+  const paidUsersRow = (shapeReport(paidUsersRes).rows[0] || {});
+
+  const totalUsers = Number(overviewTotals.activeUsers || 0);
+  const paidUsers = Number(paidUsersRow.activeUsers || 0);
+  // Free = total − paid. Clamp to 0 so a race between the two independent
+  // reports (rare — different sampling seeds) can't surface a negative count.
+  const freeUsers = Math.max(0, totalUsers - paidUsers);
+  const signups = Number(
+    funnelRows.find(r => r.eventName === 'account_created')?.eventCount || 0
+  );
+  const purchases = Number(
+    funnelRows.find(r => r.eventName === 'purchase')?.eventCount || 0
+  );
+
   // NOTE: When there are no dimensions GA4 returns a single row with all metrics.
   // Handle the empty-property case by defaulting each field to 0.
   return {
-    users: Number(totals.activeUsers || 0),
-    newUsers: Number(totals.newUsers || 0),
-    sessions: Number(totals.sessions || 0),
-    engagedSessions: Number(totals.engagedSessions || 0),
-    averageSessionDuration: Number(totals.averageSessionDuration || 0),
-    averageEngagementTime: Number(totals.userEngagementDuration || 0),
-    engagementRate: Number(totals.engagementRate || 0),
-    conversions: Number(totals.conversions || 0),
-    totalRevenue: Number(totals.totalRevenue || 0),
-    pageViews: Number(totals.screenPageViews || 0),
+    users: totalUsers,
+    newUsers: Number(overviewTotals.newUsers || 0),
+    sessions: Number(overviewTotals.sessions || 0),
+    engagedSessions: Number(overviewTotals.engagedSessions || 0),
+    averageSessionDuration: Number(overviewTotals.averageSessionDuration || 0),
+    averageEngagementTime: Number(overviewTotals.userEngagementDuration || 0),
+    engagementRate: Number(overviewTotals.engagementRate || 0),
+    conversions: Number(overviewTotals.conversions || 0),
+    totalRevenue: Number(overviewTotals.totalRevenue || 0),
+    pageViews: Number(overviewTotals.screenPageViews || 0),
+    // Funnel + paid/free split (surfaced on the UI overview cards).
+    freeUsers,
+    paidUsers,
+    signups,
+    purchases,
+    // Rates as decimals (0.42 = 42%) so the frontend fmtPercent helper works
+    // without any special-casing.
+    leadToUserRate: totalUsers > 0 ? signups / totalUsers : 0,
+    userToPaidRate: signups > 0 ? purchases / signups : 0,
     rangeDays: Math.max(1, Math.min(365, parseInt(days, 10) || 30)),
   };
 }
