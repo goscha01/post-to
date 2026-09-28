@@ -307,7 +307,12 @@ export const AuthProvider = ({ children }) => {
       }
       
       if (!refreshToken) {
-        throw new Error('No refresh token available');
+        // Primary-login users never get gmb_refresh_token in localStorage
+        // (only the business OAuth callback stores it). Returning null here
+        // (rather than throwing → logout()) lets the response interceptor's
+        // "no new token" branch fall through cleanly instead of logging the
+        // user out on the first 401 they encounter.
+        return null;
       }
 
       const response = await axios.post('/auth/refresh', {
@@ -381,13 +386,19 @@ export const AuthProvider = ({ children }) => {
         if (error.response?.status === 401 && token && !isDisconnected) {
           try {
             const newToken = await refreshToken();
-            
+
             if (newToken) {
               // Update the original request with the new token
               error.config.headers.Authorization = `Bearer ${newToken}`;
               return axios.request(error.config);
             } else {
-              logout();
+              // refreshToken() returned null — either a refresh is already
+              // in-flight (concurrent 401s from parallel dashboard requests)
+              // or no refresh token is available (users who logged in via
+              // the primary flow never get gmb_refresh_token in localStorage).
+              // Either way, calling logout() here turns one 401 into a
+              // login-screen redirect, which is the loop the user hit.
+              // Reject and let the caller decide.
               return Promise.reject(error);
             }
           } catch (refreshError) {

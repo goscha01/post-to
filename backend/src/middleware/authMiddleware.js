@@ -31,10 +31,14 @@ const authMiddleware = async (req, res, next) => {
       return res.status(401).json({ error: 'User not found' });
     }
 
-    // Check if access token is still valid
-    if (!user.access_token) {
-      return res.status(401).json({ error: 'Access token expired' });
-    }
+    // NOTE: Do not gate on `users.access_token` here. It's the initial Google
+    // OAuth access_token from signup — short-lived, never renewed by
+    // /auth/refresh (which only rotates business_access_token), and never
+    // read by any route (grep confirms zero req.user.accessToken usage).
+    // Gating on it caused a 401 → refresh-fails → logout() cycle for any
+    // user whose Google session went stale, including users trying to use
+    // features (ASC, Meta Ads, etc.) that have no relation to Google OAuth.
+    // JWT validity above is the real auth artifact.
 
     // Add user info to request
     req.user = {
