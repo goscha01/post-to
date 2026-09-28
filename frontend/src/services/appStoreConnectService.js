@@ -77,7 +77,10 @@ const analyticsBootstrap = async (connectionId) => {
 };
 
 const analyticsWalk = async (connectionId) => {
-  const res = await axios.post('/api/asc/analytics/walk', { connectionId });
+  // Walk downloads N daily instances × M segments from Apple sequentially —
+  // legitimate cold-cache walks routinely take 60-180s. Override the 60s
+  // default so "Refresh from Apple" doesn't spuriously error out.
+  const res = await axios.post('/api/asc/analytics/walk', { connectionId }, { timeout: 240_000 });
   return res.data;
 };
 

@@ -228,23 +228,51 @@ async function walk(userId, connectionId) {
 // -----------------------------------------------------------------------
 // Aggregations — read from asc_analytics_cache, aggregate for a window
 // -----------------------------------------------------------------------
-// Apple's engagement schema (as of 2026) has these columns we care about:
-//   Date, App Apple Identifier, Source Type, Source Info, Campaign, Territory,
-//   Impressions, Impressions Unique Device, Product Page Views,
-//   Product Page Views Unique Device, ...
-// Commerce schema:
-//   Date, App Name, App Apple Identifier, Sub Type, Territory, Currency,
-//   App Units, Redownloads, Total Downloads, Proceeds, ...
+// Apple's current analytics schema (verified 2026-09-28 against ProofPix
+// cache) is LONG format, not wide: each row is (Date × Event × dimensions ×
+// Counts). Column names by category:
 //
-// Column names sometimes vary by report version. The aggregation helpers below
-// look them up defensively and fall back to zero if a column is missing (so a
-// schema drift doesn't 500 the assistant — the model just sees a zero and
-// notes the data is incomplete).
+//   APP_STORE_ENGAGEMENT: Date, Event, Counts, Device, Browser, App Name,
+//                         Page Type, Territory, Source Type,
+//                         Browser Version, Engagement Type,
+//                         Platform Version, App Apple Identifier
+//     Event values seen:  Impression, Page view, Tap
+//     Page Type values:   Store sheet, No page, Product page, App privacy
+//     Source Type values: App Store search, App Store browse, App referrer,
+//                         Web referrer, Unavailable
+//
+//   COMMERCE:             Date, Counts, Device, App Name, Campaign,
+//                         Page Type, Pre-Order, Territory, Page Title,
+//                         App Version, Source Info, Source Type,
+//                         Download Type, Platform Version, App Apple Identifier
+//     Download Type:      First-time download, Redownload, Auto-update, Restore
+//                         (Auto-update = the app updating itself; NOT an install.
+//                          First-time download = a genuine new install.)
+//
+// The initial implementation of these aggregators assumed a wide schema with
+// per-metric columns (Impressions, Product Page Views, App Units) — that
+// schema doesn't exist in the current Apple API, so every metric summed to
+// zero even though 100+ instances were cached. This defensive-fallback
+// approach reads whichever schema the row was stored under: if row.Event or
+// row['Download Type'] is present, use long-format filtering; otherwise fall
+// back to the legacy wide-column lookup.
 
 const toInt = v => {
   const n = parseInt(String(v || '0').replace(/[, ]/g, ''), 10);
   return Number.isFinite(n) ? n : 0;
 };
+
+// Which engagement events count as which funnel step. Kept in one place so
+// schema changes are a one-line update.
+const IMPRESSION_EVENTS = new Set(['Impression']);
+const PAGE_VIEW_EVENTS = new Set(['Page view']);
+const PAGE_VIEW_PAGE_TYPES = new Set(['Product page']);   // exclude "Store sheet" browse-outside-product-page
+
+// COMMERCE Download Type values that count as a NEW install (not an update).
+// Restore = re-download on a new device with the same Apple ID; grouped with
+// installs since it represents a device gaining the app.
+const INSTALL_DOWNLOAD_TYPES = new Set(['First-time download', 'Restore']);
+const REDOWNLOAD_TYPES = new Set(['Redownload']);
 
 async function loadCategoryRows({ connectionId, category, days }) {
   const daysClamped = Math.max(1, Math.min(90, parseInt(days, 10) || 14));
@@ -263,62 +291,110 @@ async function loadCategoryRows({ connectionId, category, days }) {
   return { rows: data || [], days: daysClamped };
 }
 
+// Accumulate a single row into the running totals + per-day buckets. Handles
+// current long-format schema (Event/Counts) with a fallback to the legacy
+// wide-column names so historic cache rows still contribute.
+//
+// `perDay` is a Map<dateISO, { impressions, ppv, installs, redownloads }> —
+// keyed by the ROW's Date field, not the cache instance's processing_date,
+// because Apple's per-instance CSVs contain rows spanning many event dates
+// (a report generated on 09-25 typically holds rows dated 09-22 and earlier).
+function bucketByRowDate(perDay, dateKey) {
+  let b = perDay.get(dateKey);
+  if (!b) {
+    b = { impressions: 0, productPageViews: 0, installs: 0, redownloads: 0 };
+    perDay.set(dateKey, b);
+  }
+  return b;
+}
+
+function accumulateEngagement(perDay, instanceRows) {
+  for (const r of instanceRows || []) {
+    const dateKey = String(r?.Date || '').slice(0, 10);
+    if (!dateKey) continue;
+    const b = bucketByRowDate(perDay, dateKey);
+    if (r.Event !== undefined) {
+      const c = toInt(r.Counts);
+      if (IMPRESSION_EVENTS.has(r.Event)) b.impressions += c;
+      else if (PAGE_VIEW_EVENTS.has(r.Event) && PAGE_VIEW_PAGE_TYPES.has(r['Page Type'])) b.productPageViews += c;
+    } else {
+      b.impressions += toInt(r['Impressions']);
+      b.productPageViews += toInt(r['Product Page Views']);
+    }
+  }
+}
+
+function accumulateCommerce(perDay, instanceRows) {
+  for (const r of instanceRows || []) {
+    const dateKey = String(r?.Date || '').slice(0, 10);
+    if (!dateKey) continue;
+    const b = bucketByRowDate(perDay, dateKey);
+    if (r['Download Type'] !== undefined) {
+      const c = toInt(r.Counts);
+      if (INSTALL_DOWNLOAD_TYPES.has(r['Download Type'])) b.installs += c;
+      else if (REDOWNLOAD_TYPES.has(r['Download Type'])) b.redownloads += c;
+    } else {
+      b.installs += toInt(r['App Units']);
+      b.redownloads += toInt(r['Redownloads']);
+    }
+  }
+}
+
 async function getInstallFunnel({ connectionId, days = 14 }) {
   const { rows, days: d } = await loadCategoryRows({
     connectionId, category: 'APP_STORE_ENGAGEMENT', days,
   });
-
-  let impressions = 0, impressionsUniq = 0, ppv = 0, ppvUniq = 0;
-  const perDay = [];
-  for (const row of rows) {
-    let dImp = 0, dImpU = 0, dPpv = 0, dPpvU = 0;
-    for (const r of row.rows || []) {
-      dImp += toInt(r['Impressions']);
-      dImpU += toInt(r['Impressions Unique Device']);
-      dPpv += toInt(r['Product Page Views']);
-      dPpvU += toInt(r['Product Page Views Unique Device']);
-    }
-    impressions += dImp; impressionsUniq += dImpU; ppv += dPpv; ppvUniq += dPpvU;
-    perDay.push({
-      date: row.processing_date,
-      impressions: dImp, impressionsUniqueDevice: dImpU,
-      productPageViews: dPpv, productPageViewsUniqueDevice: dPpvU,
-    });
-  }
-
-  // Commerce app units for the same window — needed to compute install
-  // conversion rate. Load in parallel with engagement in a real optimization
-  // pass; here we do it sequentially for readability.
   const commerce = await loadCategoryRows({
     connectionId, category: 'COMMERCE', days,
   });
-  let appUnits = 0, redownloads = 0;
-  const perDayInstalls = new Map();
-  for (const row of commerce.rows) {
-    let dInstalls = 0, dRedl = 0;
-    for (const r of row.rows || []) {
-      dInstalls += toInt(r['App Units']);
-      dRedl += toInt(r['Redownloads']);
-    }
-    appUnits += dInstalls; redownloads += dRedl;
-    perDayInstalls.set(row.processing_date, dInstalls);
-  }
-  // Splice installs into perDay (indexed by date).
-  for (const d of perDay) {
-    d.installs = perDayInstalls.get(d.date) || 0;
-  }
 
-  const conversionRate = ppvUniq > 0 ? appUnits / ppvUniq : null;
+  // Bucket by the row's own Date field. We restrict AFTER accumulation to the
+  // requested window because rows can span dates outside the processing_date
+  // cutoff.
+  const perDayMap = new Map();
+  for (const row of rows) accumulateEngagement(perDayMap, row.rows);
+  for (const row of commerce.rows) accumulateCommerce(perDayMap, row.rows);
+
+  const cutoff = new Date();
+  cutoff.setUTCDate(cutoff.getUTCDate() - d);
+  const cutoffIso = cutoff.toISOString().slice(0, 10);
+
+  const perDay = [...perDayMap.entries()]
+    .filter(([date]) => date >= cutoffIso)
+    .sort((a, b) => b[0].localeCompare(a[0]))
+    .map(([date, b]) => ({
+      date,
+      impressions: b.impressions,
+      // Unique-device is not a column in the current schema. Keep the
+      // field for API-shape compatibility; always 0 unless legacy rows
+      // populated it.
+      impressionsUniqueDevice: 0,
+      productPageViews: b.productPageViews,
+      productPageViewsUniqueDevice: 0,
+      installs: b.installs,
+    }));
+
+  const totals = perDay.reduce((acc, d) => ({
+    impressions: acc.impressions + d.impressions,
+    productPageViews: acc.productPageViews + d.productPageViews,
+    installs: acc.installs + d.installs,
+    redownloads: acc.redownloads + (perDayMap.get(d.date)?.redownloads || 0),
+  }), { impressions: 0, productPageViews: 0, installs: 0, redownloads: 0 });
+
+  const conversionRate = totals.productPageViews > 0
+    ? totals.installs / totals.productPageViews
+    : null;
+
   return {
     days: d,
     totals: {
-      impressions,
-      impressionsUniqueDevice: impressionsUniq,
-      productPageViews: ppv,
-      productPageViewsUniqueDevice: ppvUniq,
-      installs: appUnits,
-      redownloads,
-      conversionRate,  // installs / unique PPV; null when no PPV
+      impressions: totals.impressions,
+      impressionsUniqueDevice: 0,
+      productPageViews: totals.productPageViews,
+      productPageViewsUniqueDevice: 0,
+      installs: totals.installs,
+      redownloads: totals.redownloads,
+      conversionRate,
     },
     perDay,
     dataCoverageDays: perDay.length,
@@ -329,8 +405,9 @@ async function getInstallsBySource({ connectionId, days = 14 }) {
   const { rows, days: d } = await loadCategoryRows({
     connectionId, category: 'APP_STORE_ENGAGEMENT', days,
   });
-  // Aggregate by Source Type. Also expose the top campaigns under each source.
-  const bySource = new Map(); // sourceType → { impressions, ppv, campaigns: Map<name, ppv> }
+  // Aggregate by Source Type. Long-format schema means each metric lives in
+  // its own row keyed by Event — bucket accumulation branches on Event.
+  const bySource = new Map();
   for (const row of rows) {
     for (const r of row.rows || []) {
       const sourceType = String(r['Source Type'] || 'Unknown').trim() || 'Unknown';
@@ -342,12 +419,19 @@ async function getInstallsBySource({ connectionId, days = 14 }) {
         productPageViewsUniqueDevice: 0,
         campaigns: new Map(),
       };
-      bucket.impressions += toInt(r['Impressions']);
-      bucket.impressionsUniqueDevice += toInt(r['Impressions Unique Device']);
-      bucket.productPageViews += toInt(r['Product Page Views']);
-      bucket.productPageViewsUniqueDevice += toInt(r['Product Page Views Unique Device']);
-      if (campaign) {
-        bucket.campaigns.set(campaign, (bucket.campaigns.get(campaign) || 0) + toInt(r['Product Page Views']));
+      if (r && r.Event !== undefined) {
+        const c = toInt(r.Counts);
+        if (IMPRESSION_EVENTS.has(r.Event)) bucket.impressions += c;
+        else if (PAGE_VIEW_EVENTS.has(r.Event) && PAGE_VIEW_PAGE_TYPES.has(r['Page Type'])) {
+          bucket.productPageViews += c;
+          if (campaign) bucket.campaigns.set(campaign, (bucket.campaigns.get(campaign) || 0) + c);
+        }
+      } else {
+        bucket.impressions += toInt(r['Impressions']);
+        bucket.impressionsUniqueDevice += toInt(r['Impressions Unique Device']);
+        bucket.productPageViews += toInt(r['Product Page Views']);
+        bucket.productPageViewsUniqueDevice += toInt(r['Product Page Views Unique Device']);
+        if (campaign) bucket.campaigns.set(campaign, (bucket.campaigns.get(campaign) || 0) + toInt(r['Product Page Views']));
       }
       bySource.set(sourceType, bucket);
     }
@@ -366,7 +450,6 @@ async function getInstallsBySource({ connectionId, days = 14 }) {
         .map(([campaign, ppv]) => ({ campaign, productPageViews: ppv })),
     });
   }
-  // Sort sources by impressions desc so highest-signal is first.
   sources.sort((a, b) => b.impressions - a.impressions);
   return { days: d, sources };
 }
