@@ -266,7 +266,16 @@ const toInt = v => {
 // schema changes are a one-line update.
 const IMPRESSION_EVENTS = new Set(['Impression']);
 const PAGE_VIEW_EVENTS = new Set(['Page view']);
-const PAGE_VIEW_PAGE_TYPES = new Set(['Product page']);   // exclude "Store sheet" browse-outside-product-page
+// Both "Product page" and "Store sheet" count as a product-page view. Apple
+// uses "Store sheet" for the modal presentation of the product page that
+// appears from search / browse / featured tiles — it's the same product-page
+// content, just presented as a sheet. Excluding it undercounts PPV by 10-20×
+// on typical apps (verified against ProofPix: Sep 15 had 63 "Product page"
+// vs 774 "Store sheet" — the sheet is where nearly all product-page traffic
+// actually lands). "No page" (impression-only interactions) and "App
+// privacy" (privacy detail page) are excluded — they aren't the funnel step
+// we're measuring.
+const PAGE_VIEW_PAGE_TYPES = new Set(['Product page', 'Store sheet']);
 
 // COMMERCE Download Type values that count as a NEW install (not an update).
 // Restore = re-download on a new device with the same Apple ID; grouped with
@@ -302,7 +311,21 @@ async function loadCategoryRows({ connectionId, category, days }) {
 function bucketByRowDate(perDay, dateKey) {
   let b = perDay.get(dateKey);
   if (!b) {
-    b = { impressions: 0, productPageViews: 0, installs: 0, redownloads: 0 };
+    b = {
+      impressions: 0,
+      productPageViews: 0,
+      installs: 0,
+      redownloads: 0,
+      // Presence flags. True iff Apple has published ANY row of that
+      // category for the day — lets the client render "—" (not "0") for
+      // days where Apple's async pipeline hasn't caught up yet, so real
+      // zeros aren't confused with pending data.
+      engagementDataAvailable: false,
+      commerceDataAvailable: false,
+      // True once Sales & Trends installs have been overlaid for the day
+      // (S&T is authoritative when present).
+      installsFromSalesAndTrends: false,
+    };
     perDay.set(dateKey, b);
   }
   return b;
@@ -313,6 +336,7 @@ function accumulateEngagement(perDay, instanceRows) {
     const dateKey = String(r?.Date || '').slice(0, 10);
     if (!dateKey) continue;
     const b = bucketByRowDate(perDay, dateKey);
+    b.engagementDataAvailable = true;
     if (r.Event !== undefined) {
       const c = toInt(r.Counts);
       if (IMPRESSION_EVENTS.has(r.Event)) b.impressions += c;
@@ -329,6 +353,7 @@ function accumulateCommerce(perDay, instanceRows) {
     const dateKey = String(r?.Date || '').slice(0, 10);
     if (!dateKey) continue;
     const b = bucketByRowDate(perDay, dateKey);
+    b.commerceDataAvailable = true;
     if (r['Download Type'] !== undefined) {
       const c = toInt(r.Counts);
       if (INSTALL_DOWNLOAD_TYPES.has(r['Download Type'])) b.installs += c;
@@ -400,6 +425,7 @@ async function getInstallFunnel({ connectionId, days = 14, userId }) {
         const b = bucketByRowDate(perDayMap, date);
         b.installs = sales.installs;
         b.redownloads = sales.redownloads;
+        b.installsFromSalesAndTrends = true;
       }
       salesInstallsSource = salesByDate.size > 0 ? 'sales_and_trends' : 'analytics_commerce_only';
       logger.info('asc_analytics.funnel.sales_overlay', {
@@ -424,25 +450,40 @@ async function getInstallFunnel({ connectionId, days = 14, userId }) {
     .sort((a, b) => b[0].localeCompare(a[0]))
     .map(([date, b]) => ({
       date,
-      impressions: b.impressions,
-      // Unique-device is not a column in the current schema. Keep the
-      // field for API-shape compatibility; always 0 unless legacy rows
-      // populated it.
+      // Impressions/PPV are null (not 0) when Apple hasn't published any
+      // engagement rows for the date yet — the client shows "—" for null
+      // and "0" for a genuine zero. Installs stay as a number when we
+      // have Sales & Trends OR Analytics-COMMERCE data; only null when
+      // both sources are absent.
+      impressions: b.engagementDataAvailable ? b.impressions : null,
       impressionsUniqueDevice: 0,
-      productPageViews: b.productPageViews,
+      productPageViews: b.engagementDataAvailable ? b.productPageViews : null,
       productPageViewsUniqueDevice: 0,
-      installs: b.installs,
+      installs: (b.installsFromSalesAndTrends || b.commerceDataAvailable) ? b.installs : null,
+      engagementDataAvailable: b.engagementDataAvailable,
+      commerceDataAvailable: b.commerceDataAvailable,
+      installsFromSalesAndTrends: b.installsFromSalesAndTrends,
     }));
 
+  // Sum nulls as 0 for totals. The perDay flags remain for the client to
+  // decide how to render each cell.
   const totals = perDay.reduce((acc, d) => ({
-    impressions: acc.impressions + d.impressions,
-    productPageViews: acc.productPageViews + d.productPageViews,
-    installs: acc.installs + d.installs,
+    impressions: acc.impressions + (d.impressions || 0),
+    productPageViews: acc.productPageViews + (d.productPageViews || 0),
+    installs: acc.installs + (d.installs || 0),
     redownloads: acc.redownloads + (perDayMap.get(d.date)?.redownloads || 0),
   }), { impressions: 0, productPageViews: 0, installs: 0, redownloads: 0 });
 
-  const conversionRate = totals.productPageViews > 0
-    ? totals.installs / totals.productPageViews
+  // Conversion rate is only meaningful over days where BOTH installs and PPV
+  // are available from the same source. If we use whole-window totals, we
+  // divide S&T installs (complete, all-source, including installs that
+  // never touched a product page) by Analytics PPV (delayed, partial) and
+  // get impossible numbers like 225%. Compute over the intersection only.
+  const attributableDays = perDay.filter(d => d.engagementDataAvailable && d.installs !== null);
+  const attributableInstalls = attributableDays.reduce((s, d) => s + (d.installs || 0), 0);
+  const attributablePpv = attributableDays.reduce((s, d) => s + (d.productPageViews || 0), 0);
+  const conversionRate = attributablePpv > 0
+    ? attributableInstalls / attributablePpv
     : null;
 
   return {

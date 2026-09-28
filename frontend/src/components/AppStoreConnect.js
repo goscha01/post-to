@@ -35,6 +35,9 @@ const DAY_RANGES = [
 ];
 
 const fmtInt = (n) => {
+  // Explicit null/undefined check first — Number(null) === 0, which would
+  // otherwise turn "data not yet available" (null) into a misleading "0".
+  if (n === null || n === undefined) return '—';
   const v = Number(n);
   return Number.isFinite(v) ? v.toLocaleString() : '—';
 };
@@ -584,18 +587,44 @@ const AppStoreConnect = () => {
 
           {funnel && funnel.dataCoverageDays > 0 && (
             <>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                <StatCard label="Impressions" value={fmtInt(funnel.totals.impressions)} sub={`last ${days} days`} />
-                <StatCard label="Page views" value={fmtInt(funnel.totals.productPageViews)} sub="unique-device" />
-                <StatCard label="Installs" value={fmtInt(funnel.totals.installs)} sub="new + first-time" />
-                <StatCard
-                  label="Conversion rate"
-                  value={funnel.totals.conversionRate != null
-                    ? `${(funnel.totals.conversionRate * 100).toFixed(1)}%`
-                    : '—'}
-                  sub="installs / unique PPV"
-                />
-              </div>
+              {(() => {
+                const engagementPendingDays = funnel.perDay.filter(d => !d.engagementDataAvailable).length;
+                const stDays = funnel.perDay.filter(d => d.installsFromSalesAndTrends).length;
+                return (
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    <StatCard
+                      label="Impressions"
+                      value={fmtInt(funnel.totals.impressions)}
+                      sub={engagementPendingDays > 0
+                        ? `${engagementPendingDays} day${engagementPendingDays === 1 ? '' : 's'} pending from Apple`
+                        : `last ${days} days`}
+                    />
+                    <StatCard
+                      label="Page views"
+                      value={fmtInt(funnel.totals.productPageViews)}
+                      sub={engagementPendingDays > 0
+                        ? `${engagementPendingDays} day${engagementPendingDays === 1 ? '' : 's'} pending`
+                        : 'product page + store sheet'}
+                    />
+                    <StatCard
+                      label="Installs"
+                      value={fmtInt(funnel.totals.installs)}
+                      sub={stDays > 0
+                        ? 'from Sales & Trends'
+                        : 'from App Analytics'}
+                    />
+                    <StatCard
+                      label="Conversion rate"
+                      value={funnel.totals.conversionRate != null
+                        ? `${(funnel.totals.conversionRate * 100).toFixed(1)}%`
+                        : '—'}
+                      sub={engagementPendingDays > 0
+                        ? 'excludes pending days'
+                        : 'installs / page views'}
+                    />
+                  </div>
+                );
+              })()}
 
               <div>
                 <h3 className="text-xs font-semibold text-gray-600 uppercase tracking-wide mb-2 flex items-center gap-1.5">
