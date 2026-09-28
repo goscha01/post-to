@@ -340,7 +340,16 @@ function accumulateCommerce(perDay, instanceRows) {
   }
 }
 
-async function getInstallFunnel({ connectionId, days = 14 }) {
+// Product types in the Sales & Trends TSV that represent a NEW app install.
+// See https://developer.apple.com/help/app-store-connect/reference/product-type-identifiers/
+//   1  = iPhone / iPod touch app (new install)
+//   1F = Universal app (new install)
+//   1T = iPad app (new install)
+// Updates (7, 7F, 7T) and IAP (IA*, 3) are excluded.
+const SALES_INSTALL_PRODUCT_TYPES = new Set(['1', '1F', '1T']);
+const SALES_REDOWNLOAD_PRODUCT_TYPES = new Set(['1R', '1FR', '1TR']);
+
+async function getInstallFunnel({ connectionId, days = 14, userId }) {
   const { rows, days: d } = await loadCategoryRows({
     connectionId, category: 'APP_STORE_ENGAGEMENT', days,
   });
@@ -354,6 +363,57 @@ async function getInstallFunnel({ connectionId, days = 14 }) {
   const perDayMap = new Map();
   for (const row of rows) accumulateEngagement(perDayMap, row.rows);
   for (const row of commerce.rows) accumulateCommerce(perDayMap, row.rows);
+
+  // Overlay Sales & Trends installs on top of Analytics-COMMERCE installs.
+  // Rationale: Apple's Analytics async report pipeline lags Sales & Trends
+  // by 2-3 days for install data. On the 7-day view the Analytics COMMERCE
+  // report typically shows 0 First-time downloads for the most recent days
+  // even though Sales & Trends already has real install counts (same window,
+  // authoritative source — this is what the Overview tab displays). Fetching
+  // both keeps this tab consistent with Overview.
+  //
+  // Sales & Trends requires a vendor_number; when it's missing we fall back
+  // to the Analytics-only numbers so the funnel still renders.
+  let salesInstallsSource = 'analytics_commerce_only';
+  const ctx = userId ? await loadCredsFromConnection(userId, connectionId) : null;
+  if (ctx?.metadata?.vendor_number) {
+    try {
+      const reports = await asc.getSalesReportRange(ctx.creds, {
+        vendorNumber: ctx.metadata.vendor_number,
+        days: d,
+      });
+      // Reset installs/redownloads on every day-bucket in the window: Sales
+      // & Trends is the authoritative source, and mixing the two per-day
+      // would double-count on days where both have data. We use the S&T
+      // number outright, and keep the Analytics-COMMERCE number only as a
+      // fallback for days S&T doesn't cover.
+      const salesByDate = new Map();
+      for (const rep of reports || []) {
+        let dayInstalls = 0, dayRedl = 0;
+        for (const r of rep.rows || []) {
+          if (SALES_INSTALL_PRODUCT_TYPES.has(r.productType)) dayInstalls += r.units || 0;
+          else if (SALES_REDOWNLOAD_PRODUCT_TYPES.has(r.productType)) dayRedl += r.units || 0;
+        }
+        salesByDate.set(rep.reportDate, { installs: dayInstalls, redownloads: dayRedl });
+      }
+      for (const [date, sales] of salesByDate) {
+        const b = bucketByRowDate(perDayMap, date);
+        b.installs = sales.installs;
+        b.redownloads = sales.redownloads;
+      }
+      salesInstallsSource = salesByDate.size > 0 ? 'sales_and_trends' : 'analytics_commerce_only';
+      logger.info('asc_analytics.funnel.sales_overlay', {
+        connectionId, days: d, salesDaysCovered: salesByDate.size,
+      });
+    } catch (err) {
+      // Sales & Trends fetch is best-effort. If Apple 401s or times out here,
+      // fall back to the Analytics-COMMERCE numbers rather than failing the
+      // whole funnel request.
+      logger.warn('asc_analytics.funnel.sales_overlay_failed', {
+        connectionId, error: err.message, status: err.status || null,
+      });
+    }
+  }
 
   const cutoff = new Date();
   cutoff.setUTCDate(cutoff.getUTCDate() - d);
@@ -387,6 +447,7 @@ async function getInstallFunnel({ connectionId, days = 14 }) {
 
   return {
     days: d,
+    installsSource: salesInstallsSource,
     totals: {
       impressions: totals.impressions,
       impressionsUniqueDevice: 0,

@@ -345,6 +345,7 @@ router.get('/analytics/funnel', async (req, res) => {
     const funnel = await ascAnalytics.getInstallFunnel({
       connectionId,
       days: req.query.days,
+      userId,
     });
     res.json(funnel);
   } catch (err) {
