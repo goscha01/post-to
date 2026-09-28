@@ -981,7 +981,9 @@ const AscForm = ({ onCancel, onConnected }) => {
           <li>In ASC, go to <a href="https://appstoreconnect.apple.com/access/integrations/api" target="_blank" rel="noreferrer" className="text-primary-600 hover:underline">Users and Access → Integrations → App Store Connect API</a></li>
           <li>Click <em>Generate API Key</em> (or <em>+</em>). Role: <strong>Developer</strong> or <strong>Marketing</strong> is enough for read-only.</li>
           <li>Copy the <strong>Issuer ID</strong> (top of the page) and the <strong>Key ID</strong> (per-key). Download the <strong>.p8 file</strong> — you only get to download it once.</li>
-          <li>Vendor number (optional, needed for sales reports): ASC → <em>Payments &amp; Financial Reports → Payments and Financial Reports</em>, the numeric ID in the top-left dropdown.</li>
+          <li>
+            Vendor number (optional, needed for sales reports): open <a href="https://appstoreconnect.apple.com/itc/payments_and_financial_reports" target="_blank" rel="noreferrer" className="text-primary-600 hover:underline">Payments and Financial Reports</a>. The vendor number is the <strong>8-digit ID in the top-left dropdown</strong>, shown next to your legal entity name (e.g. <span className="font-mono">81234567 — Your Company LLC</span>). Usually starts with <span className="font-mono">8</span>. Skip if you only need reviews + install analytics.
+          </li>
         </ol>
       </div>
 

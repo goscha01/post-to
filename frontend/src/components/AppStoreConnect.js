@@ -857,7 +857,15 @@ const EditCredsModal = ({ connection, onClose, onSaved, onRemoved }) => {
             placeholder="81234567"
             className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
           />
-          <p className="text-xs text-gray-500 mt-1">Find in ASC → Payments &amp; Financial Reports → top-left dropdown.</p>
+          <div className="text-xs text-gray-500 mt-1 space-y-0.5">
+            <p>
+              Open <a href="https://appstoreconnect.apple.com/itc/payments_and_financial_reports" target="_blank" rel="noreferrer" className="text-primary-600 hover:underline">Payments and Financial Reports</a> in ASC.
+            </p>
+            <p>
+              The vendor number is the <strong>8-digit ID in the top-left dropdown</strong>, shown next to your legal entity name (e.g. <span className="font-mono">81234567 — Your Company LLC</span>). It usually starts with <span className="font-mono">8</span>.
+            </p>
+            <p className="text-gray-400">Skip if you only need reviews + install analytics — you can add it later by re-opening this modal.</p>
+          </div>
 
           {err && (
             <div className="mt-3 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-800">{err}</div>
