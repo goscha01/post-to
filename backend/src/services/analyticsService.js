@@ -118,17 +118,26 @@ function shapeReport(response) {
 // distinct-user count who fired *any* of them in the period — i.e. our paid MAU.
 const PAID_USER_EVENTS = ['purchase', 'subscription_active'];
 
-// The two funnel events we track for lead→user and user→paid rates.
-//   - account_created: signup (client-side, fires once on account creation)
-//   - purchase: confirmed paid conversion (server-side, non-trial only)
-const FUNNEL_EVENTS = ['account_created', 'purchase'];
+// Ordered funnel between "opened app" (activeUsers, implicit stage 1) and
+// "paid" (PAID_USER_EVENTS, implicit stage 6). We measure distinct users per
+// event so the drop-off between stages is comparable.
+//
+// ProofPix has NO signup/login event for regular users (login only fires from
+// the admin panel — see AdminContext.js), so activation via first_photo_taken
+// is the "became a user" signal.
+const FUNNEL_STAGE_EVENTS = [
+  'first_photo_taken',
+  'paywall_view',
+  'plan_selected',
+  'trial_started',
+];
 
 async function getOverview(accessToken, propertyId, days) {
   const dateRanges = dateRangeFromDays(days);
 
   // Three parallel Data API calls. Kept separate because GA4 forbids mixing
   // dimensionFilter scopes (per-event filter would corrupt the base totals).
-  const [overviewRes, funnelRes, paidUsersRes] = await Promise.all([
+  const [overviewRes, paidUsersRes, funnelStagesRes] = await Promise.all([
     runReport(accessToken, propertyId, {
       dateRanges,
       metrics: [
@@ -146,17 +155,6 @@ async function getOverview(accessToken, propertyId, days) {
     }),
     runReport(accessToken, propertyId, {
       dateRanges,
-      dimensions: [{ name: 'eventName' }],
-      metrics: [{ name: 'eventCount' }],
-      dimensionFilter: {
-        filter: {
-          fieldName: 'eventName',
-          inListFilter: { values: FUNNEL_EVENTS },
-        },
-      },
-    }),
-    runReport(accessToken, propertyId, {
-      dateRanges,
       metrics: [{ name: 'activeUsers' }],
       dimensionFilter: {
         filter: {
@@ -165,23 +163,43 @@ async function getOverview(accessToken, propertyId, days) {
         },
       },
     }),
+    runReport(accessToken, propertyId, {
+      dateRanges,
+      dimensions: [{ name: 'eventName' }],
+      metrics: [{ name: 'activeUsers' }],
+      dimensionFilter: {
+        filter: {
+          fieldName: 'eventName',
+          inListFilter: { values: FUNNEL_STAGE_EVENTS },
+        },
+      },
+    }),
   ]);
 
   const overviewTotals = (shapeReport(overviewRes).rows[0] || {});
-  const funnelRows = shapeReport(funnelRes).rows;
-  const paidUsersRow = (shapeReport(paidUsersRes).rows[0] || {});
+  const paidUsers = Number(shapeReport(paidUsersRes).rows[0]?.activeUsers || 0);
+  // eventName → distinct activeUsers who fired it in-period. Events with zero
+  // fires are absent from the response; the Map .get() call defaults them to 0.
+  const stageUsers = new Map(
+    shapeReport(funnelStagesRes).rows.map(r => [r.eventName, Number(r.activeUsers || 0)])
+  );
 
   const totalUsers = Number(overviewTotals.activeUsers || 0);
-  const paidUsers = Number(paidUsersRow.activeUsers || 0);
   // Free = total − paid. Clamp to 0 so a race between the two independent
   // reports (rare — different sampling seeds) can't surface a negative count.
   const freeUsers = Math.max(0, totalUsers - paidUsers);
-  const signups = Number(
-    funnelRows.find(r => r.eventName === 'account_created')?.eventCount || 0
-  );
-  const purchases = Number(
-    funnelRows.find(r => r.eventName === 'purchase')?.eventCount || 0
-  );
+  const activatedUsers = stageUsers.get('first_photo_taken') || 0;
+
+  // Ordered funnel stages the UI renders as a drop-off chart. Each stage
+  // carries the source event so the frontend can show it in a tooltip.
+  const funnel = [
+    { key: 'users',     label: 'Users',         users: totalUsers,                                event: '(activeUsers)' },
+    { key: 'activated', label: 'Activated',     users: activatedUsers,                            event: 'first_photo_taken' },
+    { key: 'paywall',   label: 'Saw Paywall',   users: stageUsers.get('paywall_view')   || 0,     event: 'paywall_view' },
+    { key: 'plan',      label: 'Tapped Plan',   users: stageUsers.get('plan_selected')  || 0,     event: 'plan_selected' },
+    { key: 'trial',     label: 'Started Trial', users: stageUsers.get('trial_started')  || 0,     event: 'trial_started' },
+    { key: 'paid',      label: 'Paid',          users: paidUsers,                                 event: 'subscription_active | purchase' },
+  ];
 
   // NOTE: When there are no dimensions GA4 returns a single row with all metrics.
   // Handle the empty-property case by defaulting each field to 0.
@@ -196,15 +214,15 @@ async function getOverview(accessToken, propertyId, days) {
     conversions: Number(overviewTotals.conversions || 0),
     totalRevenue: Number(overviewTotals.totalRevenue || 0),
     pageViews: Number(overviewTotals.screenPageViews || 0),
-    // Funnel + paid/free split (surfaced on the UI overview cards).
     freeUsers,
     paidUsers,
-    signups,
-    purchases,
-    // Rates as decimals (0.42 = 42%) so the frontend fmtPercent helper works
-    // without any special-casing.
-    leadToUserRate: totalUsers > 0 ? signups / totalUsers : 0,
-    userToPaidRate: signups > 0 ? purchases / signups : 0,
+    activatedUsers,
+    // ProofPix-flavoured funnel rates:
+    //   Lead → User  = activated / total users     (of everyone who opened, who tried it)
+    //   User → Paid  = paid / activated             (of everyone who tried it, who paid)
+    leadToUserRate: totalUsers > 0 ? activatedUsers / totalUsers : 0,
+    userToPaidRate: activatedUsers > 0 ? paidUsers / activatedUsers : 0,
+    funnel,
     rangeDays: Math.max(1, Math.min(365, parseInt(days, 10) || 30)),
   };
 }

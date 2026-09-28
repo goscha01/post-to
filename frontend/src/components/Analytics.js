@@ -316,6 +316,8 @@ const Analytics = () => {
 
           <OverviewCards overview={overview} loading={loadingReports} />
 
+          <FunnelSection funnel={overview?.funnel} loading={loadingReports} />
+
           {events.highlighted && events.highlighted.length > 0 && (
             <HighlightedEvents events={events.highlighted} />
           )}
@@ -521,6 +523,91 @@ const OverviewCards = ({ overview, loading }) => {
           </div>
         );
       })}
+    </div>
+  );
+};
+
+// Renders the ordered funnel from `overview.funnel` (see backend
+// analyticsService.getOverview). Each row shows distinct-user count,
+// % of top-of-funnel, and the drop-off from the previous stage.
+const FunnelSection = ({ funnel, loading }) => {
+  if (loading) {
+    return (
+      <div className="mt-6">
+        <Section title="Conversion Funnel" subtitle="From lead to paid — where users drop off">
+          <TableLoading />
+        </Section>
+      </div>
+    );
+  }
+  if (!funnel || funnel.length === 0) {
+    return (
+      <div className="mt-6">
+        <Section title="Conversion Funnel" subtitle="From lead to paid — where users drop off">
+          <TableEmpty />
+        </Section>
+      </div>
+    );
+  }
+  const topUsers = Number(funnel[0]?.users || 0);
+  return (
+    <div className="mt-6">
+      <Section title="Conversion Funnel" subtitle="From lead to paid — where users drop off">
+        <div className="p-4 space-y-3">
+          {funnel.map((stage, i) => {
+            const users = Number(stage.users || 0);
+            const prevUsers = i === 0 ? users : Number(funnel[i - 1]?.users || 0);
+            const pctOfLead = topUsers > 0 ? users / topUsers : 0;
+            // Drop-off from the previous stage. Skipped on stage 0 (nothing to
+            // drop from). Clamped ≥ 0 so a bump in a later stage — possible
+            // when a returning paid user fires subscription_active without a
+            // fresh first_photo_taken in the same window — shows 0% not −N%.
+            const dropOff = i === 0 ? 0 : Math.max(0, prevUsers > 0 ? 1 - users / prevUsers : 0);
+            // Give every bar at least a sliver of width so zero-stages are
+            // visible in the chart (otherwise they collapse to nothing).
+            const barPct = Math.max(pctOfLead * 100, 0.5);
+            return (
+              <div key={stage.key}>
+                <div className="flex items-center justify-between text-sm gap-2">
+                  <div className="flex items-baseline gap-2 min-w-0">
+                    <span className="text-gray-800 font-medium">{stage.label}</span>
+                    {stage.event && (
+                      <span
+                        className="text-xs text-gray-400 font-mono truncate"
+                        title={stage.event}
+                      >
+                        · {stage.event}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-3 text-xs flex-shrink-0">
+                    <span className="font-semibold text-gray-900 tabular-nums">
+                      {fmtInt(users)}
+                    </span>
+                    <span className="text-gray-500 tabular-nums">
+                      {fmtPercent(pctOfLead)} of leads
+                    </span>
+                    {i > 0 && (
+                      <span
+                        className={`tabular-nums ${dropOff > 0 ? 'text-red-500' : 'text-gray-400'}`}
+                        title={`Drop-off from ${funnel[i - 1].label}`}
+                      >
+                        ↓ {fmtPercent(dropOff)}
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div className="mt-1 h-2 bg-gray-100 rounded">
+                  <div
+                    className="h-2 bg-primary-500 rounded transition-all"
+                    style={{ width: `${barPct}%` }}
+                  />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </Section>
     </div>
   );
 };
