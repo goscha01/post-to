@@ -284,7 +284,10 @@ const INSTALL_DOWNLOAD_TYPES = new Set(['First-time download', 'Restore']);
 const REDOWNLOAD_TYPES = new Set(['Redownload']);
 
 async function loadCategoryRows({ connectionId, category, days }) {
-  const daysClamped = Math.max(1, Math.min(90, parseInt(days, 10) || 14));
+  // Analytics cache queries are just Supabase reads — cheap regardless of
+  // window size. Cap at 365 to bound response size; anything larger belongs
+  // in an export flow, not the dashboard.
+  const daysClamped = Math.max(1, Math.min(365, parseInt(days, 10) || 14));
   const cutoff = new Date();
   cutoff.setUTCDate(cutoff.getUTCDate() - daysClamped);
   const cutoffIso = cutoff.toISOString().slice(0, 10);

@@ -230,26 +230,39 @@ function parseSalesTsv(tsv, reportDate) {
 // Aggregate helper — a range of daily sales reports for the UI dashboard.
 // -----------------------------------------------------------------------
 // Walks yesterday-N to yesterday and fetches each. Yesterday-not-yet-generated
-// dates return null and are dropped. Runs sequentially — Apple has generous
-// rate limits but concurrent calls with the same JWT sometimes hit anti-abuse
-// throttling, and this endpoint is called from a user-triggered dashboard,
-// not a hot path.
+// dates return null and are dropped.
+//
+// Cap 365 days — Apple's Sales & Trends retention is 366 days, and going
+// past that just returns nulls. Fetched in small parallel batches so the
+// long windows finish inside the frontend axios timeout; sequential
+// serialization is enough to stay under Apple's per-JWT concurrency
+// anti-abuse (a comment on the older sync version warned about this — 5
+// concurrent has been safe in practice across the other Apple integrations).
 async function getSalesReportRange(creds, { vendorNumber, days = 7 }) {
-  const daysClamped = Math.min(Math.max(parseInt(days, 10) || 7, 1), 90);
+  const daysClamped = Math.min(Math.max(parseInt(days, 10) || 7, 1), 365);
   const yesterday = new Date();
   yesterday.setUTCDate(yesterday.getUTCDate() - 1);
-  const results = [];
+
+  const dates = [];
   for (let i = 0; i < daysClamped; i++) {
     const d = new Date(yesterday);
     d.setUTCDate(d.getUTCDate() - i);
-    const reportDate = d.toISOString().slice(0, 10);
-    const report = await getSalesReport(creds, { vendorNumber, reportDate }).catch(err => {
-      logger.warn('asc.sales_report_failed', {
-        reportDate, error: err.message, status: err.status || null,
-      });
-      return null;
-    });
-    if (report) results.push(report);
+    dates.push(d.toISOString().slice(0, 10));
+  }
+
+  const CONCURRENCY = 5;
+  const results = [];
+  for (let i = 0; i < dates.length; i += CONCURRENCY) {
+    const batch = dates.slice(i, i + CONCURRENCY);
+    const batchResults = await Promise.all(batch.map(reportDate =>
+      getSalesReport(creds, { vendorNumber, reportDate }).catch(err => {
+        logger.warn('asc.sales_report_failed', {
+          reportDate, error: err.message, status: err.status || null,
+        });
+        return null;
+      })
+    ));
+    for (const r of batchResults) if (r) results.push(r);
   }
   // Return newest-first so the UI can render "yesterday" at the top.
   return results;

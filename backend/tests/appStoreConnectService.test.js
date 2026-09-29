@@ -486,10 +486,10 @@ test('downloadSegment fetches the URL WITHOUT an Authorization header (pre-signe
   assert.equal(call.headers?.Authorization, undefined);
 });
 
-test('getSalesReportRange clamps days into [1, 90]', async () => {
+test('getSalesReportRange clamps days into [1, 365]', async () => {
   beforeEach();
-  // 999 → clamp to 90 → 90 stubbed 404s so result is [].
-  const responses = Array.from({ length: 90 }, () => ({
+  // 999 → clamp to 365 → 365 stubbed 404s so result is [].
+  const responses = Array.from({ length: 365 }, () => ({
     status: 404, data: { errors: [{ title: 'NOT_FOUND', detail: 'missing' }] },
   }));
   setNextResponses(...responses);
@@ -498,5 +498,5 @@ test('getSalesReportRange clamps days into [1, 90]', async () => {
     { vendorNumber: '88888888', days: 999 }
   );
   assert.equal(range.length, 0);
-  assert.equal(capturedCalls.length, 90);
+  assert.equal(capturedCalls.length, 365);
 });

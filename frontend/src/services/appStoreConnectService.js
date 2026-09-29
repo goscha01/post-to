@@ -38,8 +38,12 @@ const getReviews = async ({ connectionId, appId, limit = 50, territory }) => {
 };
 
 const getSales = async ({ connectionId, days = 7 }) => {
+  // Sales & Trends fetches one Apple API call per day. Backend parallelizes
+  // in batches of 5, but 365-day windows still take ~15-40s. Override the
+  // 60s default so the long views don't spuriously error out.
   const res = await axios.get('/api/asc/sales', {
     params: { connectionId, days },
+    timeout: 180_000,
   });
   return res.data;
 };
@@ -85,7 +89,13 @@ const analyticsWalk = async (connectionId) => {
 };
 
 const analyticsFunnel = async (connectionId, days = 14) => {
-  const res = await axios.get('/api/asc/analytics/funnel', { params: { connectionId, days } });
+  // Funnel includes a live Sales & Trends overlay (one Apple call per day
+  // in the window, batched 5-at-a-time in the backend). 365-day windows
+  // take longer than the 60s default axios timeout — override to 180s.
+  const res = await axios.get('/api/asc/analytics/funnel', {
+    params: { connectionId, days },
+    timeout: 180_000,
+  });
   return res.data;
 };
 
