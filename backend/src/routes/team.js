@@ -20,7 +20,12 @@ const { sendInviteEmail } = require('../services/emailService');
 const logger = require('../utils/logger');
 
 const router = express.Router();
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
+// Use service-role key so upserts/reads bypass RLS — same pattern as gmb.js,
+// calendar.js, etc. Falls back to anon-key locally if the role key isn't set.
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY
+);
 
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const VALID_ROLES = ['owner', 'admin', 'member'];
@@ -270,7 +275,13 @@ router.post('/invite', authMiddleware, async (req, res) => {
       email_sent: emailSent,
     });
   } catch (err) {
-    logger.error('team.invite_failed', { error: err.message });
+    logger.error('team.invite_failed', {
+      error: err.message,
+      code: err.code,
+      details: err.details,
+      hint: err.hint,
+      stack: err.stack?.slice(0, 800),
+    });
     res.status(500).json({ error: 'Failed to send invitation' });
   }
 });
