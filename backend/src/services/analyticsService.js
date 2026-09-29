@@ -354,11 +354,18 @@ async function getEvents(accessToken, propertyId, days) {
 // a custom event-scoped dimension in GA4 Admin (which unlocks the
 // `customEvent:screen_name` field for funnel filters). Kept as a future
 // enhancement — not needed for the top-line lead → paid picture.
+// Ordering reflects ProofPix's actual paid flow, verified against real
+// per-event distinct-user counts (see 2026-09-29 debug session):
+//   - onboarding_started was dropped: 25 users completed onboarding but 0
+//     fired 'started', meaning the app skips WelcomeSetupScreen for most
+//     users. Including it black-holed every downstream step.
+//   - first_photo_taken was dropped from the strict paid funnel: paywall_view
+//     (16) > first_photo_taken (7), so the paywall is shown DURING onboarding
+//     before users have a chance to take a photo. Activation is a parallel
+//     signal, not a paid-funnel gate. Still visible in the Events section.
 const IN_APP_FUNNEL_STEPS = [
   { key: 'first_open',       label: 'First open',       filter: eventNameFilter('first_open') },
-  { key: 'onboarding_start', label: 'Onboarding start', filter: eventNameFilter('onboarding_started') },
   { key: 'onboarding_done',  label: 'Onboarding done',  filter: eventNameFilter('onboarding_completed') },
-  { key: 'first_photo',      label: 'Took first photo', filter: eventNameFilter('first_photo_taken') },
   { key: 'paywall',          label: 'Saw paywall',      filter: eventNameFilter('paywall_view') },
   { key: 'plan_selected',    label: 'Selected a plan',  filter: eventNameFilter('plan_selected') },
   { key: 'purchase_start',   label: 'Started purchase', filter: eventNameFilter('purchase_started') },
