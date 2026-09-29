@@ -343,41 +343,30 @@ async function getEvents(accessToken, propertyId, days) {
 // the REST endpoint directly via the OAuth2 client's `.request()` — same
 // auth, no SDK dep.
 //
-// The funnel is intentionally hard-coded to ProofPix's canonical acquisition
-// path (first open → onboarding screens → paywall → home → camera → activation
-// → paid). Making the steps user-configurable is a future extension — we'd
-// store the ordered step list per property and let the UI edit it.
+// ProofPix's canonical acquisition funnel, defined entirely with event-name
+// filters. runFunnelReport rejects both `screen_name` (event parameter) and
+// `screenName` (built-in dimension) — its whitelist of fields allowed inside
+// funnel steps is narrow. Fortunately, ProofPix fires dedicated events at
+// each stage of the flow, so we can build a proper ordered funnel without
+// touching screens at all.
+//
+// Per-onboarding-screen drop-off would require registering `screen_name` as
+// a custom event-scoped dimension in GA4 Admin (which unlocks the
+// `customEvent:screen_name` field for funnel filters). Kept as a future
+// enhancement — not needed for the top-line lead → paid picture.
 const IN_APP_FUNNEL_STEPS = [
-  { key: 'first_open',     label: 'First open',            filter: eventNameFilter('first_open') },
-  { key: 'onb_welcome',    label: 'Onboarding: welcome',   filter: screenViewFilter('onboarding_welcome') },
-  { key: 'onb_user_info',  label: 'Onboarding: user info', filter: screenViewFilter('onboarding_user_info') },
-  { key: 'onb_permissions',label: 'Onboarding: permissions', filter: screenViewFilter('onboarding_permissions') },
-  { key: 'paywall',        label: 'Saw paywall',           filter: screenViewFilter('paywall') },
-  { key: 'home',           label: 'Reached home',          filter: screenViewFilter('home') },
-  { key: 'camera',         label: 'Opened camera',         filter: screenViewFilter('camera') },
-  { key: 'first_photo',    label: 'Took first photo',      filter: eventNameFilter('first_photo_taken') },
-  { key: 'paid',           label: 'Paid',                  filter: eventNameFilter('purchase') },
+  { key: 'first_open',       label: 'First open',       filter: eventNameFilter('first_open') },
+  { key: 'onboarding_start', label: 'Onboarding start', filter: eventNameFilter('onboarding_started') },
+  { key: 'onboarding_done',  label: 'Onboarding done',  filter: eventNameFilter('onboarding_completed') },
+  { key: 'first_photo',      label: 'Took first photo', filter: eventNameFilter('first_photo_taken') },
+  { key: 'paywall',          label: 'Saw paywall',      filter: eventNameFilter('paywall_view') },
+  { key: 'plan_selected',    label: 'Selected a plan',  filter: eventNameFilter('plan_selected') },
+  { key: 'purchase_start',   label: 'Started purchase', filter: eventNameFilter('purchase_started') },
+  { key: 'paid',             label: 'Paid',             filter: eventNameFilter('purchase') },
 ];
 
 function eventNameFilter(eventName) {
   return { funnelEventFilter: { eventName } };
-}
-
-// Match a specific screen. GA4 rejects `screen_name` as an event-parameter
-// name in the funnel API ("The following event parameter is not supported
-// in this property: screen_name") — the Firebase SDK writes the param but
-// GA4 surfaces it via the built-in `screenName` dimension, not as a raw
-// event parameter. Use funnelFieldFilter on that dimension instead.
-//
-// screenName is only populated by screen_view/page_view events, so filtering
-// by it alone is equivalent to (screen_view AND screen_name=X).
-function screenViewFilter(screenName) {
-  return {
-    funnelFieldFilter: {
-      fieldName: 'screenName',
-      stringFilter: { matchType: 'EXACT', value: screenName },
-    },
-  };
 }
 
 async function getInAppFunnel(accessToken, propertyId, days) {
@@ -433,60 +422,31 @@ async function getInAppFunnel(accessToken, propertyId, days) {
       message: errorMessage,
       errorData: errorData || null,
     });
-    // v1beta fallback: two parallel runReport calls.
-    //   1. Distinct users per eventName (for non-screen steps: first_open,
-    //      first_photo_taken, purchase, and screen_view total).
-    //   2. Distinct users per screenName (built-in GA4 dimension) for the
-    //      screen-view-based steps (onboarding_welcome, paywall, home, etc.).
-    const eventBasedNames = [...new Set(
+    // v1beta fallback: one runReport dimensioned by eventName, filtered to
+    // the funnel step events. All steps are event-based now (see
+    // IN_APP_FUNNEL_STEPS) so no screenName query needed.
+    const stepEventNames = [...new Set(
       IN_APP_FUNNEL_STEPS
         .map(s => s.filter?.funnelEventFilter?.eventName)
         .filter(Boolean)
     )];
-    const screenBasedNames = [...new Set(
-      IN_APP_FUNNEL_STEPS
-        .filter(s => s.filter?.funnelFieldFilter?.fieldName === 'screenName')
-        .map(s => s.filter.funnelFieldFilter.stringFilter?.value)
-        .filter(Boolean)
-    )];
-    const [byEventRes, byScreenRes] = await Promise.all([
-      runReport(accessToken, propertyId, {
-        dateRanges: dateRangeFromDays(days),
-        dimensions: [{ name: 'eventName' }],
-        metrics: [{ name: 'activeUsers' }],
-        dimensionFilter: {
-          filter: {
-            fieldName: 'eventName',
-            inListFilter: { values: eventBasedNames },
-          },
+    const byEventRes = await runReport(accessToken, propertyId, {
+      dateRanges: dateRangeFromDays(days),
+      dimensions: [{ name: 'eventName' }],
+      metrics: [{ name: 'activeUsers' }],
+      dimensionFilter: {
+        filter: {
+          fieldName: 'eventName',
+          inListFilter: { values: stepEventNames },
         },
-      }),
-      runReport(accessToken, propertyId, {
-        dateRanges: dateRangeFromDays(days),
-        dimensions: [{ name: 'screenName' }],
-        metrics: [{ name: 'activeUsers' }],
-        dimensionFilter: {
-          filter: {
-            fieldName: 'screenName',
-            inListFilter: { values: screenBasedNames },
-          },
-        },
-      }),
-    ]);
+      },
+    });
     const usersByEvent = new Map(
       shapeReport(byEventRes).rows.map(r => [r.eventName, Number(r.activeUsers || 0)])
     );
-    const usersByScreen = new Map(
-      shapeReport(byScreenRes).rows.map(r => [r.screenName, Number(r.activeUsers || 0)])
-    );
     const funnel = IN_APP_FUNNEL_STEPS.map(s => {
       const evName = s.filter?.funnelEventFilter?.eventName;
-      const screenName = s.filter?.funnelFieldFilter?.fieldName === 'screenName'
-        ? s.filter.funnelFieldFilter.stringFilter?.value
-        : null;
-      let users = 0;
-      if (screenName) users = usersByScreen.get(screenName) || 0;
-      else if (evName) users = usersByEvent.get(evName) || 0;
+      const users = evName ? (usersByEvent.get(evName) || 0) : 0;
       return { key: s.key, label: s.label, users, event: describeStepFilter(s.filter) };
     });
     return {
@@ -504,9 +464,6 @@ async function getInAppFunnel(accessToken, propertyId, days) {
 function describeStepFilter(filter) {
   if (filter?.funnelEventFilter?.eventName) {
     return filter.funnelEventFilter.eventName;
-  }
-  if (filter?.funnelFieldFilter?.fieldName === 'screenName') {
-    return `screen_view · ${filter.funnelFieldFilter.stringFilter?.value || '?'}`;
   }
   return '(unknown)';
 }
