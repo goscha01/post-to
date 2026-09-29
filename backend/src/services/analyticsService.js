@@ -389,18 +389,23 @@ async function getInAppFunnel(accessToken, propertyId, days) {
 
   try {
     const { data: response } = await auth.request({ url, method: 'POST', data: body });
-    // funnelTable rows are one-per-step; dim=funnelStepName, metric=activeUsers.
-    // Match rows back to our step definitions by step name.
-    const rowsByStepName = new Map();
-    for (const row of response?.funnelTable?.rows || []) {
-      const stepName = row.dimensionValues?.[0]?.value;
-      const users = Number(row.metricValues?.[0]?.value || 0);
-      if (stepName) rowsByStepName.set(stepName, users);
+    // funnelTable rows are one-per-step, in the same order as the steps we
+    // submitted. GA4 prefixes the step name with "1. ", "2. " etc. in the
+    // response, so matching by name silently returns 0 for every step. Use
+    // row order — runFunnelReport guarantees it matches the request order.
+    const rows = response?.funnelTable?.rows || [];
+    if (rows.length !== IN_APP_FUNNEL_STEPS.length) {
+      // Log so we notice if GA4 ever changes the response shape (e.g. adds
+      // a "start audience" row). Non-fatal — we still map what we can.
+      logger.warn('analytics.funnel.row_count_mismatch', {
+        expected: IN_APP_FUNNEL_STEPS.length,
+        got: rows.length,
+      });
     }
-    const funnel = IN_APP_FUNNEL_STEPS.map(s => ({
+    const funnel = IN_APP_FUNNEL_STEPS.map((s, idx) => ({
       key: s.key,
       label: s.label,
-      users: rowsByStepName.get(s.label) || 0,
+      users: Number(rows[idx]?.metricValues?.[0]?.value || 0),
       event: describeStepFilter(s.filter),
     }));
     return { funnel, source: 'runFunnelReport', rangeDays };
