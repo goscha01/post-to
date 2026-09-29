@@ -32,6 +32,8 @@ const DAY_RANGES = [
   { label: '7 days', value: 7 },
   { label: '14 days', value: 14 },
   { label: '30 days', value: 30 },
+  { label: '60 days', value: 60 },
+  { label: '90 days', value: 90 },
 ];
 
 const fmtInt = (n) => {
@@ -380,7 +382,7 @@ const AppStoreConnect = () => {
               ))}
             </select>
           )}
-          {tab === 'overview' && (
+          {(tab === 'overview' || tab === 'analytics') && (
             <select
               value={days}
               onChange={e => setDays(Number(e.target.value))}
@@ -393,6 +395,7 @@ const AppStoreConnect = () => {
             onClick={() => {
               if (tab === 'overview') loadSales();
               else if (tab === 'reviews') loadReviews();
+              else if (tab === 'analytics') loadAnalytics();
             }}
             className="p-1.5 border border-gray-300 rounded-md text-gray-600 hover:bg-gray-50"
             title="Refresh"
