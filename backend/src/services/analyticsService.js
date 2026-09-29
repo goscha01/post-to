@@ -363,18 +363,19 @@ function eventNameFilter(eventName) {
   return { funnelEventFilter: { eventName } };
 }
 
-// screen_view + screen_name param match. GA4 Data API funnel filters nest
-// event-parameter filters inside funnelParameterFilterExpression.
+// Match a specific screen. GA4 rejects `screen_name` as an event-parameter
+// name in the funnel API ("The following event parameter is not supported
+// in this property: screen_name") — the Firebase SDK writes the param but
+// GA4 surfaces it via the built-in `screenName` dimension, not as a raw
+// event parameter. Use funnelFieldFilter on that dimension instead.
+//
+// screenName is only populated by screen_view/page_view events, so filtering
+// by it alone is equivalent to (screen_view AND screen_name=X).
 function screenViewFilter(screenName) {
   return {
-    funnelEventFilter: {
-      eventName: 'screen_view',
-      funnelParameterFilterExpression: {
-        funnelParameterFilter: {
-          eventParameterName: 'screen_name',
-          stringFilter: { matchType: 'EXACT', value: screenName },
-        },
-      },
+    funnelFieldFilter: {
+      fieldName: 'screenName',
+      stringFilter: { matchType: 'EXACT', value: screenName },
     },
   };
 }
@@ -440,11 +441,12 @@ async function getInAppFunnel(accessToken, propertyId, days) {
     const eventBasedNames = [...new Set(
       IN_APP_FUNNEL_STEPS
         .map(s => s.filter?.funnelEventFilter?.eventName)
-        .filter(name => name && name !== 'screen_view')
+        .filter(Boolean)
     )];
     const screenBasedNames = [...new Set(
       IN_APP_FUNNEL_STEPS
-        .map(s => s.filter?.funnelEventFilter?.funnelParameterFilterExpression?.funnelParameterFilter?.stringFilter?.value)
+        .filter(s => s.filter?.funnelFieldFilter?.fieldName === 'screenName')
+        .map(s => s.filter.funnelFieldFilter.stringFilter?.value)
         .filter(Boolean)
     )];
     const [byEventRes, byScreenRes] = await Promise.all([
@@ -478,11 +480,12 @@ async function getInAppFunnel(accessToken, propertyId, days) {
       shapeReport(byScreenRes).rows.map(r => [r.screenName, Number(r.activeUsers || 0)])
     );
     const funnel = IN_APP_FUNNEL_STEPS.map(s => {
-      const f = s.filter?.funnelEventFilter;
-      const evName = f?.eventName;
-      const screenName = f?.funnelParameterFilterExpression?.funnelParameterFilter?.stringFilter?.value;
+      const evName = s.filter?.funnelEventFilter?.eventName;
+      const screenName = s.filter?.funnelFieldFilter?.fieldName === 'screenName'
+        ? s.filter.funnelFieldFilter.stringFilter?.value
+        : null;
       let users = 0;
-      if (evName === 'screen_view' && screenName) users = usersByScreen.get(screenName) || 0;
+      if (screenName) users = usersByScreen.get(screenName) || 0;
       else if (evName) users = usersByEvent.get(evName) || 0;
       return { key: s.key, label: s.label, users, event: describeStepFilter(s.filter) };
     });
@@ -496,13 +499,16 @@ async function getInAppFunnel(accessToken, propertyId, days) {
 }
 
 // Reverse the filter object back into a human-readable "source event" tag for
-// the UI tooltip. Kept dumb — just introspects the structure we build above.
+// the UI tooltip. Kept dumb — just introspects the two structures we build
+// above (event-name filter vs. screenName field filter).
 function describeStepFilter(filter) {
-  const f = filter?.funnelEventFilter;
-  if (!f) return '(unknown)';
-  const paramValue = f.funnelParameterFilterExpression?.funnelParameterFilter?.stringFilter?.value;
-  if (f.eventName === 'screen_view' && paramValue) return `screen_view · ${paramValue}`;
-  return f.eventName || '(unknown)';
+  if (filter?.funnelEventFilter?.eventName) {
+    return filter.funnelEventFilter.eventName;
+  }
+  if (filter?.funnelFieldFilter?.fieldName === 'screenName') {
+    return `screen_view · ${filter.funnelFieldFilter.stringFilter?.value || '?'}`;
+  }
+  return '(unknown)';
 }
 
 async function getCampaigns(accessToken, propertyId, days) {
