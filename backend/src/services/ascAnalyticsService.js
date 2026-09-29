@@ -443,14 +443,37 @@ async function getInstallFunnel({ connectionId, days = 14, userId }) {
     }
   }
 
-  const cutoff = new Date();
-  cutoff.setUTCDate(cutoff.getUTCDate() - d);
-  const cutoffIso = cutoff.toISOString().slice(0, 10);
+  // Build the full list of dates in the window (yesterday back N days),
+  // then look up each in perDayMap. Missing dates get an all-null bucket
+  // so the client always renders a complete N-row table — otherwise days
+  // Apple hasn't published at all just vanish, and the user sees a
+  // 5-row table for a 7-day window and thinks it's broken.
+  const windowDates = [];
+  const today = new Date();
+  today.setUTCHours(0, 0, 0, 0);
+  for (let i = 1; i <= d; i++) {
+    const dt = new Date(today);
+    dt.setUTCDate(dt.getUTCDate() - i);
+    windowDates.push(dt.toISOString().slice(0, 10));
+  }
+  const cutoffIso = windowDates[windowDates.length - 1];
 
-  const perDay = [...perDayMap.entries()]
-    .filter(([date]) => date >= cutoffIso)
-    .sort((a, b) => b[0].localeCompare(a[0]))
-    .map(([date, b]) => {
+  // Also include any perDayMap entries whose dates fall inside the window
+  // but weren't in the windowDates loop (they will be, actually — dedupe by
+  // Set to be safe against timezone edge cases in the map keys).
+  const allWindowDates = [...new Set([
+    ...windowDates,
+    ...[...perDayMap.keys()].filter(k => k >= cutoffIso),
+  ])].sort().reverse();
+
+  const perDay = allWindowDates.map(date => {
+      const b = perDayMap.get(date) || {
+        impressions: 0, productPageViews: 0,
+        analyticsInstalls: 0, salesInstalls: null, redownloads: 0,
+        engagementDataAvailable: false, commerceDataAvailable: false,
+      };
+      return [date, b];
+    }).map(([date, b]) => {
       // Display install value: prefer S&T when it covered this day (fresher,
       // authoritative). Otherwise use Analytics-COMMERCE. Null when neither
       // source has data yet — client renders as "—".
@@ -516,7 +539,13 @@ async function getInstallFunnel({ connectionId, days = 14, userId }) {
       conversionRate,
     },
     perDay,
-    dataCoverageDays: perDay.length,
+    // Count only days where SOME real data is available (not the null-filled
+    // placeholder rows). The client uses this to decide whether to render
+    // the funnel section at all — a fully-empty perDay means no Apple data
+    // has been cached yet for this connection.
+    dataCoverageDays: perDay.filter(d =>
+      d.engagementDataAvailable || d.commerceDataAvailable || d.installsFromSalesAndTrends
+    ).length,
   };
 }
 
