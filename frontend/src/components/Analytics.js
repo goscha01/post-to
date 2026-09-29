@@ -370,7 +370,7 @@ const Analytics = () => {
 
           <AppStoreSection ascState={ascState} />
 
-          <FunnelSection funnel={inAppFunnel?.funnel} loading={loadingReports} />
+          <FunnelSection inAppFunnel={inAppFunnel} loading={loadingReports} />
 
           {events.highlighted && events.highlighted.length > 0 && (
             <HighlightedEvents events={events.highlighted} />
@@ -651,10 +651,16 @@ const AppStoreSection = ({ ascState }) => {
             );
           })}
         </div>
-        {t.conversionRate !== null && t.conversionRate !== undefined && (
+        {t.conversionRate !== null && t.conversionRate !== undefined && t.conversionRate <= 1 && (
           <div className="px-4 pb-4 text-xs text-gray-500">
             Store conversion rate (installs / page visitors, attributable days only):{' '}
             <span className="font-medium text-gray-700">{fmtPercent(t.conversionRate)}</span>
+          </div>
+        )}
+        {t.conversionRate > 1 && (
+          <div className="px-4 pb-4 text-xs text-gray-500">
+            Store conversion rate hidden: installs ({fmtInt(t.installs)}) exceed page visitors ({fmtInt(t.productPageViews)}) —
+            downloads include restores and direct-URL installs that bypass the listing page.
           </div>
         )}
       </Section>
@@ -662,12 +668,23 @@ const AppStoreSection = ({ ascState }) => {
   );
 };
 
-// Renders the ordered in-app funnel from GA4 runFunnelReport (backend
-// analyticsService.getInAppFunnel). Each row shows distinct-user count,
-// % of top-of-funnel, and the drop-off from the previous stage. Since the
-// backend uses isOpenFunnel=false, users at step N MUST have completed
-// steps 1..N-1 in order — drop-off is monotonic and real.
-const FunnelSection = ({ funnel, loading }) => {
+// Renders the in-app funnel from getInAppFunnel. Prefers GA4's v1alpha
+// runFunnelReport (real ordered drop-off). When that endpoint fails, the
+// backend falls back to per-step distinct-user counts via v1beta — same
+// shape, but the funnel is "approximate" (a user could skip a step and
+// still be counted at a later one). `inAppFunnel.source` tells us which.
+const FunnelSection = ({ inAppFunnel, loading }) => {
+  const funnel = inAppFunnel?.funnel || null;
+  const source = inAppFunnel?.source;
+  const fallbackReason = inAppFunnel?.fallbackReason;
+  const subtitle = source === 'v1beta_fallback' ? (
+    <>
+      <span className="text-amber-600">Approximate (fallback)</span> — GA4 runFunnelReport unavailable:{' '}
+      <span className="font-mono">{fallbackReason || 'error'}</span>. Numbers are per-step distinct users, not strict sequential drop-off.
+    </>
+  ) : (
+    'Ordered — each step requires the previous. Real drop-off via GA4 runFunnelReport.'
+  );
   if (loading) {
     return (
       <div className="mt-6">
@@ -689,7 +706,7 @@ const FunnelSection = ({ funnel, loading }) => {
   const topUsers = Number(funnel[0]?.users || 0);
   return (
     <div className="mt-6">
-      <Section title="In-App Funnel (all platforms)" subtitle="Ordered — each step requires the previous. Real drop-off via GA4 runFunnelReport.">
+      <Section title="In-App Funnel (all platforms)" subtitle={subtitle}>
         <div className="p-4 space-y-3">
           {funnel.map((stage, i) => {
             const users = Number(stage.users || 0);

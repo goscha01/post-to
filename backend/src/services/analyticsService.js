@@ -380,6 +380,7 @@ function screenViewFilter(screenName) {
 }
 
 async function getInAppFunnel(accessToken, propertyId, days) {
+  const rangeDays = Math.max(1, Math.min(365, parseInt(days, 10) || 30));
   const auth = oauthClientFor(accessToken);
   const body = {
     dateRanges: dateRangeFromDays(days),
@@ -395,23 +396,103 @@ async function getInAppFunnel(accessToken, propertyId, days) {
     },
   };
   const url = `https://analyticsdata.googleapis.com/v1alpha/properties/${propertyId}:runFunnelReport`;
-  const { data: response } = await auth.request({ url, method: 'POST', data: body });
 
-  // funnelTable rows are one-per-step; dim=funnelStepName, metric=activeUsers.
-  // Match rows back to our step definitions by step name.
-  const rowsByStepName = new Map();
-  for (const row of response?.funnelTable?.rows || []) {
-    const stepName = row.dimensionValues?.[0]?.value;
-    const users = Number(row.metricValues?.[0]?.value || 0);
-    if (stepName) rowsByStepName.set(stepName, users);
+  try {
+    const { data: response } = await auth.request({ url, method: 'POST', data: body });
+    // funnelTable rows are one-per-step; dim=funnelStepName, metric=activeUsers.
+    // Match rows back to our step definitions by step name.
+    const rowsByStepName = new Map();
+    for (const row of response?.funnelTable?.rows || []) {
+      const stepName = row.dimensionValues?.[0]?.value;
+      const users = Number(row.metricValues?.[0]?.value || 0);
+      if (stepName) rowsByStepName.set(stepName, users);
+    }
+    const funnel = IN_APP_FUNNEL_STEPS.map(s => ({
+      key: s.key,
+      label: s.label,
+      users: rowsByStepName.get(s.label) || 0,
+      event: describeStepFilter(s.filter),
+    }));
+    return { funnel, source: 'runFunnelReport', rangeDays };
+  } catch (err) {
+    // v1alpha runFunnelReport can 4xx for various reasons (schema mismatch,
+    // preview-API quirk, property tier). Log the raw response so we can see
+    // what Google is objecting to, then fall back to per-step distinct-user
+    // counts using v1beta runReport (proven stable). The fallback isn't a
+    // *true* ordered funnel — users could skip a screen and still be counted
+    // at a later step — but for ProofPix's linear onboarding it's a close
+    // approximation and beats an empty section.
+    const errorData = err?.response?.data;
+    const errorMessage = errorData?.error?.message || err?.message || 'unknown';
+    console.error('[analytics.funnel] runFunnelReport failed:', errorMessage, JSON.stringify(errorData || {}).slice(0, 600));
+    logger.error('analytics.funnel.runFunnelReport_failed', {
+      propertyId,
+      days: rangeDays,
+      status: err?.response?.status || err?.status,
+      message: errorMessage,
+      errorData: errorData || null,
+    });
+    // v1beta fallback: two parallel runReport calls.
+    //   1. Distinct users per eventName (for non-screen steps: first_open,
+    //      first_photo_taken, purchase, and screen_view total).
+    //   2. Distinct users per screenName (built-in GA4 dimension) for the
+    //      screen-view-based steps (onboarding_welcome, paywall, home, etc.).
+    const eventBasedNames = [...new Set(
+      IN_APP_FUNNEL_STEPS
+        .map(s => s.filter?.funnelEventFilter?.eventName)
+        .filter(name => name && name !== 'screen_view')
+    )];
+    const screenBasedNames = [...new Set(
+      IN_APP_FUNNEL_STEPS
+        .map(s => s.filter?.funnelEventFilter?.funnelParameterFilterExpression?.funnelParameterFilter?.stringFilter?.value)
+        .filter(Boolean)
+    )];
+    const [byEventRes, byScreenRes] = await Promise.all([
+      runReport(accessToken, propertyId, {
+        dateRanges: dateRangeFromDays(days),
+        dimensions: [{ name: 'eventName' }],
+        metrics: [{ name: 'activeUsers' }],
+        dimensionFilter: {
+          filter: {
+            fieldName: 'eventName',
+            inListFilter: { values: eventBasedNames },
+          },
+        },
+      }),
+      runReport(accessToken, propertyId, {
+        dateRanges: dateRangeFromDays(days),
+        dimensions: [{ name: 'screenName' }],
+        metrics: [{ name: 'activeUsers' }],
+        dimensionFilter: {
+          filter: {
+            fieldName: 'screenName',
+            inListFilter: { values: screenBasedNames },
+          },
+        },
+      }),
+    ]);
+    const usersByEvent = new Map(
+      shapeReport(byEventRes).rows.map(r => [r.eventName, Number(r.activeUsers || 0)])
+    );
+    const usersByScreen = new Map(
+      shapeReport(byScreenRes).rows.map(r => [r.screenName, Number(r.activeUsers || 0)])
+    );
+    const funnel = IN_APP_FUNNEL_STEPS.map(s => {
+      const f = s.filter?.funnelEventFilter;
+      const evName = f?.eventName;
+      const screenName = f?.funnelParameterFilterExpression?.funnelParameterFilter?.stringFilter?.value;
+      let users = 0;
+      if (evName === 'screen_view' && screenName) users = usersByScreen.get(screenName) || 0;
+      else if (evName) users = usersByEvent.get(evName) || 0;
+      return { key: s.key, label: s.label, users, event: describeStepFilter(s.filter) };
+    });
+    return {
+      funnel,
+      source: 'v1beta_fallback',
+      fallbackReason: errorMessage,
+      rangeDays,
+    };
   }
-  const funnel = IN_APP_FUNNEL_STEPS.map(s => ({
-    key: s.key,
-    label: s.label,
-    users: rowsByStepName.get(s.label) || 0,
-    event: describeStepFilter(s.filter),
-  }));
-  return { funnel, rangeDays: Math.max(1, Math.min(365, parseInt(days, 10) || 30)) };
 }
 
 // Reverse the filter object back into a human-readable "source event" tag for
