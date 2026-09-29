@@ -738,6 +738,19 @@ const FunnelSection = ({ inAppFunnel, loading }) => {
                     <span className="font-semibold text-gray-900 tabular-nums">
                       {fmtInt(users)}
                     </span>
+                    {/* Raw per-event distinct users (independent of funnel
+                        order). When it differs materially from the sequential
+                        funnel count, the event is firing but not in order
+                        (e.g. paywall shown before first_photo_taken, so those
+                        users are excluded from the sequential count). */}
+                    {stage.rawUsers != null && stage.rawUsers !== users && (
+                      <span
+                        className="text-gray-400 tabular-nums"
+                        title="Users who fired this event in the period, ignoring funnel order. Difference vs. sequential means users hit the event out of the funnel sequence."
+                      >
+                        (raw {fmtInt(stage.rawUsers)})
+                      </span>
+                    )}
                     <span className="text-gray-500 tabular-nums">
                       {fmtPercent(pctOfLead)} of leads
                     </span>

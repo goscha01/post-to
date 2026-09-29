@@ -387,8 +387,37 @@ async function getInAppFunnel(accessToken, propertyId, days) {
   };
   const url = `https://analyticsdata.googleapis.com/v1alpha/properties/${propertyId}:runFunnelReport`;
 
+  // Also run the raw per-event distinct-users query in parallel, so the
+  // frontend can show BOTH the sequential funnel count and the "did this
+  // event ever fire, regardless of order" count. Diagnoses the common
+  // situation where runFunnelReport shows 0 for step N but the event
+  // is clearly firing — that means users hit the event out of order
+  // (e.g. skipped onboarding_started, or fired paywall_view before
+  // first_photo_taken).
+  const stepEventNames = [...new Set(
+    IN_APP_FUNNEL_STEPS.map(s => s.filter?.funnelEventFilter?.eventName).filter(Boolean)
+  )];
+  const rawUsersPromise = runReport(accessToken, propertyId, {
+    dateRanges: dateRangeFromDays(days),
+    dimensions: [{ name: 'eventName' }],
+    metrics: [{ name: 'activeUsers' }],
+    dimensionFilter: {
+      filter: {
+        fieldName: 'eventName',
+        inListFilter: { values: stepEventNames },
+      },
+    },
+  }).catch(err => {
+    // Non-fatal — funnel still renders without the raw counts.
+    logger.warn('analytics.funnel.raw_counts_failed', { message: err.message });
+    return null;
+  });
+
   try {
-    const { data: response } = await auth.request({ url, method: 'POST', data: body });
+    const [{ data: response }, rawUsersRes] = await Promise.all([
+      auth.request({ url, method: 'POST', data: body }),
+      rawUsersPromise,
+    ]);
     // funnelTable rows are one-per-step, in the same order as the steps we
     // submitted. GA4 prefixes the step name with "1. ", "2. " etc. in the
     // response, so matching by name silently returns 0 for every step. Use
@@ -402,12 +431,19 @@ async function getInAppFunnel(accessToken, propertyId, days) {
         got: rows.length,
       });
     }
-    const funnel = IN_APP_FUNNEL_STEPS.map((s, idx) => ({
-      key: s.key,
-      label: s.label,
-      users: Number(rows[idx]?.metricValues?.[0]?.value || 0),
-      event: describeStepFilter(s.filter),
-    }));
+    const rawByEvent = rawUsersRes
+      ? new Map(shapeReport(rawUsersRes).rows.map(r => [r.eventName, Number(r.activeUsers || 0)]))
+      : new Map();
+    const funnel = IN_APP_FUNNEL_STEPS.map((s, idx) => {
+      const evName = s.filter?.funnelEventFilter?.eventName;
+      return {
+        key: s.key,
+        label: s.label,
+        users: Number(rows[idx]?.metricValues?.[0]?.value || 0),
+        rawUsers: evName ? (rawByEvent.get(evName) ?? null) : null,
+        event: describeStepFilter(s.filter),
+      };
+    });
     return { funnel, source: 'runFunnelReport', rangeDays };
   } catch (err) {
     // v1alpha runFunnelReport can 4xx for various reasons (schema mismatch,
@@ -427,32 +463,18 @@ async function getInAppFunnel(accessToken, propertyId, days) {
       message: errorMessage,
       errorData: errorData || null,
     });
-    // v1beta fallback: one runReport dimensioned by eventName, filtered to
-    // the funnel step events. All steps are event-based now (see
-    // IN_APP_FUNNEL_STEPS) so no screenName query needed.
-    const stepEventNames = [...new Set(
-      IN_APP_FUNNEL_STEPS
-        .map(s => s.filter?.funnelEventFilter?.eventName)
-        .filter(Boolean)
-    )];
-    const byEventRes = await runReport(accessToken, propertyId, {
-      dateRanges: dateRangeFromDays(days),
-      dimensions: [{ name: 'eventName' }],
-      metrics: [{ name: 'activeUsers' }],
-      dimensionFilter: {
-        filter: {
-          fieldName: 'eventName',
-          inListFilter: { values: stepEventNames },
-        },
-      },
-    });
-    const usersByEvent = new Map(
-      shapeReport(byEventRes).rows.map(r => [r.eventName, Number(r.activeUsers || 0)])
-    );
+    // v1beta fallback: reuse the raw per-event counts we already queried
+    // above (rawUsersPromise). No second call needed.
+    const rawUsersRes = await rawUsersPromise;
+    const usersByEvent = rawUsersRes
+      ? new Map(shapeReport(rawUsersRes).rows.map(r => [r.eventName, Number(r.activeUsers || 0)]))
+      : new Map();
     const funnel = IN_APP_FUNNEL_STEPS.map(s => {
       const evName = s.filter?.funnelEventFilter?.eventName;
       const users = evName ? (usersByEvent.get(evName) || 0) : 0;
-      return { key: s.key, label: s.label, users, event: describeStepFilter(s.filter) };
+      // In fallback mode users and rawUsers are the same (both from the
+      // per-event query). Set explicitly so the frontend renders uniformly.
+      return { key: s.key, label: s.label, users, rawUsers: users, event: describeStepFilter(s.filter) };
     });
     return {
       funnel,
