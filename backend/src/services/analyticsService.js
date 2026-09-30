@@ -556,20 +556,65 @@ async function getPlanSelectedBreakdown(accessToken, propertyId, days) {
 // For ProofPix's linear onboarding this approximation is close to real
 // drop-off but may show small non-monotonic dips when users skip a screen.
 async function getScreenViews(accessToken, propertyId, days) {
-  const response = await runReport(accessToken, propertyId, {
-    dateRanges: dateRangeFromDays(days),
-    dimensions: [{ name: 'screenName' }],
-    metrics: [{ name: 'activeUsers' }],
-    orderBys: [{ metric: { metricName: 'activeUsers' }, desc: true }],
-    limit: 200,
-  });
-  const shaped = shapeReport(response);
+  const rangeDays = Math.max(1, Math.min(365, parseInt(days, 10) || 30));
+  // Three fallback strategies for reading screen names — GA4 exposes them
+  // via different dimensions depending on how the app fires screen_view:
+  //   1. unifiedScreenName — GA4's cross-platform name (web page or app screen)
+  //   2. screenName        — built-in for app streams, populated from
+  //                          firebase_screen event param
+  //   3. customEvent:screen_name — raw event-parameter access, only works
+  //                          if `screen_name` is registered as a custom
+  //                          event dimension in GA4 Admin
+  // Whichever yields the most non-"(not set)" rows wins. Filter to
+  // eventName=screen_view so we're actually counting screen navigation,
+  // not stray events that happened to carry a screen_name param.
+  const attempts = [
+    { dim: 'unifiedScreenName', label: 'unifiedScreenName' },
+    { dim: 'screenName',        label: 'screenName' },
+    { dim: 'customEvent:screen_name', label: 'customEvent:screen_name' },
+  ];
+  let winner = null;
+  let winnerRows = [];
+  for (const attempt of attempts) {
+    try {
+      const response = await runReport(accessToken, propertyId, {
+        dateRanges: dateRangeFromDays(days),
+        dimensions: [{ name: attempt.dim }],
+        metrics: [{ name: 'activeUsers' }],
+        dimensionFilter: {
+          filter: {
+            fieldName: 'eventName',
+            stringFilter: { matchType: 'EXACT', value: 'screen_view' },
+          },
+        },
+        orderBys: [{ metric: { metricName: 'activeUsers' }, desc: true }],
+        limit: 200,
+      });
+      const shaped = shapeReport(response);
+      const rows = shaped.rows.map(r => ({
+        screenName: r[attempt.dim] || '(not set)',
+        users: Number(r.activeUsers || 0),
+      }));
+      // Score: number of rows with a real (non-"(not set)") screen name.
+      const named = rows.filter(r => r.screenName !== '(not set)').length;
+      if (!winner || named > winnerRows.filter(r => r.screenName !== '(not set)').length) {
+        winner = attempt.label;
+        winnerRows = rows;
+      }
+      // Short-circuit if we found a good dimension with lots of named rows.
+      if (named >= 5) break;
+    } catch (err) {
+      // Custom-event dimension can 400 if not registered — skip and try next.
+      logger.debug('analytics.screen_views.dimension_failed', {
+        dim: attempt.dim,
+        message: err?.response?.data?.error?.message || err?.message,
+      });
+    }
+  }
   return {
-    screens: shaped.rows.map(r => ({
-      screenName: r.screenName || '(not set)',
-      users: Number(r.activeUsers || 0),
-    })),
-    rangeDays: Math.max(1, Math.min(365, parseInt(days, 10) || 30)),
+    screens: winnerRows,
+    dimensionUsed: winner,
+    rangeDays,
   };
 }
 
