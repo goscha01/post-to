@@ -605,6 +605,104 @@ async function getInstallsBySource({ connectionId, days = 14 }) {
   return { days: d, sources };
 }
 
+// Ad attribution report — joins engagement (PPVs) and commerce (installs)
+// data by (Source Type, Campaign) so paid-ad performance can be measured
+// end-to-end: source → page visit → install.
+//
+// Apple's "Source Type" values:
+//   - App Store search    — organic search OR Apple Search Ads (distinguished
+//                           by the Campaign column being non-empty for ads)
+//   - App Store browse    — organic browsing
+//   - App referrer        — deep link from another app
+//   - Web referrer        — external URL (includes web ads with attribution)
+//   - Unavailable         — Apple couldn't attribute
+//
+// Only First-time downloads count as install-per-source (Restore is same
+// user reinstalling, doesn't reflect ad effectiveness).
+async function getAdAttribution({ connectionId, days = 14 }) {
+  const [engagement, commerce] = await Promise.all([
+    loadCategoryRows({ connectionId, category: 'APP_STORE_ENGAGEMENT', days }),
+    loadCategoryRows({ connectionId, category: 'COMMERCE', days }),
+  ]);
+  const d = engagement.days;
+
+  // Aggregate PPVs by (sourceType, campaign) — this is the "visited store
+  // page" side of the funnel.
+  const engagementByKey = new Map();
+  for (const inst of engagement.rows) {
+    for (const r of inst.rows || []) {
+      const sourceType = String(r['Source Type'] || 'Unknown').trim() || 'Unknown';
+      const campaign = String(r['Campaign'] || '').trim() || '(none)';
+      const key = `${sourceType}|${campaign}`;
+      const b = engagementByKey.get(key) || { impressions: 0, productPageViews: 0 };
+      if (r.Event !== undefined) {
+        const c = toInt(r.Counts);
+        if (IMPRESSION_EVENTS.has(r.Event)) b.impressions += c;
+        else if (PAGE_VIEW_EVENTS.has(r.Event) && PAGE_VIEW_PAGE_TYPES.has(r['Page Type'])) {
+          b.productPageViews += c;
+        }
+      } else {
+        b.impressions += toInt(r['Impressions']);
+        b.productPageViews += toInt(r['Product Page Views']);
+      }
+      engagementByKey.set(key, b);
+    }
+  }
+
+  // Aggregate installs (First-time downloads only) by (sourceType, campaign).
+  const installsByKey = new Map();
+  for (const inst of commerce.rows) {
+    for (const r of inst.rows || []) {
+      const downloadType = String(r['Download Type'] || '').trim();
+      if (downloadType !== 'First-time download') continue;
+      const sourceType = String(r['Source Type'] || 'Unknown').trim() || 'Unknown';
+      const campaign = String(r['Campaign'] || '').trim() || '(none)';
+      const key = `${sourceType}|${campaign}`;
+      installsByKey.set(key, (installsByKey.get(key) || 0) + toInt(r.Counts));
+    }
+  }
+
+  // Merge — one row per (sourceType, campaign) with all metrics.
+  const allKeys = new Set([...engagementByKey.keys(), ...installsByKey.keys()]);
+  const rows = [];
+  for (const key of allKeys) {
+    const [sourceType, campaign] = key.split('|');
+    const eng = engagementByKey.get(key) || { impressions: 0, productPageViews: 0 };
+    const installs = installsByKey.get(key) || 0;
+    const conversionRate = eng.productPageViews > 0 ? installs / eng.productPageViews : null;
+    rows.push({
+      sourceType,
+      campaign,
+      // Distinguish paid campaigns from organic — anything with a real
+      // campaign string is a tagged marketing effort; "(none)" is organic.
+      isPaid: campaign !== '(none)',
+      impressions: eng.impressions,
+      productPageViews: eng.productPageViews,
+      installs,
+      conversionRate,
+    });
+  }
+
+  // Sort: paid rows first (by installs desc), then organic (by installs desc).
+  rows.sort((a, b) => {
+    if (a.isPaid !== b.isPaid) return a.isPaid ? -1 : 1;
+    return b.installs - a.installs;
+  });
+
+  // Totals for the section header.
+  const totals = rows.reduce((acc, r) => ({
+    impressions: acc.impressions + r.impressions,
+    productPageViews: acc.productPageViews + r.productPageViews,
+    installs: acc.installs + r.installs,
+  }), { impressions: 0, productPageViews: 0, installs: 0 });
+  const paidTotals = rows.filter(r => r.isPaid).reduce((acc, r) => ({
+    productPageViews: acc.productPageViews + r.productPageViews,
+    installs: acc.installs + r.installs,
+  }), { productPageViews: 0, installs: 0 });
+
+  return { days: d, rows, totals, paidTotals };
+}
+
 async function getStatus({ userId, connectionId }) {
   const ctx = await loadCredsFromConnection(userId, connectionId);
   if (!ctx) return null;
@@ -627,6 +725,7 @@ module.exports = {
   walk,
   getInstallFunnel,
   getInstallsBySource,
+  getAdAttribution,
   getStatus,
   _internal: { loadCategoryRows, toInt, CATEGORIES },
 };

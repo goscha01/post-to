@@ -75,11 +75,18 @@ const Analytics = () => {
   const [devices, setDevices] = useState([]);
   const [geography, setGeography] = useState([]);
   const [inAppFunnel, setInAppFunnel] = useState(null);
+  // Distinct users per screen (GA4 built-in screenName dimension). Powers the
+  // screen-level sub-steps under each in-app funnel step (e.g. onboarding
+  // screen drop-off). Kept as an object { name → users } for O(1) lookup.
+  const [screensByName, setScreensByName] = useState(null);
   // ASC (App Store Connect — iOS top-of-funnel) is fetched independently of
   // the GA4 property. `null` before load, `{ connected: false }` when the
   // user has no ASC connection, `{ connected: true, totals, connectionName }`
   // otherwise. Kept separate so a missing ASC connection doesn't block GA4.
   const [ascState, setAscState] = useState(null);
+  // Ad attribution rows from ASC (source × campaign × PPV × installs).
+  // Same lifecycle as ascState — fetched alongside install funnel.
+  const [adAttribution, setAdAttribution] = useState(null);
 
   const [loading, setLoading] = useState(true);
   const [loadingReports, setLoadingReports] = useState(false);
@@ -169,7 +176,7 @@ const Analytics = () => {
     // fail on properties that don't yet have any funnel-eligible data. Fetched
     // with .catch so a funnel failure doesn't blank out the whole dashboard.
     try {
-      const [o, t, l, e, c, d, g, f] = await Promise.all([
+      const [o, t, l, e, c, d, g, f, sv] = await Promise.all([
         analyticsService.getOverview(propertyId, rangeDays),
         analyticsService.getTraffic(propertyId, rangeDays),
         analyticsService.getLandingPages(propertyId, rangeDays),
@@ -181,6 +188,10 @@ const Analytics = () => {
           console.warn('[Analytics] in-app funnel failed:', err?.response?.data || err?.message);
           return null;
         }),
+        analyticsService.getScreenViews(propertyId, rangeDays).catch(err => {
+          console.warn('[Analytics] screen views failed:', err?.response?.data || err?.message);
+          return null;
+        }),
       ]);
       setOverview(o.overview);
       setTraffic(t.traffic || []);
@@ -190,6 +201,10 @@ const Analytics = () => {
       setDevices(d.devices || []);
       setGeography(g.geography || []);
       setInAppFunnel(f?.inAppFunnel || null);
+      // Index screens by name for O(1) sub-step lookups in FunnelSection.
+      const screenMap = {};
+      (sv?.screenViews?.screens || []).forEach(s => { screenMap[s.screenName] = s.users; });
+      setScreensByName(screenMap);
     } catch (err) {
       const status = err.response?.status;
       const data = err.response?.data || {};
@@ -237,7 +252,15 @@ const Analytics = () => {
         // Use the first connection. Multi-app users can pick via the App Store
         // page for now — a picker here is a follow-up if it comes up.
         const conn = connections[0];
-        const funnel = await analyticsService.getAscInstallFunnel(conn.connectionId, days);
+        // Fetch install-funnel totals + ad-attribution in parallel — same
+        // connection, same date range, independent Apple reports.
+        const [funnel, attribution] = await Promise.all([
+          analyticsService.getAscInstallFunnel(conn.connectionId, days),
+          analyticsService.getAscAdAttribution(conn.connectionId, days).catch(err => {
+            console.warn('[Analytics] ASC ad attribution failed:', err?.response?.data || err?.message);
+            return null;
+          }),
+        ]);
         if (cancelled) return;
         setAscState({
           connected: true,
@@ -245,10 +268,12 @@ const Analytics = () => {
           totals: funnel?.totals || null,
           days: funnel?.days || days,
         });
+        setAdAttribution(attribution);
       } catch (err) {
         if (cancelled) return;
         console.warn('[Analytics] ASC funnel failed:', err?.response?.data || err?.message);
         setAscState({ connected: false, error: err?.response?.data?.error || err?.message });
+        setAdAttribution(null);
       }
     })();
     return () => { cancelled = true; };
@@ -370,7 +395,13 @@ const Analytics = () => {
 
           <AppStoreSection ascState={ascState} />
 
-          <FunnelSection inAppFunnel={inAppFunnel} loading={loadingReports} />
+          <AdAttributionSection attribution={adAttribution} />
+
+          <FunnelSection
+            inAppFunnel={inAppFunnel}
+            screensByName={screensByName}
+            loading={loadingReports}
+          />
 
           {events.highlighted && events.highlighted.length > 0 && (
             <HighlightedEvents events={events.highlighted} />
@@ -668,12 +699,149 @@ const AppStoreSection = ({ ascState }) => {
   );
 };
 
+// Ad Attribution — pairs paid campaigns with the actual installs they drove.
+// Rows come pre-sorted with paid campaigns first (isPaid=true), then organic.
+// Renders two tables: "Paid" (campaign-tagged) and "Organic" (no campaign)
+// so ad ROI is instantly readable without hunting through organic rows.
+const AdAttributionSection = ({ attribution }) => {
+  if (!attribution) return null;
+  const rows = attribution.rows || [];
+  if (rows.length === 0) return null;
+  const paid = rows.filter(r => r.isPaid);
+  const organic = rows.filter(r => !r.isPaid);
+  const paidT = attribution.paidTotals || { productPageViews: 0, installs: 0 };
+  const paidConvRate = paidT.productPageViews > 0
+    ? paidT.installs / paidT.productPageViews
+    : null;
+  return (
+    <div className="mt-6">
+      <Section
+        title="Ad Attribution (iOS)"
+        subtitle={
+          <>
+            Which App Store sources drove installs · paid campaigns highlighted ·{' '}
+            <span className="text-gray-400">
+              Meta / Google web ads must include Apple attribution params
+              (<code className="text-[10px] px-1 bg-gray-100 rounded">pt</code>,
+              {' '}<code className="text-[10px] px-1 bg-gray-100 rounded">ct</code>) to appear here with a campaign name
+            </span>
+          </>
+        }
+      >
+        {paid.length > 0 && (
+          <div className="p-4">
+            <div className="flex items-center justify-between text-xs font-medium text-gray-600 uppercase tracking-wide mb-2">
+              <span>Paid Campaigns</span>
+              <span className="normal-case text-gray-500">
+                {fmtInt(paidT.installs)} installs from {fmtInt(paidT.productPageViews)} PPVs
+                {paidConvRate !== null && paidConvRate <= 1 && (
+                  <> · <span className="font-semibold text-gray-700">{fmtPercent(paidConvRate)} conv</span></>
+                )}
+              </span>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-gray-100">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <Th>Source</Th>
+                    <Th>Campaign</Th>
+                    <Th align="right">Impressions</Th>
+                    <Th align="right">Page visitors</Th>
+                    <Th align="right">Installs</Th>
+                    <Th align="right">Conv rate</Th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {paid.slice(0, 25).map((r, i) => (
+                    <tr key={i} className="bg-emerald-50/40">
+                      <Td className="font-medium text-gray-900">{r.sourceType}</Td>
+                      <Td className="font-mono text-xs">{r.campaign}</Td>
+                      <Td align="right">{fmtInt(r.impressions)}</Td>
+                      <Td align="right">{fmtInt(r.productPageViews)}</Td>
+                      <Td align="right" className="font-semibold text-emerald-700">{fmtInt(r.installs)}</Td>
+                      <Td align="right">
+                        {r.conversionRate !== null && r.conversionRate <= 1
+                          ? fmtPercent(r.conversionRate)
+                          : '—'}
+                      </Td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+        {organic.length > 0 && (
+          <div className="p-4 border-t border-gray-100">
+            <div className="text-xs font-medium text-gray-600 uppercase tracking-wide mb-2">
+              Organic Sources
+            </div>
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-gray-100">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <Th>Source</Th>
+                    <Th align="right">Impressions</Th>
+                    <Th align="right">Page visitors</Th>
+                    <Th align="right">Installs</Th>
+                    <Th align="right">Conv rate</Th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {organic.slice(0, 25).map((r, i) => (
+                    <tr key={i}>
+                      <Td className="font-medium text-gray-900">{r.sourceType}</Td>
+                      <Td align="right">{fmtInt(r.impressions)}</Td>
+                      <Td align="right">{fmtInt(r.productPageViews)}</Td>
+                      <Td align="right">{fmtInt(r.installs)}</Td>
+                      <Td align="right">
+                        {r.conversionRate !== null && r.conversionRate <= 1
+                          ? fmtPercent(r.conversionRate)
+                          : '—'}
+                      </Td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+        {paid.length === 0 && (
+          <div className="px-4 pb-3 text-xs text-gray-500">
+            No campaign-tagged installs in this window. If you're running ads,
+            check that ad landing URLs include Apple's
+            {' '}<code className="text-[10px] px-1 bg-gray-100 rounded">pt</code> and
+            {' '}<code className="text-[10px] px-1 bg-gray-100 rounded">ct</code> parameters
+            (or use Apple Search Ads, which auto-tags).
+          </div>
+        )}
+      </Section>
+    </div>
+  );
+};
+
+// Sub-step definitions — map each funnel step key to the app screens that
+// represent it. Sub-steps use GA4 screenName distinct-user counts (unordered,
+// see FunnelSection comment). Kept front-end-side because it's a UI concern
+// (backend just serves raw screen counts).
+const FUNNEL_SUBSTEPS = {
+  onboarding_done: [
+    { screenName: 'first_load',            label: 'First load' },
+    { screenName: 'onboarding_welcome',    label: 'Welcome' },
+    { screenName: 'onboarding_user_info',  label: 'User info' },
+    { screenName: 'onboarding_permissions',label: 'Permissions' },
+  ],
+  paywall: [
+    { screenName: 'paywall',               label: 'Paywall shown' },
+  ],
+};
+
 // Renders the in-app funnel from getInAppFunnel. Prefers GA4's v1alpha
 // runFunnelReport (real ordered drop-off). When that endpoint fails, the
 // backend falls back to per-step distinct-user counts via v1beta — same
 // shape, but the funnel is "approximate" (a user could skip a step and
 // still be counted at a later one). `inAppFunnel.source` tells us which.
-const FunnelSection = ({ inAppFunnel, loading }) => {
+const FunnelSection = ({ inAppFunnel, screensByName, loading }) => {
   const funnel = inAppFunnel?.funnel || null;
   const source = inAppFunnel?.source;
   const fallbackReason = inAppFunnel?.fallbackReason;
@@ -770,11 +938,70 @@ const FunnelSection = ({ inAppFunnel, loading }) => {
                     style={{ width: `${barPct}%` }}
                   />
                 </div>
+                {/* Screen-level sub-steps for steps that have them mapped
+                    (e.g. onboarding has 4 screens). Renders indented under
+                    the parent step with its own drop-off percentages. */}
+                <FunnelSubSteps
+                  stepKey={stage.key}
+                  screensByName={screensByName}
+                  topUsers={topUsers}
+                />
               </div>
             );
           })}
         </div>
       </Section>
+    </div>
+  );
+};
+
+// Sub-steps for a single parent funnel step. Nothing renders if the step
+// has no configured sub-steps or if screensByName isn't loaded yet.
+const FunnelSubSteps = ({ stepKey, screensByName, topUsers }) => {
+  const subs = FUNNEL_SUBSTEPS[stepKey];
+  if (!subs || !screensByName) return null;
+  // Filter to substeps that have real data. A step whose screen never
+  // fired in the period is either not part of the current app version or
+  // the user genuinely never saw it — either way, hiding it is cleaner
+  // than showing a row of zeros.
+  const rows = subs
+    .map(s => ({ ...s, users: screensByName[s.screenName] ?? 0 }))
+    .filter(r => r.users > 0 || screensByName[r.screenName] !== undefined);
+  if (rows.length === 0) return null;
+  return (
+    <div className="mt-2 ml-4 pl-3 border-l-2 border-gray-100 space-y-1.5">
+      {rows.map((r, i) => {
+        const prev = i === 0 ? r.users : rows[i - 1].users;
+        const dropOff = i === 0 ? 0 : Math.max(0, prev > 0 ? 1 - r.users / prev : 0);
+        const pctOfLead = topUsers > 0 ? r.users / topUsers : 0;
+        return (
+          <div key={r.screenName}>
+            <div className="flex items-center justify-between text-xs">
+              <div className="flex items-baseline gap-2 min-w-0">
+                <span className="text-gray-600">↳ {r.label}</span>
+                <span className="text-[10px] text-gray-400 font-mono truncate">{r.screenName}</span>
+              </div>
+              <div className="flex items-center gap-3 flex-shrink-0">
+                <span className="tabular-nums text-gray-800">{fmtInt(r.users)}</span>
+                <span className="tabular-nums text-gray-400">{fmtPercent(pctOfLead)}</span>
+                {i > 0 && (
+                  <span
+                    className={`tabular-nums text-[11px] ${dropOff > 0 ? 'text-red-400' : 'text-gray-300'}`}
+                  >
+                    ↓ {fmtPercent(dropOff)}
+                  </span>
+                )}
+              </div>
+            </div>
+            <div className="mt-0.5 h-1 bg-gray-50 rounded">
+              <div
+                className="h-1 bg-primary-300 rounded"
+                style={{ width: `${Math.max(pctOfLead * 100, 0.5)}%` }}
+              />
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 };

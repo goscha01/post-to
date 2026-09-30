@@ -353,6 +353,26 @@ router.get('/analytics/funnel', async (req, res) => {
   }
 });
 
+// Ad-attribution report — pairs impressions/PPVs with actual installs per
+// (Source Type, Campaign) so paid ad campaigns can be measured end-to-end.
+// Distinct from /analytics/sources which only exposes engagement metrics.
+router.get('/analytics/ad-attribution', async (req, res) => {
+  const userId = req.user.userId;
+  try {
+    const connectionId = String(req.query.connectionId || '');
+    if (!connectionId) return res.status(400).json({ error: 'connectionId required' });
+    const status = await ascAnalytics.getStatus({ userId, connectionId });
+    if (!status) return res.status(404).json({ error: 'Connection not found' });
+    const report = await ascAnalytics.getAdAttribution({
+      connectionId,
+      days: req.query.days,
+    });
+    res.json(report);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.get('/analytics/sources', async (req, res) => {
   const userId = req.user.userId;
   try {

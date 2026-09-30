@@ -82,6 +82,13 @@ const getInAppFunnel = async (propertyId, days) => {
   return res.data;
 };
 
+// Distinct users per screenName (GA4 built-in dimension). Used by the
+// frontend to render screen-level sub-steps under each in-app funnel step.
+const getScreenViews = async (propertyId, days) => {
+  const res = await axios.get('/api/analytics/screen-views', withPropertyDays(propertyId, days));
+  return res.data;
+};
+
 // App Store Connect helpers — iOS top-of-funnel (impressions → PPVs → installs).
 // Kept in this service (not a separate ascService) so the Analytics page has
 // one import surface for all its data.
@@ -92,6 +99,15 @@ const listAscConnections = async () => {
 
 const getAscInstallFunnel = async (connectionId, days) => {
   const res = await axios.get('/api/asc/analytics/funnel', {
+    params: { connectionId, ...(days ? { days } : {}) },
+  });
+  return res.data;
+};
+
+// Ad attribution — per (Source Type, Campaign) with PPVs + real installs.
+// Answers "of my ad spend, how many installs did each campaign drive?"
+const getAscAdAttribution = async (connectionId, days) => {
+  const res = await axios.get('/api/asc/analytics/ad-attribution', {
     params: { connectionId, ...(days ? { days } : {}) },
   });
   return res.data;
@@ -110,8 +126,10 @@ const analyticsService = {
   getDevices,
   getGeography,
   getInAppFunnel,
+  getScreenViews,
   listAscConnections,
   getAscInstallFunnel,
+  getAscAdAttribution,
 };
 
 export default analyticsService;

@@ -502,6 +502,32 @@ function describeStepFilter(filter) {
   return '(unknown)';
 }
 
+// Distinct users per screen (via GA4's built-in `screenName` dimension).
+// Used by the frontend to render screen-level sub-steps under each in-app
+// funnel step — the classic "which onboarding screen do people leak on".
+// Unordered by design: a user who fired screen_view for screen 3 without
+// screen 2 still counts for screen 3, because GA4's runFunnelReport (the
+// only source of ordered semantics) doesn't accept screenName as a filter.
+// For ProofPix's linear onboarding this approximation is close to real
+// drop-off but may show small non-monotonic dips when users skip a screen.
+async function getScreenViews(accessToken, propertyId, days) {
+  const response = await runReport(accessToken, propertyId, {
+    dateRanges: dateRangeFromDays(days),
+    dimensions: [{ name: 'screenName' }],
+    metrics: [{ name: 'activeUsers' }],
+    orderBys: [{ metric: { metricName: 'activeUsers' }, desc: true }],
+    limit: 200,
+  });
+  const shaped = shapeReport(response);
+  return {
+    screens: shaped.rows.map(r => ({
+      screenName: r.screenName || '(not set)',
+      users: Number(r.activeUsers || 0),
+    })),
+    rangeDays: Math.max(1, Math.min(365, parseInt(days, 10) || 30)),
+  };
+}
+
 async function getCampaigns(accessToken, propertyId, days) {
   const response = await runReport(accessToken, propertyId, {
     dateRanges: dateRangeFromDays(days),
@@ -669,6 +695,7 @@ module.exports = {
   getEvents,
   getCampaigns,
   getInAppFunnel,
+  getScreenViews,
   markConversionEvent,
   listConversionEvents,
   normalizeApiError,

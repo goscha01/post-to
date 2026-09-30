@@ -472,5 +472,6 @@ router.get('/campaigns',       reportHandler(analytics.getCampaigns,      'campa
 router.get('/devices',         reportHandler(analytics.getDevices,        'devices'));
 router.get('/geography',       reportHandler(analytics.getGeography,      'geography'));
 router.get('/in-app-funnel',   reportHandler(analytics.getInAppFunnel,    'inAppFunnel'));
+router.get('/screen-views',    reportHandler(analytics.getScreenViews,    'screenViews'));
 
 module.exports = router;
