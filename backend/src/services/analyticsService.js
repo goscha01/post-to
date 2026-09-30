@@ -502,6 +502,51 @@ function describeStepFilter(filter) {
   return '(unknown)';
 }
 
+// Breakdown of plan_selected events by plan_id + billing_period. Powers the
+// "which plan is being picked" sub-step under the Selected a plan funnel row.
+//
+// Depends on `plan_id` and `billing_period` being registered as event-scoped
+// custom dimensions in GA4 Admin → Custom Definitions. Without registration
+// GA4 returns 400 "Field customEvent:X is not a valid dimension" — we catch
+// that so the funnel stays rendered and the frontend can show a hint.
+async function getPlanSelectedBreakdown(accessToken, propertyId, days) {
+  const rangeDays = Math.max(1, Math.min(365, parseInt(days, 10) || 30));
+  try {
+    const response = await runReport(accessToken, propertyId, {
+      dateRanges: dateRangeFromDays(days),
+      dimensions: [
+        { name: 'customEvent:plan_id' },
+        { name: 'customEvent:billing_period' },
+      ],
+      metrics: [{ name: 'activeUsers' }, { name: 'eventCount' }],
+      dimensionFilter: {
+        filter: {
+          fieldName: 'eventName',
+          stringFilter: { matchType: 'EXACT', value: 'plan_selected' },
+        },
+      },
+      orderBys: [{ metric: { metricName: 'eventCount' }, desc: true }],
+      limit: 30,
+    });
+    const shaped = shapeReport(response);
+    return {
+      rows: shaped.rows.map(r => ({
+        plan: r['customEvent:plan_id'] || '(not set)',
+        billingPeriod: r['customEvent:billing_period'] || '(not set)',
+        users: Number(r.activeUsers || 0),
+        eventCount: Number(r.eventCount || 0),
+      })),
+      rangeDays,
+    };
+  } catch (err) {
+    // Custom dimensions not registered in GA4 Admin → return empty + error
+    // so the frontend can render a "register these custom dims" hint.
+    const message = err?.response?.data?.error?.message || err?.message || 'unknown';
+    logger.warn('analytics.plan_selected_breakdown.failed', { propertyId, message });
+    return { rows: [], error: message, rangeDays };
+  }
+}
+
 // Distinct users per screen (via GA4's built-in `screenName` dimension).
 // Used by the frontend to render screen-level sub-steps under each in-app
 // funnel step — the classic "which onboarding screen do people leak on".
@@ -696,6 +741,7 @@ module.exports = {
   getCampaigns,
   getInAppFunnel,
   getScreenViews,
+  getPlanSelectedBreakdown,
   markConversionEvent,
   listConversionEvents,
   normalizeApiError,

@@ -89,6 +89,14 @@ const getScreenViews = async (propertyId, days) => {
   return res.data;
 };
 
+// Breakdown of plan_selected events by plan_id + billing_period. Requires
+// those params to be registered as event-scoped custom dimensions in GA4
+// Admin; backend surfaces an error field if not.
+const getPlanBreakdown = async (propertyId, days) => {
+  const res = await axios.get('/api/analytics/plan-breakdown', withPropertyDays(propertyId, days));
+  return res.data;
+};
+
 // App Store Connect helpers — iOS top-of-funnel (impressions → PPVs → installs).
 // Kept in this service (not a separate ascService) so the Analytics page has
 // one import surface for all its data.
@@ -127,6 +135,7 @@ const analyticsService = {
   getGeography,
   getInAppFunnel,
   getScreenViews,
+  getPlanBreakdown,
   listAscConnections,
   getAscInstallFunnel,
   getAscAdAttribution,

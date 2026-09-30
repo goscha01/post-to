@@ -79,6 +79,10 @@ const Analytics = () => {
   // screen-level sub-steps under each in-app funnel step (e.g. onboarding
   // screen drop-off). Kept as an object { name → users } for O(1) lookup.
   const [screensByName, setScreensByName] = useState(null);
+  // plan_selected breakdown by plan_id + billing_period. Shown as sub-steps
+  // under the Selected a plan funnel row. `null` before load, `{ rows, error }`
+  // after (error is set if custom dims aren't registered in GA4 Admin).
+  const [planBreakdown, setPlanBreakdown] = useState(null);
   // ASC (App Store Connect — iOS top-of-funnel) is fetched independently of
   // the GA4 property. `null` before load, `{ connected: false }` when the
   // user has no ASC connection, `{ connected: true, totals, connectionName }`
@@ -176,7 +180,7 @@ const Analytics = () => {
     // fail on properties that don't yet have any funnel-eligible data. Fetched
     // with .catch so a funnel failure doesn't blank out the whole dashboard.
     try {
-      const [o, t, l, e, c, d, g, f, sv] = await Promise.all([
+      const [o, t, l, e, c, d, g, f, sv, pb] = await Promise.all([
         analyticsService.getOverview(propertyId, rangeDays),
         analyticsService.getTraffic(propertyId, rangeDays),
         analyticsService.getLandingPages(propertyId, rangeDays),
@@ -192,6 +196,10 @@ const Analytics = () => {
           console.warn('[Analytics] screen views failed:', err?.response?.data || err?.message);
           return null;
         }),
+        analyticsService.getPlanBreakdown(propertyId, rangeDays).catch(err => {
+          console.warn('[Analytics] plan breakdown failed:', err?.response?.data || err?.message);
+          return null;
+        }),
       ]);
       setOverview(o.overview);
       setTraffic(t.traffic || []);
@@ -205,6 +213,7 @@ const Analytics = () => {
       const screenMap = {};
       (sv?.screenViews?.screens || []).forEach(s => { screenMap[s.screenName] = s.users; });
       setScreensByName(screenMap);
+      setPlanBreakdown(pb?.planBreakdown || null);
     } catch (err) {
       const status = err.response?.status;
       const data = err.response?.data || {};
@@ -400,6 +409,7 @@ const Analytics = () => {
           <FunnelSection
             inAppFunnel={inAppFunnel}
             screensByName={screensByName}
+            planBreakdown={planBreakdown}
             loading={loadingReports}
           />
 
@@ -841,7 +851,7 @@ const FUNNEL_SUBSTEPS = {
 // backend falls back to per-step distinct-user counts via v1beta — same
 // shape, but the funnel is "approximate" (a user could skip a step and
 // still be counted at a later one). `inAppFunnel.source` tells us which.
-const FunnelSection = ({ inAppFunnel, screensByName, loading }) => {
+const FunnelSection = ({ inAppFunnel, screensByName, planBreakdown, loading }) => {
   const funnel = inAppFunnel?.funnel || null;
   const source = inAppFunnel?.source;
   const fallbackReason = inAppFunnel?.fallbackReason;
@@ -946,6 +956,12 @@ const FunnelSection = ({ inAppFunnel, screensByName, loading }) => {
                   screensByName={screensByName}
                   topUsers={topUsers}
                 />
+                {/* Plan breakdown under the "Selected a plan" step —
+                    which plan (starter/pro/business) and which cadence
+                    (monthly/annual/seat) users are picking. */}
+                {stage.key === 'plan_selected' && (
+                  <PlanBreakdownSubSteps planBreakdown={planBreakdown} />
+                )}
               </div>
             );
           })}
@@ -1002,6 +1018,45 @@ const FunnelSubSteps = ({ stepKey, screensByName, topUsers }) => {
           </div>
         );
       })}
+    </div>
+  );
+};
+
+// Plan breakdown under the "Selected a plan" funnel row. Shows one line per
+// (plan, billing_period) combination with distinct users + event count.
+// Renders a "register custom dims in GA4 Admin" hint if the query errored
+// (custom event dimensions `plan_id` / `billing_period` not registered).
+const PlanBreakdownSubSteps = ({ planBreakdown }) => {
+  if (!planBreakdown) return null;
+  if (planBreakdown.error) {
+    return (
+      <div className="mt-2 ml-4 pl-3 border-l-2 border-amber-100 text-[11px] text-amber-700">
+        ↳ Plan breakdown unavailable — register{' '}
+        <code className="text-[10px] px-1 bg-amber-50 rounded">plan_id</code> and{' '}
+        <code className="text-[10px] px-1 bg-amber-50 rounded">billing_period</code>{' '}
+        as event-scoped custom dimensions in GA4 Admin → Custom Definitions.
+      </div>
+    );
+  }
+  const rows = planBreakdown.rows || [];
+  const meaningful = rows.filter(r => r.eventCount > 0 && r.plan !== '(not set)');
+  if (meaningful.length === 0) return null;
+  return (
+    <div className="mt-2 ml-4 pl-3 border-l-2 border-gray-100 space-y-1">
+      {meaningful.map((r, i) => (
+        <div key={i} className="flex items-center justify-between text-xs">
+          <div className="flex items-baseline gap-2 min-w-0">
+            <span className="text-gray-600">↳ {r.plan}</span>
+            {r.billingPeriod && r.billingPeriod !== '(not set)' && (
+              <span className="text-[10px] text-gray-400 font-mono">{r.billingPeriod}</span>
+            )}
+          </div>
+          <div className="flex items-center gap-3 flex-shrink-0">
+            <span className="tabular-nums text-gray-800">{fmtInt(r.users)} users</span>
+            <span className="tabular-nums text-gray-400">{fmtInt(r.eventCount)} taps</span>
+          </div>
+        </div>
+      ))}
     </div>
   );
 };

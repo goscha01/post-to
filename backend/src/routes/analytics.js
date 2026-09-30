@@ -473,5 +473,6 @@ router.get('/devices',         reportHandler(analytics.getDevices,        'devic
 router.get('/geography',       reportHandler(analytics.getGeography,      'geography'));
 router.get('/in-app-funnel',   reportHandler(analytics.getInAppFunnel,    'inAppFunnel'));
 router.get('/screen-views',    reportHandler(analytics.getScreenViews,    'screenViews'));
+router.get('/plan-breakdown',  reportHandler(analytics.getPlanSelectedBreakdown, 'planBreakdown'));
 
 module.exports = router;
