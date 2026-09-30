@@ -834,15 +834,24 @@ const AdAttributionSection = ({ attribution }) => {
 // represent it. Sub-steps use GA4 screenName distinct-user counts (unordered,
 // see FunnelSection comment). Kept front-end-side because it's a UI concern
 // (backend just serves raw screen counts).
+// Screens that map to each parent funnel step. Verified against the actual
+// screen_view events GA4 receives from ProofPix (checked 2026-09-30):
+//   - Current build collapses the whole onboarding flow (welcome + user info +
+//     permissions) into a single FirstLoadScreen. The separate
+//     onboarding_welcome / onboarding_user_info / onboarding_permissions
+//     screens exist in App.js's SCREEN_NAME_MAP but never fire — that flow
+//     was refactored out. For screen-level onboarding drop-off, ProofPix
+//     would need to reinstate the separate screens or add logScreenView
+//     calls at each in-screen step.
+//   - `first_load` (30 users) > "Onboarding done" (23 raw) shows there IS
+//     drop-off within onboarding — 7 users bounce from the load screen
+//     before completing.
 const FUNNEL_SUBSTEPS = {
   onboarding_done: [
-    { screenName: 'first_load',            label: 'First load' },
-    { screenName: 'onboarding_welcome',    label: 'Welcome' },
-    { screenName: 'onboarding_user_info',  label: 'User info' },
-    { screenName: 'onboarding_permissions',label: 'Permissions' },
+    { screenName: 'first_load', label: 'First load (onboarding)' },
   ],
   paywall: [
-    { screenName: 'paywall',               label: 'Paywall shown' },
+    { screenName: 'paywall', label: 'Paywall shown' },
   ],
 };
 
