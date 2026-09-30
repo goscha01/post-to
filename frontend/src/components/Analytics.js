@@ -971,19 +971,21 @@ const FunnelSection = ({ inAppFunnel, screensByName, planBreakdown, loading }) =
   );
 };
 
-// Sub-steps for a single parent funnel step. Nothing renders if the step
-// has no configured sub-steps or if screensByName isn't loaded yet.
+// Sub-steps for a single parent funnel step. Renders all mapped screens
+// (even at 0) so a broken mapping is visible instead of silently hidden.
+// When every mapped screen is missing from the data, prints a debug line
+// showing the top-N actual screen names GA4 knows about — makes it easy
+// to spot when Firebase-auto-generated screen names differ from the
+// snake_case names we expected.
 const FunnelSubSteps = ({ stepKey, screensByName, topUsers }) => {
   const subs = FUNNEL_SUBSTEPS[stepKey];
   if (!subs || !screensByName) return null;
-  // Filter to substeps that have real data. A step whose screen never
-  // fired in the period is either not part of the current app version or
-  // the user genuinely never saw it — either way, hiding it is cleaner
-  // than showing a row of zeros.
-  const rows = subs
-    .map(s => ({ ...s, users: screensByName[s.screenName] ?? 0 }))
-    .filter(r => r.users > 0 || screensByName[r.screenName] !== undefined);
-  if (rows.length === 0) return null;
+  const rows = subs.map(s => ({
+    ...s,
+    users: screensByName[s.screenName] ?? 0,
+    knownInData: screensByName[s.screenName] !== undefined,
+  }));
+  const noneKnown = rows.every(r => !r.knownInData);
   return (
     <div className="mt-2 ml-4 pl-3 border-l-2 border-gray-100 space-y-1.5">
       {rows.map((r, i) => {
@@ -994,8 +996,15 @@ const FunnelSubSteps = ({ stepKey, screensByName, topUsers }) => {
           <div key={r.screenName}>
             <div className="flex items-center justify-between text-xs">
               <div className="flex items-baseline gap-2 min-w-0">
-                <span className="text-gray-600">↳ {r.label}</span>
+                <span className={r.knownInData ? 'text-gray-600' : 'text-gray-400'}>
+                  ↳ {r.label}
+                </span>
                 <span className="text-[10px] text-gray-400 font-mono truncate">{r.screenName}</span>
+                {!r.knownInData && (
+                  <span className="text-[10px] text-amber-600" title="This screen name doesn't appear in GA4's data">
+                    (not in data)
+                  </span>
+                )}
               </div>
               <div className="flex items-center gap-3 flex-shrink-0">
                 <span className="tabular-nums text-gray-800">{fmtInt(r.users)}</span>
@@ -1018,9 +1027,23 @@ const FunnelSubSteps = ({ stepKey, screensByName, topUsers }) => {
           </div>
         );
       })}
+      {noneKnown && (
+        <div className="mt-2 text-[11px] text-amber-700">
+          None of the expected screen names appear in GA4. Top screens in this
+          window: {topScreenNames(screensByName, 8).join(', ') || '(no screens tracked)'}
+        </div>
+      )}
     </div>
   );
 };
+
+// Returns the top-N screen names from screensByName, sorted by user count.
+function topScreenNames(screensByName, n) {
+  return Object.entries(screensByName || {})
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, n)
+    .map(([name, users]) => `${name} (${users})`);
+}
 
 // Plan breakdown under the "Selected a plan" funnel row. Shows one line per
 // (plan, billing_period) combination with distinct users + event count.
