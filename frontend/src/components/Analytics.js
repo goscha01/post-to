@@ -1027,10 +1027,16 @@ const FunnelSubSteps = ({ stepKey, screensByName, topUsers }) => {
           </div>
         );
       })}
-      {noneKnown && (
-        <div className="mt-2 text-[11px] text-amber-700">
-          None of the expected screen names appear in GA4. Top screens in this
-          window: {topScreenNames(screensByName, 8).join(', ') || '(no screens tracked)'}
+      {/* Show top screens whenever ANY expected screen is missing (not just
+          when all are missing). Reveals the actual GA4 screen names so we
+          can update the FUNNEL_SUBSTEPS mapping. */}
+      {rows.some(r => !r.knownInData) && (
+        <div className="mt-2 text-[11px] text-gray-500">
+          <span className="text-amber-700">Screens missing:</span>{' '}
+          {rows.filter(r => !r.knownInData).map(r => r.screenName).join(', ')}
+          <br />
+          <span className="text-gray-600">All screens in GA4 (top 15):</span>{' '}
+          {topScreenNames(screensByName, 15).join(', ') || '(no screens tracked)'}
         </div>
       )}
     </div>
