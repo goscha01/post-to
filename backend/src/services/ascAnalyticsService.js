@@ -140,12 +140,54 @@ async function bootstrap(userId, connectionId) {
 async function walk(userId, connectionId) {
   const ctx = await loadCredsFromConnection(userId, connectionId);
   if (!ctx) throw new Error('ASC connection not found');
-  const requestId = ctx.metadata.analytics_report_request_id;
+  let requestId = ctx.metadata.analytics_report_request_id;
   if (!requestId) throw new Error('Analytics not bootstrapped for this connection');
   if (!ctx.appId) throw new Error('Connection has no primary appId');
 
+  // Self-heal: Apple auto-stops ONGOING report requests that go long
+  // stretches without being polled ("stoppedDueToInactivity"). A stopped
+  // request keeps its historical instances but generates no new ones —
+  // walks silently return zero forever and the dashboard slowly goes
+  // stale. Check for this on every walk; if stopped, create a fresh
+  // request and continue against the new id.
+  const requestState = await asc.findOngoingReportRequestForApp(ctx.creds, { appId: ctx.appId })
+    .catch(err => {
+      logger.warn('asc_analytics.walk.request_state_check_failed', {
+        userId, connectionId, error: err.message,
+      });
+      return null;
+    });
+  if (requestState?.stoppedDueToInactivity || (requestState && requestState.id !== requestId)) {
+    logger.warn('asc_analytics.walk.request_stopped', {
+      userId, connectionId, oldRequestId: requestId,
+      apiRequestId: requestState.id,
+      stoppedDueToInactivity: requestState.stoppedDueToInactivity,
+    });
+    // Old request is stopped or Apple issued a different one — bootstrap
+    // a fresh ONGOING request. Apple will backfill it with historical
+    // instances over the next 24-48h.
+    try {
+      const created = await asc.createOngoingReportRequest(ctx.creds, { appId: ctx.appId });
+      requestId = created.id;
+    } catch (err) {
+      if (err.isConflict) {
+        // Race: another walk already recreated it. Look up the fresh id.
+        const existing = await asc.findOngoingReportRequestForApp(ctx.creds, { appId: ctx.appId });
+        if (existing && !existing.stoppedDueToInactivity) requestId = existing.id;
+        else throw err;
+      } else {
+        throw err;
+      }
+    }
+    await patchConnectionMetadata(connectionId, {
+      analytics_report_request_id: requestId,
+      analytics_bootstrap_at: new Date().toISOString(),
+      analytics_rebootstrap_reason: 'stoppedDueToInactivity',
+    });
+  }
+
   const reports = await asc.listReportsInRequest(ctx.creds, requestId, { categories: CATEGORIES });
-  const summary = { categories: {}, totalInstances: 0, totalRows: 0 };
+  const summary = { categories: {}, totalInstances: 0, totalRows: 0, requestId };
 
   for (const report of reports) {
     if (!CATEGORIES.includes(report.category)) continue;
