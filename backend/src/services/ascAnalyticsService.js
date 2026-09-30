@@ -144,12 +144,18 @@ async function walk(userId, connectionId) {
   if (!requestId) throw new Error('Analytics not bootstrapped for this connection');
   if (!ctx.appId) throw new Error('Connection has no primary appId');
 
-  // Self-heal: Apple auto-stops ONGOING report requests that go long
-  // stretches without being polled ("stoppedDueToInactivity"). A stopped
-  // request keeps its historical instances but generates no new ones —
-  // walks silently return zero forever and the dashboard slowly goes
-  // stale. Check for this on every walk; if stopped, create a fresh
-  // request and continue against the new id.
+  // Self-heal: three failure modes have all caused a silent "walks return
+  // zero forever, dashboard drifts stale" pattern:
+  //   (a) stoppedDueToInactivity — Apple auto-pauses ONGOING requests
+  //       that go long stretches without being polled.
+  //   (b) The stored requestId points at a request Apple no longer has
+  //       (deleted / GC'd / migrated) — listReportsInRequest silently
+  //       returns [].
+  //   (c) Apple has no ONGOING request at all for this app (nuked
+  //       server-side), so findOngoingReportRequestForApp returns null.
+  //
+  // Check for (a) and (c) up front; check for (b) after listReportsInRequest.
+  let rebootstrapReason = null;
   const requestState = await asc.findOngoingReportRequestForApp(ctx.creds, { appId: ctx.appId })
     .catch(err => {
       logger.warn('asc_analytics.walk.request_state_check_failed', {
@@ -157,21 +163,27 @@ async function walk(userId, connectionId) {
       });
       return null;
     });
-  if (requestState?.stoppedDueToInactivity || (requestState && requestState.id !== requestId)) {
-    logger.warn('asc_analytics.walk.request_stopped', {
+  if (!requestState) {
+    rebootstrapReason = 'no_ongoing_request_at_apple';
+  } else if (requestState.stoppedDueToInactivity) {
+    rebootstrapReason = 'stoppedDueToInactivity';
+  } else if (requestState.id !== requestId) {
+    rebootstrapReason = 'request_id_mismatch';
+  }
+
+  if (rebootstrapReason) {
+    logger.warn('asc_analytics.walk.rebootstrap_triggered', {
       userId, connectionId, oldRequestId: requestId,
-      apiRequestId: requestState.id,
-      stoppedDueToInactivity: requestState.stoppedDueToInactivity,
+      apiRequestId: requestState?.id || null,
+      stoppedDueToInactivity: requestState?.stoppedDueToInactivity || false,
+      reason: rebootstrapReason,
     });
-    // Old request is stopped or Apple issued a different one — bootstrap
-    // a fresh ONGOING request. Apple will backfill it with historical
-    // instances over the next 24-48h.
     try {
       const created = await asc.createOngoingReportRequest(ctx.creds, { appId: ctx.appId });
       requestId = created.id;
     } catch (err) {
       if (err.isConflict) {
-        // Race: another walk already recreated it. Look up the fresh id.
+        // Race / already-exists: look it up and use whatever Apple has.
         const existing = await asc.findOngoingReportRequestForApp(ctx.creds, { appId: ctx.appId });
         if (existing && !existing.stoppedDueToInactivity) requestId = existing.id;
         else throw err;
@@ -182,14 +194,49 @@ async function walk(userId, connectionId) {
     await patchConnectionMetadata(connectionId, {
       analytics_report_request_id: requestId,
       analytics_bootstrap_at: new Date().toISOString(),
-      analytics_rebootstrap_reason: 'stoppedDueToInactivity',
+      analytics_rebootstrap_reason: rebootstrapReason,
+      analytics_rebootstrap_at: new Date().toISOString(),
     });
   }
 
   const reports = await asc.listReportsInRequest(ctx.creds, requestId, { categories: CATEGORIES });
-  const summary = { categories: {}, totalInstances: 0, totalRows: 0, requestId };
 
-  for (const report of reports) {
+  // Failure mode (b): stored requestId is dead server-side. Apple 200s the
+  // /reports endpoint but returns an empty data array (validateStatus:
+  // () => true swallowed the 404 or similar). Re-bootstrap and try again
+  // with a fresh request id.
+  let reportsToWalk = reports;
+  if (reports.length === 0 && !rebootstrapReason) {
+    logger.warn('asc_analytics.walk.rebootstrap_triggered', {
+      userId, connectionId, oldRequestId: requestId,
+      reason: 'empty_reports_list',
+    });
+    try {
+      const created = await asc.createOngoingReportRequest(ctx.creds, { appId: ctx.appId });
+      requestId = created.id;
+      await patchConnectionMetadata(connectionId, {
+        analytics_report_request_id: requestId,
+        analytics_bootstrap_at: new Date().toISOString(),
+        analytics_rebootstrap_reason: 'empty_reports_list',
+        analytics_rebootstrap_at: new Date().toISOString(),
+      });
+      reportsToWalk = await asc.listReportsInRequest(ctx.creds, requestId, { categories: CATEGORIES });
+    } catch (err) {
+      // 409 means a fresh request already exists; just retry the list.
+      if (err.isConflict) {
+        const existing = await asc.findOngoingReportRequestForApp(ctx.creds, { appId: ctx.appId });
+        if (existing) {
+          requestId = existing.id;
+          reportsToWalk = await asc.listReportsInRequest(ctx.creds, requestId, { categories: CATEGORIES });
+        }
+      }
+      // If still nothing, fall through — reportsToWalk stays [], walk
+      // returns 0-new, and we surface the state to the client.
+    }
+  }
+  const summary = { categories: {}, totalInstances: 0, totalRows: 0, requestId, reportsCount: reportsToWalk.length };
+
+  for (const report of reportsToWalk) {
     if (!CATEGORIES.includes(report.category)) continue;
 
     // Which instance ids do we already have?
@@ -256,6 +303,15 @@ async function walk(userId, connectionId) {
       at: new Date().toISOString(),
       newInstances: summary.totalInstances,
       newRows: summary.totalRows,
+      // Diagnostic fields — makes it possible to see WHY a walk returned
+      // zero (Apple has no request / Apple request has no reports / Apple
+      // has reports but they're empty) by querying the metadata later.
+      requestId,
+      apiRequestState: requestState
+        ? { id: requestState.id, stoppedDueToInactivity: requestState.stoppedDueToInactivity }
+        : null,
+      reportsCount: reportsToWalk.length,
+      rebootstrapReason: rebootstrapReason || null,
     },
   });
 
