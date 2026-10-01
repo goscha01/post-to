@@ -922,7 +922,7 @@ async function getMetaAdsOverlayForApp(userId, { appleAppId, days = 14 } = {}) {
   const daysClamped = Math.max(1, Math.min(90, parseInt(days, 10) || 14));
 
   const perAccount = [];
-  let totalInstalls = 0, totalSpend = 0, totalImpressions = 0, totalClicks = 0;
+  let totalInstalls = 0, totalSpend = 0, totalImpressions = 0, totalClicks = 0, totalAppStoreVisits = 0;
   const campaigns = [];
 
   for (const acct of sel.adAccountIds) {
@@ -936,7 +936,7 @@ async function getMetaAdsOverlayForApp(userId, { appleAppId, days = 14 } = {}) {
       );
       const matchingCampaignIds = new Set(matchingAdsets.map(a => a.campaignId).filter(Boolean));
       if (matchingCampaignIds.size === 0) {
-        perAccount.push({ adAccountId: acct, campaigns: 0, installs: 0, spend: 0 });
+        perAccount.push({ adAccountId: acct, campaigns: 0, installs: 0, spend: 0, appStoreVisits: 0 });
         continue;
       }
 
@@ -946,19 +946,25 @@ async function getMetaAdsOverlayForApp(userId, { appleAppId, days = 14 } = {}) {
       });
       const matched = insights.rows.filter(r => matchingCampaignIds.has(r.campaignId));
 
-      let acctInstalls = 0, acctSpend = 0, acctImpr = 0, acctClicks = 0;
+      let acctInstalls = 0, acctSpend = 0, acctImpr = 0, acctClicks = 0, acctVisits = 0;
       for (const r of matched) {
-        const inst = (r.actionsByType?.app_install || 0)
-          + (r.actionsByType?.mobile_app_install || 0)
-          + (r.actionsByType?.omni_app_install || 0);
+        const a = r.actionsByType || {};
+        const inst = (a.app_install || 0) + (a.mobile_app_install || 0) + (a.omni_app_install || 0);
+        // Meta's app_store_visit = the user clicked the ad and landed on
+        // the App Store page. This is the direct analog to Apple's
+        // "App referrer" PPVs — comparing the two tells you how much of
+        // that App referrer bucket Meta is actually driving.
+        const visits = a.app_store_visit || 0;
         acctInstalls += inst;
         acctSpend += Number(r.spend || 0);
         acctImpr += Number(r.impressions || 0);
         acctClicks += Number(r.clicks || 0);
+        acctVisits += visits;
         campaigns.push({
           campaignId: r.campaignId,
           campaignName: r.campaignName,
           installs: inst,
+          appStoreVisits: visits,
           spend: Number(r.spend || 0),
           impressions: Number(r.impressions || 0),
           clicks: Number(r.clicks || 0),
@@ -968,10 +974,12 @@ async function getMetaAdsOverlayForApp(userId, { appleAppId, days = 14 } = {}) {
       totalSpend += acctSpend;
       totalImpressions += acctImpr;
       totalClicks += acctClicks;
+      totalAppStoreVisits += acctVisits;
       perAccount.push({
         adAccountId: acct,
         campaigns: matchingCampaignIds.size,
         installs: acctInstalls,
+        appStoreVisits: acctVisits,
         spend: acctSpend,
       });
     } catch (err) {
@@ -987,6 +995,7 @@ async function getMetaAdsOverlayForApp(userId, { appleAppId, days = 14 } = {}) {
     days: daysClamped,
     totals: {
       installs: totalInstalls,
+      appStoreVisits: totalAppStoreVisits,
       spend: Number(totalSpend.toFixed(2)),
       impressions: totalImpressions,
       clicks: totalClicks,

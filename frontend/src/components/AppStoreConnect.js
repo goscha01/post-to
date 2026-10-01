@@ -671,35 +671,52 @@ const AppStoreConnect = () => {
             <div className="rounded-lg border border-blue-200 bg-blue-50/40 p-3">
               <div className="flex items-center justify-between gap-2 mb-2">
                 <h3 className="text-xs font-semibold text-blue-900 uppercase tracking-wide">
-                  Meta Ads attribution
+                  Meta Ads attribution — cross-reference with "App referrer"
                 </h3>
                 <span className="text-[11px] text-blue-700">
                   Facebook / Instagram campaigns promoting this app · last {metaAds.days} days
                 </span>
               </div>
-              {metaAds.totals.installs > 0 || metaAds.totals.spend > 0 ? (
+              {metaAds.totals.installs > 0 || metaAds.totals.spend > 0 || metaAds.totals.appStoreVisits > 0 ? (
                 <>
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                     <div>
-                      <p className="text-[11px] uppercase text-blue-700">Installs</p>
+                      <p className="text-[11px] uppercase text-blue-700">Installs (Meta attribution)</p>
                       <p className="text-base font-semibold text-blue-900">{fmtInt(metaAds.totals.installs)}</p>
                       {funnel?.totals?.installs > 0 && (
                         <p className="text-[11px] text-blue-700">
-                          {((metaAds.totals.installs / funnel.totals.installs) * 100).toFixed(0)}% of total
+                          {((metaAds.totals.installs / funnel.totals.installs) * 100).toFixed(0)}% of total installs
                         </p>
                       )}
                     </div>
                     <div>
+                      <p className="text-[11px] uppercase text-blue-700">App Store visits (Meta)</p>
+                      <p className="text-base font-semibold text-blue-900">{fmtInt(metaAds.totals.appStoreVisits)}</p>
+                      {(() => {
+                        // Compare against Apple's "App referrer" PPV
+                        const appRef = sources?.sources?.find(s => s.sourceType === 'App referrer');
+                        if (!appRef || appRef.productPageViews === 0) return null;
+                        const ratio = (metaAds.totals.appStoreVisits / appRef.productPageViews) * 100;
+                        return (
+                          <p className="text-[11px] text-blue-700">
+                            vs. {fmtInt(appRef.productPageViews)} App referrer PPVs ({ratio.toFixed(0)}%)
+                          </p>
+                        );
+                      })()}
+                    </div>
+                    <div>
                       <p className="text-[11px] uppercase text-blue-700">Spend</p>
                       <p className="text-base font-semibold text-blue-900">${metaAds.totals.spend.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+                      <p className="text-[11px] text-blue-700">
+                        CPI {metaAds.totals.costPerInstall != null ? '$' + metaAds.totals.costPerInstall.toFixed(2) : '—'}
+                      </p>
                     </div>
                     <div>
-                      <p className="text-[11px] uppercase text-blue-700">Cost per install</p>
-                      <p className="text-base font-semibold text-blue-900">{metaAds.totals.costPerInstall != null ? '$' + metaAds.totals.costPerInstall.toFixed(2) : '—'}</p>
-                    </div>
-                    <div>
-                      <p className="text-[11px] uppercase text-blue-700">Impressions</p>
+                      <p className="text-[11px] uppercase text-blue-700">Ad impressions</p>
                       <p className="text-base font-semibold text-blue-900">{fmtInt(metaAds.totals.impressions)}</p>
+                      <p className="text-[11px] text-blue-700">
+                        {fmtInt(metaAds.totals.clicks)} link clicks
+                      </p>
                     </div>
                   </div>
                   {metaAds.campaigns.length > 0 && (
@@ -710,15 +727,17 @@ const AppStoreConnect = () => {
                           <li key={c.campaignId} className="flex justify-between gap-2">
                             <span className="truncate">{c.campaignName}</span>
                             <span className="flex-shrink-0 text-blue-700">
-                              {fmtInt(c.installs)} installs · ${c.spend.toFixed(2)}
+                              {fmtInt(c.installs)} installs · {fmtInt(c.appStoreVisits)} ASV · ${c.spend.toFixed(2)}
                             </span>
                           </li>
                         ))}
                       </ul>
                     </div>
                   )}
-                  <p className="text-[11px] text-blue-700 mt-2">
-                    Meta's own attribution. In Apple's Sources table, these installs mostly show up as "App referrer" (Facebook / Instagram iOS apps) — Apple doesn't label the referring app.
+                  <p className="text-[11px] text-blue-700 mt-2 leading-relaxed">
+                    <strong>How to read this:</strong> Apple's "App referrer" bucket (in the Sources table below) is any iOS app that linked to the App Store — Meta Ads, your in-app referral system, other apps. Meta's own metrics tell you exactly how much of that bucket Meta drove. The remainder is in-app referrals + non-Meta sources.
+                    <br />
+                    Meta's "App Store visits" count can exceed Apple's "App referrer" PPV when a user is attributed to a click outside the current 7-day window (Meta's attribution window is 1-day click + 7-day view by default).
                   </p>
                 </>
               ) : (
