@@ -1,10 +1,16 @@
 const jwt = require('jsonwebtoken');
 const { createClient } = require('@supabase/supabase-js');
 
-// Initialize Supabase client
+// Initialize Supabase client with service-role key so the per-request
+// team_memberships re-check isn't blocked by RLS. If anon-role is used, RLS
+// returns an empty result for workspace-member reads, and the middleware
+// mistakes a legitimate membership for a revoked one — silently clearing
+// users.active_workspace_owner_id and bouncing an invited teammate back to
+// their own (empty) workspace on every request. Falls back to anon-key for
+// local dev where SERVICE_ROLE_KEY may be unset.
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_ANON_KEY
+  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY
 );
 
 const authMiddleware = async (req, res, next) => {

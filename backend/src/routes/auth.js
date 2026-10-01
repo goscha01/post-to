@@ -8,10 +8,13 @@ const authMiddleware = require('../middleware/authMiddleware');
 const logger = require('../utils/logger');
 const router = express.Router();
 
-// Initialize Supabase client
+// Initialize Supabase client with service-role key so writes/reads touching
+// RLS-enabled tables (users, team_memberships, team_invitations) aren't
+// silently blocked. Falls back to anon-key for local dev. See
+// authMiddleware.js for the same fix + rationale.
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_ANON_KEY
+  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY
 );
 
 // Initialize Google OAuth2 client for user authentication
