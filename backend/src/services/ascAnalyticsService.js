@@ -26,11 +26,14 @@
 //                          data, huge row count)
 //   FRAMEWORK_USAGE      — performance signals, low value for marketing
 
+const axios = require('axios');
 const { createClient } = require('@supabase/supabase-js');
 const asc = require('./appStoreConnectService');
 const cryptoBox = require('../utils/cryptoBox');
 const connections = require('./connectionsService');
 const metaAds = require('./metaAdsService');
+const googleAds = require('./googleAdsService');
+const { getAllBusinessTokens } = require('../utils/businessTokens');
 const logger = require('../utils/logger');
 
 const supabase = createClient(
@@ -1006,6 +1009,177 @@ async function getMetaAdsOverlayForApp(userId, { appleAppId, days = 14 } = {}) {
   };
 }
 
+// -----------------------------------------------------------------------
+// Google Ads overlay — Universal App Campaigns promoting this iOS app
+// -----------------------------------------------------------------------
+// Mirrors getMetaAdsOverlayForApp but for Google Ads. Walks each saved
+// google_ads customer, pulls UAC (MULTI_CHANNEL + APP_CAMPAIGN) campaigns,
+// filters to those whose app_campaign_setting.app_id matches this Apple
+// App Store id. Requires a business-OAuth token with the `adwords` scope
+// — we try each saved token in order, matching to the customer's recorded
+// owner_google_id when available.
+async function getGoogleAdsOverlayForApp(userId, { appleAppId, days = 14 } = {}) {
+  if (!userId || !appleAppId) return null;
+  const daysClamped = Math.max(1, Math.min(90, parseInt(days, 10) || 14));
+
+  const { data: gaConns } = await supabase
+    .from('connected_accounts')
+    .select('metadata')
+    .eq('user_id', userId)
+    .eq('provider', 'google_ads');
+  if (!gaConns || gaConns.length === 0) {
+    return { connected: false, reason: 'google_ads_not_connected' };
+  }
+
+  const tokens = await getAllBusinessTokens(userId);
+  if (!tokens || tokens.length === 0) {
+    return { connected: false, reason: 'no_google_oauth_token' };
+  }
+
+  let totalInstalls = 0, totalSpend = 0, totalImpressions = 0, totalClicks = 0;
+  const campaigns = [];
+  const perAccount = [];
+
+  for (const conn of gaConns) {
+    const meta = conn.metadata || {};
+    const customerId = meta.customer_id;
+    const ownerGoogleId = meta.owner_google_id;
+    if (!customerId) continue;
+
+    const token = ownerGoogleId
+      ? tokens.find(t => t.google_id === ownerGoogleId)
+      : tokens[0];
+    if (!token?.access_token) {
+      perAccount.push({ customerId, error: 'no_matching_oauth_token' });
+      continue;
+    }
+
+    try {
+      const found = await googleAds.getAppInstallCampaignsForApp(
+        token.access_token, customerId, daysClamped,
+        { appleAppId, loginCustomerId: meta.manager_customer_id }
+      );
+      let acctInstalls = 0, acctSpend = 0, acctImpr = 0, acctClicks = 0;
+      for (const c of found) {
+        acctInstalls += c.installs;
+        acctSpend += c.spend;
+        acctImpr += c.impressions;
+        acctClicks += c.clicks;
+        campaigns.push({ customerId, ...c });
+      }
+      totalInstalls += acctInstalls;
+      totalSpend += acctSpend;
+      totalImpressions += acctImpr;
+      totalClicks += acctClicks;
+      perAccount.push({ customerId, campaigns: found.length, installs: acctInstalls, spend: acctSpend });
+    } catch (err) {
+      logger.warn('asc_analytics.google_ads_overlay.account_failed', {
+        userId, customerId, error: err.message, status: err.status || null,
+      });
+      perAccount.push({ customerId, error: err.message });
+    }
+  }
+
+  return {
+    connected: true,
+    days: daysClamped,
+    totals: {
+      installs: totalInstalls,
+      spend: Number(totalSpend.toFixed(2)),
+      impressions: totalImpressions,
+      clicks: totalClicks,
+      costPerInstall: totalInstalls > 0 ? Number((totalSpend / totalInstalls).toFixed(2)) : null,
+    },
+    perAccount,
+    campaigns: campaigns.sort((a, b) => b.installs - a.installs).slice(0, 10),
+  };
+}
+
+// -----------------------------------------------------------------------
+// In-app referrals overlay — ProofPix proxy's admin referral links
+// -----------------------------------------------------------------------
+// ProofPix stores admin referral links (channel/campaign/placement +
+// usedCount + lastUsedAt) in Redis-KV behind
+// GET /api/admin/referral-links on its proxy. We call that endpoint,
+// filter to recently-used links, and return a summary.
+//
+// Requires: PROOFPIX_PROXY_URL + PROOFPIX_ADMIN_SECRET env vars on
+// post-to's backend. When either is missing we return a "not configured"
+// shape so the UI can surface actionable copy instead of a silent empty.
+//
+// Granularity caveat: ProofPix's current model exposes cumulative
+// `usedCount` + `lastUsedAt` per link, not per-day event history. We
+// filter by lastUsedAt in-window as a reasonable proxy for "activity in
+// this window" and surface each link's channel so the user can see
+// which referral strategies are driving usage. Precise per-day install
+// counts would need a time-series store on the ProofPix side.
+async function getInAppReferralsOverlay({ appleAppId, days = 14 } = {}) {
+  // appleAppId is accepted for API-shape consistency but ProofPix's
+  // referral system is already per-app (only one app per deployment).
+  const daysClamped = Math.max(1, Math.min(90, parseInt(days, 10) || 14));
+  const proxyUrl = process.env.PROOFPIX_PROXY_URL;
+  const adminSecret = process.env.PROOFPIX_ADMIN_SECRET;
+  if (!proxyUrl || !adminSecret) {
+    return {
+      configured: false,
+      reason: !proxyUrl ? 'proxy_url_missing' : 'admin_secret_missing',
+    };
+  }
+
+  try {
+    const { data: links } = await axios.get(`${proxyUrl}/api/admin/referral-links`, {
+      headers: { 'x-admin-secret': adminSecret },
+      timeout: 15_000,
+      validateStatus: s => s < 500,
+    });
+    if (!Array.isArray(links)) {
+      return { configured: true, totalUsesInWindow: 0, links: [], raw: links };
+    }
+
+    const cutoff = new Date();
+    cutoff.setUTCDate(cutoff.getUTCDate() - daysClamped);
+    const cutoffIso = cutoff.toISOString();
+
+    const recent = links.filter(l =>
+      l.lastUsedAt && l.lastUsedAt >= cutoffIso && l.isActive !== false
+    );
+
+    // Channel rollup — groups "meta", "instagram_bio", etc. so the user
+    // sees category-level traffic without needing to parse every link.
+    const byChannel = new Map();
+    for (const l of recent) {
+      const ch = (l.channel || '(unlabeled)').toLowerCase();
+      const b = byChannel.get(ch) || { channel: ch, links: 0, totalUses: 0 };
+      b.links += 1;
+      b.totalUses += l.usedCount || 0;
+      byChannel.set(ch, b);
+    }
+
+    return {
+      configured: true,
+      days: daysClamped,
+      // Note: usedCount is cumulative — "totalUses" here is each link's
+      // ALL-TIME usage, not just the last N days. Treated as an upper
+      // bound for the window; the activeLinks count is the better
+      // "this window" signal.
+      activeLinks: recent.length,
+      totalLinks: links.length,
+      byChannel: [...byChannel.values()].sort((a, b) => b.totalUses - a.totalUses),
+      topLinks: recent
+        .sort((a, b) => (b.usedCount || 0) - (a.usedCount || 0))
+        .slice(0, 10)
+        .map(l => ({
+          code: l.code, label: l.label, channel: l.channel,
+          source: l.source, campaign: l.campaign,
+          usedCount: l.usedCount || 0, lastUsedAt: l.lastUsedAt,
+        })),
+    };
+  } catch (err) {
+    logger.warn('asc_analytics.referrals_overlay.failed', { error: err.message });
+    return { configured: true, error: err.message };
+  }
+}
+
 module.exports = {
   bootstrap,
   walk,
@@ -1014,5 +1188,7 @@ module.exports = {
   getAdAttribution,
   getStatus,
   getMetaAdsOverlayForApp,
+  getGoogleAdsOverlayForApp,
+  getInAppReferralsOverlay,
   _internal: { loadCategoryRows, toInt, CATEGORIES },
 };

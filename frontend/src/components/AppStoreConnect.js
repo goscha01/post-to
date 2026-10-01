@@ -124,6 +124,8 @@ const AppStoreConnect = () => {
   const [funnel, setFunnel] = useState(null);
   const [sources, setSources] = useState(null);
   const [metaAds, setMetaAds] = useState(null);
+  const [googleAds, setGoogleAds] = useState(null);
+  const [referrals, setReferrals] = useState(null);
   const [loadingAnalytics, setLoadingAnalytics] = useState(false);
   const [bootstrapping, setBootstrapping] = useState(false);
   const [walking, setWalking] = useState(false);
@@ -227,18 +229,24 @@ const AppStoreConnect = () => {
       const status = await ascService.analyticsStatus(selectedConnectionId);
       setAnalyticsStatus(status);
       if (status.bootstrapped && status.cachedInstances > 0) {
-        const [f, s, m] = await Promise.all([
+        const [f, s, m, g, r] = await Promise.all([
           ascService.analyticsFunnel(selectedConnectionId, days),
           ascService.analyticsSources(selectedConnectionId, days),
           ascService.analyticsMetaAds(selectedConnectionId, days).catch(() => null),
+          ascService.analyticsGoogleAds(selectedConnectionId, days).catch(() => null),
+          ascService.analyticsReferrals(selectedConnectionId, days).catch(() => null),
         ]);
         setFunnel(f);
         setSources(s);
         setMetaAds(m);
+        setGoogleAds(g);
+        setReferrals(r);
       } else {
         setFunnel(null);
         setSources(null);
         setMetaAds(null);
+        setGoogleAds(null);
+        setReferrals(null);
       }
     } catch (e) {
       setError(e?.response?.data?.error || e.message);
@@ -750,6 +758,99 @@ const AppStoreConnect = () => {
           {metaAds && !metaAds.connected && (
             <div className="rounded-md border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600">
               Connect Meta (Facebook) to see Meta Ads install attribution here.
+            </div>
+          )}
+
+          {googleAds?.connected && googleAds.totals && (googleAds.totals.installs > 0 || googleAds.totals.spend > 0) && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50/40 p-3">
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <h3 className="text-xs font-semibold text-amber-900 uppercase tracking-wide">
+                  Google Ads attribution (Universal App Campaigns)
+                </h3>
+                <span className="text-[11px] text-amber-800">
+                  campaigns targeting app id {funnel ? '' : ''}{sources ? '' : ''}this app · last {googleAds.days} days
+                </span>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                <div>
+                  <p className="text-[11px] uppercase text-amber-800">Installs</p>
+                  <p className="text-base font-semibold text-amber-900">{fmtInt(googleAds.totals.installs)}</p>
+                  {funnel?.totals?.installs > 0 && googleAds.totals.installs > 0 && (
+                    <p className="text-[11px] text-amber-800">
+                      {((googleAds.totals.installs / funnel.totals.installs) * 100).toFixed(0)}% of total installs
+                    </p>
+                  )}
+                </div>
+                <div>
+                  <p className="text-[11px] uppercase text-amber-800">Spend</p>
+                  <p className="text-base font-semibold text-amber-900">${googleAds.totals.spend.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+                  <p className="text-[11px] text-amber-800">
+                    CPI {googleAds.totals.costPerInstall != null ? '$' + googleAds.totals.costPerInstall.toFixed(2) : '—'}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-[11px] uppercase text-amber-800">Impressions</p>
+                  <p className="text-base font-semibold text-amber-900">{fmtInt(googleAds.totals.impressions)}</p>
+                </div>
+                <div>
+                  <p className="text-[11px] uppercase text-amber-800">Clicks</p>
+                  <p className="text-base font-semibold text-amber-900">{fmtInt(googleAds.totals.clicks)}</p>
+                </div>
+              </div>
+              {googleAds.campaigns.length > 0 && (
+                <div className="mt-3 pt-3 border-t border-amber-200/60">
+                  <p className="text-[11px] uppercase tracking-wide text-amber-800 mb-1.5">Top campaigns</p>
+                  <ul className="text-xs text-amber-900 space-y-0.5">
+                    {googleAds.campaigns.slice(0, 5).map(c => (
+                      <li key={c.campaignId} className="flex justify-between gap-2">
+                        <span className="truncate">{c.name}</span>
+                        <span className="flex-shrink-0 text-amber-800">
+                          {fmtInt(c.installs)} installs · ${c.spend.toFixed(2)}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+
+          {referrals?.configured && (referrals.activeLinks > 0 || (referrals.byChannel?.length || 0) > 0) && (
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50/40 p-3">
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <h3 className="text-xs font-semibold text-emerald-900 uppercase tracking-wide">
+                  In-app referrals (ProofPix admin links)
+                </h3>
+                <span className="text-[11px] text-emerald-800">
+                  active in the last {referrals.days} days
+                </span>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-2">
+                <div>
+                  <p className="text-[11px] uppercase text-emerald-800">Active links</p>
+                  <p className="text-base font-semibold text-emerald-900">{fmtInt(referrals.activeLinks)}</p>
+                  <p className="text-[11px] text-emerald-800">of {fmtInt(referrals.totalLinks)} total</p>
+                </div>
+                <div className="col-span-2">
+                  <p className="text-[11px] uppercase text-emerald-800">By channel (cumulative uses)</p>
+                  <ul className="text-xs text-emerald-900 space-y-0.5 mt-1">
+                    {referrals.byChannel.slice(0, 5).map(c => (
+                      <li key={c.channel} className="flex justify-between gap-2">
+                        <span className="truncate">{c.channel}</span>
+                        <span className="text-emerald-800">{fmtInt(c.totalUses)} uses · {c.links} links</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+              <p className="text-[11px] text-emerald-800">
+                Referral <code>usedCount</code> is cumulative. Precise per-day install counts would need a time-series store on the ProofPix side.
+              </p>
+            </div>
+          )}
+          {referrals && referrals.configured === false && (
+            <div className="rounded-md border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600">
+              In-app referral stats not available — set <code>PROOFPIX_PROXY_URL</code> and <code>PROOFPIX_ADMIN_SECRET</code> env vars on the post-to backend to surface ProofPix admin referral links here.
             </div>
           )}
 

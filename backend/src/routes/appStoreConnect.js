@@ -414,6 +414,52 @@ router.get('/analytics/meta-ads', async (req, res) => {
   }
 });
 
+// GET /analytics/google-ads — Google Universal App Campaigns promoting
+// THIS Apple app. Filtered by app_campaign_setting.app_id matching the
+// connection's Apple App Store id. Pulls across all saved google_ads
+// connections (handles users with multiple Google accounts).
+router.get('/analytics/google-ads', async (req, res) => {
+  const userId = (req.user.workspaceOwnerId || req.user.userId);
+  try {
+    const connectionId = String(req.query.connectionId || '');
+    if (!connectionId) return res.status(400).json({ error: 'connectionId required' });
+    const ctx = await loadCreds(userId, connectionId);
+    if (!ctx) return res.status(404).json({ error: 'ASC connection not found' });
+    if (!ctx.appId) return res.status(400).json({ error: 'Connection has no primary appId' });
+    const overlay = await ascAnalytics.getGoogleAdsOverlayForApp(userId, {
+      appleAppId: ctx.appId,
+      days: req.query.days,
+    });
+    res.json(overlay || { connected: false, reason: 'google_ads_not_connected' });
+  } catch (err) {
+    logger.warn('asc_analytics.google_ads_overlay.failed', { userId, error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /analytics/referrals — in-app referral activity from ProofPix proxy.
+// Admin referral links with usedCount + lastUsedAt, grouped by channel.
+// Requires PROOFPIX_PROXY_URL + PROOFPIX_ADMIN_SECRET env vars; returns
+// a "not configured" shape when either is missing so the UI can tell the
+// user what to set.
+router.get('/analytics/referrals', async (req, res) => {
+  const userId = (req.user.workspaceOwnerId || req.user.userId);
+  try {
+    const connectionId = String(req.query.connectionId || '');
+    if (!connectionId) return res.status(400).json({ error: 'connectionId required' });
+    const ctx = await loadCreds(userId, connectionId);
+    if (!ctx) return res.status(404).json({ error: 'ASC connection not found' });
+    const overlay = await ascAnalytics.getInAppReferralsOverlay({
+      appleAppId: ctx.appId,
+      days: req.query.days,
+    });
+    res.json(overlay);
+  } catch (err) {
+    logger.warn('asc_analytics.referrals_overlay.failed', { userId, error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // -----------------------------------------------------------------------
 // PATCH /:connectionId — update credentials in place (key rotation)
 // -----------------------------------------------------------------------

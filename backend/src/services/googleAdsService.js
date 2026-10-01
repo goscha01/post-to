@@ -1879,11 +1879,63 @@ async function getAccountLinks(accessToken, customerId, { loginCustomerId } = {}
   };
 }
 
+// App install campaign reader — filters to campaigns promoting a specific
+// iOS App Store app. Universal App Campaigns (channel=MULTI_CHANNEL,
+// sub_type=APP_CAMPAIGN) have an app_campaign_setting.app_id field that
+// matches Apple's App Store numeric ID for iOS apps. We use that as the
+// definitive join key so we only count conversions for THIS app.
+async function getAppInstallCampaignsForApp(accessToken, customerId, days, { appleAppId, loginCustomerId } = {}) {
+  if (!appleAppId) throw new Error('appleAppId required');
+  const dr = dateRangeClause(days);
+  const rows = await search(accessToken, customerId, `
+    SELECT
+      campaign.id,
+      campaign.name,
+      campaign.status,
+      campaign.advertising_channel_type,
+      campaign.advertising_channel_sub_type,
+      campaign.app_campaign_setting.app_id,
+      campaign.app_campaign_setting.app_store,
+      metrics.impressions,
+      metrics.clicks,
+      metrics.cost_micros,
+      metrics.conversions,
+      metrics.cost_per_conversion
+    FROM campaign
+    WHERE ${dr.clause}
+      AND campaign.advertising_channel_type = 'MULTI_CHANNEL'
+      AND campaign.advertising_channel_sub_type IN ('APP_CAMPAIGN', 'APP_CAMPAIGN_FOR_ENGAGEMENT', 'APP_CAMPAIGN_FOR_PRE_REGISTRATION')
+    ORDER BY metrics.cost_micros DESC
+  `, { loginCustomerId });
+
+  return rows
+    .filter(r => String(r.campaign?.appCampaignSetting?.appId || '') === String(appleAppId))
+    .map(r => {
+      const c = r.campaign || {};
+      const m = r.metrics || {};
+      const cost = fromMicros(m.costMicros);
+      const conv = num(m.conversions);
+      return {
+        campaignId: String(c.id || ''),
+        name: c.name || '',
+        status: enumLabel(c.status),
+        appId: c.appCampaignSetting?.appId || null,
+        appStore: enumLabel(c.appCampaignSetting?.appStore),
+        spend: cost,
+        impressions: num(m.impressions),
+        clicks: num(m.clicks),
+        installs: conv,   // In UAC, "conversions" is primarily app installs
+        costPerInstall: conv > 0 ? cost / conv : null,
+      };
+    });
+}
+
 module.exports = {
   listAccessibleCustomers,
   describeCustomers,
   enumerateManagerChildren,
   getCampaigns,
+  getAppInstallCampaignsForApp,
   getAdGroups,
   getKeywords,
   getSearchTerms,
