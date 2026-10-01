@@ -957,13 +957,15 @@ const FunnelSection = ({ inAppFunnel, screensByName, planBreakdown, loading }) =
                     style={{ width: `${barPct}%` }}
                   />
                 </div>
-                {/* Screen-level sub-steps for steps that have them mapped
-                    (e.g. onboarding has 4 screens). Renders indented under
-                    the parent step with its own drop-off percentages. */}
+                {/* Screen-level sub-steps for steps that have them mapped.
+                    Renders indented under the parent step. Compares to
+                    THIS step's user count (not top-of-funnel) so the
+                    "% completed" reads as "of users who viewed this
+                    screen, how many fired the parent step's event". */}
                 <FunnelSubSteps
                   stepKey={stage.key}
                   screensByName={screensByName}
-                  topUsers={topUsers}
+                  parentUsers={users}
                 />
                 {/* Plan breakdown under the "Selected a plan" step —
                     which plan (starter/pro/business) and which cadence
@@ -986,7 +988,14 @@ const FunnelSection = ({ inAppFunnel, screensByName, planBreakdown, loading }) =
 // showing the top-N actual screen names GA4 knows about — makes it easy
 // to spot when Firebase-auto-generated screen names differ from the
 // snake_case names we expected.
-const FunnelSubSteps = ({ stepKey, screensByName, topUsers }) => {
+//
+// Sub-steps are UNORDERED distinct-user counts per screen — they can
+// exceed the parent step's user count because a user who viewed the
+// screen but didn't complete the parent event still counts here. We
+// compare against the parent step instead of top-of-funnel so the ratio
+// makes semantic sense: "63% of users who viewed first_load went on to
+// fire onboarding_completed" tells you drop-off within the step.
+const FunnelSubSteps = ({ stepKey, screensByName, parentUsers }) => {
   const subs = FUNNEL_SUBSTEPS[stepKey];
   if (!subs || !screensByName) return null;
   const rows = subs.map(s => ({
@@ -994,13 +1003,18 @@ const FunnelSubSteps = ({ stepKey, screensByName, topUsers }) => {
     users: screensByName[s.screenName] ?? 0,
     knownInData: screensByName[s.screenName] !== undefined,
   }));
-  const noneKnown = rows.every(r => !r.knownInData);
   return (
     <div className="mt-2 ml-4 pl-3 border-l-2 border-gray-100 space-y-1.5">
-      {rows.map((r, i) => {
-        const prev = i === 0 ? r.users : rows[i - 1].users;
-        const dropOff = i === 0 ? 0 : Math.max(0, prev > 0 ? 1 - r.users / prev : 0);
-        const pctOfLead = topUsers > 0 ? r.users / topUsers : 0;
+      {rows.map((r) => {
+        // Completion-within-step: how many of the users who viewed this
+        // screen actually fired the parent step's event. If screen views
+        // ≥ parent event count, the ratio ≤ 100% and reads naturally as
+        // "X% of screen viewers completed the step". If screen views <
+        // parent (edge case — e.g. event fires without screen view), we
+        // just hide the ratio.
+        const completed = r.users > 0 && r.users >= parentUsers && parentUsers > 0
+          ? parentUsers / r.users
+          : null;
         return (
           <div key={r.screenName}>
             <div className="flex items-center justify-between text-xs">
@@ -1016,22 +1030,16 @@ const FunnelSubSteps = ({ stepKey, screensByName, topUsers }) => {
                 )}
               </div>
               <div className="flex items-center gap-3 flex-shrink-0">
-                <span className="tabular-nums text-gray-800">{fmtInt(r.users)}</span>
-                <span className="tabular-nums text-gray-400">{fmtPercent(pctOfLead)}</span>
-                {i > 0 && (
+                <span className="tabular-nums text-gray-800">{fmtInt(r.users)} views</span>
+                {completed !== null && (
                   <span
-                    className={`tabular-nums text-[11px] ${dropOff > 0 ? 'text-red-400' : 'text-gray-300'}`}
+                    className="tabular-nums text-gray-500 text-[11px]"
+                    title="Of users who viewed this screen, the portion who went on to complete the parent step"
                   >
-                    ↓ {fmtPercent(dropOff)}
+                    {fmtPercent(completed)} completed
                   </span>
                 )}
               </div>
-            </div>
-            <div className="mt-0.5 h-1 bg-gray-50 rounded">
-              <div
-                className="h-1 bg-primary-300 rounded"
-                style={{ width: `${Math.max(pctOfLead * 100, 0.5)}%` }}
-              />
             </div>
           </div>
         );
