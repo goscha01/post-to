@@ -104,6 +104,18 @@ const analyticsSources = async (connectionId, days = 14) => {
   return res.data;
 };
 
+// Meta Ads attribution overlay — filtered to adsets whose promoted_object
+// targets THIS Apple app. Requires a Meta OAuth connection + at least one
+// selected ad account. Backend queries Meta's Marketing API live, so the
+// timeout matches the funnel's 180s.
+const analyticsMetaAds = async (connectionId, days = 14) => {
+  const res = await axios.get('/api/asc/analytics/meta-ads', {
+    params: { connectionId, days },
+    timeout: 180_000,
+  });
+  return res.data;
+};
+
 export default {
   connect,
   listConnected,
@@ -118,4 +130,5 @@ export default {
   analyticsWalk,
   analyticsFunnel,
   analyticsSources,
+  analyticsMetaAds,
 };

@@ -30,6 +30,7 @@ const { createClient } = require('@supabase/supabase-js');
 const asc = require('./appStoreConnectService');
 const cryptoBox = require('../utils/cryptoBox');
 const connections = require('./connectionsService');
+const metaAds = require('./metaAdsService');
 const logger = require('../utils/logger');
 
 const supabase = createClient(
@@ -868,6 +869,112 @@ async function getStatus({ userId, connectionId }) {
   };
 }
 
+// -----------------------------------------------------------------------
+// Meta Ads overlay — "what from Sources is Meta Ads?"
+// -----------------------------------------------------------------------
+// Apple's Source Type taxonomy only knows "App referrer" / "Web referrer" —
+// it doesn't tell us WHICH app or site did the referring. Meta Ads' own
+// Marketing API, meanwhile, knows exactly which campaigns promoted which
+// app and how many installs each drove. We cross-reference by:
+//
+//   1. Load the user's Meta owner token + selected ad accounts.
+//   2. Walk adsets, keep only those whose promoted_object.object_store_url
+//      contains the Apple appId of THIS ASC connection.
+//   3. Sum the daily insights (app_install + mobile_app_install +
+//      omni_app_install) over the same date window.
+//
+// Returns null when the user has no Meta connection, or when no campaigns
+// are promoting this specific app. The route surfaces that as an empty
+// panel with a hint, not an error.
+async function getMetaAdsOverlayForApp(userId, { appleAppId, days = 14 } = {}) {
+  if (!userId || !appleAppId) return null;
+
+  const token = await connections.getMetaOwnerToken(userId);
+  if (!token?.accessToken) return { connected: false, reason: 'meta_not_connected' };
+
+  const sel = await connections.getMetaAdAccountSelection(userId);
+  if (!sel.adAccountIds.length) return { connected: true, reason: 'no_ad_accounts_selected' };
+
+  // Normalize days for Meta's time_range cap (90 days hard limit on
+  // some endpoints; getInsights handles up to Meta's limit internally).
+  const daysClamped = Math.max(1, Math.min(90, parseInt(days, 10) || 14));
+
+  const perAccount = [];
+  let totalInstalls = 0, totalSpend = 0, totalImpressions = 0, totalClicks = 0;
+  const campaigns = [];
+
+  for (const acct of sel.adAccountIds) {
+    try {
+      // Load adsets to find which ones promote this specific iOS app.
+      const adsets = await metaAds.getAdSets({
+        accessToken: token.accessToken, adAccountId: acct, days: daysClamped,
+      });
+      const matchingAdsets = adsets.filter(a =>
+        String(a.promotedObject?.object_store_url || '').includes(appleAppId)
+      );
+      const matchingCampaignIds = new Set(matchingAdsets.map(a => a.campaignId).filter(Boolean));
+      if (matchingCampaignIds.size === 0) {
+        perAccount.push({ adAccountId: acct, campaigns: 0, installs: 0, spend: 0 });
+        continue;
+      }
+
+      // Insights for matching campaigns only.
+      const insights = await metaAds.getInsights({
+        accessToken: token.accessToken, node: acct, level: 'campaign', days: daysClamped,
+      });
+      const matched = insights.rows.filter(r => matchingCampaignIds.has(r.campaignId));
+
+      let acctInstalls = 0, acctSpend = 0, acctImpr = 0, acctClicks = 0;
+      for (const r of matched) {
+        const inst = (r.actionsByType?.app_install || 0)
+          + (r.actionsByType?.mobile_app_install || 0)
+          + (r.actionsByType?.omni_app_install || 0);
+        acctInstalls += inst;
+        acctSpend += Number(r.spend || 0);
+        acctImpr += Number(r.impressions || 0);
+        acctClicks += Number(r.clicks || 0);
+        campaigns.push({
+          campaignId: r.campaignId,
+          campaignName: r.campaignName,
+          installs: inst,
+          spend: Number(r.spend || 0),
+          impressions: Number(r.impressions || 0),
+          clicks: Number(r.clicks || 0),
+        });
+      }
+      totalInstalls += acctInstalls;
+      totalSpend += acctSpend;
+      totalImpressions += acctImpr;
+      totalClicks += acctClicks;
+      perAccount.push({
+        adAccountId: acct,
+        campaigns: matchingCampaignIds.size,
+        installs: acctInstalls,
+        spend: acctSpend,
+      });
+    } catch (err) {
+      logger.warn('asc_analytics.meta_overlay.account_failed', {
+        userId, adAccountId: acct, error: err.message,
+      });
+      perAccount.push({ adAccountId: acct, error: err.message });
+    }
+  }
+
+  return {
+    connected: true,
+    days: daysClamped,
+    totals: {
+      installs: totalInstalls,
+      spend: Number(totalSpend.toFixed(2)),
+      impressions: totalImpressions,
+      clicks: totalClicks,
+      costPerInstall: totalInstalls > 0 ? Number((totalSpend / totalInstalls).toFixed(2)) : null,
+    },
+    perAccount,
+    campaigns: campaigns.sort((a, b) => b.installs - a.installs).slice(0, 10),
+  };
+}
+
 module.exports = {
   bootstrap,
   walk,
@@ -875,5 +982,6 @@ module.exports = {
   getInstallsBySource,
   getAdAttribution,
   getStatus,
+  getMetaAdsOverlayForApp,
   _internal: { loadCategoryRows, toInt, CATEGORIES },
 };

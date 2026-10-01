@@ -123,6 +123,7 @@ const AppStoreConnect = () => {
   const [analyticsStatus, setAnalyticsStatus] = useState(null);
   const [funnel, setFunnel] = useState(null);
   const [sources, setSources] = useState(null);
+  const [metaAds, setMetaAds] = useState(null);
   const [loadingAnalytics, setLoadingAnalytics] = useState(false);
   const [bootstrapping, setBootstrapping] = useState(false);
   const [walking, setWalking] = useState(false);
@@ -226,15 +227,18 @@ const AppStoreConnect = () => {
       const status = await ascService.analyticsStatus(selectedConnectionId);
       setAnalyticsStatus(status);
       if (status.bootstrapped && status.cachedInstances > 0) {
-        const [f, s] = await Promise.all([
+        const [f, s, m] = await Promise.all([
           ascService.analyticsFunnel(selectedConnectionId, days),
           ascService.analyticsSources(selectedConnectionId, days),
+          ascService.analyticsMetaAds(selectedConnectionId, days).catch(() => null),
         ]);
         setFunnel(f);
         setSources(s);
+        setMetaAds(m);
       } else {
         setFunnel(null);
         setSources(null);
+        setMetaAds(null);
       }
     } catch (e) {
       setError(e?.response?.data?.error || e.message);
@@ -661,6 +665,73 @@ const AppStoreConnect = () => {
                 </Table>
               </div>
             </>
+          )}
+
+          {metaAds?.connected && metaAds.totals && (
+            <div className="rounded-lg border border-blue-200 bg-blue-50/40 p-3">
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <h3 className="text-xs font-semibold text-blue-900 uppercase tracking-wide">
+                  Meta Ads attribution
+                </h3>
+                <span className="text-[11px] text-blue-700">
+                  Facebook / Instagram campaigns promoting this app · last {metaAds.days} days
+                </span>
+              </div>
+              {metaAds.totals.installs > 0 || metaAds.totals.spend > 0 ? (
+                <>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    <div>
+                      <p className="text-[11px] uppercase text-blue-700">Installs</p>
+                      <p className="text-base font-semibold text-blue-900">{fmtInt(metaAds.totals.installs)}</p>
+                      {funnel?.totals?.installs > 0 && (
+                        <p className="text-[11px] text-blue-700">
+                          {((metaAds.totals.installs / funnel.totals.installs) * 100).toFixed(0)}% of total
+                        </p>
+                      )}
+                    </div>
+                    <div>
+                      <p className="text-[11px] uppercase text-blue-700">Spend</p>
+                      <p className="text-base font-semibold text-blue-900">${metaAds.totals.spend.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+                    </div>
+                    <div>
+                      <p className="text-[11px] uppercase text-blue-700">Cost per install</p>
+                      <p className="text-base font-semibold text-blue-900">{metaAds.totals.costPerInstall != null ? '$' + metaAds.totals.costPerInstall.toFixed(2) : '—'}</p>
+                    </div>
+                    <div>
+                      <p className="text-[11px] uppercase text-blue-700">Impressions</p>
+                      <p className="text-base font-semibold text-blue-900">{fmtInt(metaAds.totals.impressions)}</p>
+                    </div>
+                  </div>
+                  {metaAds.campaigns.length > 0 && (
+                    <div className="mt-3 pt-3 border-t border-blue-200/60">
+                      <p className="text-[11px] uppercase tracking-wide text-blue-700 mb-1.5">Top campaigns</p>
+                      <ul className="text-xs text-blue-900 space-y-0.5">
+                        {metaAds.campaigns.slice(0, 5).map(c => (
+                          <li key={c.campaignId} className="flex justify-between gap-2">
+                            <span className="truncate">{c.campaignName}</span>
+                            <span className="flex-shrink-0 text-blue-700">
+                              {fmtInt(c.installs)} installs · ${c.spend.toFixed(2)}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  <p className="text-[11px] text-blue-700 mt-2">
+                    Meta's own attribution. In Apple's Sources table, these installs mostly show up as "App referrer" (Facebook / Instagram iOS apps) — Apple doesn't label the referring app.
+                  </p>
+                </>
+              ) : (
+                <p className="text-xs text-blue-900">
+                  No Meta Ads activity for this app in the window.
+                </p>
+              )}
+            </div>
+          )}
+          {metaAds && !metaAds.connected && (
+            <div className="rounded-md border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600">
+              Connect Meta (Facebook) to see Meta Ads install attribution here.
+            </div>
           )}
 
           {sources && sources.sources.length > 0 && (

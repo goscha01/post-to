@@ -390,6 +390,30 @@ router.get('/analytics/sources', async (req, res) => {
   }
 });
 
+// GET /analytics/meta-ads — cross-reference Meta Ads install conversions
+// for campaigns promoting THIS Apple app. Answers "which of my App referrer
+// PPVs are actually Meta Ads traffic". Returns installs + spend + CPI from
+// Meta's Marketing API filtered to adsets whose promoted_object.object_
+// store_url contains this connection's Apple appId.
+router.get('/analytics/meta-ads', async (req, res) => {
+  const userId = (req.user.workspaceOwnerId || req.user.userId);
+  try {
+    const connectionId = String(req.query.connectionId || '');
+    if (!connectionId) return res.status(400).json({ error: 'connectionId required' });
+    const ctx = await loadCreds(userId, connectionId);
+    if (!ctx) return res.status(404).json({ error: 'ASC connection not found' });
+    if (!ctx.appId) return res.status(400).json({ error: 'Connection has no primary appId' });
+    const overlay = await ascAnalytics.getMetaAdsOverlayForApp(userId, {
+      appleAppId: ctx.appId,
+      days: req.query.days,
+    });
+    res.json(overlay || { connected: false, reason: 'meta_not_connected' });
+  } catch (err) {
+    logger.warn('asc_analytics.meta_overlay.failed', { userId, error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // -----------------------------------------------------------------------
 // PATCH /:connectionId — update credentials in place (key rotation)
 // -----------------------------------------------------------------------
