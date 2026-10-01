@@ -607,9 +607,18 @@ async function getInstallFunnel({ connectionId, days = 14, userId }) {
       const displayInstalls = stCovered
         ? b.salesInstalls
         : (b.commerceDataAvailable ? b.analyticsInstalls : null);
+
+      // When engagement data is available but ONLY the thin "summary" report
+      // has landed (PPV present, zero impression events), show impressions
+      // as "—" rather than "0" — the comprehensive report with impression
+      // events hasn't published yet. 0 PPV + 0 impressions on a day with
+      // engagement data IS a real zero (no activity that day).
+      const partialEngagement =
+        b.engagementDataAvailable && b.impressions === 0 && b.productPageViews > 0;
+
       return {
         date,
-        impressions: b.engagementDataAvailable ? b.impressions : null,
+        impressions: !b.engagementDataAvailable || partialEngagement ? null : b.impressions,
         impressionsUniqueDevice: 0,
         productPageViews: b.engagementDataAvailable ? b.productPageViews : null,
         productPageViewsUniqueDevice: 0,
@@ -621,6 +630,7 @@ async function getInstallFunnel({ connectionId, days = 14, userId }) {
         engagementDataAvailable: b.engagementDataAvailable,
         commerceDataAvailable: b.commerceDataAvailable,
         installsFromSalesAndTrends: stCovered,
+        partialEngagement,
       };
     });
 
@@ -648,7 +658,19 @@ async function getInstallFunnel({ connectionId, days = 14, userId }) {
   );
   const attributableInstalls = attributableDays.reduce((s, d) => s + (d.analyticsInstalls || 0), 0);
   const attributablePpv = attributableDays.reduce((s, d) => s + (d.productPageViews || 0), 0);
-  const conversionRate = (attributableDays.length > 0 && attributablePpv > 0)
+  // Apple's Analytics COMMERCE report lags Sales & Trends by several days
+  // for install attribution — a day can have the commerce "summary"
+  // (Auto-updates etc.) but zero First-time download rows while S&T
+  // already knows there were real installs that day. If every attributable
+  // day shows analyticsInstalls=0 but we know (from S&T) there were
+  // installs, that's "attribution pending", not "nobody converted". Show
+  // "—" instead of a misleading 0.0%.
+  const attributableSalesInstalls = attributableDays.reduce(
+    (s, d) => s + (d.installsFromSalesAndTrends && typeof d.installs === 'number' ? d.installs : 0),
+    0
+  );
+  const attributionPending = attributableInstalls === 0 && attributableSalesInstalls > 0;
+  const conversionRate = (attributableDays.length > 0 && attributablePpv > 0 && !attributionPending)
     ? attributableInstalls / attributablePpv
     : null;
 
