@@ -176,6 +176,25 @@ const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'ga4_list_custom_dimensions',
+    description: 'List the GA4 property\'s registered Custom Dimensions. Use this BEFORE creating a new custom dimension to check whether the target parameter is already registered — Google returns 409 ALREADY_EXISTS on duplicate (handled as a no-op by ga4_create_custom_dimension but still worth checking so plan steps close cleanly).',
+    parameters: { type: 'object', properties: {} },
+  },
+  {
+    name: 'ga4_create_custom_dimension',
+    description: 'Register a GA4 event-scoped custom dimension so a specific event parameter becomes queryable via the Data API (needed for per-parameter reports like "plan_selected broken down by plan_id"). Idempotent: if a dimension for the same parameterName+scope already exists, returns noop:true. Use scope=EVENT for event parameters (default), scope=USER for user properties. ONLY create a dimension when the plan explicitly requires per-parameter reporting that isn\'t available today.',
+    parameters: {
+      type: 'object',
+      properties: {
+        parameterName: { type: 'string', description: 'The event parameter name as fired by the app (e.g. "plan_id", "billing_period", "trigger"). Case-sensitive, must match the SDK call exactly.' },
+        displayName:   { type: 'string', description: 'Human-readable name shown in GA4 reports (e.g. "Plan ID", "Billing Period"). Up to 82 chars.' },
+        description:   { type: 'string', description: 'Optional long-form description of what the dimension measures.' },
+        scope:         { type: 'string', enum: ['EVENT', 'USER'], description: 'EVENT for event parameters (default), USER for user properties. Most dimensions are EVENT.' },
+      },
+      required: ['parameterName', 'displayName'],
+    },
+  },
+  {
     name: 'google_ads_get_account_links',
     description: 'List account/product links attached to this Google Ads customer (Firebase, GA4, Merchant Center, Play, third-party app analytics). Use to VERIFY LINKAGE claims from the Google Ads side WITHOUT needing Firebase Console access — e.g. answers "is my Firebase project linked to this Ads customer?" and "is my GA4 property linked?". Returns counts by link type + normalized rows so you can cross-check specific link IDs. Prefer this over telling the user to open Firebase Console.',
     parameters: {
@@ -338,6 +357,30 @@ function makeExecutor(context) {
       case 'ga4_list_key_events': {
         const res = await analytics.listConversionEvents(ga4Ctx.accessToken, ga4Ctx.propertyId);
         return res;
+      }
+      case 'ga4_list_custom_dimensions': {
+        const res = await analytics.listCustomDimensions(ga4Ctx.accessToken, ga4Ctx.propertyId);
+        return res;
+      }
+      case 'ga4_create_custom_dimension': {
+        const parameterName = String(args?.parameterName || '').trim();
+        const displayName = String(args?.displayName || '').trim();
+        if (!parameterName) return { error: 'parameterName required' };
+        if (!displayName) return { error: 'displayName required' };
+        const scope = args?.scope === 'USER' ? 'USER' : 'EVENT';
+        try {
+          const res = await analytics.createCustomDimension(ga4Ctx.accessToken, ga4Ctx.propertyId, {
+            parameterName,
+            displayName,
+            description: args?.description || undefined,
+            scope,
+          });
+          return res;
+        } catch (err) {
+          const status = err?.response?.status || err?.status || 500;
+          const message = err?.response?.data?.error?.message || err?.message || 'create failed';
+          return { error: message, status };
+        }
       }
       default:
         return { error: `Unknown GA4 tool: ${name}` };

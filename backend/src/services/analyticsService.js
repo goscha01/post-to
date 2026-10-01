@@ -747,6 +747,94 @@ async function markConversionEvent(accessToken, propertyId, eventName) {
 // AI to check "is 'purchase' already a Key Event?" before either marking
 // it or telling the user to click a Console button. Returns the raw
 // resource names so the model can also cross-reference deletion targets.
+// ---------- Custom Dimensions (Admin API) ----------
+//
+// GA4 event parameters (e.g. `plan_id`, `billing_period`) must be registered
+// as event-scoped custom dimensions before they're queryable by name via the
+// Data API — unregistered parameters just return "(not set)". These two
+// functions let the Campaign Assistant automate the registration instead of
+// walking the user through GA4 Admin UI.
+//
+// API: properties.customDimensions.{create,list} (v1beta, stable).
+// Requires OAuth scope `analytics.edit` (we request it alongside readonly).
+
+async function listCustomDimensions(accessToken, propertyId) {
+  const pid = String(propertyId || '').replace(/^properties\//, '').trim();
+  if (!pid) throw new Error('propertyId required');
+  const auth = oauthClientFor(accessToken);
+  const admin = google.analyticsadmin({ version: 'v1beta', auth });
+  const dims = [];
+  let pageToken;
+  do {
+    const { data } = await admin.properties.customDimensions.list({
+      parent: `properties/${pid}`,
+      pageSize: 200,
+      pageToken,
+    });
+    for (const d of data?.customDimensions || []) {
+      dims.push({
+        resourceName: d.name || null,
+        displayName: d.displayName || null,
+        parameterName: d.parameterName || null,
+        scope: d.scope || null,
+        description: d.description || null,
+        disallowAdsPersonalization: !!d.disallowAdsPersonalization,
+      });
+    }
+    pageToken = data?.nextPageToken || null;
+  } while (pageToken);
+  return { propertyId: pid, count: dims.length, customDimensions: dims };
+}
+
+// Create one event-scoped custom dimension. If a dimension with the same
+// parameterName+scope already exists Apple… — er, Google — returns 409
+// ALREADY_EXISTS; we treat that as a successful no-op so the Assistant can
+// re-run the step safely.
+async function createCustomDimension(accessToken, propertyId, { parameterName, displayName, description, scope = 'EVENT' }) {
+  const pid = String(propertyId || '').replace(/^properties\//, '').trim();
+  const param = String(parameterName || '').trim();
+  const name = String(displayName || '').trim();
+  if (!pid) throw new Error('propertyId required');
+  if (!param) throw new Error('parameterName required');
+  if (!name) throw new Error('displayName required');
+  const auth = oauthClientFor(accessToken);
+  const admin = google.analyticsadmin({ version: 'v1beta', auth });
+  try {
+    const { data } = await admin.properties.customDimensions.create({
+      parent: `properties/${pid}`,
+      requestBody: {
+        parameterName: param,
+        displayName: name,
+        scope,
+        ...(description ? { description } : {}),
+      },
+    });
+    return {
+      noop: false,
+      resourceName: data?.name || null,
+      displayName: data?.displayName || name,
+      parameterName: data?.parameterName || param,
+      scope: data?.scope || scope,
+      propertyId: pid,
+    };
+  } catch (err) {
+    const code = err?.code || err?.response?.status;
+    const msg = err?.errors?.[0]?.message || err?.message || '';
+    const isAlreadyExists = code === 409
+      || /already exists|ALREADY_EXISTS/i.test(msg + ' ' + JSON.stringify(err?.response?.data || {}));
+    if (isAlreadyExists) {
+      return {
+        noop: true,
+        reason: `Custom dimension for "${param}" (scope=${scope}) already exists on this property`,
+        parameterName: param,
+        scope,
+        propertyId: pid,
+      };
+    }
+    throw err;
+  }
+}
+
 async function listConversionEvents(accessToken, propertyId) {
   const pid = String(propertyId || '').replace(/^properties\//, '').trim();
   if (!pid) throw new Error('propertyId required');
@@ -789,6 +877,8 @@ module.exports = {
   getPlanSelectedBreakdown,
   markConversionEvent,
   listConversionEvents,
+  listCustomDimensions,
+  createCustomDimension,
   normalizeApiError,
   // exposed for tests
   _internal: { runReport, shapeReport, dateRangeFromDays, HIGHLIGHTED_EVENTS },
