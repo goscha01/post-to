@@ -723,12 +723,25 @@ async function getAdAttribution({ connectionId, days = 14 }) {
     loadCategoryRows({ connectionId, category: 'COMMERCE', days }),
   ]);
   const d = engagement.days;
+  // Row-level event-date cutoff (matches what getInstallFunnel does). Apple's
+  // cached report instances contain rows spanning multiple event dates — an
+  // instance from processing_date=09-30 can hold rows for 09-22..09-29. Without
+  // this filter, Ad Attribution totals balloon past the App Store tile which
+  // DOES filter by event date, and user-facing numbers stop corresponding.
+  const cutoff = new Date();
+  cutoff.setUTCDate(cutoff.getUTCDate() - d);
+  const cutoffIso = cutoff.toISOString().slice(0, 10);
+  const inWindow = (r) => {
+    const dateKey = String(r?.Date || '').slice(0, 10);
+    return dateKey && dateKey >= cutoffIso;
+  };
 
   // Aggregate PPVs by (sourceType, campaign) — this is the "visited store
   // page" side of the funnel.
   const engagementByKey = new Map();
   for (const inst of engagement.rows) {
     for (const r of inst.rows || []) {
+      if (!inWindow(r)) continue;
       const sourceType = String(r['Source Type'] || 'Unknown').trim() || 'Unknown';
       const campaign = String(r['Campaign'] || '').trim() || '(none)';
       const key = `${sourceType}|${campaign}`;
@@ -751,6 +764,7 @@ async function getAdAttribution({ connectionId, days = 14 }) {
   const installsByKey = new Map();
   for (const inst of commerce.rows) {
     for (const r of inst.rows || []) {
+      if (!inWindow(r)) continue;
       const downloadType = String(r['Download Type'] || '').trim();
       if (downloadType !== 'First-time download') continue;
       const sourceType = String(r['Source Type'] || 'Unknown').trim() || 'Unknown';
