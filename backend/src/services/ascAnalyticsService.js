@@ -389,16 +389,40 @@ async function loadCategoryRows({ connectionId, category, days }) {
   const cutoff = new Date();
   cutoff.setUTCDate(cutoff.getUTCDate() - daysClamped);
   const cutoffIso = cutoff.toISOString().slice(0, 10);
+  // CRITICAL: Apple's ONGOING request contains multiple REPORTS per
+  // category (verified Oct 1 — reportsCount: 15 for ProofPix). Each report
+  // publishes its own instance per processing_date with different
+  // dimensional cuts of the same underlying events, and `walk` upserts
+  // each separately (unique by instance_id). Summing rows across all of
+  // them double- or triple-counts the metrics. We dedupe here by picking
+  // the ONE instance per processing_date with the most rows — that's the
+  // "comprehensive" cut, and others are subsets of it. Correct long-term
+  // fix is to store report_id/report_name and let the caller filter;
+  // this is the no-schema-change workaround.
   const { data, error } = await supabase
     .from('asc_analytics_cache')
-    .select('processing_date, rows, row_count')
+    .select('processing_date, rows, row_count, instance_id')
     .eq('connection_id', connectionId)
     .eq('report_category', category)
     .eq('granularity', 'DAILY')
     .gte('processing_date', cutoffIso)
     .order('processing_date', { ascending: false });
   if (error) throw error;
-  return { rows: data || [], days: daysClamped };
+
+  // Dedupe: keep the single instance per processing_date with the highest
+  // row_count. Multiple instances for the same date = different Apple
+  // reports with overlapping event data; summing them triple-counts.
+  const bestByDate = new Map();
+  for (const row of (data || [])) {
+    const existing = bestByDate.get(row.processing_date);
+    if (!existing || (row.row_count || 0) > (existing.row_count || 0)) {
+      bestByDate.set(row.processing_date, row);
+    }
+  }
+  const deduped = [...bestByDate.values()].sort((a, b) =>
+    b.processing_date.localeCompare(a.processing_date)
+  );
+  return { rows: deduped, days: daysClamped };
 }
 
 // Accumulate a single row into the running totals + per-day buckets. Handles
@@ -654,11 +678,23 @@ async function getInstallsBySource({ connectionId, days = 14 }) {
   const { rows, days: d } = await loadCategoryRows({
     connectionId, category: 'APP_STORE_ENGAGEMENT', days,
   });
+  // Match the funnel's effective date window: filter rows by their own Date
+  // field, not just by the cache instance's processing_date. Apple's
+  // per-instance CSVs contain rows spanning MANY event dates (a report
+  // published Sep 25 holds rows dated back to Sep 15+). Without this
+  // filter, sources totals balloon to several multiples of what the funnel
+  // reports for the same window.
+  const cutoff = new Date();
+  cutoff.setUTCDate(cutoff.getUTCDate() - d);
+  const cutoffIso = cutoff.toISOString().slice(0, 10);
+
   // Aggregate by Source Type. Long-format schema means each metric lives in
   // its own row keyed by Event — bucket accumulation branches on Event.
   const bySource = new Map();
   for (const row of rows) {
     for (const r of row.rows || []) {
+      const rowDate = String(r?.Date || '').slice(0, 10);
+      if (!rowDate || rowDate < cutoffIso) continue;
       const sourceType = String(r['Source Type'] || 'Unknown').trim() || 'Unknown';
       const campaign = String(r['Campaign'] || '').trim();
       const bucket = bySource.get(sourceType) || {
