@@ -190,7 +190,7 @@ router.get('/accounts/:accountId/locations/:locationId/reviews', requireBusiness
   try {
     const { accountId, locationId } = req.params;
     const { cached_only } = req.query;
-    const userId = req.user?.userId;
+    const userId = (req.user?.workspaceOwnerId || req.user?.userId);
 
     // If cached_only=true, return only cached data. When the DB has zero rows
     // for this location we return cached:false so the frontend falls through
@@ -236,7 +236,7 @@ router.get('/accounts/:accountId/locations/:locationId/reviews', requireBusiness
     // Save reviews to database
     if (data.reviews && data.reviews.length > 0) {
       await saveExistingReviewsToDatabase(
-        req.user.userId,
+        (req.user.workspaceOwnerId || req.user.userId),
         data.reviews,
         locationId,
         accountId,
@@ -383,7 +383,7 @@ router.put('/accounts/:accountId/locations/:locationId/reviews/:reviewId/reply',
   try {
     let { accountId, locationId, reviewId } = req.params;
     const { comment } = req.body;
-    const userId = req.user?.userId;
+    const userId = (req.user?.workspaceOwnerId || req.user?.userId);
 
     accountId = accountId.replace('accounts/', '');
     locationId = locationId.replace('locations/', '');
@@ -450,7 +450,7 @@ router.put('/accounts/:accountId/locations/:locationId/reviews/:reviewId/reply',
     });
 
   } catch (error) {
-    logger.error('gmb.reply.unhandled', { user_id: req.user?.userId, error: error.message, stack: (error.stack || '').slice(0, 1500) });
+    logger.error('gmb.reply.unhandled', { user_id: (req.user?.workspaceOwnerId || req.user?.userId), error: error.message, stack: (error.stack || '').slice(0, 1500) });
     res.status(500).json({
       success: false,
       error: 'Failed to reply to review',
@@ -463,7 +463,7 @@ router.put('/accounts/:accountId/locations/:locationId/reviews/:reviewId/reply',
 router.delete('/accounts/:accountId/locations/:locationId/reviews/:reviewId/reply', requireBusinessAuth, async (req, res) => {
   try {
     let { accountId, locationId, reviewId } = req.params;
-    const userId = req.user?.userId;
+    const userId = (req.user?.workspaceOwnerId || req.user?.userId);
 
     accountId = accountId.replace('accounts/', '');
     locationId = locationId.replace('locations/', '');
@@ -518,7 +518,7 @@ router.delete('/accounts/:accountId/locations/:locationId/reviews/:reviewId/repl
     res.json({ success: true, message: 'Review reply deleted successfully' });
 
   } catch (error) {
-    logger.error('gmb.reply.delete_unhandled', { user_id: req.user?.userId, error: error.message, stack: (error.stack || '').slice(0, 1500) });
+    logger.error('gmb.reply.delete_unhandled', { user_id: (req.user?.workspaceOwnerId || req.user?.userId), error: error.message, stack: (error.stack || '').slice(0, 1500) });
     res.status(500).json({
       success: false,
       error: 'Failed to delete review reply',
@@ -559,7 +559,7 @@ async function loadReviewForUser(reviewIdParam, userId) {
 
 router.post('/:reviewId/generate-post', async (req, res) => {
   try {
-    const userId = req.user.userId;
+    const userId = (req.user.workspaceOwnerId || req.user.userId);
     const reviewIdParam = req.params.reviewId;
 
     // Try lookup by UUID primary key first, then by GMB review_id string.
@@ -637,7 +637,7 @@ router.post('/:reviewId/generate-post', async (req, res) => {
 // ---------------------------------------------------------------------------
 router.post('/:reviewId/generate-reply', async (req, res) => {
   try {
-    const userId = req.user.userId;
+    const userId = (req.user.workspaceOwnerId || req.user.userId);
     const review = await loadReviewForUser(req.params.reviewId, userId);
     if (!review) {
       return res.status(404).json({ error: 'Review not found' });

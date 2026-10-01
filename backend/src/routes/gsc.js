@@ -1,7 +1,7 @@
 // Google Search Console read-only endpoints.
 //
 // Auth stack:
-//   - authMiddleware       → user JWT (populates req.user.userId)
+//   - authMiddleware       → user JWT (populates (req.user.workspaceOwnerId || req.user.userId))
 //   - requireBusinessAuth  → GSC tokens live on the same OAuth grant as GMB
 //                            (webmasters.readonly is in BUSINESS_SCOPES). The
 //                            middleware handles proactive refresh + populates
@@ -43,14 +43,14 @@ async function tokenForSite(req, siteUrl) {
   const { data: rows } = await supabase
     .from('connected_accounts')
     .select('metadata')
-    .eq('user_id', req.user.userId)
+    .eq('user_id', (req.user.workspaceOwnerId || req.user.userId))
     .eq('provider', 'google_search_console')
     .eq('external_id', `gsc:${siteUrl}`)
     .limit(1);
   const ownerGoogleId = rows && rows[0]?.metadata?.owner_google_id;
   if (!ownerGoogleId) return req.businessToken;
 
-  const tokens = await getAllBusinessTokens(req.user.userId);
+  const tokens = await getAllBusinessTokens((req.user.workspaceOwnerId || req.user.userId));
   const match = tokens.find(t => t.google_id === ownerGoogleId);
   return match?.access_token || req.businessToken;
 }
@@ -63,7 +63,7 @@ router.get('/sites', async (req, res) => {
     // different set of GSC sites. Tag each returned site with owner_google_id
     // + owner_email so the caller can save + route later queries to the right
     // token.
-    const tokens = await getAllBusinessTokens(req.user.userId);
+    const tokens = await getAllBusinessTokens((req.user.workspaceOwnerId || req.user.userId));
     const effectiveTokens = tokens.length > 0 ? tokens : [{
       access_token: req.businessToken,
       email: null,
@@ -104,7 +104,7 @@ router.get('/sites', async (req, res) => {
     });
 
     logger.info('gsc.sites.list_ok', {
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
       count: deduped.length,
       accounts_tried: effectiveTokens.length,
       accounts_failed: errors.length,
@@ -120,7 +120,7 @@ router.get('/sites', async (req, res) => {
 
     res.json({ sites: deduped, errors: errors.length ? errors : undefined });
   } catch (err) {
-    const norm = gsc.normalizeApiError(err, { endpoint: 'sites.list', userId: req.user.userId });
+    const norm = gsc.normalizeApiError(err, { endpoint: 'sites.list', userId: (req.user.workspaceOwnerId || req.user.userId) });
     logger.error('gsc.sites.list_failed', { error: norm.message, status: norm.status });
     res.status(norm.status || 500).json({ error: norm.message });
   }
@@ -131,7 +131,7 @@ router.post('/sites', express.json(), async (req, res) => {
     const { siteUrl, displayName, permissionLevel, ownerGoogleId, ownerEmail } = req.body || {};
     if (!siteUrl) return res.status(400).json({ error: 'siteUrl required' });
     const row = await connections.upsertGoogleSearchConsole({
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
       siteUrl: String(siteUrl).trim(),
       displayName: displayName || siteUrl,
       permissionLevel: permissionLevel || null,
@@ -139,14 +139,14 @@ router.post('/sites', express.json(), async (req, res) => {
       ownerEmail: ownerEmail || null,
     });
     logger.info('gsc.site.connected', {
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
       siteUrl,
       connectionId: row.id,
       ownerGoogleId: ownerGoogleId || null,
     });
     res.status(201).json({ connection: row });
   } catch (err) {
-    logger.error('gsc.site.connect_failed', { userId: req.user.userId, error: err.message });
+    logger.error('gsc.site.connect_failed', { userId: (req.user.workspaceOwnerId || req.user.userId), error: err.message });
     res.status(500).json({ error: err.message || 'Failed to save site' });
   }
 });
@@ -156,7 +156,7 @@ router.get('/connected', async (req, res) => {
     const { data, error } = await supabase
       .from('connected_accounts')
       .select('*')
-      .eq('user_id', req.user.userId)
+      .eq('user_id', (req.user.workspaceOwnerId || req.user.userId))
       .eq('provider', 'google_search_console')
       .order('created_at', { ascending: false });
     if (error) throw error;
@@ -187,7 +187,7 @@ router.get('/queries', async (req, res) => {
 
     // Resolve siteUrl from ?connectionId when the caller didn't pass one.
     if (!siteUrl && req.query.connectionId) {
-      const row = await connections.getForUser(req.user.userId, req.query.connectionId);
+      const row = await connections.getForUser((req.user.workspaceOwnerId || req.user.userId), req.query.connectionId);
       if (!row) return res.status(404).json({ error: 'Connection not found' });
       if (row.provider !== 'google_search_console') {
         return res.status(400).json({ error: 'Connection is not a Google Search Console connection' });
@@ -210,7 +210,7 @@ router.get('/queries', async (req, res) => {
     const result = await gsc.topQueries(token, siteUrl, { days, limit });
 
     logger.info('gsc.queries.ok', {
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
       siteUrl,
       days,
       limit,
@@ -222,7 +222,7 @@ router.get('/queries', async (req, res) => {
   } catch (err) {
     const norm = gsc.normalizeApiError(err, {
       endpoint: 'queries',
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
     });
     logger.error('gsc.queries.failed', { error: norm.message, status: norm.status });
     res.status(norm.status || 500).json({ error: norm.message });

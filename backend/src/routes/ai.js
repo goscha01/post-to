@@ -62,7 +62,7 @@ router.post(
       return res.status(400).json({ error: 'Invalid input', details: errors.array() });
     }
 
-    const userId = req.user.userId;
+    const userId = (req.user.workspaceOwnerId || req.user.userId);
     const kind = 'article_generation';
 
     // Cap check.
@@ -244,7 +244,7 @@ router.post(
 // For the reviewId-based variant, reviews.js calls generateReviewPostHandler.
 // ---------------------------------------------------------------------------
 async function generateReviewPostHandler(req, res, options = {}) {
-  const userId = req.user.userId;
+  const userId = (req.user.workspaceOwnerId || req.user.userId);
   const kind = 'review_post_generation';
 
   const used = await aiJobs.countTodayByKind(userId, kind);
@@ -340,7 +340,7 @@ async function generateReviewPostHandler(req, res, options = {}) {
 // if the user doesn't post it via the existing GMB reply endpoint.
 // ---------------------------------------------------------------------------
 async function generateReviewReplyHandler(req, res, options = {}) {
-  const userId = req.user.userId;
+  const userId = (req.user.workspaceOwnerId || req.user.userId);
   const kind = 'review_reply_generation';
 
   const used = await aiJobs.countTodayByKind(userId, kind);
@@ -519,7 +519,7 @@ router.post(
       // tripped the check. Without this the frontend just gets a generic
       // "Invalid input" with no way to diagnose.
       logger.warn('ai.post_from_image.validation_error', {
-        user_id: req.user?.userId,
+        user_id: (req.user?.workspaceOwnerId || req.user?.userId),
         errors: errors.array().slice(0, 10),
         image_url_count: Array.isArray(req.body?.imageUrls) ? req.body.imageUrls.length : null,
         image_url_lengths: Array.isArray(req.body?.imageUrls)
@@ -533,7 +533,7 @@ router.post(
       return res.status(400).json({ error: 'Invalid input', details: errors.array() });
     }
 
-    const userId = req.user.userId;
+    const userId = (req.user.workspaceOwnerId || req.user.userId);
     const kind = 'post_from_image_generation';
 
     const used = await aiJobs.countTodayByKind(userId, kind);

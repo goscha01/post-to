@@ -6,7 +6,7 @@
 // grep in the Phase 1B spec allows a POST handler here.
 //
 // Auth stack:
-//   - authMiddleware  → app user JWT (populates req.user.userId)
+//   - authMiddleware  → app user JWT (populates (req.user.workspaceOwnerId || req.user.userId))
 //
 // Meta OAuth is intentionally NOT enforced by a middleware — every endpoint
 // resolves the Meta owner token via connectionsService.getMetaOwnerToken and
@@ -239,7 +239,7 @@ async function resolveDefaultOrRequested(userId, requestedAdAccountId) {
 
 router.get('/_diagnose', async (req, res) => {
   try {
-    const meta = await connections.getMetaOwnerToken(req.user.userId);
+    const meta = await connections.getMetaOwnerToken((req.user.workspaceOwnerId || req.user.userId));
     if (!meta?.accessToken) {
       return res.json({
         metaConnected: false,
@@ -256,7 +256,7 @@ router.get('/_diagnose', async (req, res) => {
       // Log but return a structured shape rather than 500 — this endpoint
       // exists specifically to explain broken states.
       logger.warn('metaAds.diagnose.debug_token_failed', {
-        userId: req.user.userId,
+        userId: (req.user.workspaceOwnerId || req.user.userId),
         error: err.message,
       });
       return res.json({
@@ -285,7 +285,7 @@ router.get('/_diagnose', async (req, res) => {
     });
   } catch (err) {
     logger.error('metaAds.diagnose.failed', {
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
       error: err.message,
     });
     res.status(500).json({ error: err.message || 'Failed to diagnose Meta connection' });
@@ -296,7 +296,7 @@ router.get('/_diagnose', async (req, res) => {
 
 router.get('/accounts', async (req, res) => {
   try {
-    const meta = await connections.getMetaOwnerToken(req.user.userId);
+    const meta = await connections.getMetaOwnerToken((req.user.workspaceOwnerId || req.user.userId));
     if (!meta?.accessToken) {
       return sendErr(res, {
         status: 400,
@@ -308,7 +308,7 @@ router.get('/accounts', async (req, res) => {
     try {
       accounts = await svc.listAdAccounts(meta.accessToken);
     } catch (err) {
-      return sendMetaErr(res, err, { userId: req.user.userId, op: 'listAdAccounts' });
+      return sendMetaErr(res, err, { userId: (req.user.workspaceOwnerId || req.user.userId), op: 'listAdAccounts' });
     }
     if (accounts.length === 0) {
       return sendErr(res, {
@@ -319,9 +319,9 @@ router.get('/accounts', async (req, res) => {
         extra: { accounts: [] },
       });
     }
-    const selection = await connections.getMetaAdAccountSelection(req.user.userId);
+    const selection = await connections.getMetaAdAccountSelection((req.user.workspaceOwnerId || req.user.userId));
     logger.info('metaAds.accounts.list_ok', {
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
       count: accounts.length,
       selectedCount: selection.adAccountIds.length,
     });
@@ -331,7 +331,7 @@ router.get('/accounts', async (req, res) => {
     });
   } catch (err) {
     logger.error('metaAds.accounts.list_failed', {
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
       error: err.message,
     });
     res.status(500).json({ error: err.message || 'Failed to list Meta ad accounts' });
@@ -367,7 +367,7 @@ router.post('/accounts', express.json(), async (req, res) => {
       });
     }
 
-    const meta = await connections.getMetaOwnerToken(req.user.userId);
+    const meta = await connections.getMetaOwnerToken((req.user.workspaceOwnerId || req.user.userId));
     if (!meta?.accessToken) {
       return sendErr(res, {
         status: 400,
@@ -381,7 +381,7 @@ router.post('/accounts', express.json(), async (req, res) => {
     try {
       accessible = await svc.listAdAccounts(meta.accessToken);
     } catch (err) {
-      return sendMetaErr(res, err, { userId: req.user.userId, op: 'listAdAccounts.forSelection' });
+      return sendMetaErr(res, err, { userId: (req.user.workspaceOwnerId || req.user.userId), op: 'listAdAccounts.forSelection' });
     }
     const accessibleIds = new Set(accessible.map((a) => a.id));
     const invalid = normalized.filter((id) => !accessibleIds.has(id));
@@ -396,7 +396,7 @@ router.post('/accounts', express.json(), async (req, res) => {
     const requestedDefault = body.defaultAdAccountId
       ? svc.normalizeAdAccountId(body.defaultAdAccountId)
       : null;
-    const persisted = await connections.setMetaAdAccountSelection(req.user.userId, {
+    const persisted = await connections.setMetaAdAccountSelection((req.user.workspaceOwnerId || req.user.userId), {
       adAccountIds: normalized,
       defaultAdAccountId:
         requestedDefault && normalized.includes(requestedDefault)
@@ -404,7 +404,7 @@ router.post('/accounts', express.json(), async (req, res) => {
           : normalized[0],
     });
     logger.info('metaAds.accounts.selection_saved', {
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
       count: persisted.adAccountIds.length,
       default: persisted.defaultAdAccountId,
       rowsUpdated: persisted.rowsUpdated,
@@ -419,7 +419,7 @@ router.post('/accounts', express.json(), async (req, res) => {
       });
     }
     logger.error('metaAds.accounts.save_failed', {
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
       error: err.message,
     });
     res.status(500).json({ error: err.message || 'Failed to save ad account selection' });
@@ -430,11 +430,11 @@ router.post('/accounts', express.json(), async (req, res) => {
 // dashboard on load to know which account to render.
 router.get('/connected', async (req, res) => {
   try {
-    const selection = await connections.getMetaAdAccountSelection(req.user.userId);
+    const selection = await connections.getMetaAdAccountSelection((req.user.workspaceOwnerId || req.user.userId));
     res.json({ selection });
   } catch (err) {
     logger.error('metaAds.connected.failed', {
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
       error: err.message,
     });
     res.status(500).json({ error: err.message || 'Failed to fetch selection' });
@@ -451,7 +451,7 @@ router.get('/connected', async (req, res) => {
 router.get('/overview', async (req, res) => {
   try {
     const days = parseDays(req);
-    const resolved = await resolveDefaultOrRequested(req.user.userId, req.query.adAccountId);
+    const resolved = await resolveDefaultOrRequested((req.user.workspaceOwnerId || req.user.userId), req.query.adAccountId);
     if (resolved.error) return sendErr(res, resolved.error);
 
     const { accessToken, adAccountId } = resolved;
@@ -462,7 +462,7 @@ router.get('/overview', async (req, res) => {
         svc.getInsights({ accessToken, node: adAccountId, level: 'campaign', days }),
       ]);
     } catch (err) {
-      return sendMetaErr(res, err, { userId: req.user.userId, op: 'overview', adAccountId });
+      return sendMetaErr(res, err, { userId: (req.user.workspaceOwnerId || req.user.userId), op: 'overview', adAccountId });
     }
 
     const insights = insightsBundle.rows;
@@ -544,7 +544,7 @@ router.get('/overview', async (req, res) => {
     });
   } catch (err) {
     logger.error('metaAds.overview.failed', {
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
       error: err.message,
     });
     res.status(500).json({ error: err.message || 'Failed to compute overview' });
@@ -582,7 +582,7 @@ function joinEntitiesWithInsights({ entities, insightsRows, entityKey, campaigns
 router.get('/campaigns', async (req, res) => {
   try {
     const days = parseDays(req);
-    const resolved = await resolveDefaultOrRequested(req.user.userId, req.query.adAccountId);
+    const resolved = await resolveDefaultOrRequested((req.user.workspaceOwnerId || req.user.userId), req.query.adAccountId);
     if (resolved.error) return sendErr(res, resolved.error);
     const { accessToken, adAccountId } = resolved;
     let campaigns, insightsBundle;
@@ -592,7 +592,7 @@ router.get('/campaigns', async (req, res) => {
         svc.getInsights({ accessToken, node: adAccountId, level: 'campaign', days }),
       ]);
     } catch (err) {
-      return sendMetaErr(res, err, { userId: req.user.userId, op: 'campaigns', adAccountId });
+      return sendMetaErr(res, err, { userId: (req.user.workspaceOwnerId || req.user.userId), op: 'campaigns', adAccountId });
     }
     const rows = joinEntitiesWithInsights({
       entities: campaigns,
@@ -602,7 +602,7 @@ router.get('/campaigns', async (req, res) => {
     res.json({ adAccountId, days, dateRange: insightsBundle.dateRange, campaigns: rows });
   } catch (err) {
     logger.error('metaAds.campaigns.failed', {
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
       error: err.message,
     });
     res.status(500).json({ error: err.message || 'Failed to fetch campaigns' });
@@ -612,7 +612,7 @@ router.get('/campaigns', async (req, res) => {
 router.get('/adsets', async (req, res) => {
   try {
     const days = parseDays(req);
-    const resolved = await resolveDefaultOrRequested(req.user.userId, req.query.adAccountId);
+    const resolved = await resolveDefaultOrRequested((req.user.workspaceOwnerId || req.user.userId), req.query.adAccountId);
     if (resolved.error) return sendErr(res, resolved.error);
     const { accessToken, adAccountId } = resolved;
     let campaigns, adsets, insightsBundle;
@@ -623,7 +623,7 @@ router.get('/adsets', async (req, res) => {
         svc.getInsights({ accessToken, node: adAccountId, level: 'adset', days }),
       ]);
     } catch (err) {
-      return sendMetaErr(res, err, { userId: req.user.userId, op: 'adsets', adAccountId });
+      return sendMetaErr(res, err, { userId: (req.user.workspaceOwnerId || req.user.userId), op: 'adsets', adAccountId });
     }
     const campaignsById = new Map(campaigns.map((c) => [c.id, c]));
     const rows = joinEntitiesWithInsights({
@@ -635,7 +635,7 @@ router.get('/adsets', async (req, res) => {
     res.json({ adAccountId, days, dateRange: insightsBundle.dateRange, adsets: rows });
   } catch (err) {
     logger.error('metaAds.adsets.failed', {
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
       error: err.message,
     });
     res.status(500).json({ error: err.message || 'Failed to fetch ad sets' });
@@ -654,7 +654,7 @@ router.get('/ads', async (req, res) => {
       });
     }
     const days = requestedDays;
-    const resolved = await resolveDefaultOrRequested(req.user.userId, req.query.adAccountId);
+    const resolved = await resolveDefaultOrRequested((req.user.workspaceOwnerId || req.user.userId), req.query.adAccountId);
     if (resolved.error) return sendErr(res, resolved.error);
     const { accessToken, adAccountId } = resolved;
     let campaigns, ads, insightsBundle;
@@ -665,7 +665,7 @@ router.get('/ads', async (req, res) => {
         svc.getInsights({ accessToken, node: adAccountId, level: 'ad', days }),
       ]);
     } catch (err) {
-      return sendMetaErr(res, err, { userId: req.user.userId, op: 'ads', adAccountId });
+      return sendMetaErr(res, err, { userId: (req.user.workspaceOwnerId || req.user.userId), op: 'ads', adAccountId });
     }
     const campaignsById = new Map(campaigns.map((c) => [c.id, c]));
     const rows = joinEntitiesWithInsights({
@@ -677,7 +677,7 @@ router.get('/ads', async (req, res) => {
     res.json({ adAccountId, days, dateRange: insightsBundle.dateRange, ads: rows });
   } catch (err) {
     logger.error('metaAds.ads.failed', {
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
       error: err.message,
     });
     res.status(500).json({ error: err.message || 'Failed to fetch ads' });
@@ -690,7 +690,7 @@ function makeBreakdownRoute({ path, level, breakdowns, days = { fallback: 30, ma
   router.get(path, async (req, res) => {
     try {
       const requested = parseDays(req, days);
-      const resolved = await resolveDefaultOrRequested(req.user.userId, req.query.adAccountId);
+      const resolved = await resolveDefaultOrRequested((req.user.workspaceOwnerId || req.user.userId), req.query.adAccountId);
       if (resolved.error) return sendErr(res, resolved.error);
       const { accessToken, adAccountId } = resolved;
       let bundle;
@@ -704,7 +704,7 @@ function makeBreakdownRoute({ path, level, breakdowns, days = { fallback: 30, ma
         });
       } catch (err) {
         return sendMetaErr(res, err, {
-          userId: req.user.userId,
+          userId: (req.user.workspaceOwnerId || req.user.userId),
           op: `breakdown${path}`,
           adAccountId,
           breakdowns,
@@ -719,7 +719,7 @@ function makeBreakdownRoute({ path, level, breakdowns, days = { fallback: 30, ma
       });
     } catch (err) {
       logger.error('metaAds.breakdown.failed', {
-        userId: req.user.userId,
+        userId: (req.user.workspaceOwnerId || req.user.userId),
         path,
         error: err.message,
       });
@@ -758,19 +758,19 @@ makeBreakdownRoute({
 
 router.get('/creatives', async (req, res) => {
   try {
-    const resolved = await resolveDefaultOrRequested(req.user.userId, req.query.adAccountId);
+    const resolved = await resolveDefaultOrRequested((req.user.workspaceOwnerId || req.user.userId), req.query.adAccountId);
     if (resolved.error) return sendErr(res, resolved.error);
     const { accessToken, adAccountId } = resolved;
     let rows;
     try {
       rows = await svc.getAdCreatives({ accessToken, adAccountId });
     } catch (err) {
-      return sendMetaErr(res, err, { userId: req.user.userId, op: 'creatives', adAccountId });
+      return sendMetaErr(res, err, { userId: (req.user.workspaceOwnerId || req.user.userId), op: 'creatives', adAccountId });
     }
     res.json({ adAccountId, creatives: rows });
   } catch (err) {
     logger.error('metaAds.creatives.failed', {
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
       error: err.message,
     });
     res.status(500).json({ error: err.message || 'Failed to fetch creatives' });
@@ -797,7 +797,7 @@ router.get('/diagnostics', async (req, res) => {
       });
     }
     const days = requestedDays;
-    const resolved = await resolveDefaultOrRequested(req.user.userId, req.query.adAccountId);
+    const resolved = await resolveDefaultOrRequested((req.user.workspaceOwnerId || req.user.userId), req.query.adAccountId);
     if (resolved.error) return sendErr(res, resolved.error);
     const { accessToken, adAccountId } = resolved;
 
@@ -819,7 +819,7 @@ router.get('/diagnostics', async (req, res) => {
         svc.getInsights({ accessToken, node: adAccountId, level: 'ad', days }),
       ]);
     } catch (err) {
-      return sendMetaErr(res, err, { userId: req.user.userId, op: 'diagnostics', adAccountId });
+      return sendMetaErr(res, err, { userId: (req.user.workspaceOwnerId || req.user.userId), op: 'diagnostics', adAccountId });
     }
 
     const issues = diagnostics.runDiagnostics({
@@ -845,7 +845,7 @@ router.get('/diagnostics', async (req, res) => {
     });
   } catch (err) {
     logger.error('metaAds.diagnostics.failed', {
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
       error: err.message,
     });
     res.status(500).json({ error: err.message || 'Failed to compute diagnostics' });
@@ -854,19 +854,19 @@ router.get('/diagnostics', async (req, res) => {
 
 router.get('/delivery-issues', async (req, res) => {
   try {
-    const resolved = await resolveDefaultOrRequested(req.user.userId, req.query.adAccountId);
+    const resolved = await resolveDefaultOrRequested((req.user.workspaceOwnerId || req.user.userId), req.query.adAccountId);
     if (resolved.error) return sendErr(res, resolved.error);
     const { accessToken, adAccountId } = resolved;
     let issues;
     try {
       issues = await svc.getDeliveryIssues({ accessToken, adAccountId });
     } catch (err) {
-      return sendMetaErr(res, err, { userId: req.user.userId, op: 'deliveryIssues', adAccountId });
+      return sendMetaErr(res, err, { userId: (req.user.workspaceOwnerId || req.user.userId), op: 'deliveryIssues', adAccountId });
     }
     res.json({ adAccountId, issues });
   } catch (err) {
     logger.error('metaAds.deliveryIssues.failed', {
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
       error: err.message,
     });
     res.status(500).json({ error: err.message || 'Failed to fetch delivery issues' });

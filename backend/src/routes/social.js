@@ -75,7 +75,7 @@ async function attachOriginalSourceUrls({ userId, provider, posts }) {
 // thumbnail — that's what was making FB photos come out tiny.
 function rewriteDriveImageUrl(rawUrl, req) {
   if (!rawUrl) {
-    logger.info('social.rewrite.skipped', { user_id: req.user?.userId, reason: 'no_url' });
+    logger.info('social.rewrite.skipped', { user_id: (req.user?.workspaceOwnerId || req.user?.userId), reason: 'no_url' });
     return rawUrl;
   }
   const fileId = driveRouter.driveFileIdFromUrl(rawUrl);
@@ -84,7 +84,7 @@ function rewriteDriveImageUrl(rawUrl, req) {
     // is actually sending. Truncated so a data-url or malformed input
     // doesn't blow up the log line.
     logger.info('social.rewrite.no_match', {
-      user_id: req.user?.userId,
+      user_id: (req.user?.workspaceOwnerId || req.user?.userId),
       url_prefix: rawUrl.slice(0, 120),
       url_host: (() => { try { return new URL(rawUrl).hostname; } catch { return null; } })(),
       url_length: rawUrl.length,
@@ -96,13 +96,13 @@ function rewriteDriveImageUrl(rawUrl, req) {
     process.env.BACKEND_URL ||
     `https://${req.get('host')}`;
   const proxied = driveRouter.buildSignedDriveProxyUrl({
-    userId: req.user?.userId,
+    userId: (req.user?.workspaceOwnerId || req.user?.userId),
     fileId,
     baseUrl: publicBaseUrl,
     ttlSeconds: 3600,
   });
   logger.info('social.rewrite.ok', {
-    user_id: req.user?.userId,
+    user_id: (req.user?.workspaceOwnerId || req.user?.userId),
     file_id: fileId,
     proxied_host: (() => { try { return new URL(proxied).hostname; } catch { return null; } })(),
   });
@@ -130,7 +130,7 @@ router.get('/_diagnose', async (req, res) => {
 // per-provider branching is needed in the renderer.
 router.get('/facebook/pages/:connectionId/posts', async (req, res) => {
   try {
-    const row = await connections.getRawForUser(req.user.userId, req.params.connectionId);
+    const row = await connections.getRawForUser((req.user.workspaceOwnerId || req.user.userId), req.params.connectionId);
     if (!row) return res.status(404).json({ error: 'Connection not found' });
     if (row.provider !== 'facebook') return res.status(400).json({ error: 'Not a Facebook connection' });
     const pageId = row.metadata?.page_id;
@@ -139,12 +139,12 @@ router.get('/facebook/pages/:connectionId/posts', async (req, res) => {
 
     const limit = Math.min(Math.max(1, parseInt(req.query.limit || '10', 10)), 50);
     const posts = await meta.getRecentFacebookPosts({ pageId, pageAccessToken, limit });
-    const enriched = await attachOriginalSourceUrls({ userId: req.user.userId, provider: 'facebook', posts });
+    const enriched = await attachOriginalSourceUrls({ userId: (req.user.workspaceOwnerId || req.user.userId), provider: 'facebook', posts });
     res.json({ posts: enriched });
   } catch (err) {
     const n = meta.normalizeApiError(err);
     logger.warn('social.facebook.posts_failed', {
-      user_id: req.user.userId,
+      user_id: (req.user.workspaceOwnerId || req.user.userId),
       connection_id: req.params.connectionId,
       error: n.message,
       code: n.code,
@@ -156,7 +156,7 @@ router.get('/facebook/pages/:connectionId/posts', async (req, res) => {
 
 router.get('/instagram/:connectionId/media', async (req, res) => {
   try {
-    const row = await connections.getRawForUser(req.user.userId, req.params.connectionId);
+    const row = await connections.getRawForUser((req.user.workspaceOwnerId || req.user.userId), req.params.connectionId);
     if (!row) return res.status(404).json({ error: 'Connection not found' });
     if (row.provider !== 'instagram') return res.status(400).json({ error: 'Not an Instagram connection' });
     const igBusinessId = row.metadata?.ig_business_id;
@@ -165,12 +165,12 @@ router.get('/instagram/:connectionId/media', async (req, res) => {
 
     const limit = Math.min(Math.max(1, parseInt(req.query.limit || '10', 10)), 50);
     const posts = await meta.getRecentInstagramMedia({ igBusinessId, pageAccessToken, limit });
-    const enriched = await attachOriginalSourceUrls({ userId: req.user.userId, provider: 'instagram', posts });
+    const enriched = await attachOriginalSourceUrls({ userId: (req.user.workspaceOwnerId || req.user.userId), provider: 'instagram', posts });
     res.json({ posts: enriched });
   } catch (err) {
     const n = meta.normalizeApiError(err);
     logger.warn('social.instagram.media_failed', {
-      user_id: req.user.userId,
+      user_id: (req.user.workspaceOwnerId || req.user.userId),
       connection_id: req.params.connectionId,
       error: n.message,
       code: n.code,
@@ -194,7 +194,7 @@ router.post(
 
     try {
       const { connectionId, message, imageUrl, link } = req.body;
-      const row = await connections.getRawForUser(req.user.userId, connectionId);
+      const row = await connections.getRawForUser((req.user.workspaceOwnerId || req.user.userId), connectionId);
       if (!row) return res.status(404).json({ error: 'Connection not found' });
       if (row.provider !== 'facebook') return res.status(400).json({ error: 'Not a Facebook connection' });
 
@@ -216,7 +216,7 @@ router.post(
         link,
       });
       logger.info('social.facebook.published', {
-        user_id: req.user.userId,
+        user_id: (req.user.workspaceOwnerId || req.user.userId),
         connection_id: connectionId,
         page_id: pageId,
         has_image: !!imageUrl,
@@ -226,7 +226,7 @@ router.post(
       });
       if (imageUrl && result?.id) {
         await rememberPublishedSource({
-          userId: req.user.userId,
+          userId: (req.user.workspaceOwnerId || req.user.userId),
           provider: 'facebook',
           providerPostId: result.id,
           sourceUrl: imageUrl,
@@ -236,7 +236,7 @@ router.post(
     } catch (err) {
       const n = meta.normalizeApiError(err);
       logger.error('social.facebook.publish_failed', {
-        user_id: req.user.userId,
+        user_id: (req.user.workspaceOwnerId || req.user.userId),
         error: n.message,
         code: n.code,
         subcode: n.subcode,
@@ -261,7 +261,7 @@ router.post(
 
     try {
       const { connectionId, caption, imageUrl } = req.body;
-      const row = await connections.getRawForUser(req.user.userId, connectionId);
+      const row = await connections.getRawForUser((req.user.workspaceOwnerId || req.user.userId), connectionId);
       if (!row) return res.status(404).json({ error: 'Connection not found' });
       if (row.provider !== 'instagram') return res.status(400).json({ error: 'Not an Instagram connection' });
 
@@ -279,7 +279,7 @@ router.post(
         imageUrl: rewrittenUrl,
       });
       logger.info('social.instagram.published', {
-        user_id: req.user.userId,
+        user_id: (req.user.workspaceOwnerId || req.user.userId),
         connection_id: connectionId,
         ig_business_id: igBusinessId,
         image_rewritten: rewrittenUrl !== imageUrl,
@@ -288,7 +288,7 @@ router.post(
       });
       if (imageUrl && result?.id) {
         await rememberPublishedSource({
-          userId: req.user.userId,
+          userId: (req.user.workspaceOwnerId || req.user.userId),
           provider: 'instagram',
           providerPostId: result.id,
           sourceUrl: imageUrl,
@@ -298,7 +298,7 @@ router.post(
     } catch (err) {
       const n = meta.normalizeApiError(err);
       logger.error('social.instagram.publish_failed', {
-        user_id: req.user.userId,
+        user_id: (req.user.workspaceOwnerId || req.user.userId),
         error: n.message,
         code: n.code,
         subcode: n.subcode,
@@ -322,7 +322,7 @@ router.delete('/facebook/posts/:postId', async (req, res) => {
     if (!postId || !connectionId) {
       return res.status(400).json({ error: 'postId and connectionId required' });
     }
-    const row = await connections.getRawForUser(req.user.userId, connectionId);
+    const row = await connections.getRawForUser((req.user.workspaceOwnerId || req.user.userId), connectionId);
     if (!row) return res.status(404).json({ error: 'Connection not found' });
     if (row.provider !== 'facebook') return res.status(400).json({ error: 'Not a Facebook connection' });
     const pageAccessToken = row.metadata?.page_access_token;
@@ -331,7 +331,7 @@ router.delete('/facebook/posts/:postId', async (req, res) => {
     }
     const result = await meta.deleteFacebookPost({ postId, pageAccessToken });
     logger.info('social.facebook.deleted', {
-      user_id: req.user.userId,
+      user_id: (req.user.workspaceOwnerId || req.user.userId),
       connection_id: connectionId,
       post_id: postId,
       result_success: !!result?.success,
@@ -340,7 +340,7 @@ router.delete('/facebook/posts/:postId', async (req, res) => {
   } catch (err) {
     const n = meta.normalizeApiError(err);
     logger.error('social.facebook.delete_failed', {
-      user_id: req.user.userId,
+      user_id: (req.user.workspaceOwnerId || req.user.userId),
       post_id: req.params.postId,
       error: n.message,
       code: n.code,

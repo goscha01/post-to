@@ -191,7 +191,7 @@ async function loadUsedIdentifiers(userId) {
 }
 
 router.get('/images', async (req, res) => {
-  const userId = req.user?.userId;
+  const userId = (req.user?.workspaceOwnerId || req.user?.userId);
   const {
     q = '',
     pageSize = '50',
@@ -420,7 +420,7 @@ async function fetchDriveFileBytes({ userId, fileId, fallbackToken }) {
 // render a Drive image in an <img> tag without the user first setting the
 // file to "Anyone with link" on Drive.
 router.get('/proxy/:fileId', async (req, res) => {
-  const userId = req.user?.userId;
+  const userId = (req.user?.workspaceOwnerId || req.user?.userId);
   const { fileId } = req.params;
   if (!/^[a-zA-Z0-9_-]{10,}$/.test(fileId)) {
     return res.status(400).json({ success: false, error: 'Invalid file id' });

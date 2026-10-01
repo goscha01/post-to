@@ -71,7 +71,7 @@ async function resolveAdsCustomer(req) {
     const { data } = await supabase
       .from('connected_accounts')
       .select('metadata, created_at')
-      .eq('user_id', req.user.userId)
+      .eq('user_id', (req.user.workspaceOwnerId || req.user.userId))
       .eq('provider', 'google_ads')
       .order('created_at', { ascending: false })
       .limit(1);
@@ -90,7 +90,7 @@ async function resolveAdsCustomer(req) {
   const { data: rows } = await supabase
     .from('connected_accounts')
     .select('display_name, metadata')
-    .eq('user_id', req.user.userId)
+    .eq('user_id', (req.user.workspaceOwnerId || req.user.userId))
     .eq('provider', 'google_ads')
     .eq('external_id', `ads:${cid}`)
     .limit(1);
@@ -111,7 +111,7 @@ async function resolveGa4Property(req) {
     const { data } = await supabase
       .from('connected_accounts')
       .select('metadata, display_name')
-      .eq('user_id', req.user.userId)
+      .eq('user_id', (req.user.workspaceOwnerId || req.user.userId))
       .eq('provider', 'google_analytics')
       .eq('external_id', `ga4:${explicit}`)
       .limit(1);
@@ -124,7 +124,7 @@ async function resolveGa4Property(req) {
   const { data } = await supabase
     .from('connected_accounts')
     .select('metadata, display_name, created_at')
-    .eq('user_id', req.user.userId)
+    .eq('user_id', (req.user.workspaceOwnerId || req.user.userId))
     .eq('provider', 'google_analytics')
     .order('created_at', { ascending: false })
     .limit(1);
@@ -138,7 +138,7 @@ async function resolveGa4Property(req) {
 
 async function tokenForOwner(req, ownerGoogleId) {
   if (!ownerGoogleId) return req.businessToken;
-  const tokens = await getAllBusinessTokens(req.user.userId);
+  const tokens = await getAllBusinessTokens((req.user.workspaceOwnerId || req.user.userId));
   const match = tokens.find(t => t.google_id === ownerGoogleId);
   return match?.access_token || req.businessToken;
 }
@@ -151,9 +151,9 @@ async function tokenForOwner(req, ownerGoogleId) {
 async function resolveMeta(req) {
   const raw = String(req.query.metaAdAccountId || '').trim();
   const explicit = raw ? metaAdsService.normalizeAdAccountId(raw) : null;
-  const meta = await connections.getMetaOwnerToken(req.user.userId);
+  const meta = await connections.getMetaOwnerToken((req.user.workspaceOwnerId || req.user.userId));
   if (!meta?.accessToken) return { adAccountId: null, accessToken: null, source: null };
-  const selection = await connections.getMetaAdAccountSelection(req.user.userId);
+  const selection = await connections.getMetaAdAccountSelection((req.user.workspaceOwnerId || req.user.userId));
   // Explicit id from the query must be in the saved selection — mirrors
   // the authorization contract enforced by /api/meta-ads/* routes.
   if (explicit) {
@@ -219,7 +219,7 @@ router.get('/', async (req, res) => {
       metaAdAccountId: metaResolved.adAccountId,
       days,
       thresholds,
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
     });
 
     // Stamp the account block onto the report so ChatGPT sees which account
@@ -237,7 +237,7 @@ router.get('/', async (req, res) => {
     };
 
     logger.info('optimizationReport.ok', {
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
       customerId: adsCustomer.customerId,
       propertyId: ga4Property.propertyId || null,
       metaAdAccountId: metaResolved.adAccountId || null,
@@ -251,7 +251,7 @@ router.get('/', async (req, res) => {
     res.json(report);
   } catch (err) {
     logger.error('optimizationReport.failed', {
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
       error: err.message,
       status: err?.response?.status || null,
       duration_ms: Date.now() - t0,

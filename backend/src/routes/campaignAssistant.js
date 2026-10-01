@@ -257,7 +257,7 @@ async function resolveGa4Property(userId, propertyIdRaw) {
 
 async function tokenForOwner(req, ownerGoogleId) {
   if (!ownerGoogleId) return req.businessToken;
-  const tokens = await getAllBusinessTokens(req.user.userId);
+  const tokens = await getAllBusinessTokens((req.user.workspaceOwnerId || req.user.userId));
   const match = tokens.find(t => t.google_id === ownerGoogleId);
   return match?.access_token || req.businessToken;
 }
@@ -454,13 +454,13 @@ router.get('/conversations', async (req, res) => {
     const { data, error } = await supabase
       .from('campaign_assistant_conversations')
       .select('id, title, google_ads_customer_id, campaign_id, campaign_name, ga4_property_id, ga4_app_property_id, days, created_at, updated_at')
-      .eq('user_id', req.user.userId)
+      .eq('user_id', (req.user.workspaceOwnerId || req.user.userId))
       .order('updated_at', { ascending: false })
       .limit(MAX_CONVERSATIONS_PER_LIST);
     if (error) throw error;
     res.json({ conversations: data || [] });
   } catch (err) {
-    logger.error('campaignAssistant.list_failed', { userId: req.user.userId, error: err.message });
+    logger.error('campaignAssistant.list_failed', { userId: (req.user.workspaceOwnerId || req.user.userId), error: err.message });
     res.status(500).json({ error: err.message });
   }
 });
@@ -473,7 +473,7 @@ router.get('/conversations/:id', async (req, res) => {
     const { data: conv, error: convErr } = await supabase
       .from('campaign_assistant_conversations')
       .select('*')
-      .eq('user_id', req.user.userId)
+      .eq('user_id', (req.user.workspaceOwnerId || req.user.userId))
       .eq('id', req.params.id)
       .single();
     if (convErr || !conv) return res.status(404).json({ error: 'Not found' });
@@ -505,7 +505,7 @@ router.get('/conversations/:id', async (req, res) => {
     res.json({ conversation: rest, snapshotMeta, messages: messages || [] });
   } catch (err) {
     logger.error('campaignAssistant.get_failed', {
-      userId: req.user.userId, id: req.params.id, error: err.message,
+      userId: (req.user.workspaceOwnerId || req.user.userId), id: req.params.id, error: err.message,
     });
     res.status(500).json({ error: err.message });
   }
@@ -519,13 +519,13 @@ router.delete('/conversations/:id', async (req, res) => {
     const { error } = await supabase
       .from('campaign_assistant_conversations')
       .delete()
-      .eq('user_id', req.user.userId)
+      .eq('user_id', (req.user.workspaceOwnerId || req.user.userId))
       .eq('id', req.params.id);
     if (error) throw error;
     res.json({ ok: true });
   } catch (err) {
     logger.error('campaignAssistant.delete_failed', {
-      userId: req.user.userId, id: req.params.id, error: err.message,
+      userId: (req.user.workspaceOwnerId || req.user.userId), id: req.params.id, error: err.message,
     });
     res.status(500).json({ error: err.message });
   }
@@ -535,7 +535,7 @@ router.delete('/conversations/:id', async (req, res) => {
 // POST /conversations — create + capture report snapshot
 // ---------------------------------------------------------------------------
 router.post('/conversations', requireBusinessAuth, async (req, res) => {
-  const userId = req.user.userId;
+  const userId = (req.user.workspaceOwnerId || req.user.userId);
   const t0 = Date.now();
   try {
     const {
@@ -685,7 +685,7 @@ router.post('/conversations', requireBusinessAuth, async (req, res) => {
 // effect of applied changes after they've taken effect.
 // ---------------------------------------------------------------------------
 router.post('/conversations/:id/refresh-snapshot', requireBusinessAuth, async (req, res) => {
-  const userId = req.user.userId;
+  const userId = (req.user.workspaceOwnerId || req.user.userId);
   const conversationId = req.params.id;
   const t0 = Date.now();
   try {
@@ -790,7 +790,7 @@ router.post('/conversations/:id/refresh-snapshot', requireBusinessAuth, async (r
 // POST /conversations/:id/chat — SSE, both providers in parallel
 // ---------------------------------------------------------------------------
 router.post('/conversations/:id/chat', async (req, res) => {
-  const userId = req.user.userId;
+  const userId = (req.user.workspaceOwnerId || req.user.userId);
   const conversationId = req.params.id;
   const message = String(req.body?.message || '').trim().slice(0, MAX_USER_MESSAGE_CHARS);
   const attachments = Array.isArray(req.body?.attachments) ? req.body.attachments : [];
@@ -1109,7 +1109,7 @@ router.post('/conversations/:id/chat', async (req, res) => {
 //             or {type:'error',error} → {type:'done'}
 // ---------------------------------------------------------------------------
 router.post('/conversations/:id/one-shot', async (req, res) => {
-  const userId = req.user.userId;
+  const userId = (req.user.workspaceOwnerId || req.user.userId);
   const conversationId = req.params.id;
   const prompt = String(req.body?.prompt || '').trim().slice(0, MAX_USER_MESSAGE_CHARS);
   const provider = req.body?.provider === 'openai' ? 'openai' : 'claude';
@@ -1261,7 +1261,7 @@ router.post('/conversations/:id/one-shot', async (req, res) => {
 // GET /conversations/:id/cards/:cardKey/messages — per-card history
 // ---------------------------------------------------------------------------
 router.get('/conversations/:id/cards/:cardKey/messages', async (req, res) => {
-  const userId = req.user.userId;
+  const userId = (req.user.workspaceOwnerId || req.user.userId);
   const conversationId = req.params.id;
   const cardKey = String(req.params.cardKey || '').slice(0, 255);
   if (!cardKey) return res.status(400).json({ error: 'cardKey required' });
@@ -1318,7 +1318,7 @@ router.post('/messages/:id/rate', async (req, res) => {
       .from('campaign_assistant_conversations')
       .select('id')
       .eq('id', msg.conversation_id)
-      .eq('user_id', req.user.userId)
+      .eq('user_id', (req.user.workspaceOwnerId || req.user.userId))
       .single();
     if (convErr || !conv) return res.status(404).json({ error: 'Message not found' });
 
@@ -1330,7 +1330,7 @@ router.post('/messages/:id/rate', async (req, res) => {
     res.json({ ok: true, rating });
   } catch (err) {
     logger.error('campaignAssistant.rate_failed', {
-      userId: req.user.userId, id: req.params.id, error: err.message,
+      userId: (req.user.workspaceOwnerId || req.user.userId), id: req.params.id, error: err.message,
     });
     res.status(500).json({ error: err.message });
   }
@@ -1710,7 +1710,7 @@ async function handleEditOpsRegen({ req, res, userId, conversationId, conv, livi
 //      run the edit-ops synthesis → mutate the living plan in place.
 //      Step IDs stay stable so applied/done statuses persist.
 router.post('/conversations/:id/plans', async (req, res) => {
-  const userId = req.user.userId;
+  const userId = (req.user.workspaceOwnerId || req.user.userId);
   const conversationId = req.params.id;
   const t0 = Date.now();
   console.log(`[HTTP] POST /conversations/${conversationId}/plans user=${userId}`);
@@ -1895,7 +1895,7 @@ router.get('/conversations/:id/plans', async (req, res) => {
     const { data: conv, error: convErr } = await supabase
       .from('campaign_assistant_conversations')
       .select('id')
-      .eq('user_id', req.user.userId)
+      .eq('user_id', (req.user.workspaceOwnerId || req.user.userId))
       .eq('id', req.params.id)
       .single();
     if (convErr || !conv) return res.status(404).json({ error: 'Not found' });
@@ -1924,7 +1924,7 @@ router.get('/conversations/:id/plans', async (req, res) => {
     res.json({ plans: plans || [] });
   } catch (err) {
     logger.error('campaignAssistant.plans_list_failed', {
-      userId: req.user.userId, conversationId: req.params.id, error: err.message,
+      userId: (req.user.workspaceOwnerId || req.user.userId), conversationId: req.params.id, error: err.message,
     });
     res.status(500).json({ error: err.message });
   }
@@ -1936,7 +1936,7 @@ router.get('/plans/:planId', async (req, res) => {
     const { data: plan, error: planErr } = await supabase
       .from('campaign_assistant_action_plans')
       .select('*')
-      .eq('user_id', req.user.userId)
+      .eq('user_id', (req.user.workspaceOwnerId || req.user.userId))
       .eq('id', req.params.planId)
       .single();
     if (planErr || !plan) return res.status(404).json({ error: 'Plan not found' });
@@ -1967,7 +1967,7 @@ router.get('/plans/:planId', async (req, res) => {
     });
   } catch (err) {
     logger.error('campaignAssistant.plan_get_failed', {
-      userId: req.user.userId, planId: req.params.planId, error: err.message,
+      userId: (req.user.workspaceOwnerId || req.user.userId), planId: req.params.planId, error: err.message,
     });
     res.status(500).json({ error: err.message });
   }
@@ -1999,7 +1999,7 @@ router.patch('/plan-steps/:stepId', async (req, res) => {
       .eq('id', req.params.stepId)
       .single();
     if (stepErr || !step) return res.status(404).json({ error: 'Step not found' });
-    if (step.campaign_assistant_action_plans?.user_id !== req.user.userId) {
+    if (step.campaign_assistant_action_plans?.user_id !== (req.user.workspaceOwnerId || req.user.userId)) {
       return res.status(404).json({ error: 'Step not found' });
     }
 
@@ -2013,7 +2013,7 @@ router.patch('/plan-steps/:stepId', async (req, res) => {
     res.json({ step: updated });
   } catch (err) {
     logger.error('campaignAssistant.plan_step_update_failed', {
-      userId: req.user.userId, stepId: req.params.stepId, error: err.message,
+      userId: (req.user.workspaceOwnerId || req.user.userId), stepId: req.params.stepId, error: err.message,
     });
     res.status(500).json({ error: err.message });
   }
@@ -2104,7 +2104,7 @@ function parseDecisionJson(raw) {
 }
 
 router.post('/plan-steps/:stepId/report-results', async (req, res) => {
-  const userId = req.user.userId;
+  const userId = (req.user.workspaceOwnerId || req.user.userId);
   const stepId = req.params.stepId;
   const results = String(req.body?.results || '').trim().slice(0, 8000);
   if (!results) return res.status(400).json({ error: 'results required' });
@@ -2379,7 +2379,7 @@ Decide now.`,
 // chat turn.
 // ---------------------------------------------------------------------------
 router.post('/plan-steps/:stepId/push-back', async (req, res) => {
-  const userId = req.user.userId;
+  const userId = (req.user.workspaceOwnerId || req.user.userId);
   const stepId = req.params.stepId;
   const feedback = String(req.body?.feedback || '').trim().slice(0, 8000);
   if (!feedback) return res.status(400).json({ error: 'feedback required' });
@@ -2464,7 +2464,7 @@ const FORCE_SETTABLE_ACTION_TYPES = new Set([
   'mark_ga4_conversion_event',
 ]);
 router.post('/plan-steps/:stepId/set-action', async (req, res) => {
-  const userId = req.user.userId;
+  const userId = (req.user.workspaceOwnerId || req.user.userId);
   const stepId = req.params.stepId;
   const actionType = String(req.body?.action_type || '').trim();
   const actionParams = req.body?.action_params && typeof req.body.action_params === 'object'
@@ -2531,7 +2531,7 @@ const googleAdsSvc = require('../services/googleAdsService');
 const analyticsSvc = require('../services/analyticsService');
 
 router.post('/plan-steps/:stepId/apply', async (req, res) => {
-  const userId = req.user.userId;
+  const userId = (req.user.workspaceOwnerId || req.user.userId);
   const stepId = req.params.stepId;
   const t0 = Date.now();
 
@@ -2891,13 +2891,13 @@ router.delete('/plans/:planId', async (req, res) => {
     const { error } = await supabase
       .from('campaign_assistant_action_plans')
       .delete()
-      .eq('user_id', req.user.userId)
+      .eq('user_id', (req.user.workspaceOwnerId || req.user.userId))
       .eq('id', req.params.planId);
     if (error) throw error;
     res.json({ ok: true });
   } catch (err) {
     logger.error('campaignAssistant.plan_delete_failed', {
-      userId: req.user.userId, planId: req.params.planId, error: err.message,
+      userId: (req.user.workspaceOwnerId || req.user.userId), planId: req.params.planId, error: err.message,
     });
     res.status(500).json({ error: err.message });
   }
@@ -2920,7 +2920,7 @@ router.delete('/plans/:planId', async (req, res) => {
 // conversation using the seeded prompt, or adds a message to an
 // existing conversation.
 router.post('/meta-review-context', requireBusinessAuth, async (req, res) => {
-  const userId = req.user.userId;
+  const userId = (req.user.workspaceOwnerId || req.user.userId);
   try {
     const { issueId } = req.body || {};
     if (!issueId || typeof issueId !== 'string') {

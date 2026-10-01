@@ -76,7 +76,7 @@ function formatGoogleDate(googleDate) {
 // /basic — aggregated totals per dashboard metric over the date range.
 router.post('/basic', authMiddleware, requireBusinessAuth, async (req, res) => {
   const { accountId, locationId, metricRequests, timeRange } = req.body;
-  const userId = req.user?.userId;
+  const userId = (req.user?.workspaceOwnerId || req.user?.userId);
 
   if (!locationId || !metricRequests || !timeRange) {
     return res.status(400).json({
@@ -217,7 +217,7 @@ router.post('/basic', authMiddleware, requireBusinessAuth, async (req, res) => {
 // /timeline — per-day breakdown for chart rendering.
 router.post('/timeline', authMiddleware, requireBusinessAuth, async (req, res) => {
   const { accountId, locationId, metricRequests, timeRange } = req.body;
-  const userId = req.user?.userId;
+  const userId = (req.user?.workspaceOwnerId || req.user?.userId);
 
   if (!locationId || !metricRequests || !timeRange) {
     return res.status(400).json({

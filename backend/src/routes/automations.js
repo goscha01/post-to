@@ -26,10 +26,10 @@ router.use(authMiddleware);
 
 router.get('/', async (req, res) => {
   try {
-    const rows = await automationsService.listForUser(req.user.userId);
+    const rows = await automationsService.listForUser((req.user.workspaceOwnerId || req.user.userId));
     res.json({ automations: rows });
   } catch (err) {
-    logger.error('automations.list_failed', { error: err.message, user_id: req.user.userId });
+    logger.error('automations.list_failed', { error: err.message, user_id: (req.user.workspaceOwnerId || req.user.userId) });
     res.status(500).json({ error: 'Failed to list automations' });
   }
 });
@@ -38,7 +38,7 @@ router.get('/:id', [param('id').isUUID()], async (req, res) => {
   const errs = validationResult(req);
   if (!errs.isEmpty()) return res.status(400).json({ error: 'Invalid id' });
   try {
-    const row = await automationsService.getForUser(req.user.userId, req.params.id);
+    const row = await automationsService.getForUser((req.user.workspaceOwnerId || req.user.userId), req.params.id);
     if (!row) return res.status(404).json({ error: 'Not found' });
     res.json({ automation: row });
   } catch (err) {
@@ -67,11 +67,11 @@ router.post(
     const errs = validationResult(req);
     if (!errs.isEmpty()) return res.status(400).json({ error: 'Invalid input', details: errs.array() });
     try {
-      const row = await automationsService.createRule(req.user.userId, req.body);
-      logger.info('automations.created', { user_id: req.user.userId, id: row.id, kind: row.kind });
+      const row = await automationsService.createRule((req.user.workspaceOwnerId || req.user.userId), req.body);
+      logger.info('automations.created', { user_id: (req.user.workspaceOwnerId || req.user.userId), id: row.id, kind: row.kind });
       res.status(201).json({ automation: row });
     } catch (err) {
-      logger.error('automations.create_failed', { error: err.message, user_id: req.user.userId });
+      logger.error('automations.create_failed', { error: err.message, user_id: (req.user.workspaceOwnerId || req.user.userId) });
       res.status(err.status || 500).json({ error: err.message || 'Failed to create automation' });
     }
   }
@@ -97,7 +97,7 @@ router.patch(
     const errs = validationResult(req);
     if (!errs.isEmpty()) return res.status(400).json({ error: 'Invalid input', details: errs.array() });
     try {
-      const row = await automationsService.updateRule(req.user.userId, req.params.id, req.body);
+      const row = await automationsService.updateRule((req.user.workspaceOwnerId || req.user.userId), req.params.id, req.body);
       res.json({ automation: row });
     } catch (err) {
       logger.error('automations.update_failed', { error: err.message, id: req.params.id });
@@ -110,7 +110,7 @@ router.delete('/:id', [param('id').isUUID()], async (req, res) => {
   const errs = validationResult(req);
   if (!errs.isEmpty()) return res.status(400).json({ error: 'Invalid id' });
   try {
-    await automationsService.deleteRule(req.user.userId, req.params.id);
+    await automationsService.deleteRule((req.user.workspaceOwnerId || req.user.userId), req.params.id);
     res.json({ ok: true });
   } catch (err) {
     logger.error('automations.delete_failed', { error: err.message, id: req.params.id });
@@ -126,7 +126,7 @@ router.post('/:id/run', [param('id').isUUID()], async (req, res) => {
   const errs = validationResult(req);
   if (!errs.isEmpty()) return res.status(400).json({ error: 'Invalid id' });
   try {
-    const rule = await automationsService.getForUser(req.user.userId, req.params.id);
+    const rule = await automationsService.getForUser((req.user.workspaceOwnerId || req.user.userId), req.params.id);
     if (!rule) return res.status(404).json({ error: 'Not found' });
     const result = await automationExecutor.runRule(rule, { trigger: 'test' });
     res.json({ run: result });
@@ -147,7 +147,7 @@ router.get(
         .from('automation_runs')
         .select('*')
         .eq('rule_id', req.params.id)
-        .eq('user_id', req.user.userId)
+        .eq('user_id', (req.user.workspaceOwnerId || req.user.userId))
         .order('started_at', { ascending: false })
         .limit(req.query.limit || 20);
       if (error) throw error;

@@ -73,7 +73,7 @@ function normalizeP8(raw) {
 // POST /connect — validate + save
 // -----------------------------------------------------------------------
 router.post('/connect', express.json({ limit: '1mb' }), async (req, res) => {
-  const userId = req.user.userId;
+  const userId = (req.user.workspaceOwnerId || req.user.userId);
   try {
     const issuerId = normalizeInput(req.body?.issuerId);
     const keyId = normalizeInput(req.body?.keyId);
@@ -147,7 +147,7 @@ router.post('/connect', express.json({ limit: '1mb' }), async (req, res) => {
 // -----------------------------------------------------------------------
 router.get('/connected', async (req, res) => {
   try {
-    const rows = await connections.listForUser(req.user.userId);
+    const rows = await connections.listForUser((req.user.workspaceOwnerId || req.user.userId));
     res.json({
       connections: rows
         .filter(r => r.provider === 'app_store_connect')
@@ -167,7 +167,7 @@ router.get('/connected', async (req, res) => {
         })),
     });
   } catch (err) {
-    logger.error('asc.connected.failed', { userId: req.user.userId, error: err.message });
+    logger.error('asc.connected.failed', { userId: (req.user.workspaceOwnerId || req.user.userId), error: err.message });
     res.status(500).json({ error: 'Failed to list ASC connections' });
   }
 });
@@ -176,7 +176,7 @@ router.get('/connected', async (req, res) => {
 // GET /_diagnose — probe credentials
 // -----------------------------------------------------------------------
 router.get('/_diagnose', async (req, res) => {
-  const userId = req.user.userId;
+  const userId = (req.user.workspaceOwnerId || req.user.userId);
   try {
     const ctx = await loadCreds(userId, String(req.query.connectionId || ''));
     if (!ctx) return res.status(400).json({ error: 'connectionId required or not found' });
@@ -202,7 +202,7 @@ router.get('/_diagnose', async (req, res) => {
 // GET /apps — refresh apps list from Apple
 // -----------------------------------------------------------------------
 router.get('/apps', async (req, res) => {
-  const userId = req.user.userId;
+  const userId = (req.user.workspaceOwnerId || req.user.userId);
   try {
     const ctx = await loadCreds(userId, String(req.query.connectionId || ''));
     if (!ctx) return res.status(400).json({ error: 'connectionId required or not found' });
@@ -220,7 +220,7 @@ router.get('/apps', async (req, res) => {
 // GET /reviews — recent customer reviews for an app
 // -----------------------------------------------------------------------
 router.get('/reviews', async (req, res) => {
-  const userId = req.user.userId;
+  const userId = (req.user.workspaceOwnerId || req.user.userId);
   try {
     const ctx = await loadCreds(userId, String(req.query.connectionId || ''));
     if (!ctx) return res.status(400).json({ error: 'connectionId required or not found' });
@@ -242,7 +242,7 @@ router.get('/reviews', async (req, res) => {
 // GET /sales — daily sales rollup
 // -----------------------------------------------------------------------
 router.get('/sales', async (req, res) => {
-  const userId = req.user.userId;
+  const userId = (req.user.workspaceOwnerId || req.user.userId);
   try {
     const ctx = await loadCreds(userId, String(req.query.connectionId || ''));
     if (!ctx) return res.status(400).json({ error: 'connectionId required or not found' });
@@ -290,7 +290,7 @@ router.get('/sales', async (req, res) => {
 // asc_analytics_cache — no Apple calls at request time.
 
 router.post('/analytics/bootstrap', express.json(), async (req, res) => {
-  const userId = req.user.userId;
+  const userId = (req.user.workspaceOwnerId || req.user.userId);
   try {
     const connectionId = String(req.body?.connectionId || req.query.connectionId || '');
     if (!connectionId) return res.status(400).json({ error: 'connectionId required' });
@@ -305,7 +305,7 @@ router.post('/analytics/bootstrap', express.json(), async (req, res) => {
 });
 
 router.get('/analytics/status', async (req, res) => {
-  const userId = req.user.userId;
+  const userId = (req.user.workspaceOwnerId || req.user.userId);
   try {
     const connectionId = String(req.query.connectionId || '');
     if (!connectionId) return res.status(400).json({ error: 'connectionId required' });
@@ -320,7 +320,7 @@ router.get('/analytics/status', async (req, res) => {
 // Manual walk trigger — mostly useful for testing / on-demand refresh from
 // the dashboard. Cron does this hourly automatically.
 router.post('/analytics/walk', express.json(), async (req, res) => {
-  const userId = req.user.userId;
+  const userId = (req.user.workspaceOwnerId || req.user.userId);
   try {
     const connectionId = String(req.body?.connectionId || req.query.connectionId || '');
     if (!connectionId) return res.status(400).json({ error: 'connectionId required' });
@@ -335,7 +335,7 @@ router.post('/analytics/walk', express.json(), async (req, res) => {
 });
 
 router.get('/analytics/funnel', async (req, res) => {
-  const userId = req.user.userId;
+  const userId = (req.user.workspaceOwnerId || req.user.userId);
   try {
     const connectionId = String(req.query.connectionId || '');
     if (!connectionId) return res.status(400).json({ error: 'connectionId required' });
@@ -357,7 +357,7 @@ router.get('/analytics/funnel', async (req, res) => {
 // (Source Type, Campaign) so paid ad campaigns can be measured end-to-end.
 // Distinct from /analytics/sources which only exposes engagement metrics.
 router.get('/analytics/ad-attribution', async (req, res) => {
-  const userId = req.user.userId;
+  const userId = (req.user.workspaceOwnerId || req.user.userId);
   try {
     const connectionId = String(req.query.connectionId || '');
     if (!connectionId) return res.status(400).json({ error: 'connectionId required' });
@@ -374,7 +374,7 @@ router.get('/analytics/ad-attribution', async (req, res) => {
 });
 
 router.get('/analytics/sources', async (req, res) => {
-  const userId = req.user.userId;
+  const userId = (req.user.workspaceOwnerId || req.user.userId);
   try {
     const connectionId = String(req.query.connectionId || '');
     if (!connectionId) return res.status(400).json({ error: 'connectionId required' });
@@ -403,7 +403,7 @@ router.get('/analytics/sources', async (req, res) => {
 // by probing listApps before writing — bad keys 401 immediately, no
 // half-written state.
 router.patch('/:connectionId', express.json({ limit: '1mb' }), async (req, res) => {
-  const userId = req.user.userId;
+  const userId = (req.user.workspaceOwnerId || req.user.userId);
   try {
     const existing = await connections.getRawForUser(userId, req.params.connectionId);
     if (!existing || existing.provider !== 'app_store_connect') {
@@ -484,7 +484,7 @@ router.patch('/:connectionId', express.json({ limit: '1mb' }), async (req, res) 
 // deleteForUser + treated it as 404, silently deleting the row while the
 // UI stayed stuck on it — never route back into that shape.
 router.delete('/:connectionId', async (req, res) => {
-  const userId = req.user.userId;
+  const userId = (req.user.workspaceOwnerId || req.user.userId);
   try {
     const existed = await connections.deleteForUser(userId, req.params.connectionId);
     logger.info('asc.deleted', { userId, connectionId: req.params.connectionId, existed });

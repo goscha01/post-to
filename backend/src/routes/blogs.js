@@ -124,7 +124,7 @@ async function loadConnectionContext(userId, connectionId) {
 
 router.get('/domains', async (req, res) => {
   try {
-    const rows = await blogDomainsService.listForUser(req.user.userId);
+    const rows = await blogDomainsService.listForUser((req.user.workspaceOwnerId || req.user.userId));
     res.json({ domains: rows, cnameTarget: blogDomainsService.BLOG_CNAME_TARGET });
   } catch (err) {
     logger.error('blogs.domains.list_failed', { error: err.message });
@@ -143,7 +143,7 @@ router.post(
     if (!errors.isEmpty()) return res.status(400).json({ error: 'Invalid input', details: errors.array() });
     try {
       const row = await blogDomainsService.createDomain({
-        userId: req.user.userId,
+        userId: (req.user.workspaceOwnerId || req.user.userId),
         hostname: req.body.hostname,
         siteName: req.body.siteName,
       });
@@ -159,7 +159,7 @@ router.post('/domains/:id/verify', [param('id').isUUID()], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) return res.status(400).json({ error: 'Invalid id' });
   try {
-    const row = await blogDomainsService.verifyDomain({ userId: req.user.userId, id: req.params.id });
+    const row = await blogDomainsService.verifyDomain({ userId: (req.user.workspaceOwnerId || req.user.userId), id: req.params.id });
     res.json({ domain: row });
   } catch (err) {
     logger.warn('blogs.domains.verify_failed', { error: err.message, id: req.params.id });
@@ -177,7 +177,7 @@ router.delete('/domains/:id', [param('id').isUUID()], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) return res.status(400).json({ error: 'Invalid id' });
   try {
-    await blogDomainsService.deleteDomain({ userId: req.user.userId, id: req.params.id });
+    await blogDomainsService.deleteDomain({ userId: (req.user.workspaceOwnerId || req.user.userId), id: req.params.id });
     res.json({ ok: true });
   } catch (err) {
     logger.error('blogs.domains.delete_failed', { error: err.message, id: req.params.id });
@@ -192,7 +192,7 @@ router.post('/domains/:id/refresh-theme', [param('id').isUUID()], async (req, re
   const errors = validationResult(req);
   if (!errors.isEmpty()) return res.status(400).json({ error: 'Invalid id' });
   try {
-    const row = await blogDomainsService.refreshTheme({ userId: req.user.userId, id: req.params.id });
+    const row = await blogDomainsService.refreshTheme({ userId: (req.user.workspaceOwnerId || req.user.userId), id: req.params.id });
     res.json({ domain: row });
   } catch (err) {
     logger.error('blogs.domains.refresh_theme_failed', { error: err.message, id: req.params.id });
@@ -217,7 +217,7 @@ router.patch(
     if (!errors.isEmpty()) return res.status(400).json({ error: 'Invalid input', details: errors.array() });
     try {
       const row = await blogDomainsService.updateTheme({
-        userId: req.user.userId,
+        userId: (req.user.workspaceOwnerId || req.user.userId),
         id: req.params.id,
         patch: req.body,
       });
@@ -245,7 +245,7 @@ router.get(
       let q = supabase
         .from('blog_articles')
         .select(PUBLIC_FIELDS)
-        .eq('user_id', req.user.userId)
+        .eq('user_id', (req.user.workspaceOwnerId || req.user.userId))
         .order('created_at', { ascending: false })
         .limit(req.query.limit || 100);
       if (req.query.connectionId) q = q.eq('connection_id', req.query.connectionId);
@@ -267,7 +267,7 @@ router.get('/:id', [param('id').isUUID()], async (req, res) => {
     const { data, error } = await supabase
       .from('blog_articles')
       .select(PUBLIC_FIELDS)
-      .eq('user_id', req.user.userId)
+      .eq('user_id', (req.user.workspaceOwnerId || req.user.userId))
       .eq('id', req.params.id)
       .single();
     if (error) {
@@ -281,16 +281,16 @@ router.get('/:id', [param('id').isUUID()], async (req, res) => {
     const cached = data.seo_metadata;
     const stale = !cached || cached.analyzerVersion !== seoAnalyzer.SEO_ANALYZER_VERSION;
     if (stale) {
-      const ctx = await loadConnectionContext(req.user.userId, data.connection_id);
+      const ctx = await loadConnectionContext((req.user.workspaceOwnerId || req.user.userId), data.connection_id);
       const analysis = seoPipeline.analyzeExistingArticle({ article: data, ...ctx });
       // Persist so future reads are pure DB lookups. Best-effort — a save
       // failure doesn't affect the response.
       supabase.from('blog_articles').update({ seo_metadata: analysis })
-        .eq('user_id', req.user.userId).eq('id', req.params.id)
+        .eq('user_id', (req.user.workspaceOwnerId || req.user.userId)).eq('id', req.params.id)
         .then(() => {}, () => {});
       blog = { ...data, seo_metadata: analysis };
     }
-    res.json({ blog: await withPreview(req.user.userId, blog) });
+    res.json({ blog: await withPreview((req.user.workspaceOwnerId || req.user.userId), blog) });
   } catch (err) {
     logger.error('blogs.get_failed', { error: err.message });
     res.status(500).json({ error: 'Failed to load blog' });
@@ -366,7 +366,7 @@ router.patch(
       const { data, error } = await supabase
         .from('blog_articles')
         .update(patch)
-        .eq('user_id', req.user.userId)
+        .eq('user_id', (req.user.workspaceOwnerId || req.user.userId))
         .eq('id', req.params.id)
         .select(PUBLIC_FIELDS)
         .single();
@@ -374,8 +374,8 @@ router.patch(
         if (error.code === 'PGRST116') return res.status(404).json({ error: 'Blog not found' });
         throw error;
       }
-      logger.info('blogs.updated', { userId: req.user.userId, blogId: req.params.id, fields: Object.keys(patch), seo_invalidated: invalidates });
-      res.json({ blog: await withPreview(req.user.userId, data) });
+      logger.info('blogs.updated', { userId: (req.user.workspaceOwnerId || req.user.userId), blogId: req.params.id, fields: Object.keys(patch), seo_invalidated: invalidates });
+      res.json({ blog: await withPreview((req.user.workspaceOwnerId || req.user.userId), data) });
     } catch (err) {
       logger.error('blogs.update_failed', { error: err.message });
       res.status(500).json({ error: 'Failed to update blog' });
@@ -396,14 +396,14 @@ router.post('/:id/seo-analyze', [param('id').isUUID()], async (req, res) => {
     const { data: article, error: loadErr } = await supabase
       .from('blog_articles')
       .select(PUBLIC_FIELDS)
-      .eq('user_id', req.user.userId)
+      .eq('user_id', (req.user.workspaceOwnerId || req.user.userId))
       .eq('id', req.params.id)
       .single();
     if (loadErr) {
       if (loadErr.code === 'PGRST116') return res.status(404).json({ error: 'Blog not found' });
       throw loadErr;
     }
-    const ctx = await loadConnectionContext(req.user.userId, article.connection_id);
+    const ctx = await loadConnectionContext((req.user.workspaceOwnerId || req.user.userId), article.connection_id);
     const analysis = seoPipeline.analyzeExistingArticle({
       article,
       internalHostnames: ctx.internalHostnames,
@@ -412,12 +412,12 @@ router.post('/:id/seo-analyze', [param('id').isUUID()], async (req, res) => {
     const { data: updated, error: updateErr } = await supabase
       .from('blog_articles')
       .update({ seo_metadata: analysis })
-      .eq('user_id', req.user.userId)
+      .eq('user_id', (req.user.workspaceOwnerId || req.user.userId))
       .eq('id', req.params.id)
       .select(PUBLIC_FIELDS)
       .single();
     if (updateErr) throw updateErr;
-    res.json({ blog: await withPreview(req.user.userId, updated), seo: analysis });
+    res.json({ blog: await withPreview((req.user.workspaceOwnerId || req.user.userId), updated), seo: analysis });
   } catch (err) {
     logger.error('blogs.seo_analyze_failed', { error: err.message, id: req.params.id });
     res.status(500).json({ error: 'Failed to analyze blog' });
@@ -444,14 +444,14 @@ router.post('/:id/seo-fix-all', [param('id').isUUID()], async (req, res) => {
     const { data: article, error: loadErr } = await supabase
       .from('blog_articles')
       .select(PUBLIC_FIELDS)
-      .eq('user_id', req.user.userId)
+      .eq('user_id', (req.user.workspaceOwnerId || req.user.userId))
       .eq('id', req.params.id)
       .single();
     if (loadErr) {
       if (loadErr.code === 'PGRST116') return res.status(404).json({ error: 'Blog not found' });
       throw loadErr;
     }
-    const ctx = await loadConnectionContext(req.user.userId, article.connection_id);
+    const ctx = await loadConnectionContext((req.user.workspaceOwnerId || req.user.userId), article.connection_id);
     let current = article;
     let analysis = seoPipeline.analyzeExistingArticle({ article: current, ...ctx });
     // Pick fixable checks: fails + warnings, excluding hero/image (can't fix
@@ -505,7 +505,7 @@ router.post('/:id/seo-fix-all', [param('id').isUUID()], async (req, res) => {
           changed.seo_metadata = null;
           const { data: updated, error: updateErr } = await supabase
             .from('blog_articles').update(changed)
-            .eq('user_id', req.user.userId).eq('id', req.params.id)
+            .eq('user_id', (req.user.workspaceOwnerId || req.user.userId)).eq('id', req.params.id)
             .select(PUBLIC_FIELDS).single();
           if (updateErr) throw updateErr;
           current = updated;
@@ -519,9 +519,9 @@ router.post('/:id/seo-fix-all', [param('id').isUUID()], async (req, res) => {
     // Persist the final analysis one more time so the row's cached
     // seo_metadata reflects the end state.
     await supabase.from('blog_articles').update({ seo_metadata: analysis })
-      .eq('user_id', req.user.userId).eq('id', req.params.id);
+      .eq('user_id', (req.user.workspaceOwnerId || req.user.userId)).eq('id', req.params.id);
     logger.info('blogs.seo_fix_all.done', { blogId: req.params.id, applied: applied.length, targets: targets.length });
-    res.json({ blog: await withPreview(req.user.userId, current), seo: analysis, applied });
+    res.json({ blog: await withPreview((req.user.workspaceOwnerId || req.user.userId), current), seo: analysis, applied });
   } catch (err) {
     logger.error('blogs.seo_fix_all_failed', { error: err.message, id: req.params.id });
     res.status(500).json({ error: 'Failed to run batch SEO fix', message: err.message });
@@ -541,18 +541,18 @@ router.post(
       const { data: article, error: loadErr } = await supabase
         .from('blog_articles')
         .select(PUBLIC_FIELDS)
-        .eq('user_id', req.user.userId)
+        .eq('user_id', (req.user.workspaceOwnerId || req.user.userId))
         .eq('id', req.params.id)
         .single();
       if (loadErr) {
         if (loadErr.code === 'PGRST116') return res.status(404).json({ error: 'Blog not found' });
         throw loadErr;
       }
-      const ctx = await loadConnectionContext(req.user.userId, article.connection_id);
+      const ctx = await loadConnectionContext((req.user.workspaceOwnerId || req.user.userId), article.connection_id);
       const analysis = seoPipeline.analyzeExistingArticle({ article, ...ctx });
       const kind = 'article_seo_fix';
       const job = await aiJobs.createJob({
-        userId: req.user.userId,
+        userId: (req.user.workspaceOwnerId || req.user.userId),
         kind,
         model: process.env.AI_ARTICLE_MODEL || process.env.AI_MODEL || null,
         inputJson: { blogId: article.id, checkId: req.body.checkId },
@@ -601,28 +601,28 @@ router.post(
             prompt: repair.prompt, outputJson: repair.data, model: repair.model,
             usage: repair.usage, costUsd: repair.costUsd,
           });
-          return res.json({ blog: await withPreview(req.user.userId, article), seo: analysis, changed: {}, previous: {} });
+          return res.json({ blog: await withPreview((req.user.workspaceOwnerId || req.user.userId), article), seo: analysis, changed: {}, previous: {} });
         }
         // Save + re-analyze (invalidate cache).
         changed.seo_metadata = null;
         const { data: updated, error: updateErr } = await supabase
           .from('blog_articles')
           .update(changed)
-          .eq('user_id', req.user.userId)
+          .eq('user_id', (req.user.workspaceOwnerId || req.user.userId))
           .eq('id', req.params.id)
           .select(PUBLIC_FIELDS)
           .single();
         if (updateErr) throw updateErr;
         const newAnalysis = seoPipeline.analyzeExistingArticle({ article: updated, ...ctx });
         await supabase.from('blog_articles').update({ seo_metadata: newAnalysis })
-          .eq('user_id', req.user.userId).eq('id', req.params.id);
+          .eq('user_id', (req.user.workspaceOwnerId || req.user.userId)).eq('id', req.params.id);
         await aiJobs.completeJob(job.id, {
           prompt: repair.prompt, outputJson: repair.data, model: repair.model,
           usage: repair.usage, costUsd: repair.costUsd,
           resultTable: 'blog_articles', resultId: updated.id,
         });
         return res.json({
-          blog: await withPreview(req.user.userId, { ...updated, seo_metadata: newAnalysis }),
+          blog: await withPreview((req.user.workspaceOwnerId || req.user.userId), { ...updated, seo_metadata: newAnalysis }),
           seo: newAnalysis,
           changed,
           previous,
@@ -656,7 +656,7 @@ router.post('/:id/publish', [param('id').isUUID()], async (req, res) => {
     const { data: blog, error: loadErr } = await supabase
       .from('blog_articles')
       .select(PUBLIC_FIELDS)
-      .eq('user_id', req.user.userId)
+      .eq('user_id', (req.user.workspaceOwnerId || req.user.userId))
       .eq('id', req.params.id)
       .single();
     if (loadErr) {
@@ -671,7 +671,7 @@ router.post('/:id/publish', [param('id').isUUID()], async (req, res) => {
     const { data: updated, error: updateErr } = await supabase
       .from('blog_articles')
       .update({ status: 'published', published_at: now })
-      .eq('user_id', req.user.userId)
+      .eq('user_id', (req.user.workspaceOwnerId || req.user.userId))
       .eq('id', req.params.id)
       .select(PUBLIC_FIELDS)
       .single();
@@ -681,10 +681,10 @@ router.post('/:id/publish', [param('id').isUUID()], async (req, res) => {
     // domains can publish to N destinations in the same call.
     const domainsRaw = await Promise.all(
       // use getForUser to keep sensitive S3 secret available for the publish call
-      (await blogDomainsService.listForUser(req.user.userId)).map(async d => {
+      (await blogDomainsService.listForUser((req.user.workspaceOwnerId || req.user.userId))).map(async d => {
         if (!(d.status === 'active' && d.metadata?.verified && d.metadata?.hostname)) return null;
         // Need raw metadata (including s3_access_key_secret) for S3 publish.
-        return blogDomainsService.getForUser({ userId: req.user.userId, id: d.id });
+        return blogDomainsService.getForUser({ userId: (req.user.workspaceOwnerId || req.user.userId), id: d.id });
       })
     );
     const verifiedDomains = domainsRaw.filter(Boolean);
@@ -724,7 +724,7 @@ router.post('/:id/publish', [param('id').isUUID()], async (req, res) => {
             });
           }
         } catch (e) {
-          logger.error('blogs.publish.s3_failed', { userId: req.user.userId, host, error: e.message });
+          logger.error('blogs.publish.s3_failed', { userId: (req.user.workspaceOwnerId || req.user.userId), host, error: e.message });
           deployHints.push({ host, hint: `S3 publish failed: ${e.message}` });
         }
       } else {
@@ -734,14 +734,14 @@ router.post('/:id/publish', [param('id').isUUID()], async (req, res) => {
     }
 
     logger.info('blogs.published', {
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
       blogId: req.params.id,
       slug: updated.slug,
       domainCount: verifiedDomains.length,
       hasS3,
     });
     res.json({
-      blog: await withPreview(req.user.userId, updated),
+      blog: await withPreview((req.user.workspaceOwnerId || req.user.userId), updated),
       urls,
       hasVerifiedDomain: verifiedDomains.length > 0,
       deployHints,
@@ -771,13 +771,13 @@ router.post(
     if (!errors.isEmpty()) return res.status(400).json({ error: 'Invalid input', details: errors.array() });
     try {
       const out = await publishDispatcher.dispatch({
-        userId: req.user.userId,
+        userId: (req.user.workspaceOwnerId || req.user.userId),
         articleId: req.params.id,
         connectionIds: req.body.connectionIds,
       });
       const ok = out.results.filter(r => r.ok).length;
       const failed = out.results.length - ok;
-      logger.info('blogs.publish_to.dispatched', { userId: req.user.userId, articleId: req.params.id, ok, failed });
+      logger.info('blogs.publish_to.dispatched', { userId: (req.user.workspaceOwnerId || req.user.userId), articleId: req.params.id, ok, failed });
       res.json(out);
     } catch (err) {
       logger.error('blogs.publish_to.failed', { error: err.message, id: req.params.id });
@@ -791,7 +791,7 @@ router.get('/:id/publish-targets', [param('id').isUUID()], async (req, res) => {
   if (!errors.isEmpty()) return res.status(400).json({ error: 'Invalid id' });
   try {
     const targets = await publishDispatcher.listForArticle({
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
       articleId: req.params.id,
     });
     res.json({ targets });
@@ -809,7 +809,7 @@ router.post(
     if (!errors.isEmpty()) return res.status(400).json({ error: 'Invalid id' });
     try {
       const result = await publishDispatcher.retryTarget({
-        userId: req.user.userId,
+        userId: (req.user.workspaceOwnerId || req.user.userId),
         targetId: req.params.targetId,
       });
       res.json({ result });
@@ -874,7 +874,7 @@ router.post('/:id/unpublish', [param('id').isUUID()], async (req, res) => {
     const { data, error } = await supabase
       .from('blog_articles')
       .update({ status: 'draft' })
-      .eq('user_id', req.user.userId)
+      .eq('user_id', (req.user.workspaceOwnerId || req.user.userId))
       .eq('id', req.params.id)
       .select(PUBLIC_FIELDS)
       .single();
@@ -883,9 +883,9 @@ router.post('/:id/unpublish', [param('id').isUUID()], async (req, res) => {
       throw error;
     }
 
-    const removals = await fanoutRemoval({ userId: req.user.userId, blog: data });
-    logger.info('blogs.unpublished', { userId: req.user.userId, blogId: req.params.id, removedFrom: removals.length });
-    res.json({ blog: await withPreview(req.user.userId, data), removals });
+    const removals = await fanoutRemoval({ userId: (req.user.workspaceOwnerId || req.user.userId), blog: data });
+    logger.info('blogs.unpublished', { userId: (req.user.workspaceOwnerId || req.user.userId), blogId: req.params.id, removedFrom: removals.length });
+    res.json({ blog: await withPreview((req.user.workspaceOwnerId || req.user.userId), data), removals });
   } catch (err) {
     logger.error('blogs.unpublish_failed', { error: err.message, id: req.params.id });
     res.status(500).json({ error: 'Failed to unpublish blog' });
@@ -901,7 +901,7 @@ router.delete('/:id', [param('id').isUUID()], async (req, res) => {
     const { data: blog, error: loadErr } = await supabase
       .from('blog_articles')
       .select(PUBLIC_FIELDS)
-      .eq('user_id', req.user.userId).eq('id', req.params.id).single();
+      .eq('user_id', (req.user.workspaceOwnerId || req.user.userId)).eq('id', req.params.id).single();
     if (loadErr) {
       if (loadErr.code === 'PGRST116') return res.status(404).json({ error: 'Blog not found' });
       throw loadErr;
@@ -910,17 +910,17 @@ router.delete('/:id', [param('id').isUUID()], async (req, res) => {
     let removals = [];
     if (blog.status === 'published' || blog.hero_image) {
       // Only pay the fanout cost if there's something to remove out there.
-      removals = await fanoutRemoval({ userId: req.user.userId, blog });
+      removals = await fanoutRemoval({ userId: (req.user.workspaceOwnerId || req.user.userId), blog });
     }
 
     const { error } = await supabase
       .from('blog_articles')
       .delete()
-      .eq('user_id', req.user.userId)
+      .eq('user_id', (req.user.workspaceOwnerId || req.user.userId))
       .eq('id', req.params.id);
     if (error) throw error;
 
-    logger.info('blogs.deleted', { userId: req.user.userId, blogId: req.params.id, removedFrom: removals.length });
+    logger.info('blogs.deleted', { userId: (req.user.workspaceOwnerId || req.user.userId), blogId: req.params.id, removedFrom: removals.length });
     res.json({ ok: true, removals });
   } catch (err) {
     logger.error('blogs.delete_failed', { error: err.message });
@@ -941,11 +941,11 @@ router.post(
     if (!errors.isEmpty()) return res.status(400).json({ error: 'Invalid id' });
     try {
       const updated = await blogHeroImageService.upload({
-        userId: req.user.userId,
+        userId: (req.user.workspaceOwnerId || req.user.userId),
         blogId: req.params.id,
         file: req.file,
       });
-      res.json({ blog: await withPreview(req.user.userId, updated) });
+      res.json({ blog: await withPreview((req.user.workspaceOwnerId || req.user.userId), updated) });
     } catch (err) {
       logger.error('blogs.hero_upload_failed', { error: err.message, id: req.params.id });
       res.status(err.status || 500).json({ error: err.message || 'Failed to upload hero image' });
@@ -958,7 +958,7 @@ router.delete('/:id/hero-image', [param('id').isUUID()], async (req, res) => {
   if (!errors.isEmpty()) return res.status(400).json({ error: 'Invalid id' });
   try {
     const updated = await blogHeroImageService.remove({
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
       blogId: req.params.id,
     });
     // updated.hero_image is null after remove — withPreview short-circuits.
@@ -990,7 +990,7 @@ router.get('/:id/suggest-hero-images', [param('id').isUUID()], async (req, res) 
     const { data: blog, error: loadErr } = await supabase
       .from('blog_articles')
       .select('id, keyword, title, meta_description, suggested_excerpt, visual_search_query')
-      .eq('user_id', req.user.userId).eq('id', req.params.id).single();
+      .eq('user_id', (req.user.workspaceOwnerId || req.user.userId)).eq('id', req.params.id).single();
     if (loadErr || !blog) return res.status(404).json({ error: 'Blog not found' });
 
     let query = String(req.query.q || '').trim();
@@ -1015,7 +1015,7 @@ router.get('/:id/suggest-hero-images', [param('id').isUUID()], async (req, res) 
           // if the write fails (query still works for this call).
           await supabase.from('blog_articles')
             .update({ visual_search_query: generatedQuery })
-            .eq('id', blog.id).eq('user_id', req.user.userId)
+            .eq('id', blog.id).eq('user_id', (req.user.workspaceOwnerId || req.user.userId))
             .then(() => {}, () => {});
         } else {
           query = String(blog.keyword || blog.title || '').trim();
@@ -1030,7 +1030,7 @@ router.get('/:id/suggest-hero-images', [param('id').isUUID()], async (req, res) 
     // deduping.
     const { data: usedRows } = await supabase.from('blog_articles')
       .select('hero_image_source_id')
-      .eq('user_id', req.user.userId)
+      .eq('user_id', (req.user.workspaceOwnerId || req.user.userId))
       .not('hero_image_source_id', 'is', null);
     const excludeIds = (usedRows || [])
       .map(r => r.hero_image_source_id)
@@ -1062,7 +1062,7 @@ router.post(
     try {
       const { buffer, contentType, bytes } = await stockImageService.downloadImage(req.body.url);
       const updated = await blogHeroImageService.uploadFromBuffer({
-        userId: req.user.userId,
+        userId: (req.user.workspaceOwnerId || req.user.userId),
         blogId: req.params.id,
         buffer,
         contentType,
@@ -1073,10 +1073,10 @@ router.post(
       if (req.body.sourceId) {
         await supabase.from('blog_articles')
           .update({ hero_image_source_id: req.body.sourceId })
-          .eq('id', req.params.id).eq('user_id', req.user.userId)
+          .eq('id', req.params.id).eq('user_id', (req.user.workspaceOwnerId || req.user.userId))
           .then(() => {}, (e) => logger.warn('blogs.hero.source_id_save_failed', { error: e.message }));
       }
-      res.json({ blog: await withPreview(req.user.userId, updated) });
+      res.json({ blog: await withPreview((req.user.workspaceOwnerId || req.user.userId), updated) });
     } catch (err) {
       logger.error('blogs.hero_from_url_failed', { error: err.message, id: req.params.id });
       res.status(err.status || 500).json({ error: err.message || 'Failed to download / upload' });

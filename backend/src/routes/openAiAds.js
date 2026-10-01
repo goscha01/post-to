@@ -42,7 +42,7 @@ function sendUpstream(res, err, event) {
 router.get('/_diagnose', async (req, res) => {
   try {
     const out = await openAiAds.diagnose({
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
       connectionId: req.query.connectionId,
     });
     res.json(out);
@@ -57,7 +57,7 @@ router.get('/_diagnose', async (req, res) => {
 // applies).
 router.get('/connected', async (req, res) => {
   try {
-    const rows = await connectionsService.listForUser(req.user.userId);
+    const rows = await connectionsService.listForUser((req.user.workspaceOwnerId || req.user.userId));
     const filtered = rows.filter(r => r.provider === 'openai_ads');
     res.json({ connections: filtered });
   } catch (err) {
@@ -69,7 +69,7 @@ router.get('/connected', async (req, res) => {
 router.get('/campaigns', async (req, res) => {
   try {
     const data = await openAiAds.getCampaigns({
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
       connectionId: req.query.connectionId,
     });
     res.json({ campaigns: data });
@@ -81,7 +81,7 @@ router.get('/campaigns', async (req, res) => {
 router.get('/ad-groups', async (req, res) => {
   try {
     const data = await openAiAds.getAdGroups({
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
       connectionId: req.query.connectionId,
     });
     res.json({ adGroups: data });
@@ -93,7 +93,7 @@ router.get('/ad-groups', async (req, res) => {
 router.get('/ads', async (req, res) => {
   try {
     const data = await openAiAds.getAds({
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
       connectionId: req.query.connectionId,
     });
     res.json({ ads: data });
@@ -111,7 +111,7 @@ router.get('/ads', async (req, res) => {
 router.get('/insights', async (req, res) => {
   try {
     const data = await openAiAds.getInsights({
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
       connectionId: req.query.connectionId,
       scope: req.query.scope || 'account',
       days: parseDays(req.query.days),

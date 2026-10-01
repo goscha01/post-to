@@ -1,7 +1,7 @@
 // Google Ads read-only endpoints.
 //
 // Auth stack (same as /api/analytics):
-//   - authMiddleware       → user JWT (populates req.user.userId)
+//   - authMiddleware       → user JWT (populates (req.user.workspaceOwnerId || req.user.userId))
 //   - requireBusinessAuth  → Google Ads reuses the same OAuth grant as GMB +
 //                            GA4 (adwords scope added to BUSINESS_SCOPES).
 //                            Middleware handles proactive refresh + populates
@@ -64,7 +64,7 @@ async function tokenForCustomer(req, customerId) {
   const { data: rows } = await supabase
     .from('connected_accounts')
     .select('metadata')
-    .eq('user_id', req.user.userId)
+    .eq('user_id', (req.user.workspaceOwnerId || req.user.userId))
     .eq('provider', 'google_ads')
     .eq('external_id', `ads:${customerId}`)
     .limit(1);
@@ -73,7 +73,7 @@ async function tokenForCustomer(req, customerId) {
 
   let accessToken = req.businessToken;
   if (ownerGoogleId) {
-    const tokens = await getAllBusinessTokens(req.user.userId);
+    const tokens = await getAllBusinessTokens((req.user.workspaceOwnerId || req.user.userId));
     const match = tokens.find(t => t.google_id === ownerGoogleId);
     if (match?.access_token) accessToken = match.access_token;
   }
@@ -96,7 +96,7 @@ router.get('/_diagnose', async (req, res) => {
     const hasAdwords = grantedScopes.includes('https://www.googleapis.com/auth/adwords');
     const hasDevToken = !!process.env.GOOGLE_ADS_DEVELOPER_TOKEN;
     logger.info('googleAds.diagnose', {
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
       granted_scopes: grantedScopes,
       hasAdwords,
       hasDeveloperToken: hasDevToken,
@@ -121,7 +121,7 @@ router.get('/_diagnose', async (req, res) => {
     });
   } catch (err) {
     logger.error('googleAds.diagnose.failed', {
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
       error: err.message,
     });
     res.status(500).json({ error: err.message || 'Failed to introspect token' });
@@ -134,7 +134,7 @@ router.get('/customers', async (req, res) => {
   try {
     // Fan out across every connected Google account so a user with multiple
     // accounts sees the union of Ads customers they can access.
-    const tokens = await getAllBusinessTokens(req.user.userId);
+    const tokens = await getAllBusinessTokens((req.user.workspaceOwnerId || req.user.userId));
     const effectiveTokens = tokens.length > 0 ? tokens : [{
       access_token: req.businessToken,
       email: null,
@@ -229,7 +229,7 @@ router.get('/customers', async (req, res) => {
     });
 
     logger.info('googleAds.customers.list_ok', {
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
       count: deduped.length,
       accounts_tried: effectiveTokens.length,
       accounts_failed: errors.length,
@@ -262,7 +262,7 @@ router.get('/customers', async (req, res) => {
   } catch (err) {
     const norm = ads.normalizeApiError(err, {
       endpoint: 'customers.list',
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
     });
     res.status(norm.status || 500).json({ error: norm.message, code: norm.code });
   }
@@ -283,7 +283,7 @@ router.post('/customers', express.json(), async (req, res) => {
       return res.status(400).json({ error: 'customerId required' });
     }
     const row = await connections.upsertGoogleAds({
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
       customerId: String(customerId).replace(/[^0-9]/g, ''),
       descriptiveName: descriptiveName || `Google Ads ${customerId}`,
       managerCustomerId: managerCustomerId ? String(managerCustomerId).replace(/[^0-9]/g, '') : null,
@@ -293,7 +293,7 @@ router.post('/customers', express.json(), async (req, res) => {
       ownerEmail: ownerEmail || null,
     });
     logger.info('googleAds.customer.connected', {
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
       customerId,
       connectionId: row.id,
       ownerGoogleId: ownerGoogleId || null,
@@ -301,7 +301,7 @@ router.post('/customers', express.json(), async (req, res) => {
     res.status(201).json({ connection: row });
   } catch (err) {
     logger.error('googleAds.customer.connect_failed', {
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
       error: err.message,
     });
     res.status(500).json({ error: err.message || 'Failed to save customer' });
@@ -310,7 +310,7 @@ router.post('/customers', express.json(), async (req, res) => {
 
 router.get('/connected', async (req, res) => {
   try {
-    const rows = await connections.listForUser(req.user.userId);
+    const rows = await connections.listForUser((req.user.workspaceOwnerId || req.user.userId));
     res.json({
       customers: rows
         .filter(r => r.provider === 'google_ads')
@@ -329,7 +329,7 @@ router.get('/connected', async (req, res) => {
     });
   } catch (err) {
     logger.error('googleAds.connected.failed', {
-      userId: req.user.userId,
+      userId: (req.user.workspaceOwnerId || req.user.userId),
       error: err.message,
     });
     res.status(500).json({ error: 'Failed to list connected customers' });
@@ -344,7 +344,7 @@ async function resolveCustomerId(req) {
 
   const connectionId = (req.query.connectionId || '').toString().trim();
   if (connectionId) {
-    const row = await connections.getForUser(req.user.userId, connectionId);
+    const row = await connections.getForUser((req.user.workspaceOwnerId || req.user.userId), connectionId);
     if (row && row.provider === 'google_ads') {
       return row.metadata?.customer_id || null;
     }
@@ -353,7 +353,7 @@ async function resolveCustomerId(req) {
   const { data } = await supabase
     .from('connected_accounts')
     .select('metadata, created_at')
-    .eq('user_id', req.user.userId)
+    .eq('user_id', (req.user.workspaceOwnerId || req.user.userId))
     .eq('provider', 'google_ads')
     .order('created_at', { ascending: false })
     .limit(1);
@@ -395,7 +395,7 @@ function reportHandler(serviceFn, name, { supportsDays = true } = {}) {
         ? await serviceFn(accessToken, customerId, days, opts)
         : await serviceFn(accessToken, customerId, opts);
       logger.info(`googleAds.${name}.ok`, {
-        userId: req.user.userId,
+        userId: (req.user.workspaceOwnerId || req.user.userId),
         customerId,
         days: days || null,
         campaignId: campaignId || null,
@@ -409,7 +409,7 @@ function reportHandler(serviceFn, name, { supportsDays = true } = {}) {
     } catch (err) {
       const norm = ads.normalizeApiError(err, {
         endpoint: name,
-        userId: req.user.userId,
+        userId: (req.user.workspaceOwnerId || req.user.userId),
       });
       res.status(norm.status || 500).json({ error: norm.message, code: norm.code });
     }

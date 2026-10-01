@@ -323,7 +323,7 @@ router.get('/categories/:categoryId', async (req, res) => {
   try {
     const { categoryId } = req.params;
     const { cached_only } = req.query;
-    const userId = req.user?.userId;
+    const userId = (req.user?.workspaceOwnerId || req.user?.userId);
 
     // If cached_only=true, return only cached data
     if (cached_only === 'true') {
@@ -428,7 +428,7 @@ router.get('/categories/:categoryId', async (req, res) => {
 router.get('/locations/:locationId/services', async (req, res) => {
   try {
     const { locationId } = req.params;
-    const userId = req.user?.userId;
+    const userId = (req.user?.workspaceOwnerId || req.user?.userId);
     const { cached_only } = req.query;
 
     if (cached_only === 'true') {
@@ -492,7 +492,7 @@ router.get('/locations/:locationId/services', async (req, res) => {
 
     const serviceItems = attempt.result?.data?.serviceItems || [];
     CacheUtils.cacheExistingServices(userId, locationId, serviceItems, 2 * 60 * 1000);
-    const savedServices = await saveExistingServicesToDatabase(req.user.userId, serviceItems, 'google');
+    const savedServices = await saveExistingServicesToDatabase((req.user.workspaceOwnerId || req.user.userId), serviceItems, 'google');
 
     res.json({
       success: true,
@@ -502,7 +502,7 @@ router.get('/locations/:locationId/services', async (req, res) => {
     });
   } catch (error) {
     logger.error('services.location.unhandled', {
-      user_id: req.user?.userId,
+      user_id: (req.user?.workspaceOwnerId || req.user?.userId),
       location_id: req.params.locationId,
       error: error?.message,
       stack: error?.stack?.slice(0, 1500),
