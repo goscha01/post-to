@@ -365,8 +365,25 @@ async function resolveAscToolContext(userId) {
 // the matching business token by owner_google_id. Returns null when no
 // GA4 property is bound or no matching access token is available.
 async function resolveGa4ToolContext(userId, conv) {
-  const propertyIdRaw = conv?.ga4_property_id || conv?.ga4_app_property_id || null;
-  if (!propertyIdRaw) return null;
+  // Prefer the property explicitly attached to this conversation. If the
+  // conversation was created without one (common — the picker only requires
+  // a Google Ads customer + campaign), fall back to the user's most recently
+  // connected GA4 property so chat tools like ga4_list_custom_dimensions
+  // and ga4_create_custom_dimension still work on the Analytics-only setup.
+  let propertyIdRaw = conv?.ga4_property_id || conv?.ga4_app_property_id || null;
+  let fallback = false;
+  if (!propertyIdRaw) {
+    const { data: connected } = await supabase
+      .from('connected_accounts')
+      .select('metadata, created_at')
+      .eq('user_id', userId)
+      .eq('provider', 'google_analytics')
+      .order('created_at', { ascending: false })
+      .limit(1);
+    propertyIdRaw = connected?.[0]?.metadata?.property_id || null;
+    fallback = !!propertyIdRaw;
+    if (!propertyIdRaw) return null;
+  }
   const ga4Prop = await resolveGa4Property(userId, propertyIdRaw);
   if (!ga4Prop.propertyId) return null;
   const tokens = await getAllBusinessTokens(userId);
@@ -376,6 +393,11 @@ async function resolveGa4ToolContext(userId, conv) {
     : tokens[0];
   const accessToken = match?.access_token || tokens[0]?.access_token;
   if (!accessToken) return null;
+  if (fallback) {
+    logger.info('campaignAssistant.ga4.fallback_to_connected', {
+      userId, conversationId: conv?.id || null, propertyId: ga4Prop.propertyId,
+    });
+  }
   return {
     accessToken,
     propertyId: ga4Prop.propertyId,
