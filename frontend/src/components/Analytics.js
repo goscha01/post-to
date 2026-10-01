@@ -835,20 +835,23 @@ const AdAttributionSection = ({ attribution }) => {
 // see FunnelSection comment). Kept front-end-side because it's a UI concern
 // (backend just serves raw screen counts).
 // Screens that map to each parent funnel step. Verified against the actual
-// screen_view events GA4 receives from ProofPix (checked 2026-09-30):
-//   - Current build collapses the whole onboarding flow (welcome + user info +
-//     permissions) into a single FirstLoadScreen. The separate
-//     onboarding_welcome / onboarding_user_info / onboarding_permissions
-//     screens exist in App.js's SCREEN_NAME_MAP but never fire — that flow
-//     was refactored out. For screen-level onboarding drop-off, ProofPix
-//     would need to reinstate the separate screens or add logScreenView
-//     calls at each in-screen step.
-//   - `first_load` (30 users) > "Onboarding done" (23 raw) shows there IS
-//     drop-off within onboarding — 7 users bounce from the load screen
-//     before completing.
+// screen_view events GA4 receives from ProofPix. Order within each step
+// reflects the user flow so sub-step rows read top-to-bottom in sequence.
+//
+// Onboarding flow (as of ProofPix instrumentation 2026-10-01):
+//   first_load  — route-level screen_view auto-fired by App.js nav listener
+//   onboarding_welcome   — fired on FirstLoadScreen mount (every onboarding user)
+//   onboarding_user_info — fired when the user focuses the name field (intent
+//                          signal: they're actively engaging, not bouncing)
+//   onboarding_permissions — intentionally absent; no permissions prompt in
+//                            this flow, fabricating it would be noise
+// Downstream of these: logOnboardingCompleted fires on Save & Continue
+// (the parent "Onboarding done" funnel step).
 const FUNNEL_SUBSTEPS = {
   onboarding_done: [
-    { screenName: 'first_load', label: 'First load (onboarding)' },
+    { screenName: 'first_load',           label: 'First load' },
+    { screenName: 'onboarding_welcome',   label: 'Welcome' },
+    { screenName: 'onboarding_user_info', label: 'User info (name focus)' },
   ],
   paywall: [
     { screenName: 'paywall', label: 'Paywall shown' },
