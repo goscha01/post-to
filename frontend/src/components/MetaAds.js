@@ -139,6 +139,10 @@ const MetaAds = () => {
   const [deliveryIssues, setDeliveryIssues] = useState([]);
 
   const [loadingReports, setLoadingReports] = useState(false);
+  // Wave 2 loading state covers Diagnostics + Delivery Issues, which run
+  // after wave 1 since they internally fan out 3-6 extra Meta calls each
+  // and get rate-limited when fired alongside the main dashboard reads.
+  const [loadingWave2, setLoadingWave2] = useState(false);
   const [error, setError] = useState('');
   const [activeSection, setActiveSection] = useState('overview');
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -223,79 +227,21 @@ const MetaAds = () => {
 
   // -------- report load fanout --------
   //
-  // Uses Promise.allSettled, not Promise.all. Meta's Graph API rate-limits
-  // aggressively (code 4/17/32 → 429) when we fan out 11 parallel reads
-  // against a single ad account, and a single hanging request would
-  // otherwise pin the loading overlay forever. With allSettled every
-  // section resolves (or fails) independently and the overlay clears as
-  // soon as the slowest one settles.
-  const loadReports = useCallback(async (adAccountId, rangeDays) => {
-    if (!adAccountId) return;
-    const token = ++loadTokenRef.current;
-    setLoadingReports(true);
-    setError('');
-    setFailedSections([]);
-
-    const calls = [
-      { key: 'overview',       label: 'Overview',        fn: () => metaAdsService.getOverview(adAccountId, rangeDays) },
-      { key: 'diagnostics',    label: 'Diagnostics',     fn: () => metaAdsService.getDiagnostics(adAccountId, rangeDays) },
-      { key: 'campaigns',      label: 'Campaigns',       fn: () => metaAdsService.getCampaigns(adAccountId, rangeDays) },
-      { key: 'adsets',         label: 'Ad Sets',         fn: () => metaAdsService.getAdSets(adAccountId, rangeDays) },
-      // /ads is capped at 90d server-side which matches our max, so this is safe
-      { key: 'ads',            label: 'Ads',             fn: () => metaAdsService.getAds(adAccountId, rangeDays) },
-      { key: 'placements',     label: 'Placements',      fn: () => metaAdsService.getPlacements(adAccountId, rangeDays) },
-      { key: 'devices',        label: 'Devices',         fn: () => metaAdsService.getDevices(adAccountId, rangeDays) },
-      { key: 'demographics',   label: 'Demographics',    fn: () => metaAdsService.getDemographics(adAccountId, rangeDays) },
-      { key: 'dayHour',        label: 'Day & Hour',      fn: () => metaAdsService.getDayHour(adAccountId, rangeDays) },
-      { key: 'creatives',      label: 'Creatives',       fn: () => metaAdsService.getCreatives(adAccountId) },
-      { key: 'deliveryIssues', label: 'Delivery Issues', fn: () => metaAdsService.getDeliveryIssues(adAccountId) },
-    ];
-
-    const results = await Promise.allSettled(calls.map((c) => c.fn()));
-    if (token !== loadTokenRef.current) return; // superseded
-
-    // If any single response signals an auth/scope/selection problem, the
-    // whole page is in that state — short-circuit to the appropriate
-    // banner. Takes precedence over per-section rendering.
-    for (const r of results) {
-      if (r.status !== 'rejected') continue;
-      const info = metaAdsService.interpretMetaError(r.reason);
-      if (info.intent === 'missing_scope') {
-        if (token === loadTokenRef.current) setLoadingReports(false);
-        return setConnState({ status: 'missing_scope' });
-      }
-      if (info.intent === 'token_invalid') {
-        if (token === loadTokenRef.current) setLoadingReports(false);
-        return setConnState({ status: 'token_invalid' });
-      }
-      if (info.intent === 'not_connected') {
-        if (token === loadTokenRef.current) setLoadingReports(false);
-        return setConnState({ status: 'not_connected' });
-      }
-      if (info.intent === 'no_selection') {
-        setSelection({ adAccountIds: [], defaultAdAccountId: null });
-        setSelectedAdAccountId(null);
-        if (token === loadTokenRef.current) setLoadingReports(false);
-        return;
-      }
-    }
-
-    // Per-section apply. Setters wrapped in try/catch so one weird payload
-    // can't block the rest.
-    const applyers = {
-      overview:       (v) => setOverview(v),
-      diagnostics:    (v) => setDiagnosticsData(v),
-      campaigns:      (v) => setCampaigns(v.campaigns || []),
-      adsets:         (v) => setAdsets(v.adsets || []),
-      ads:            (v) => setAds(v.ads || []),
-      placements:     (v) => setPlacements(v),
-      devices:        (v) => setDevices(v),
-      demographics:   (v) => setDemographics(v),
-      dayHour:        (v) => setDayHour(v),
-      creatives:      (v) => setCreatives(v.creatives || []),
-      deliveryIssues: (v) => setDeliveryIssues(v.issues || []),
-    };
-
+  // Two-wave strategy. Meta rate-limits a single ad account hard (code
+  // 4/17/32 → 429) when we fan out 11 reads at once, and the "heavy"
+  // backend endpoints — /diagnostics (6 Meta calls internally) and
+  // /delivery-issues (3 Meta calls, overlapping with /campaigns,
+  // /adsets, /ads) — are the ones that reliably get throttled or hang.
+  //
+  //   Wave 1 — 9 single-Meta-call endpoints. Fast. Overlay clears when
+  //            this wave settles so the user can start reading data
+  //            and clicking tabs.
+  //   Wave 2 — diagnostics + delivery-issues. Run in the background
+  //            AFTER wave 1 so Meta has already answered everything
+  //            else. Those sections render "Loading…" (via their own
+  //            `loading` prop) until this wave settles.
+  const applyFanoutResults = (results, calls, applyers, loadingTokenAtStart) => {
+    if (loadingTokenAtStart !== loadTokenRef.current) return { failures: [], superseded: true };
     const failures = [];
     results.forEach((r, i) => {
       const c = calls[i];
@@ -306,8 +252,113 @@ const MetaAds = () => {
         failures.push({ key: c.key, label: c.label, intent: info.intent, message: info.message });
       }
     });
-    setFailedSections(failures);
-    if (token === loadTokenRef.current) setLoadingReports(false);
+    return { failures, superseded: false };
+  };
+
+  const checkAuthShapedError = (results, loadingTokenAtStart) => {
+    for (const r of results) {
+      if (r.status !== 'rejected') continue;
+      const info = metaAdsService.interpretMetaError(r.reason);
+      if (info.intent === 'missing_scope') {
+        if (loadingTokenAtStart === loadTokenRef.current) setConnState({ status: 'missing_scope' });
+        return true;
+      }
+      if (info.intent === 'token_invalid') {
+        if (loadingTokenAtStart === loadTokenRef.current) setConnState({ status: 'token_invalid' });
+        return true;
+      }
+      if (info.intent === 'not_connected') {
+        if (loadingTokenAtStart === loadTokenRef.current) setConnState({ status: 'not_connected' });
+        return true;
+      }
+      if (info.intent === 'no_selection') {
+        if (loadingTokenAtStart === loadTokenRef.current) {
+          setSelection({ adAccountIds: [], defaultAdAccountId: null });
+          setSelectedAdAccountId(null);
+        }
+        return true;
+      }
+    }
+    return false;
+  };
+
+  const loadReports = useCallback(async (adAccountId, rangeDays) => {
+    if (!adAccountId) return;
+    const token = ++loadTokenRef.current;
+    setLoadingReports(true);
+    setError('');
+    setFailedSections([]);
+
+    // Wave 1 — fast, single-Meta-call endpoints.
+    const wave1Calls = [
+      { key: 'overview',     label: 'Overview',     fn: () => metaAdsService.getOverview(adAccountId, rangeDays) },
+      { key: 'campaigns',    label: 'Campaigns',    fn: () => metaAdsService.getCampaigns(adAccountId, rangeDays) },
+      { key: 'adsets',       label: 'Ad Sets',      fn: () => metaAdsService.getAdSets(adAccountId, rangeDays) },
+      // /ads is capped at 90d server-side which matches our max.
+      { key: 'ads',          label: 'Ads',          fn: () => metaAdsService.getAds(adAccountId, rangeDays) },
+      { key: 'placements',   label: 'Placements',   fn: () => metaAdsService.getPlacements(adAccountId, rangeDays) },
+      { key: 'devices',      label: 'Devices',      fn: () => metaAdsService.getDevices(adAccountId, rangeDays) },
+      { key: 'demographics', label: 'Demographics', fn: () => metaAdsService.getDemographics(adAccountId, rangeDays) },
+      { key: 'dayHour',      label: 'Day & Hour',   fn: () => metaAdsService.getDayHour(adAccountId, rangeDays) },
+      { key: 'creatives',    label: 'Creatives',    fn: () => metaAdsService.getCreatives(adAccountId) },
+    ];
+    const wave1Applyers = {
+      overview:     (v) => setOverview(v),
+      campaigns:    (v) => setCampaigns(v.campaigns || []),
+      adsets:       (v) => setAdsets(v.adsets || []),
+      ads:          (v) => setAds(v.ads || []),
+      placements:   (v) => setPlacements(v),
+      devices:      (v) => setDevices(v),
+      demographics: (v) => setDemographics(v),
+      dayHour:      (v) => setDayHour(v),
+      creatives:    (v) => setCreatives(v.creatives || []),
+    };
+
+    const wave1Results = await Promise.allSettled(wave1Calls.map((c) => c.fn()));
+    if (token !== loadTokenRef.current) return; // superseded
+
+    if (checkAuthShapedError(wave1Results, token)) {
+      if (token === loadTokenRef.current) setLoadingReports(false);
+      return;
+    }
+
+    const { failures: wave1Failures } = applyFanoutResults(wave1Results, wave1Calls, wave1Applyers, token);
+    if (token === loadTokenRef.current) {
+      setFailedSections(wave1Failures);
+      setLoadingReports(false); // overlay off — user can start reading
+    }
+
+    // Wave 2 — heavy endpoints that internally fan out multiple Meta
+    // calls. Run after wave 1 so Meta's rate-limit window has had a
+    // chance to breathe. Don't block the overlay on these; the two
+    // affected tabs (Diagnostics, Delivery Issues) render their own
+    // "Loading…" state until these settle.
+    setLoadingWave2(true);
+    const wave2Calls = [
+      { key: 'diagnostics',    label: 'Diagnostics',     fn: () => metaAdsService.getDiagnostics(adAccountId, rangeDays) },
+      { key: 'deliveryIssues', label: 'Delivery Issues', fn: () => metaAdsService.getDeliveryIssues(adAccountId) },
+    ];
+    const wave2Applyers = {
+      diagnostics:    (v) => setDiagnosticsData(v),
+      deliveryIssues: (v) => setDeliveryIssues(v.issues || []),
+    };
+
+    const wave2Results = await Promise.allSettled(wave2Calls.map((c) => c.fn()));
+    if (token !== loadTokenRef.current) return;
+
+    // Auth-shaped errors from wave 2 are still meaningful (token could
+    // have expired mid-flight), but we never clear data from wave 1.
+    if (checkAuthShapedError(wave2Results, token)) {
+      if (token === loadTokenRef.current) setLoadingWave2(false);
+      return;
+    }
+
+    const { failures: wave2Failures } = applyFanoutResults(wave2Results, wave2Calls, wave2Applyers, token);
+    if (token === loadTokenRef.current) {
+      if (wave2Failures.length > 0) setFailedSections((prev) => [...prev, ...wave2Failures]);
+      setLoadingWave2(false);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ----- effects -----
@@ -427,11 +478,11 @@ const MetaAds = () => {
           <DayRangeSelector value={days} onChange={setDays} />
           <button
             onClick={() => selectedAdAccountId && loadReports(selectedAdAccountId, days)}
-            disabled={!selectedAdAccountId || loadingReports}
+            disabled={!selectedAdAccountId || loadingReports || loadingWave2}
             className="inline-flex items-center gap-1.5 px-3 py-2 border border-gray-300 rounded-md text-sm text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50"
             title="Refresh"
           >
-            <RefreshCw className={`h-4 w-4 ${loadingReports ? 'animate-spin' : ''}`} />
+            <RefreshCw className={`h-4 w-4 ${(loadingReports || loadingWave2) ? 'animate-spin' : ''}`} />
             Refresh
           </button>
           <button
@@ -494,7 +545,7 @@ const MetaAds = () => {
           <LoadingOverlay show={loadingReports} label="Loading Meta Ads data…">
             <div className="mt-6">
               {activeSection === 'overview'       && <OverviewCards overview={overview} loading={loadingReports} currency={currency} />}
-              {activeSection === 'diagnostics'    && <DiagnosticsView data={diagnosticsData} loading={loadingReports} currency={currency} />}
+              {activeSection === 'diagnostics'    && <DiagnosticsView data={diagnosticsData} loading={loadingReports || loadingWave2} currency={currency} />}
               {activeSection === 'campaigns'      && <CampaignsTable rows={campaigns} loading={loadingReports} currency={currency} />}
               {activeSection === 'adsets'         && <AdSetsTable rows={adsets} loading={loadingReports} currency={currency} />}
               {activeSection === 'ads'            && <AdsTable rows={ads} loading={loadingReports} currency={currency} />}
@@ -503,7 +554,7 @@ const MetaAds = () => {
               {activeSection === 'demographics'   && <BreakdownTable rows={demographics.rows} keys={['age','gender']} loading={loadingReports} currency={currency} />}
               {activeSection === 'dayHour'        && <BreakdownTable rows={dayHour.rows} keys={['hourly_stats_aggregated_by_advertiser_time_zone']} loading={loadingReports} currency={currency} />}
               {activeSection === 'creatives'      && <CreativesGrid rows={creatives} loading={loadingReports} />}
-              {activeSection === 'deliveryIssues' && <DeliveryIssuesList rows={deliveryIssues} loading={loadingReports} />}
+              {activeSection === 'deliveryIssues' && <DeliveryIssuesList rows={deliveryIssues} loading={loadingReports || loadingWave2} />}
             </div>
           </LoadingOverlay>
         </>
