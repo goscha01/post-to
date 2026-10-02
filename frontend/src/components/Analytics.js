@@ -404,7 +404,7 @@ const Analytics = () => {
 
           <AppStoreSection ascState={ascState} />
 
-          <AdAttributionSection attribution={adAttribution} />
+          <AdAttributionSection attribution={adAttribution} ascState={ascState} />
 
           <FunnelSection
             inAppFunnel={inAppFunnel}
@@ -657,13 +657,37 @@ const AppStoreSection = ({ ascState }) => {
     );
   }
   const t = ascState.totals || { impressions: 0, productPageViews: 0, installs: 0, conversionRate: null };
+  // Three tiles come from TWO different Apple data sources, which is where
+  // user confusion originates:
+  //   - Impressions / Page visitors → Apple Analytics APP_STORE_ENGAGEMENT
+  //   - Downloads                   → Apple Sales & Trends (authoritative,
+  //                                   includes restores + direct URL installs
+  //                                   that have no page-view touchpoint)
+  // Each tile carries a `note` explaining what to make of a 0 / unusual value.
   const cards = [
-    { key: 'impressions', label: 'Impressions',        icon: Eye,           value: fmtInt(t.impressions),
-      hint: 'App Store listing shown in search or browse' },
-    { key: 'ppv',         label: 'Store Page Visitors', icon: MousePointer2, value: fmtInt(t.productPageViews),
-      hint: 'Users who tapped into the listing page' },
-    { key: 'installs',    label: 'Downloads',           icon: Download,      value: fmtInt(t.installs),
-      hint: 'First-time installs (Sales & Trends)' },
+    {
+      key: 'impressions',
+      label: 'Impressions',
+      icon: Eye,
+      value: fmtInt(t.impressions),
+      note: t.impressions === 0
+        ? 'App not surfaced in App Store search/browse this period. All traffic is from external channels (direct URLs, referrers).'
+        : 'App Store listing shown in search or browse',
+    },
+    {
+      key: 'ppv',
+      label: 'Store Page Visitors',
+      icon: MousePointer2,
+      value: fmtInt(t.productPageViews),
+      note: 'Distinct users who tapped into the listing page',
+    },
+    {
+      key: 'installs',
+      label: 'Downloads',
+      icon: Download,
+      value: fmtInt(t.installs),
+      note: 'From Apple Sales & Trends (authoritative). Includes restores + direct-URL installs that bypass the listing page — this is why Downloads can exceed Store Page Visitors.',
+    },
   ];
   return (
     <div className="mt-6">
@@ -682,12 +706,13 @@ const AppStoreSection = ({ ascState }) => {
           {cards.map(c => {
             const Icon = c.icon;
             return (
-              <div key={c.key} className={cardWrap} title={c.hint}>
+              <div key={c.key} className={cardWrap}>
                 <div className="flex items-center gap-2 text-xs font-medium text-gray-500 uppercase tracking-wide">
                   <Icon className="h-3.5 w-3.5" />
                   {c.label}
                 </div>
                 <div className="mt-2 text-2xl font-semibold text-gray-900">{c.value}</div>
+                <div className="mt-1 text-[11px] text-gray-500 leading-snug">{c.note}</div>
               </div>
             );
           })}
@@ -713,7 +738,7 @@ const AppStoreSection = ({ ascState }) => {
 // Rows come pre-sorted with paid campaigns first (isPaid=true), then organic.
 // Renders two tables: "Paid" (campaign-tagged) and "Organic" (no campaign)
 // so ad ROI is instantly readable without hunting through organic rows.
-const AdAttributionSection = ({ attribution }) => {
+const AdAttributionSection = ({ attribution, ascState }) => {
   if (!attribution) return null;
   const rows = attribution.rows || [];
   if (rows.length === 0) return null;
@@ -722,6 +747,16 @@ const AdAttributionSection = ({ attribution }) => {
   const paidT = attribution.paidTotals || { productPageViews: 0, installs: 0 };
   const paidConvRate = paidT.productPageViews > 0
     ? paidT.installs / paidT.productPageViews
+    : null;
+  // Explain the gap between the Downloads tile (Sales & Trends authoritative,
+  // includes all installs) and the sum of per-source installs here (Analytics
+  // COMMERCE, only installs Apple could attribute to a source). The former
+  // is always ≥ the latter — the delta is restores + direct installs that
+  // Apple couldn't attribute to any Source Type.
+  const sTotalInstalls = ascState?.totals?.installs ?? null;
+  const attributedInstalls = (attribution.totals?.installs) ?? rows.reduce((s, r) => s + (r.installs || 0), 0);
+  const unattributedInstalls = sTotalInstalls !== null
+    ? Math.max(0, sTotalInstalls - attributedInstalls)
     : null;
   return (
     <div className="mt-6">
@@ -738,6 +773,16 @@ const AdAttributionSection = ({ attribution }) => {
           </>
         }
       >
+        {unattributedInstalls !== null && unattributedInstalls > 0 && (
+          <div className="px-4 pt-3 text-[11px] text-gray-500 leading-snug">
+            <span className="font-medium text-gray-700">
+              {fmtInt(attributedInstalls)} of {fmtInt(sTotalInstalls)} downloads attributed to a source.
+            </span>{' '}
+            The remaining {fmtInt(unattributedInstalls)} are from Apple Sales & Trends
+            (restores, direct-URL installs, Apple ID family-shared installs) that bypass
+            source attribution — this gap is normal, not a tracking bug.
+          </div>
+        )}
         {paid.length > 0 && (
           <div className="p-4">
             <div className="flex items-center justify-between text-xs font-medium text-gray-600 uppercase tracking-wide mb-2">
