@@ -604,24 +604,53 @@ const AppStoreConnect = () => {
 
           {funnel && funnel.dataCoverageDays > 0 && (
             <>
+              {(funnel.engagementStatus === 'pending' || funnel.engagementStatus === 'partial') && (
+                <div className="rounded-md border border-amber-200 bg-amber-50 p-2.5 text-xs text-amber-900">
+                  <strong>Apple's engagement data for this window hasn't fully landed.</strong>{' '}
+                  The comprehensive report (impressions + Store sheet page views) lags event
+                  dates by 5-7 days. Only the thin "summary" report has published for recent
+                  days, and it omits Store sheet views — the bulk of real PPV traffic. Rather
+                  than show misleading tiny numbers, impressions and page views are blanked
+                  out for days where only summary data exists. Try the <strong>30-day</strong> window
+                  for a complete picture, or watch Meta / Google Ads below for current paid
+                  traffic. Installs (Sales & Trends) are current.
+                </div>
+              )}
               {(() => {
-                const engagementPendingDays = funnel.perDay.filter(d => !d.engagementDataAvailable).length;
-                const commercePendingDays = funnel.perDay.filter(d => !d.commerceDataAvailable).length;
                 const stDays = funnel.perDay.filter(d => d.installsFromSalesAndTrends).length;
+
+                // Fallback conversion-rate when Apple's attributed CVR is
+                // null (install attribution pending): compute paid-ads CVR
+                // as (Meta installs + Google installs) / (Meta clicks +
+                // Google clicks). Mixes platforms but gives a usable number
+                // instead of "—" when the user cares.
+                let cvr = funnel.totals.conversionRate;
+                let cvrSub = 'attributed installs / PPV';
+                if (cvr == null) {
+                  const paidInstalls = (metaAds?.totals?.installs || 0) + (googleAds?.totals?.installs || 0);
+                  const paidClicks = (metaAds?.totals?.clicks || 0) + (googleAds?.totals?.clicks || 0);
+                  if (paidClicks > 0) {
+                    cvr = paidInstalls / paidClicks;
+                    cvrSub = 'paid ads · installs / clicks';
+                  } else {
+                    cvrSub = 'Apple analytics pending';
+                  }
+                }
+
                 return (
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                     <StatCard
                       label="Impressions"
                       value={fmtInt(funnel.totals.impressions)}
-                      sub={engagementPendingDays > 0
-                        ? `${engagementPendingDays} day${engagementPendingDays === 1 ? '' : 's'} pending from Apple`
+                      sub={funnel.totals.impressions == null
+                        ? 'Apple engagement pending'
                         : `last ${days} days`}
                     />
                     <StatCard
                       label="Page views"
                       value={fmtInt(funnel.totals.productPageViews)}
-                      sub={engagementPendingDays > 0
-                        ? `${engagementPendingDays} day${engagementPendingDays === 1 ? '' : 's'} pending`
+                      sub={funnel.totals.productPageViews == null
+                        ? 'Apple engagement pending'
                         : 'product page + store sheet'}
                     />
                     <StatCard
@@ -633,12 +662,8 @@ const AppStoreConnect = () => {
                     />
                     <StatCard
                       label="Conversion rate"
-                      value={funnel.totals.conversionRate != null
-                        ? `${(funnel.totals.conversionRate * 100).toFixed(1)}%`
-                        : '—'}
-                      sub={funnel.totals.conversionRate == null && commercePendingDays > 0
-                        ? 'Apple analytics pending'
-                        : 'attributed installs / PPV'}
+                      value={cvr != null ? `${(cvr * 100).toFixed(1)}%` : '—'}
+                      sub={cvrSub}
                     />
                   </div>
                 );

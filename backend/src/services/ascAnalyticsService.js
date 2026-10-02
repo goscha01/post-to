@@ -612,10 +612,17 @@ async function getInstallFunnel({ connectionId, days = 14, userId }) {
         : (b.commerceDataAvailable ? b.analyticsInstalls : null);
 
       // When engagement data is available but ONLY the thin "summary" report
-      // has landed (PPV present, zero impression events), show impressions
-      // as "—" rather than "0" — the comprehensive report with impression
-      // events hasn't published yet. 0 PPV + 0 impressions on a day with
-      // engagement data IS a real zero (no activity that day).
+      // has landed (impressions=0, productPageViews>0), null BOTH impressions
+      // and productPageViews. Apple's summary report captures only the direct
+      // "Product page" event — it entirely omits "Store sheet" (the modal
+      // product page shown from search/browse/featured tiles), which carries
+      // 10-20× more traffic on typical apps (ProofPix Sep 15: 63 Product
+      // page vs 774 Store sheet). Showing e.g. "4 PPV" for a week when
+      // Meta alone drove 163 app_store_visits is actively misleading.
+      // The comprehensive report (with both event types + impressions)
+      // lands 5-7 days after the event — until then, both metrics are
+      // partial. 0 PPV + 0 impressions on a day with engagement data IS
+      // a real zero (no activity that day).
       const partialEngagement =
         b.engagementDataAvailable && b.impressions === 0 && b.productPageViews > 0;
 
@@ -623,7 +630,7 @@ async function getInstallFunnel({ connectionId, days = 14, userId }) {
         date,
         impressions: !b.engagementDataAvailable || partialEngagement ? null : b.impressions,
         impressionsUniqueDevice: 0,
-        productPageViews: b.engagementDataAvailable ? b.productPageViews : null,
+        productPageViews: !b.engagementDataAvailable || partialEngagement ? null : b.productPageViews,
         productPageViewsUniqueDevice: 0,
         installs: displayInstalls,
         // Analytics-attributed installs (First-time download in the ASC
@@ -691,9 +698,18 @@ async function getInstallFunnel({ connectionId, days = 14, userId }) {
     ? attributableInstalls / attributablePpv
     : null;
 
+  // Flag so the client can show a clear "Apple engagement data is still
+  // landing" banner instead of leaving the user to interpret a wall of "—".
+  // Fires when EVERY day in the window is pending or partial on engagement.
+  const engagementStatus =
+    perDay.every(d => !d.engagementDataAvailable) ? 'pending'
+    : perDay.every(d => !d.engagementDataAvailable || d.partialEngagement) ? 'partial'
+    : 'ok';
+
   return {
     days: d,
     installsSource: salesInstallsSource,
+    engagementStatus,
     totals: {
       impressions: totals.impressions,
       impressionsUniqueDevice: 0,
