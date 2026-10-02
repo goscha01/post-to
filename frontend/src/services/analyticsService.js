@@ -121,6 +121,26 @@ const getAscAdAttribution = async (connectionId, days) => {
   return res.data;
 };
 
+// Meta Ads overlay for the connected ASC app — campaigns promoting this
+// specific Apple app, with per-campaign installs/clicks/spend/visits.
+// Used on the Analytics page to fill in Impressions / Page Visitors when
+// Apple's own engagement data is pending (5-7 day lag).
+const getAscMetaAdsOverlay = async (connectionId, days) => {
+  const res = await axios.get('/api/asc/analytics/meta-ads', {
+    params: { connectionId, ...(days ? { days } : {}) },
+    timeout: 180_000,
+  });
+  return res.data;
+};
+
+const getAscGoogleAdsOverlay = async (connectionId, days) => {
+  const res = await axios.get('/api/asc/analytics/google-ads', {
+    params: { connectionId, ...(days ? { days } : {}) },
+    timeout: 180_000,
+  });
+  return res.data;
+};
+
 const analyticsService = {
   listAvailableProperties,
   selectProperty,
@@ -139,6 +159,8 @@ const analyticsService = {
   listAscConnections,
   getAscInstallFunnel,
   getAscAdAttribution,
+  getAscMetaAdsOverlay,
+  getAscGoogleAdsOverlay,
 };
 
 export default analyticsService;

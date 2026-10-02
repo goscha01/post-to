@@ -261,14 +261,19 @@ const Analytics = () => {
         // Use the first connection. Multi-app users can pick via the App Store
         // page for now — a picker here is a follow-up if it comes up.
         const conn = connections[0];
-        // Fetch install-funnel totals + ad-attribution in parallel — same
-        // connection, same date range, independent Apple reports.
-        const [funnel, attribution] = await Promise.all([
+        // Fetch install-funnel + ad-attribution + Meta/Google ad overlays
+        // in parallel. Meta/Google overlays are what let the Impressions
+        // and Page Visitors tiles fall back to paid-ad data when Apple's
+        // own engagement reports are pending (5-7 day lag). Mirrors the
+        // same fallback the App Store page uses.
+        const [funnel, attribution, metaOverlay, googleOverlay] = await Promise.all([
           analyticsService.getAscInstallFunnel(conn.connectionId, days),
           analyticsService.getAscAdAttribution(conn.connectionId, days).catch(err => {
             console.warn('[Analytics] ASC ad attribution failed:', err?.response?.data || err?.message);
             return null;
           }),
+          analyticsService.getAscMetaAdsOverlay(conn.connectionId, days).catch(() => null),
+          analyticsService.getAscGoogleAdsOverlay(conn.connectionId, days).catch(() => null),
         ]);
         if (cancelled) return;
         setAscState({
@@ -280,6 +285,8 @@ const Analytics = () => {
           // tile uses it to distinguish "Apple hasn't published yet" from
           // "genuinely zero" so users stop asking "why 0 impressions".
           engagementStatus: funnel?.engagementStatus || 'ok',
+          metaAds: metaOverlay?.connected ? metaOverlay : null,
+          googleAds: googleOverlay?.connected ? googleOverlay : null,
         });
         setAdAttribution(attribution);
       } catch (err) {
@@ -669,30 +676,53 @@ const AppStoreSection = ({ ascState }) => {
   //                                   that have no page-view touchpoint)
   // Each tile carries a `note` explaining what to make of a 0 / unusual value.
   // Impressions=0 can mean three different things — distinguish them so the
-  // user doesn't have to guess which.
+  // user doesn't have to guess which. If Apple's own number is null/0,
+  // fall back to Meta + Google ad impressions (what the App Store page
+  // already does — paid ad reach is still "how many people saw something
+  // about your app" even when Apple's organic surface is dark).
   const engagementStatus = ascState.engagementStatus;
+  const metaImp   = ascState.metaAds?.totals?.impressions   || 0;
+  const metaVisits= ascState.metaAds?.totals?.appStoreVisits|| 0;
+  const googleImp = ascState.googleAds?.totals?.impressions || 0;
+  const googleClk = ascState.googleAds?.totals?.clicks      || 0;
+  const paidImpTotal = metaImp + googleImp;
+  const paidVisitsTotal = metaVisits + googleClk;
+
+  const appleImpEmpty = t.impressions === null || t.impressions === 0;
+  const applePpvEmpty = t.productPageViews === null || t.productPageViews === 0;
+
+  const impressionsValue = appleImpEmpty && paidImpTotal > 0 ? paidImpTotal : t.impressions;
+  const ppvValue = applePpvEmpty && paidVisitsTotal > 0 ? paidVisitsTotal : t.productPageViews;
+
   const impressionsNote =
-    engagementStatus === 'pending'
-      ? "Apple hasn't published engagement data for any day in this window yet (typical 2-3 day lag from Apple's analytics pipeline). This number will fill in automatically — not a bug on our end."
+    engagementStatus === 'pending' && paidImpTotal === 0
+      ? "Apple hasn't published engagement data for any day in this window yet (typical 2-3 day lag). Connect Meta or Google Ads to see paid-ad reach immediately."
+      : appleImpEmpty && paidImpTotal > 0
+      ? `Paid ad reach · Meta ${fmtInt(metaImp)} + Google ${fmtInt(googleImp)}. Apple's organic App Store impressions pending or zero.`
       : engagementStatus === 'partial'
-      ? "Apple is still publishing engagement data for the most recent days of this window (typical 2-3 day lag). Numbers below are provisional."
-      : t.impressions === 0 || t.impressions === null
-      ? 'No impressions in this period. The app is not being surfaced in App Store search or browse — every install is coming from external channels (direct URLs, referrer apps, deep links, Apple Search Ads that bypass impressions).'
+      ? "Apple still publishing engagement data for the most recent days (2-3 day lag). Numbers are provisional."
+      : appleImpEmpty
+      ? 'No impressions. App not surfaced in App Store search/browse AND no connected Meta/Google ads driving reach.'
       : 'App Store listing shown in organic search or browse';
+  const ppvNote =
+    applePpvEmpty && paidVisitsTotal > 0
+      ? `Paid clicks → App Store · Meta ASV ${fmtInt(metaVisits)} + Google clicks ${fmtInt(googleClk)}. Apple's own PPV data pending.`
+      : 'Distinct users who tapped into the listing page';
+
   const cards = [
     {
       key: 'impressions',
       label: 'Impressions',
       icon: Eye,
-      value: fmtInt(t.impressions),
+      value: fmtInt(impressionsValue),
       note: impressionsNote,
     },
     {
       key: 'ppv',
       label: 'Store Page Visitors',
       icon: MousePointer2,
-      value: fmtInt(t.productPageViews),
-      note: 'Distinct users who tapped into the listing page',
+      value: fmtInt(ppvValue),
+      note: ppvNote,
     },
     {
       key: 'installs',
