@@ -145,6 +145,10 @@ const MetaAds = () => {
   // Monotonic token to discard stale fanout responses when the user flips
   // between day ranges or ad accounts faster than Meta's API responds.
   const loadTokenRef = useRef(0);
+  // Per-section failure list from the last fanout. Shown as an inline
+  // warning with a Retry button so the user can recover from Meta's
+  // frequent rate-limit (429 / code 4|17|32) without blanking the page.
+  const [failedSections, setFailedSections] = useState([]);
 
   const selectedAccount = useMemo(
     () => accounts.find((a) => a.id === selectedAdAccountId) || null,
@@ -218,54 +222,92 @@ const MetaAds = () => {
   };
 
   // -------- report load fanout --------
+  //
+  // Uses Promise.allSettled, not Promise.all. Meta's Graph API rate-limits
+  // aggressively (code 4/17/32 → 429) when we fan out 11 parallel reads
+  // against a single ad account, and a single hanging request would
+  // otherwise pin the loading overlay forever. With allSettled every
+  // section resolves (or fails) independently and the overlay clears as
+  // soon as the slowest one settles.
   const loadReports = useCallback(async (adAccountId, rangeDays) => {
     if (!adAccountId) return;
     const token = ++loadTokenRef.current;
     setLoadingReports(true);
     setError('');
-    try {
-      const [ov, diag, camps, aset, adRows, plc, dev, dem, dh, cr, di] = await Promise.all([
-        metaAdsService.getOverview(adAccountId, rangeDays),
-        metaAdsService.getDiagnostics(adAccountId, rangeDays),
-        metaAdsService.getCampaigns(adAccountId, rangeDays),
-        metaAdsService.getAdSets(adAccountId, rangeDays),
-        // /ads is capped at 90d server-side which matches our max, so this is safe
-        metaAdsService.getAds(adAccountId, rangeDays),
-        metaAdsService.getPlacements(adAccountId, rangeDays),
-        metaAdsService.getDevices(adAccountId, rangeDays),
-        metaAdsService.getDemographics(adAccountId, rangeDays),
-        metaAdsService.getDayHour(adAccountId, rangeDays),
-        metaAdsService.getCreatives(adAccountId),
-        metaAdsService.getDeliveryIssues(adAccountId),
-      ]);
-      if (token !== loadTokenRef.current) return; // superseded
-      setOverview(ov);
-      setDiagnosticsData(diag);
-      setCampaigns(camps.campaigns || []);
-      setAdsets(aset.adsets || []);
-      setAds(adRows.ads || []);
-      setPlacements(plc);
-      setDevices(dev);
-      setDemographics(dem);
-      setDayHour(dh);
-      setCreatives(cr.creatives || []);
-      setDeliveryIssues(di.issues || []);
-    } catch (e) {
-      if (token !== loadTokenRef.current) return;
-      const info = metaAdsService.interpretMetaError(e);
-      if (info.intent === 'missing_scope') return setConnState({ status: 'missing_scope' });
-      if (info.intent === 'token_invalid') return setConnState({ status: 'token_invalid' });
-      if (info.intent === 'not_connected') return setConnState({ status: 'not_connected' });
+    setFailedSections([]);
+
+    const calls = [
+      { key: 'overview',       label: 'Overview',        fn: () => metaAdsService.getOverview(adAccountId, rangeDays) },
+      { key: 'diagnostics',    label: 'Diagnostics',     fn: () => metaAdsService.getDiagnostics(adAccountId, rangeDays) },
+      { key: 'campaigns',      label: 'Campaigns',       fn: () => metaAdsService.getCampaigns(adAccountId, rangeDays) },
+      { key: 'adsets',         label: 'Ad Sets',         fn: () => metaAdsService.getAdSets(adAccountId, rangeDays) },
+      // /ads is capped at 90d server-side which matches our max, so this is safe
+      { key: 'ads',            label: 'Ads',             fn: () => metaAdsService.getAds(adAccountId, rangeDays) },
+      { key: 'placements',     label: 'Placements',      fn: () => metaAdsService.getPlacements(adAccountId, rangeDays) },
+      { key: 'devices',        label: 'Devices',         fn: () => metaAdsService.getDevices(adAccountId, rangeDays) },
+      { key: 'demographics',   label: 'Demographics',    fn: () => metaAdsService.getDemographics(adAccountId, rangeDays) },
+      { key: 'dayHour',        label: 'Day & Hour',      fn: () => metaAdsService.getDayHour(adAccountId, rangeDays) },
+      { key: 'creatives',      label: 'Creatives',       fn: () => metaAdsService.getCreatives(adAccountId) },
+      { key: 'deliveryIssues', label: 'Delivery Issues', fn: () => metaAdsService.getDeliveryIssues(adAccountId) },
+    ];
+
+    const results = await Promise.allSettled(calls.map((c) => c.fn()));
+    if (token !== loadTokenRef.current) return; // superseded
+
+    // If any single response signals an auth/scope/selection problem, the
+    // whole page is in that state — short-circuit to the appropriate
+    // banner. Takes precedence over per-section rendering.
+    for (const r of results) {
+      if (r.status !== 'rejected') continue;
+      const info = metaAdsService.interpretMetaError(r.reason);
+      if (info.intent === 'missing_scope') {
+        if (token === loadTokenRef.current) setLoadingReports(false);
+        return setConnState({ status: 'missing_scope' });
+      }
+      if (info.intent === 'token_invalid') {
+        if (token === loadTokenRef.current) setLoadingReports(false);
+        return setConnState({ status: 'token_invalid' });
+      }
+      if (info.intent === 'not_connected') {
+        if (token === loadTokenRef.current) setLoadingReports(false);
+        return setConnState({ status: 'not_connected' });
+      }
       if (info.intent === 'no_selection') {
-        // The saved selection is out of sync — clear it and re-prompt.
         setSelection({ adAccountIds: [], defaultAdAccountId: null });
         setSelectedAdAccountId(null);
+        if (token === loadTokenRef.current) setLoadingReports(false);
         return;
       }
-      setError(info.message);
-    } finally {
-      if (token === loadTokenRef.current) setLoadingReports(false);
     }
+
+    // Per-section apply. Setters wrapped in try/catch so one weird payload
+    // can't block the rest.
+    const applyers = {
+      overview:       (v) => setOverview(v),
+      diagnostics:    (v) => setDiagnosticsData(v),
+      campaigns:      (v) => setCampaigns(v.campaigns || []),
+      adsets:         (v) => setAdsets(v.adsets || []),
+      ads:            (v) => setAds(v.ads || []),
+      placements:     (v) => setPlacements(v),
+      devices:        (v) => setDevices(v),
+      demographics:   (v) => setDemographics(v),
+      dayHour:        (v) => setDayHour(v),
+      creatives:      (v) => setCreatives(v.creatives || []),
+      deliveryIssues: (v) => setDeliveryIssues(v.issues || []),
+    };
+
+    const failures = [];
+    results.forEach((r, i) => {
+      const c = calls[i];
+      if (r.status === 'fulfilled') {
+        try { applyers[c.key](r.value); } catch { /* ignore shape errors */ }
+      } else {
+        const info = metaAdsService.interpretMetaError(r.reason);
+        failures.push({ key: c.key, label: c.label, intent: info.intent, message: info.message });
+      }
+    });
+    setFailedSections(failures);
+    if (token === loadTokenRef.current) setLoadingReports(false);
   }, []);
 
   // ----- effects -----
@@ -433,6 +475,14 @@ const MetaAds = () => {
                 <> · <span className="text-red-600 font-medium">Closed</span></>
               )}
             </p>
+          )}
+
+          {failedSections.length > 0 && (
+            <FailedSectionsBanner
+              failures={failedSections}
+              onRetry={() => selectedAdAccountId && loadReports(selectedAdAccountId, days)}
+              loading={loadingReports}
+            />
           )}
 
           <SectionTabs
@@ -610,6 +660,40 @@ const DayRangeSelector = ({ value, onChange }) => (
     ))}
   </div>
 );
+
+// Inline banner for the common "Meta rate-limited some but not all of
+// our fanout" case. We don't blank the whole page because the sections
+// that did come back are still useful; we just surface which sections
+// failed and give a one-click retry.
+const FailedSectionsBanner = ({ failures, onRetry, loading }) => {
+  const anyRateLimit = failures.some((f) => f.intent === 'rate_limited');
+  const anyUpstream  = failures.some((f) => f.intent === 'upstream' || f.intent === 'generic');
+  const title = anyRateLimit
+    ? 'Meta rate-limited some sections'
+    : anyUpstream
+      ? 'Some sections failed to load'
+      : 'Some sections unavailable';
+  return (
+    <div className="mb-3 flex items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded-md text-sm text-amber-900">
+      <AlertTriangle className="h-4 w-4 mt-0.5 flex-shrink-0 text-amber-600" />
+      <div className="flex-1 min-w-0">
+        <div className="font-medium">{title}</div>
+        <div className="text-xs mt-0.5 text-amber-800">
+          {failures.map((f) => f.label).join(', ')}
+          {anyRateLimit && ' · Meta throttles when we fan out this many parallel reads. Retry in ~10s.'}
+        </div>
+      </div>
+      <button
+        onClick={onRetry}
+        disabled={loading}
+        className="text-xs font-medium px-2 py-1 bg-white border border-amber-300 rounded hover:bg-amber-100 disabled:opacity-50 inline-flex items-center gap-1"
+      >
+        <RefreshCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} />
+        Retry
+      </button>
+    </div>
+  );
+};
 
 const SectionTabs = ({ value, onChange, diagnosticsCount }) => (
   <div className="flex gap-1 border-b border-gray-200 overflow-x-auto">

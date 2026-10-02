@@ -132,6 +132,10 @@ const GoogleAds = () => {
   // Monotonic token to discard stale fanout responses when the user flips
   // between day ranges, customers, or campaign filters mid-flight.
   const loadTokenRef = useRef(0);
+  // Per-section failure list from the last fanout. Shown as an inline
+  // warning with a Retry button so one slow/failed Google Ads endpoint
+  // doesn't blank the whole dashboard.
+  const [failedSections, setFailedSections] = useState([]);
 
   const selectedCustomer = useMemo(
     () => connectedCustomers.find(c => c.customerId === selectedCustomerId) || null,
@@ -258,83 +262,122 @@ const GoogleAds = () => {
     const token = ++loadTokenRef.current;
     setLoadingReports(true);
     setError('');
-    try {
-      // Fan out — each endpoint is independent so we parallelize the whole set.
-      // Campaign filter is applied where it makes sense (campaign, ad_group,
-      // keyword_view, search_term_view, ad_group_ad, campaign_asset,
-      // geographic_view, age_range_view, gender_view, quality). Devices,
-      // day/hour, and conversions are FROM customer resources that don't
-      // support a campaign WHERE clause — those tabs will always show
-      // customer-wide numbers regardless of the campaign filter.
-      const [
-        cs, ag, kw, st, adResp, ast, rec, conv, dv, loc, dh, aud, ai, ql, ch, diag,
-      ] = await Promise.all([
-        googleAdsService.getCampaigns(customerId, rangeDays, filterCampaignId),
-        googleAdsService.getAdGroups(customerId, rangeDays, filterCampaignId),
-        googleAdsService.getKeywords(customerId, rangeDays, filterCampaignId),
-        googleAdsService.getSearchTerms(customerId, rangeDays, filterCampaignId),
-        googleAdsService.getAds(customerId, rangeDays, filterCampaignId),
-        googleAdsService.getAssets(customerId, rangeDays, filterCampaignId),
-        googleAdsService.getRecommendations(customerId),
-        googleAdsService.getConversions(customerId, rangeDays),
-        googleAdsService.getDevices(customerId, rangeDays),
-        googleAdsService.getLocations(customerId, rangeDays, filterCampaignId),
-        googleAdsService.getDayHour(customerId, rangeDays),
-        googleAdsService.getAudience(customerId, rangeDays, filterCampaignId),
-        googleAdsService.getAuctionInsights(customerId, rangeDays, filterCampaignId),
-        googleAdsService.getQuality(customerId, rangeDays, filterCampaignId),
-        googleAdsService.getChangeHistory(customerId, rangeDays),
-        googleAdsService.getDiagnostics(customerId, rangeDays, filterCampaignId),
-      ]);
-      if (token !== loadTokenRef.current) return; // superseded
-      setCampaigns(cs.campaigns || []);
-      // Keep the campaign-picker options in sync with the *unfiltered* campaign
-      // list. When a filter is active, cs.campaigns is scoped to a single
-      // campaign — don't clobber the dropdown or the user can never switch
-      // back to another one. We refresh options only when no filter is set.
-      if (!filterCampaignId) {
-        setAllCampaignOptions(
-          (cs.campaigns || []).map(c => ({
-            id: c.campaignId,
-            name: c.name || `Campaign ${c.campaignId}`,
-            status: c.status,
-          }))
-        );
+    setFailedSections([]);
+
+    // Fan out with allSettled, not Promise.all — Google Ads can throw
+    // partial errors or hang on a single resource and we don't want
+    // one bad call to blank the whole dashboard. See CLAUDE.md FixLoop
+    // notes for the symptoms that drove this.
+    //
+    // Campaign filter is applied where it makes sense (campaign, ad_group,
+    // keyword_view, search_term_view, ad_group_ad, campaign_asset,
+    // geographic_view, age_range_view, gender_view, quality). Devices,
+    // day/hour, and conversions are FROM customer resources that don't
+    // support a campaign WHERE clause.
+    const calls = [
+      { key: 'campaigns',       label: 'Campaigns',        fn: () => googleAdsService.getCampaigns(customerId, rangeDays, filterCampaignId) },
+      { key: 'adGroups',        label: 'Ad Groups',        fn: () => googleAdsService.getAdGroups(customerId, rangeDays, filterCampaignId) },
+      { key: 'keywords',        label: 'Keywords',         fn: () => googleAdsService.getKeywords(customerId, rangeDays, filterCampaignId) },
+      { key: 'searchTerms',     label: 'Search Terms',     fn: () => googleAdsService.getSearchTerms(customerId, rangeDays, filterCampaignId) },
+      { key: 'ads',             label: 'Ads',              fn: () => googleAdsService.getAds(customerId, rangeDays, filterCampaignId) },
+      { key: 'assets',          label: 'Assets',           fn: () => googleAdsService.getAssets(customerId, rangeDays, filterCampaignId) },
+      { key: 'recommendations', label: 'Recommendations',  fn: () => googleAdsService.getRecommendations(customerId) },
+      { key: 'conversions',     label: 'Conversions',      fn: () => googleAdsService.getConversions(customerId, rangeDays) },
+      { key: 'devices',         label: 'Devices',          fn: () => googleAdsService.getDevices(customerId, rangeDays) },
+      { key: 'locations',       label: 'Locations',        fn: () => googleAdsService.getLocations(customerId, rangeDays, filterCampaignId) },
+      { key: 'dayHour',         label: 'Day & Hour',       fn: () => googleAdsService.getDayHour(customerId, rangeDays) },
+      { key: 'audience',        label: 'Audience',         fn: () => googleAdsService.getAudience(customerId, rangeDays, filterCampaignId) },
+      { key: 'auctionInsights', label: 'Auction Insights', fn: () => googleAdsService.getAuctionInsights(customerId, rangeDays, filterCampaignId) },
+      { key: 'quality',         label: 'Quality',          fn: () => googleAdsService.getQuality(customerId, rangeDays, filterCampaignId) },
+      { key: 'changeHistory',   label: 'Change History',   fn: () => googleAdsService.getChangeHistory(customerId, rangeDays) },
+      { key: 'diagnostics',     label: 'Diagnostics',      fn: () => googleAdsService.getDiagnostics(customerId, rangeDays, filterCampaignId) },
+    ];
+
+    const results = await Promise.allSettled(calls.map((c) => c.fn()));
+    if (token !== loadTokenRef.current) return; // superseded
+
+    // Short-circuit on auth-shaped failures from any single response — the
+    // whole page is in that state and per-section render would be noise.
+    for (const r of results) {
+      if (r.status !== 'rejected') continue;
+      const err = r.reason;
+      const status = err?.response?.status;
+      const code = err?.response?.data?.code;
+      if (code === 'DEVELOPER_TOKEN_MISSING' || status === 503) {
+        setDevTokenMissing(true);
+        if (token === loadTokenRef.current) setLoadingReports(false);
+        return;
       }
-      setAdGroups(ag.adGroups || []);
-      setKeywords(kw.keywords || []);
-      setSearchTerms(st.searchTerms || []);
-      setAdsList(adResp.ads || []);
-      setAssets(ast.assets || []);
-      setRecommendations(rec.recommendations || []);
-      setConversions(conv.conversions || []);
-      setDevices(dv.devices || []);
-      setLocations(loc.locations || []);
-      setDayHour(dh.dayHour || []);
-      setAudience(aud.audience || { ageRanges: [], genders: [] });
-      setAuctionInsights(ai.auctionInsights || []);
-      setQuality(ql.quality || []);
-      setChangeHistory(ch.changeHistory && typeof ch.changeHistory === 'object' && !Array.isArray(ch.changeHistory)
-        ? {
-            events: ch.changeHistory.events || [],
-            summary: ch.changeHistory.summary || [],
-            caps: ch.changeHistory.caps || null,
-            requestedDays: ch.changeHistory.requestedDays || null,
-            unavailableBeyondDays: ch.changeHistory.unavailableBeyondDays || null,
-          }
-        : { events: Array.isArray(ch.changeHistory) ? ch.changeHistory : [], summary: [], caps: null, requestedDays: null, unavailableBeyondDays: null });
-      setDiagnostics(diag.diagnostics || null);
-    } catch (err) {
-      if (token !== loadTokenRef.current) return;
-      const status = err.response?.status;
-      const code = err.response?.data?.code;
-      if (code === 'DEVELOPER_TOKEN_MISSING' || status === 503) setDevTokenMissing(true);
-      if (status === 403 && err.response?.data?.needsReauth) setNeedsReauth(true);
-      if (status === 400 && err.response?.data?.needsCustomerSelection) setNeedsCustomerSelection(true);
-      setError(err.response?.data?.error || err.message || 'Failed to load Google Ads data');
-    } finally {
-      if (token === loadTokenRef.current) setLoadingReports(false);
+      if (status === 403 && err?.response?.data?.needsReauth) {
+        setNeedsReauth(true);
+        if (token === loadTokenRef.current) setLoadingReports(false);
+        return;
+      }
+      if (status === 400 && err?.response?.data?.needsCustomerSelection) {
+        setNeedsCustomerSelection(true);
+        if (token === loadTokenRef.current) setLoadingReports(false);
+        return;
+      }
     }
+
+    const applyers = {
+      campaigns: (v) => {
+        setCampaigns(v.campaigns || []);
+        // Keep the campaign-picker options in sync with the *unfiltered*
+        // campaign list. When a filter is active, v.campaigns is scoped
+        // to a single campaign — don't clobber the dropdown.
+        if (!filterCampaignId) {
+          setAllCampaignOptions(
+            (v.campaigns || []).map(c => ({
+              id: c.campaignId,
+              name: c.name || `Campaign ${c.campaignId}`,
+              status: c.status,
+            }))
+          );
+        }
+      },
+      adGroups:        (v) => setAdGroups(v.adGroups || []),
+      keywords:        (v) => setKeywords(v.keywords || []),
+      searchTerms:     (v) => setSearchTerms(v.searchTerms || []),
+      ads:             (v) => setAdsList(v.ads || []),
+      assets:          (v) => setAssets(v.assets || []),
+      recommendations: (v) => setRecommendations(v.recommendations || []),
+      conversions:     (v) => setConversions(v.conversions || []),
+      devices:         (v) => setDevices(v.devices || []),
+      locations:       (v) => setLocations(v.locations || []),
+      dayHour:         (v) => setDayHour(v.dayHour || []),
+      audience:        (v) => setAudience(v.audience || { ageRanges: [], genders: [] }),
+      auctionInsights: (v) => setAuctionInsights(v.auctionInsights || []),
+      quality:         (v) => setQuality(v.quality || []),
+      changeHistory:   (v) => setChangeHistory(
+        v.changeHistory && typeof v.changeHistory === 'object' && !Array.isArray(v.changeHistory)
+          ? {
+              events: v.changeHistory.events || [],
+              summary: v.changeHistory.summary || [],
+              caps: v.changeHistory.caps || null,
+              requestedDays: v.changeHistory.requestedDays || null,
+              unavailableBeyondDays: v.changeHistory.unavailableBeyondDays || null,
+            }
+          : { events: Array.isArray(v.changeHistory) ? v.changeHistory : [], summary: [], caps: null, requestedDays: null, unavailableBeyondDays: null }
+      ),
+      diagnostics:     (v) => setDiagnostics(v.diagnostics || null),
+    };
+
+    const failures = [];
+    results.forEach((r, i) => {
+      const c = calls[i];
+      if (r.status === 'fulfilled') {
+        try { applyers[c.key](r.value); } catch { /* ignore shape errors */ }
+      } else {
+        failures.push({
+          key: c.key,
+          label: c.label,
+          message: r.reason?.response?.data?.error || r.reason?.message || 'Failed to load',
+        });
+      }
+    });
+    setFailedSections(failures);
+    if (token === loadTokenRef.current) setLoadingReports(false);
   }, []);
 
   useEffect(() => {
@@ -451,6 +494,14 @@ const GoogleAds = () => {
             </p>
           )}
 
+          {failedSections.length > 0 && (
+            <FailedSectionsBanner
+              failures={failedSections}
+              onRetry={() => selectedCustomerId && loadReports(selectedCustomerId, days, campaignId)}
+              loading={loadingReports}
+            />
+          )}
+
           <SectionTabs value={activeSection} onChange={setActiveSection} />
 
           <LoadingOverlay show={loadingReports} label="Loading Google Ads data…">
@@ -543,6 +594,30 @@ const CampaignFilter = ({ value, onChange, options }) => (
       </option>
     ))}
   </select>
+);
+
+// Inline banner for partial-failure fanouts. Google Ads can fail or hang
+// on a single resource (quality score, auction insights, change history)
+// without the account itself being broken — we surface which ones failed
+// and give a one-click retry rather than blanking the dashboard.
+const FailedSectionsBanner = ({ failures, onRetry, loading }) => (
+  <div className="mb-3 flex items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded-md text-sm text-amber-900">
+    <AlertTriangle className="h-4 w-4 mt-0.5 flex-shrink-0 text-amber-600" />
+    <div className="flex-1 min-w-0">
+      <div className="font-medium">Some sections failed to load</div>
+      <div className="text-xs mt-0.5 text-amber-800">
+        {failures.map((f) => f.label).join(', ')}
+      </div>
+    </div>
+    <button
+      onClick={onRetry}
+      disabled={loading}
+      className="text-xs font-medium px-2 py-1 bg-white border border-amber-300 rounded hover:bg-amber-100 disabled:opacity-50 inline-flex items-center gap-1"
+    >
+      <RefreshCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} />
+      Retry
+    </button>
+  </div>
 );
 
 const SectionTabs = ({ value, onChange }) => (

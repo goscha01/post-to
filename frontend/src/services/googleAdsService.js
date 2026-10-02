@@ -3,12 +3,18 @@ import axios from '../utils/axiosConfig';
 // Thin wrapper around /api/google-ads. Every response returns
 // `{ customerId, days?, <name>: <payload> }`.
 
+// 45s is above Google Ads' typical p95 for a single customer window but
+// short enough that a stuck request fails loudly instead of pinning the
+// loading overlay forever when a Google Ads API call hangs on us.
+const REPORT_TIMEOUT_MS = 45000;
+
 const withCustomerDays = (customerId, days, campaignId) => ({
   params: {
     ...(customerId ? { customerId } : {}),
     ...(days ? { days } : {}),
     ...(campaignId ? { campaignId } : {}),
   },
+  timeout: REPORT_TIMEOUT_MS,
 });
 
 // ---- Customer discovery + selection ----

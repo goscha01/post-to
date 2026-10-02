@@ -8,11 +8,17 @@ import axios from '../utils/axiosConfig';
 // (missing_scope, no_selection, needs_reauth, no_accounts) rather than
 // hand-rolling code checks in every catch block.
 
+// 45s is above Meta's typical p95 for a single ad-account window (~15-25s)
+// but short enough that a stuck request fails loudly instead of pinning
+// the loading overlay forever when Meta's Graph API hangs on us.
+const REPORT_TIMEOUT_MS = 45000;
+
 const withParams = (adAccountId, days) => ({
   params: {
     ...(adAccountId ? { adAccountId } : {}),
     ...(days ? { days } : {}),
   },
+  timeout: REPORT_TIMEOUT_MS,
 });
 
 // ---- Connection + account selection ----
