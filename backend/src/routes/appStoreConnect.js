@@ -414,6 +414,47 @@ router.get('/analytics/meta-ads', async (req, res) => {
   }
 });
 
+// GET /analytics/meta-ads-daily — same as /meta-ads but with perDay rows
+// instead of aggregate totals. Powers the Daily funnel's paid-ad columns.
+router.get('/analytics/meta-ads-daily', async (req, res) => {
+  const userId = (req.user.workspaceOwnerId || req.user.userId);
+  try {
+    const connectionId = String(req.query.connectionId || '');
+    if (!connectionId) return res.status(400).json({ error: 'connectionId required' });
+    const ctx = await loadCreds(userId, connectionId);
+    if (!ctx) return res.status(404).json({ error: 'ASC connection not found' });
+    if (!ctx.appId) return res.status(400).json({ error: 'Connection has no primary appId' });
+    const overlay = await ascAnalytics.getMetaAdsDailyOverlayForApp(userId, {
+      appleAppId: ctx.appId,
+      days: req.query.days,
+    });
+    res.json(overlay || { connected: false, reason: 'meta_not_connected' });
+  } catch (err) {
+    logger.warn('asc_analytics.meta_daily_overlay.failed', { userId, error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /analytics/google-ads-daily — perDay version of /google-ads overlay.
+router.get('/analytics/google-ads-daily', async (req, res) => {
+  const userId = (req.user.workspaceOwnerId || req.user.userId);
+  try {
+    const connectionId = String(req.query.connectionId || '');
+    if (!connectionId) return res.status(400).json({ error: 'connectionId required' });
+    const ctx = await loadCreds(userId, connectionId);
+    if (!ctx) return res.status(404).json({ error: 'ASC connection not found' });
+    if (!ctx.appId) return res.status(400).json({ error: 'Connection has no primary appId' });
+    const overlay = await ascAnalytics.getGoogleAdsDailyOverlayForApp(userId, {
+      appleAppId: ctx.appId,
+      days: req.query.days,
+    });
+    res.json(overlay || { connected: false, reason: 'google_ads_not_connected' });
+  } catch (err) {
+    logger.warn('asc_analytics.google_ads_daily_overlay.failed', { userId, error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /analytics/google-ads — Google Universal App Campaigns promoting
 // THIS Apple app. Filtered by app_campaign_setting.app_id matching the
 // connection's Apple App Store id. Pulls across all saved google_ads

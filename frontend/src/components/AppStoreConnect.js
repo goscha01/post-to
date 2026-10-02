@@ -125,6 +125,11 @@ const AppStoreConnect = () => {
   const [sources, setSources] = useState(null);
   const [metaAds, setMetaAds] = useState(null);
   const [googleAds, setGoogleAds] = useState(null);
+  // Per-day Meta + Google overlays indexed by date for O(1) merge into
+  // funnel.perDay. Both default to null until the overlays return; the
+  // daily funnel table reads from these to render the paid-ad columns.
+  const [metaDaily, setMetaDaily] = useState({});
+  const [googleDaily, setGoogleDaily] = useState({});
   const [referrals, setReferrals] = useState(null);
   const [loadingAnalytics, setLoadingAnalytics] = useState(false);
   const [bootstrapping, setBootstrapping] = useState(false);
@@ -229,24 +234,35 @@ const AppStoreConnect = () => {
       const status = await ascService.analyticsStatus(selectedConnectionId);
       setAnalyticsStatus(status);
       if (status.bootstrapped && status.cachedInstances > 0) {
-        const [f, s, m, g, r] = await Promise.all([
+        const [f, s, m, g, r, md, gd] = await Promise.all([
           ascService.analyticsFunnel(selectedConnectionId, days),
           ascService.analyticsSources(selectedConnectionId, days),
           ascService.analyticsMetaAds(selectedConnectionId, days).catch(() => null),
           ascService.analyticsGoogleAds(selectedConnectionId, days).catch(() => null),
           ascService.analyticsReferrals(selectedConnectionId, days).catch(() => null),
+          ascService.analyticsMetaAdsDaily(selectedConnectionId, days).catch(() => null),
+          ascService.analyticsGoogleAdsDaily(selectedConnectionId, days).catch(() => null),
         ]);
         setFunnel(f);
         setSources(s);
         setMetaAds(m);
         setGoogleAds(g);
         setReferrals(r);
+        // Index per-day overlays by date for cheap merge in the daily table.
+        const mdByDate = {};
+        for (const row of md?.perDay || []) mdByDate[row.date] = row;
+        setMetaDaily(mdByDate);
+        const gdByDate = {};
+        for (const row of gd?.perDay || []) gdByDate[row.date] = row;
+        setGoogleDaily(gdByDate);
       } else {
         setFunnel(null);
         setSources(null);
         setMetaAds(null);
         setGoogleAds(null);
         setReferrals(null);
+        setMetaDaily({});
+        setGoogleDaily({});
       }
     } catch (e) {
       setError(e?.response?.data?.error || e.message);
@@ -708,27 +724,48 @@ const AppStoreConnect = () => {
                 <h3 className="text-xs font-semibold text-gray-600 uppercase tracking-wide mb-2 flex items-center gap-1.5">
                   <TrendingUp className="h-3.5 w-3.5" />
                   Daily funnel
+                  <span className="normal-case text-[11px] font-normal text-gray-500 ml-1">
+                    · Apple (left) + paid ads (right) side-by-side so you can see today even when Apple's engagement is pending
+                  </span>
                 </h3>
                 <Table>
                   <thead className="bg-gray-50">
                     <tr>
                       <Th>Date</Th>
-                      <Th className="text-right">Impressions</Th>
-                      <Th className="text-right">Unique dev.</Th>
-                      <Th className="text-right">Page views</Th>
-                      <Th className="text-right">Installs</Th>
+                      <Th className="text-right">Impressions<br /><span className="normal-case text-[10px] font-normal text-gray-400">Apple</span></Th>
+                      <Th className="text-right">Page views<br /><span className="normal-case text-[10px] font-normal text-gray-400">Apple</span></Th>
+                      <Th className="text-right">Installs<br /><span className="normal-case text-[10px] font-normal text-gray-400">S&amp;T</span></Th>
+                      <Th className="text-right border-l border-gray-200">Ad imp<br /><span className="normal-case text-[10px] font-normal text-gray-400">Meta+G</span></Th>
+                      <Th className="text-right">Ad clicks<br /><span className="normal-case text-[10px] font-normal text-gray-400">Meta ASV+G</span></Th>
+                      <Th className="text-right">Ad installs<br /><span className="normal-case text-[10px] font-normal text-gray-400">Meta+G</span></Th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
-                    {funnel.perDay.map(d => (
-                      <tr key={d.date}>
-                        <Td>{d.date}</Td>
-                        <Td className="text-right">{fmtInt(d.impressions)}</Td>
-                        <Td className="text-right text-gray-500">{fmtInt(d.impressionsUniqueDevice)}</Td>
-                        <Td className="text-right">{fmtInt(d.productPageViews)}</Td>
-                        <Td className="text-right font-medium">{fmtInt(d.installs)}</Td>
-                      </tr>
-                    ))}
+                    {funnel.perDay.map(d => {
+                      const md = metaDaily[d.date] || null;
+                      const gd = googleDaily[d.date] || null;
+                      const anyPaid = md || gd;
+                      const adImp     = (md?.impressions    || 0) + (gd?.impressions || 0);
+                      const adClicks  = (md?.appStoreVisits || 0) + (gd?.clicks      || 0);
+                      const adInstall = (md?.installs       || 0) + (gd?.installs    || 0);
+                      return (
+                        <tr key={d.date}>
+                          <Td>{d.date}</Td>
+                          <Td className="text-right">{fmtInt(d.impressions)}</Td>
+                          <Td className="text-right">{fmtInt(d.productPageViews)}</Td>
+                          <Td className="text-right font-medium">{fmtInt(d.installs)}</Td>
+                          <Td className="text-right border-l border-gray-200 text-blue-700">
+                            {anyPaid ? fmtInt(adImp) : <span className="text-gray-300">—</span>}
+                          </Td>
+                          <Td className="text-right text-blue-700">
+                            {anyPaid ? fmtInt(adClicks) : <span className="text-gray-300">—</span>}
+                          </Td>
+                          <Td className="text-right text-blue-700 font-medium">
+                            {anyPaid ? fmtInt(adInstall) : <span className="text-gray-300">—</span>}
+                          </Td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </Table>
               </div>

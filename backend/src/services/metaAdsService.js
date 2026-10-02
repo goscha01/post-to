@@ -523,6 +523,11 @@ async function getInsights({
   days = 30,
   breakdowns = [],
   limit = DEFAULT_INSIGHTS_LIMIT,
+  // time_increment: 1 → one row per day per entity (daily breakdown). Omit
+  // or pass 'all_days' for the default aggregated-over-window shape. Meta
+  // caps per-request rows at ~100k; for app-install campaigns at account
+  // level this is comfortably within budget even for 90 days.
+  timeIncrement = null,
 } = {}) {
   if (!accessToken) throw new Error('accessToken required');
   if (!node) throw new Error('node required');
@@ -534,6 +539,7 @@ async function getInsights({
   const params = {
     level,
     time_range: JSON.stringify(range),
+    ...(timeIncrement ? { time_increment: String(timeIncrement) } : {}),
     fields: [
       'account_id',
       'account_currency',

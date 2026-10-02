@@ -1884,11 +1884,17 @@ async function getAccountLinks(accessToken, customerId, { loginCustomerId } = {}
 // sub_type=APP_CAMPAIGN) have an app_campaign_setting.app_id field that
 // matches Apple's App Store numeric ID for iOS apps. We use that as the
 // definitive join key so we only count conversions for THIS app.
-async function getAppInstallCampaignsForApp(accessToken, customerId, days, { appleAppId, loginCustomerId } = {}) {
+async function getAppInstallCampaignsForApp(accessToken, customerId, days, { appleAppId, loginCustomerId, perDay = false } = {}) {
   if (!appleAppId) throw new Error('appleAppId required');
   const dr = dateRangeClause(days);
+  // perDay=true adds segments.date to the SELECT + GROUP BY, yielding one
+  // row per (campaign, date). Each row still carries campaign fields but
+  // metrics are the per-day values. perDay=false preserves the original
+  // aggregated-over-window shape.
+  const dateField = perDay ? 'segments.date,' : '';
   const rows = await search(accessToken, customerId, `
     SELECT
+      ${dateField}
       campaign.id,
       campaign.name,
       campaign.status,
@@ -1905,7 +1911,7 @@ async function getAppInstallCampaignsForApp(accessToken, customerId, days, { app
     WHERE ${dr.clause}
       AND campaign.advertising_channel_type = 'MULTI_CHANNEL'
       AND campaign.advertising_channel_sub_type IN ('APP_CAMPAIGN', 'APP_CAMPAIGN_FOR_ENGAGEMENT', 'APP_CAMPAIGN_FOR_PRE_REGISTRATION')
-    ORDER BY metrics.cost_micros DESC
+    ${perDay ? '' : 'ORDER BY metrics.cost_micros DESC'}
   `, { loginCustomerId });
 
   return rows
@@ -1916,6 +1922,7 @@ async function getAppInstallCampaignsForApp(accessToken, customerId, days, { app
       const cost = fromMicros(m.costMicros);
       const conv = num(m.conversions);
       return {
+        ...(perDay ? { date: r.segments?.date || null } : {}),
         campaignId: String(c.id || ''),
         name: c.name || '',
         status: enumLabel(c.status),

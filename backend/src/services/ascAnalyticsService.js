@@ -1040,6 +1040,138 @@ async function getMetaAdsOverlayForApp(userId, { appleAppId, days = 14 } = {}) {
 }
 
 // -----------------------------------------------------------------------
+// Meta Ads DAILY overlay — one row per date with impressions/clicks/
+// app_store_visits/installs/spend aggregated across campaigns that
+// promote this specific Apple app. Used to fill in Apple's engagement
+// pending days with paid-ad data in the daily-funnel table.
+// -----------------------------------------------------------------------
+async function getMetaAdsDailyOverlayForApp(userId, { appleAppId, days = 14 } = {}) {
+  if (!userId || !appleAppId) return null;
+  const token = await connections.getMetaOwnerToken(userId);
+  if (!token?.accessToken) return { connected: false, reason: 'meta_not_connected' };
+  const sel = await connections.getMetaAdAccountSelection(userId);
+  if (!sel.adAccountIds.length) return { connected: true, reason: 'no_ad_accounts_selected', perDay: [] };
+  const daysClamped = Math.max(1, Math.min(90, parseInt(days, 10) || 14));
+
+  // Map: date → { impressions, clicks, appStoreVisits, installs, spend }
+  const byDate = new Map();
+  for (const acct of sel.adAccountIds) {
+    try {
+      const adsets = await metaAds.getAdSets({
+        accessToken: token.accessToken, adAccountId: acct, days: daysClamped,
+      });
+      const matchingCampaignIds = new Set(
+        adsets
+          .filter(a => String(a.promotedObject?.object_store_url || '').includes(appleAppId))
+          .map(a => a.campaignId)
+          .filter(Boolean)
+      );
+      if (matchingCampaignIds.size === 0) continue;
+
+      // Per-day insights at campaign level, filtered to matching campaigns.
+      const insights = await metaAds.getInsights({
+        accessToken: token.accessToken,
+        node: acct,
+        level: 'campaign',
+        days: daysClamped,
+        timeIncrement: 1,
+      });
+      for (const r of insights.rows) {
+        if (!matchingCampaignIds.has(r.campaignId)) continue;
+        const date = String(r.dateStart || '').slice(0, 10);
+        if (!date) continue;
+        const a = r.actionsByType || {};
+        const bucket = byDate.get(date) || { impressions: 0, clicks: 0, appStoreVisits: 0, installs: 0, spend: 0 };
+        bucket.impressions   += Number(r.impressions || 0);
+        bucket.clicks        += Number(r.clicks || 0);
+        bucket.spend         += Number(r.spend || 0);
+        bucket.appStoreVisits+= Number(a.app_store_visit || 0);
+        bucket.installs      += (a.app_install || 0) + (a.mobile_app_install || 0) + (a.omni_app_install || 0);
+        byDate.set(date, bucket);
+      }
+    } catch (err) {
+      logger.warn('asc_analytics.meta_daily_overlay.account_failed', {
+        userId, adAccountId: acct, error: err.message,
+      });
+    }
+  }
+
+  const perDay = [...byDate.entries()]
+    .sort((a, b) => b[0].localeCompare(a[0]))
+    .map(([date, b]) => ({
+      date,
+      impressions: b.impressions,
+      clicks: b.clicks,
+      appStoreVisits: b.appStoreVisits,
+      installs: b.installs,
+      spend: Number(b.spend.toFixed(2)),
+    }));
+  return { connected: true, days: daysClamped, perDay };
+}
+
+// -----------------------------------------------------------------------
+// Google Ads DAILY overlay — same shape as Meta's, from UAC segments
+// grouped by date. Each saved google_ads customer that has an app-install
+// campaign targeting this Apple app contributes its per-day rows.
+// -----------------------------------------------------------------------
+async function getGoogleAdsDailyOverlayForApp(userId, { appleAppId, days = 14 } = {}) {
+  if (!userId || !appleAppId) return null;
+  const daysClamped = Math.max(1, Math.min(90, parseInt(days, 10) || 14));
+  const { data: gaConns } = await supabase
+    .from('connected_accounts')
+    .select('metadata')
+    .eq('user_id', userId)
+    .eq('provider', 'google_ads');
+  if (!gaConns || gaConns.length === 0) return { connected: false, reason: 'google_ads_not_connected' };
+  const tokens = await getAllBusinessTokens(userId);
+  if (!tokens || tokens.length === 0) return { connected: false, reason: 'no_google_oauth_token' };
+
+  const byDate = new Map();
+  for (const conn of gaConns) {
+    const meta = conn.metadata || {};
+    const customerId = meta.customer_id;
+    const ownerGoogleId = meta.owner_google_id;
+    if (!customerId) continue;
+    const token = ownerGoogleId ? tokens.find(t => t.google_id === ownerGoogleId) : tokens[0];
+    if (!token?.access_token) continue;
+    try {
+      const found = await googleAds.getAppInstallCampaignsForApp(
+        token.access_token, customerId, daysClamped,
+        { appleAppId, loginCustomerId: meta.manager_customer_id, perDay: true }
+      );
+      // getAppInstallCampaignsForApp with perDay=true returns rows with
+      // a `date` field; without it, returns window-aggregates. We request
+      // per-day. If the service doesn't yet support that flag, this
+      // branch silently returns no data — the dashboard still works.
+      for (const c of found || []) {
+        if (!c.date) continue;
+        const bucket = byDate.get(c.date) || { impressions: 0, clicks: 0, installs: 0, spend: 0 };
+        bucket.impressions += Number(c.impressions || 0);
+        bucket.clicks      += Number(c.clicks || 0);
+        bucket.installs    += Number(c.installs || 0);
+        bucket.spend       += Number(c.spend || 0);
+        byDate.set(c.date, bucket);
+      }
+    } catch (err) {
+      logger.warn('asc_analytics.google_ads_daily_overlay.account_failed', {
+        userId, customerId, error: err.message,
+      });
+    }
+  }
+
+  const perDay = [...byDate.entries()]
+    .sort((a, b) => b[0].localeCompare(a[0]))
+    .map(([date, b]) => ({
+      date,
+      impressions: b.impressions,
+      clicks: b.clicks,
+      installs: b.installs,
+      spend: Number(b.spend.toFixed(2)),
+    }));
+  return { connected: true, days: daysClamped, perDay };
+}
+
+// -----------------------------------------------------------------------
 // Google Ads overlay — Universal App Campaigns promoting this iOS app
 // -----------------------------------------------------------------------
 // Mirrors getMetaAdsOverlayForApp but for Google Ads. Walks each saved
@@ -1218,7 +1350,9 @@ module.exports = {
   getAdAttribution,
   getStatus,
   getMetaAdsOverlayForApp,
+  getMetaAdsDailyOverlayForApp,
   getGoogleAdsOverlayForApp,
+  getGoogleAdsDailyOverlayForApp,
   getInAppReferralsOverlay,
   _internal: { loadCategoryRows, toInt, CATEGORIES },
 };

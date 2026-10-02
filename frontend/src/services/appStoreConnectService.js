@@ -116,6 +116,22 @@ const analyticsMetaAds = async (connectionId, days = 14) => {
   return res.data;
 };
 
+const analyticsMetaAdsDaily = async (connectionId, days = 14) => {
+  const res = await axios.get('/api/asc/analytics/meta-ads-daily', {
+    params: { connectionId, days },
+    timeout: 180_000,
+  });
+  return res.data;
+};
+
+const analyticsGoogleAdsDaily = async (connectionId, days = 14) => {
+  const res = await axios.get('/api/asc/analytics/google-ads-daily', {
+    params: { connectionId, days },
+    timeout: 180_000,
+  });
+  return res.data;
+};
+
 const analyticsGoogleAds = async (connectionId, days = 14) => {
   const res = await axios.get('/api/asc/analytics/google-ads', {
     params: { connectionId, days },
@@ -147,6 +163,8 @@ export default {
   analyticsFunnel,
   analyticsSources,
   analyticsMetaAds,
+  analyticsMetaAdsDaily,
   analyticsGoogleAds,
+  analyticsGoogleAdsDaily,
   analyticsReferrals,
 };
