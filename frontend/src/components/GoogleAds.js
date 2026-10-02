@@ -132,6 +132,10 @@ const GoogleAds = () => {
   // Monotonic token to discard stale fanout responses when the user flips
   // between day ranges, customers, or campaign filters mid-flight.
   const loadTokenRef = useRef(0);
+  // Dedupe guard against effect re-fire loops (same params within 2s).
+  // Mirror of the MetaAds fix — defensive even though GoogleAds' effect
+  // deps are all primitives today.
+  const lastFiredRef = useRef({ customerId: null, days: null, campaignId: null, atMs: 0 });
   // Per-section failure list from the last fanout. Shown as an inline
   // warning with a Retry button so one slow/failed Google Ads endpoint
   // doesn't blank the whole dashboard.
@@ -257,8 +261,20 @@ const GoogleAds = () => {
     }
   }, []);
 
-  const loadReports = useCallback(async (customerId, rangeDays, filterCampaignId) => {
+  const loadReports = useCallback(async (customerId, rangeDays, filterCampaignId, { force = false } = {}) => {
     if (!customerId) return;
+    const now = Date.now();
+    const last = lastFiredRef.current;
+    if (
+      !force &&
+      last.customerId === customerId &&
+      last.days === rangeDays &&
+      last.campaignId === filterCampaignId &&
+      now - last.atMs < 2000
+    ) {
+      return;
+    }
+    lastFiredRef.current = { customerId, days: rangeDays, campaignId: filterCampaignId, atMs: now };
     const token = ++loadTokenRef.current;
     setLoadingReports(true);
     setError('');
@@ -427,7 +443,7 @@ const GoogleAds = () => {
             />
           )}
           <button
-            onClick={() => selectedCustomerId && loadReports(selectedCustomerId, days, campaignId)}
+            onClick={() => selectedCustomerId && loadReports(selectedCustomerId, days, campaignId, { force: true })}
             disabled={!selectedCustomerId || loadingReports}
             className="inline-flex items-center gap-1.5 px-3 py-2 border border-gray-300 rounded-md text-sm text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50"
             title="Refresh"
@@ -497,7 +513,7 @@ const GoogleAds = () => {
           {failedSections.length > 0 && (
             <FailedSectionsBanner
               failures={failedSections}
-              onRetry={() => selectedCustomerId && loadReports(selectedCustomerId, days, campaignId)}
+              onRetry={() => selectedCustomerId && loadReports(selectedCustomerId, days, campaignId, { force: true })}
               loading={loadingReports}
             />
           )}

@@ -149,6 +149,15 @@ const MetaAds = () => {
   // Monotonic token to discard stale fanout responses when the user flips
   // between day ranges or ad accounts faster than Meta's API responds.
   const loadTokenRef = useRef(0);
+  // Hard dedupe guard. loadReports is called from a useEffect whose
+  // dependency array includes `selection.adAccountIds` — an array
+  // reference that *can* change identity without the actual id list
+  // changing (any setSelection with a fresh literal). Without this
+  // guard the effect re-fires on every re-render that happens to
+  // follow setSelection, which produces a tight fanout loop against
+  // Meta and racks up 429s. Keyed on (adAccountId, days) because
+  // that's the only combination that materially changes the fanout.
+  const lastFiredRef = useRef({ adAccountId: null, days: null, atMs: 0 });
   // Per-section failure list from the last fanout. Shown as an inline
   // warning with a Retry button so the user can recover from Meta's
   // frequent rate-limit (429 / code 4|17|32) without blanking the page.
@@ -282,8 +291,22 @@ const MetaAds = () => {
     return false;
   };
 
-  const loadReports = useCallback(async (adAccountId, rangeDays) => {
+  const loadReports = useCallback(async (adAccountId, rangeDays, { force = false } = {}) => {
     if (!adAccountId) return;
+    // Dedupe: skip if the same (account, days) was fired in the last 2s
+    // and we're not being forced (Refresh button). This absorbs any
+    // effect-re-fire loops without blocking a legitimate user action.
+    const now = Date.now();
+    const last = lastFiredRef.current;
+    if (
+      !force &&
+      last.adAccountId === adAccountId &&
+      last.days === rangeDays &&
+      now - last.atMs < 2000
+    ) {
+      return;
+    }
+    lastFiredRef.current = { adAccountId, days: rangeDays, atMs: now };
     const token = ++loadTokenRef.current;
     setLoadingReports(true);
     setError('');
@@ -370,15 +393,21 @@ const MetaAds = () => {
     if (connState.status === 'connected') loadAccounts();
   }, [connState.status, loadAccounts]);
 
+  // Precompute the "selectedAdAccountId is in our saved selection" boolean
+  // so this effect doesn't depend on `selection.adAccountIds` (an array
+  // reference whose identity flips every time setSelection runs with a
+  // fresh literal, even when the ids don't actually change). That identity
+  // flip was retriggering the fanout and producing a 429 storm against
+  // Meta. Depending on the boolean keeps the trigger logic the same but
+  // dedupes identity-only re-renders.
+  const selectionIncludesSelected = !!(
+    selectedAdAccountId && selection.adAccountIds?.includes(selectedAdAccountId)
+  );
   useEffect(() => {
-    if (
-      connState.status === 'connected' &&
-      selectedAdAccountId &&
-      selection.adAccountIds?.includes(selectedAdAccountId)
-    ) {
+    if (connState.status === 'connected' && selectionIncludesSelected) {
       loadReports(selectedAdAccountId, days);
     }
-  }, [connState.status, selectedAdAccountId, selection.adAccountIds, days, loadReports]);
+  }, [connState.status, selectedAdAccountId, selectionIncludesSelected, days, loadReports]);
 
   const handleExportJson = () => {
     const payload = {
@@ -477,7 +506,7 @@ const MetaAds = () => {
           )}
           <DayRangeSelector value={days} onChange={setDays} />
           <button
-            onClick={() => selectedAdAccountId && loadReports(selectedAdAccountId, days)}
+            onClick={() => selectedAdAccountId && loadReports(selectedAdAccountId, days, { force: true })}
             disabled={!selectedAdAccountId || loadingReports || loadingWave2}
             className="inline-flex items-center gap-1.5 px-3 py-2 border border-gray-300 rounded-md text-sm text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50"
             title="Refresh"
@@ -531,8 +560,8 @@ const MetaAds = () => {
           {failedSections.length > 0 && (
             <FailedSectionsBanner
               failures={failedSections}
-              onRetry={() => selectedAdAccountId && loadReports(selectedAdAccountId, days)}
-              loading={loadingReports}
+              onRetry={() => selectedAdAccountId && loadReports(selectedAdAccountId, days, { force: true })}
+              loading={loadingReports || loadingWave2}
             />
           )}
 
