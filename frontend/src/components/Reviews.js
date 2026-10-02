@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import LoadingOverlay from './LoadingOverlay';
 import axios from '../utils/axiosConfig';
 import { useAuth } from '../contexts/AuthContext';
 import imageService from '../services/imageService';
@@ -89,6 +90,10 @@ const Reviews = () => {
   const [reviews, setReviews] = useState([]);
   const [profiles, setProfiles] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [refreshingReviews, setRefreshingReviews] = useState(false);
+  // Monotonic token so a slow fetch for one profile doesn't overwrite a
+  // newer fetch triggered by profile switch or refresh click.
+  const reviewsTokenRef = useRef(0);
   const [selectedProfile, setSelectedProfile] = useState('');
   const [replyText, setReplyText] = useState('');
   const [replyingTo, setReplyingTo] = useState(null);
@@ -187,8 +192,8 @@ const Reviews = () => {
 
   const fetchReviews = async (locationName) => {
     if (!locationName) return;
-    
-    
+    const token = ++reviewsTokenRef.current;
+    setRefreshingReviews(true);
     try {
       // Extract account and location IDs from the location name
       // Format: locations/2141374650782668963 (we need to get the account ID from the profile)
@@ -215,30 +220,34 @@ const Reviews = () => {
       }
       
       if (!accountId || !locationId) {
-        setReviews([]);
+        if (token === reviewsTokenRef.current) setReviews([]);
         return;
       }
-      
-      
+
+
       // STEP 1: Load cached data first for instant UI
       let currentReviews = [];
       const cachedResponse = await businessProfileService.getReviewsForLocation(accountId, locationId, false);
+      if (token !== reviewsTokenRef.current) return;
       if (cachedResponse && cachedResponse.success && cachedResponse.reviews && cachedResponse.reviews.length > 0) {
         currentReviews = cachedResponse.reviews;
         // Process media for cached reviews
         const reviewsWithMedia = await reviewsMediaService.getMediaForReviews(cachedResponse.reviews);
+        if (token !== reviewsTokenRef.current) return;
         setReviews(reviewsWithMedia);
       }
-      
+
       // STEP 2: Fetch fresh data in background
       const freshResponse = await businessProfileService.getReviewsForLocation(accountId, locationId, true);
-      
+      if (token !== reviewsTokenRef.current) return;
+
       if (freshResponse && freshResponse.success) {
         // Compare fresh data with current data and update only if changes are detected
         const hasChanges = JSON.stringify(freshResponse.reviews) !== JSON.stringify(currentReviews);
         if (hasChanges) {
           // Process media for fresh reviews
           const freshReviewsWithMedia = await reviewsMediaService.getMediaForReviews(freshResponse.reviews || []);
+          if (token !== reviewsTokenRef.current) return;
           setReviews(freshReviewsWithMedia);
         } else {
         }
@@ -246,7 +255,9 @@ const Reviews = () => {
         setReviews([]);
       }
     } catch (error) {
-      setReviews([]);
+      if (token === reviewsTokenRef.current) setReviews([]);
+    } finally {
+      if (token === reviewsTokenRef.current) setRefreshingReviews(false);
     }
   };
 
@@ -491,14 +502,16 @@ const Reviews = () => {
         {selectedProfile && (
           <button
             onClick={() => fetchReviews(selectedProfile, true)}
-            className="inline-flex items-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500"
+            disabled={refreshingReviews}
+            className="inline-flex items-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 disabled:opacity-50"
           >
-            <RefreshCw className="h-4 w-4 mr-2" />
+            <RefreshCw className={`h-4 w-4 mr-2 ${refreshingReviews ? 'animate-spin' : ''}`} />
             Refresh Reviews
           </button>
         )}
       </div>
 
+      <LoadingOverlay show={refreshingReviews} label="Loading reviews…">
       {/* Profile Selector */}
       <div className="bg-white shadow rounded-lg p-6">
         <label htmlFor="profile-select" className="block text-sm font-medium text-gray-700 mb-2">
@@ -707,14 +720,15 @@ const Reviews = () => {
             <h3 className="text-sm font-medium text-blue-800">Managing Reviews</h3>
             <div className="mt-2 text-sm text-blue-700">
               <p>
-                Respond to customer reviews to show that you value their feedback. 
-                Timely and helpful responses can improve your business reputation and 
+                Respond to customer reviews to show that you value their feedback.
+                Timely and helpful responses can improve your business reputation and
                 encourage more customers to leave reviews.
               </p>
             </div>
           </div>
         </div>
       </div>
+      </LoadingOverlay>
     </div>
   );
 };

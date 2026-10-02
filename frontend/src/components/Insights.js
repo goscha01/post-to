@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import LoadingOverlay from './LoadingOverlay';
 import axios from '../utils/axiosConfig';
 import { useAuth } from '../contexts/AuthContext';
 import insightsService from '../services/insightsService';
@@ -912,6 +913,7 @@ const getAuthHeaders = () => {
         </div>
       </div>
 
+      <LoadingOverlay show={refreshing || timelineLoading} label="Loading insights…">
       {/* Profile Selector */}
       <div className="bg-white shadow rounded-lg p-6">
         <label htmlFor="profile-select" className="block text-sm font-medium text-gray-700 mb-2">
@@ -1345,6 +1347,7 @@ const getAuthHeaders = () => {
           </div>
         </div>
       </div>
+      </LoadingOverlay>
     </div>
   );
 };

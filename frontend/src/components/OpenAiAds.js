@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import LoadingOverlay from './LoadingOverlay';
 import { useNavigate } from 'react-router-dom';
 import {
   Bot,
@@ -102,6 +103,9 @@ const OpenAiAds = () => {
   // this we call every endpoint with connectionId=undefined, which returns
   // 400 API_KEY_MISSING because the backend has no env fallback either.
   const [connectedLoaded, setConnectedLoaded] = useState(false);
+  // Monotonic token to discard stale fanout responses when the user flips
+  // between day ranges or connections mid-flight.
+  const loadTokenRef = useRef(0);
 
   const selectedConnection = useMemo(
     () => connections.find(c => c.id === selectedConnectionId) || null,
@@ -151,6 +155,7 @@ const OpenAiAds = () => {
 
   const loadAll = useCallback(async (connectionId) => {
     if (!connectionId) return;
+    const token = ++loadTokenRef.current;
     setLoadingReports(true);
     setError('');
     try {
@@ -164,6 +169,7 @@ const OpenAiAds = () => {
         openAiAdsService.getAdGroups(params).catch(() => []),
         openAiAdsService.getAds(params).catch(() => []),
       ]);
+      if (token !== loadTokenRef.current) return;
       setDiag(d);
       setCampaigns(cList);
       setAdGroups(aList);
@@ -182,12 +188,14 @@ const OpenAiAds = () => {
           return [];
         }),
       ]);
+      if (token !== loadTokenRef.current) return;
       setAccountInsights(acctIns);
       setCampaignInsights(campIns);
     } catch (e) {
+      if (token !== loadTokenRef.current) return;
       setError(e.response?.data?.error || e.message || 'Failed to load OpenAI Ads data');
     } finally {
-      setLoadingReports(false);
+      if (token === loadTokenRef.current) setLoadingReports(false);
     }
   }, [days]);
 
@@ -328,7 +336,7 @@ const OpenAiAds = () => {
       ) : loading ? (
         <div className="text-sm text-gray-500">Loading…</div>
       ) : (
-        <>
+        <LoadingOverlay show={loadingReports} label="Loading OpenAI Ads data…">
           <OverviewGrid overview={overview} />
           <Section title="Daily time-series">
             <InsightsTable rows={accountInsights} />
@@ -342,7 +350,7 @@ const OpenAiAds = () => {
           <Section title="Ads">
             <AdsTable ads={adsList} />
           </Section>
-        </>
+        </LoadingOverlay>
       )}
     </div>
   );

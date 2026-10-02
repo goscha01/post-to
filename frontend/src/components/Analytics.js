@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import LoadingOverlay from './LoadingOverlay';
 import { useAuth } from '../contexts/AuthContext';
 import {
   BarChart3,
@@ -99,6 +100,9 @@ const Analytics = () => {
   const [needsReauth, setNeedsReauth] = useState(false);
   const [propertyPermission, setPropertyPermission] = useState(null); // { propertyId, triedAccounts }
   const [pickerOpen, setPickerOpen] = useState(false);
+  // Monotonic token so a slow previous fanout doesn't overwrite the fresh
+  // one when the user flips the day range (or property) mid-flight.
+  const loadTokenRef = useRef(0);
 
   const selectedProperty = useMemo(
     () => connectedProperties.find(p => p.propertyId === selectedPropertyId) || null,
@@ -173,6 +177,7 @@ const Analytics = () => {
 
   const loadReports = useCallback(async (propertyId, rangeDays) => {
     if (!propertyId) return;
+    const token = ++loadTokenRef.current;
     setLoadingReports(true);
     setError('');
     setPropertyPermission(null);
@@ -201,6 +206,7 @@ const Analytics = () => {
           return null;
         }),
       ]);
+      if (token !== loadTokenRef.current) return;
       setOverview(o.overview);
       setTraffic(t.traffic || []);
       setLanding(l.landingPages || []);
@@ -215,6 +221,7 @@ const Analytics = () => {
       setScreensByName(screenMap);
       setPlanBreakdown(pb?.planBreakdown || null);
     } catch (err) {
+      if (token !== loadTokenRef.current) return;
       const status = err.response?.status;
       const data = err.response?.data || {};
       if (status === 403 && data.needsPropertyPermission) {
@@ -230,7 +237,7 @@ const Analytics = () => {
       }
       setError(data.error || err.message || 'Failed to load analytics data');
     } finally {
-      setLoadingReports(false);
+      if (token === loadTokenRef.current) setLoadingReports(false);
     }
   }, []);
 
@@ -400,7 +407,7 @@ const Analytics = () => {
       ) : needsPropertySelection ? (
         <EmptyState onConnect={() => setPickerOpen(true)} />
       ) : (
-        <>
+        <LoadingOverlay show={loadingReports} label="Loading Analytics data…">
           {selectedProperty && (
             <p className="text-xs text-gray-500 mb-4">
               Property: <span className="font-medium text-gray-700">{selectedProperty.displayName}</span>{' '}
@@ -457,7 +464,7 @@ const Analytics = () => {
               <GeographyTable rows={geography} loading={loadingReports} />
             </Section>
           </div>
-        </>
+        </LoadingOverlay>
       )}
 
       {pickerOpen && (

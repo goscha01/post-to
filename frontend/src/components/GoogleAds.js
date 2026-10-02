@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useAuth } from '../contexts/AuthContext';
+import LoadingOverlay from './LoadingOverlay';
 import {
   Megaphone,
   DollarSign,
@@ -128,6 +129,9 @@ const GoogleAds = () => {
   const [devTokenMissing, setDevTokenMissing] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [activeSection, setActiveSection] = useState('overview');
+  // Monotonic token to discard stale fanout responses when the user flips
+  // between day ranges, customers, or campaign filters mid-flight.
+  const loadTokenRef = useRef(0);
 
   const selectedCustomer = useMemo(
     () => connectedCustomers.find(c => c.customerId === selectedCustomerId) || null,
@@ -251,6 +255,7 @@ const GoogleAds = () => {
 
   const loadReports = useCallback(async (customerId, rangeDays, filterCampaignId) => {
     if (!customerId) return;
+    const token = ++loadTokenRef.current;
     setLoadingReports(true);
     setError('');
     try {
@@ -281,6 +286,7 @@ const GoogleAds = () => {
         googleAdsService.getChangeHistory(customerId, rangeDays),
         googleAdsService.getDiagnostics(customerId, rangeDays, filterCampaignId),
       ]);
+      if (token !== loadTokenRef.current) return; // superseded
       setCampaigns(cs.campaigns || []);
       // Keep the campaign-picker options in sync with the *unfiltered* campaign
       // list. When a filter is active, cs.campaigns is scoped to a single
@@ -319,6 +325,7 @@ const GoogleAds = () => {
         : { events: Array.isArray(ch.changeHistory) ? ch.changeHistory : [], summary: [], caps: null, requestedDays: null, unavailableBeyondDays: null });
       setDiagnostics(diag.diagnostics || null);
     } catch (err) {
+      if (token !== loadTokenRef.current) return;
       const status = err.response?.status;
       const code = err.response?.data?.code;
       if (code === 'DEVELOPER_TOKEN_MISSING' || status === 503) setDevTokenMissing(true);
@@ -326,7 +333,7 @@ const GoogleAds = () => {
       if (status === 400 && err.response?.data?.needsCustomerSelection) setNeedsCustomerSelection(true);
       setError(err.response?.data?.error || err.message || 'Failed to load Google Ads data');
     } finally {
-      setLoadingReports(false);
+      if (token === loadTokenRef.current) setLoadingReports(false);
     }
   }, []);
 
@@ -446,25 +453,27 @@ const GoogleAds = () => {
 
           <SectionTabs value={activeSection} onChange={setActiveSection} />
 
-          <div className="mt-6">
-            {activeSection === 'overview'        && <OverviewCards overview={overview} loading={loadingReports} currency={currency} />}
-            {activeSection === 'diagnostics'     && <DiagnosticsView diagnostics={diagnostics} loading={loadingReports} currency={currency} />}
-            {activeSection === 'campaigns'       && <CampaignsTable rows={campaigns} loading={loadingReports} currency={currency} />}
-            {activeSection === 'adGroups'        && <AdGroupsTable rows={adGroups} loading={loadingReports} currency={currency} />}
-            {activeSection === 'keywords'        && <KeywordsTable rows={keywords} loading={loadingReports} currency={currency} />}
-            {activeSection === 'searchTerms'     && <SearchTermsTable rows={searchTerms} loading={loadingReports} currency={currency} />}
-            {activeSection === 'ads'             && <AdsList rows={adsList} loading={loadingReports} currency={currency} />}
-            {activeSection === 'assets'          && <AssetsTable rows={assets} loading={loadingReports} currency={currency} />}
-            {activeSection === 'recommendations' && <RecommendationsView rows={recommendations} loading={loadingReports} currency={currency} />}
-            {activeSection === 'conversions'     && <ConversionsTable rows={conversions} loading={loadingReports} currency={currency} />}
-            {activeSection === 'devices'         && <DevicesView rows={devices} loading={loadingReports} currency={currency} />}
-            {activeSection === 'locations'       && <LocationsTable rows={locations} loading={loadingReports} currency={currency} />}
-            {activeSection === 'dayHour'         && <DayHourHeatmap rows={dayHour} loading={loadingReports} />}
-            {activeSection === 'audience'        && <AudienceView data={audience} loading={loadingReports} currency={currency} />}
-            {activeSection === 'auctionInsights' && <AuctionInsightsTable rows={auctionInsights} loading={loadingReports} />}
-            {activeSection === 'quality'         && <QualityTable rows={quality} loading={loadingReports} />}
-            {activeSection === 'changeHistory'   && <ChangeHistoryTable data={changeHistory} loading={loadingReports} />}
-          </div>
+          <LoadingOverlay show={loadingReports} label="Loading Google Ads data…">
+            <div className="mt-6">
+              {activeSection === 'overview'        && <OverviewCards overview={overview} loading={loadingReports} currency={currency} />}
+              {activeSection === 'diagnostics'     && <DiagnosticsView diagnostics={diagnostics} loading={loadingReports} currency={currency} />}
+              {activeSection === 'campaigns'       && <CampaignsTable rows={campaigns} loading={loadingReports} currency={currency} />}
+              {activeSection === 'adGroups'        && <AdGroupsTable rows={adGroups} loading={loadingReports} currency={currency} />}
+              {activeSection === 'keywords'        && <KeywordsTable rows={keywords} loading={loadingReports} currency={currency} />}
+              {activeSection === 'searchTerms'     && <SearchTermsTable rows={searchTerms} loading={loadingReports} currency={currency} />}
+              {activeSection === 'ads'             && <AdsList rows={adsList} loading={loadingReports} currency={currency} />}
+              {activeSection === 'assets'          && <AssetsTable rows={assets} loading={loadingReports} currency={currency} />}
+              {activeSection === 'recommendations' && <RecommendationsView rows={recommendations} loading={loadingReports} currency={currency} />}
+              {activeSection === 'conversions'     && <ConversionsTable rows={conversions} loading={loadingReports} currency={currency} />}
+              {activeSection === 'devices'         && <DevicesView rows={devices} loading={loadingReports} currency={currency} />}
+              {activeSection === 'locations'       && <LocationsTable rows={locations} loading={loadingReports} currency={currency} />}
+              {activeSection === 'dayHour'         && <DayHourHeatmap rows={dayHour} loading={loadingReports} />}
+              {activeSection === 'audience'        && <AudienceView data={audience} loading={loadingReports} currency={currency} />}
+              {activeSection === 'auctionInsights' && <AuctionInsightsTable rows={auctionInsights} loading={loadingReports} />}
+              {activeSection === 'quality'         && <QualityTable rows={quality} loading={loadingReports} />}
+              {activeSection === 'changeHistory'   && <ChangeHistoryTable data={changeHistory} loading={loadingReports} />}
+            </div>
+          </LoadingOverlay>
         </>
       )}
 

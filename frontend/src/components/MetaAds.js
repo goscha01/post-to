@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   Facebook,
   DollarSign,
@@ -16,6 +16,7 @@ import {
   Link2,
 } from 'lucide-react';
 import metaAdsService from '../services/metaAdsService';
+import LoadingOverlay from './LoadingOverlay';
 
 // Read-only Meta Ads dashboard. Mirrors GoogleAds.js in visual language
 // (day ranges, tabs, overview cards, diagnostics cards) so the mental model
@@ -141,6 +142,9 @@ const MetaAds = () => {
   const [error, setError] = useState('');
   const [activeSection, setActiveSection] = useState('overview');
   const [pickerOpen, setPickerOpen] = useState(false);
+  // Monotonic token to discard stale fanout responses when the user flips
+  // between day ranges or ad accounts faster than Meta's API responds.
+  const loadTokenRef = useRef(0);
 
   const selectedAccount = useMemo(
     () => accounts.find((a) => a.id === selectedAdAccountId) || null,
@@ -216,6 +220,7 @@ const MetaAds = () => {
   // -------- report load fanout --------
   const loadReports = useCallback(async (adAccountId, rangeDays) => {
     if (!adAccountId) return;
+    const token = ++loadTokenRef.current;
     setLoadingReports(true);
     setError('');
     try {
@@ -233,6 +238,7 @@ const MetaAds = () => {
         metaAdsService.getCreatives(adAccountId),
         metaAdsService.getDeliveryIssues(adAccountId),
       ]);
+      if (token !== loadTokenRef.current) return; // superseded
       setOverview(ov);
       setDiagnosticsData(diag);
       setCampaigns(camps.campaigns || []);
@@ -245,6 +251,7 @@ const MetaAds = () => {
       setCreatives(cr.creatives || []);
       setDeliveryIssues(di.issues || []);
     } catch (e) {
+      if (token !== loadTokenRef.current) return;
       const info = metaAdsService.interpretMetaError(e);
       if (info.intent === 'missing_scope') return setConnState({ status: 'missing_scope' });
       if (info.intent === 'token_invalid') return setConnState({ status: 'token_invalid' });
@@ -257,7 +264,7 @@ const MetaAds = () => {
       }
       setError(info.message);
     } finally {
-      setLoadingReports(false);
+      if (token === loadTokenRef.current) setLoadingReports(false);
     }
   }, []);
 
@@ -434,19 +441,21 @@ const MetaAds = () => {
             diagnosticsCount={diagnosticsData?.counts?.total || 0}
           />
 
-          <div className="mt-6">
-            {activeSection === 'overview'       && <OverviewCards overview={overview} loading={loadingReports} currency={currency} />}
-            {activeSection === 'diagnostics'    && <DiagnosticsView data={diagnosticsData} loading={loadingReports} currency={currency} />}
-            {activeSection === 'campaigns'      && <CampaignsTable rows={campaigns} loading={loadingReports} currency={currency} />}
-            {activeSection === 'adsets'         && <AdSetsTable rows={adsets} loading={loadingReports} currency={currency} />}
-            {activeSection === 'ads'            && <AdsTable rows={ads} loading={loadingReports} currency={currency} />}
-            {activeSection === 'placements'     && <BreakdownTable rows={placements.rows} keys={['publisher_platform','platform_position']} loading={loadingReports} currency={currency} />}
-            {activeSection === 'devices'        && <BreakdownTable rows={devices.rows} keys={['device_platform']} loading={loadingReports} currency={currency} />}
-            {activeSection === 'demographics'   && <BreakdownTable rows={demographics.rows} keys={['age','gender']} loading={loadingReports} currency={currency} />}
-            {activeSection === 'dayHour'        && <BreakdownTable rows={dayHour.rows} keys={['hourly_stats_aggregated_by_advertiser_time_zone']} loading={loadingReports} currency={currency} />}
-            {activeSection === 'creatives'      && <CreativesGrid rows={creatives} loading={loadingReports} />}
-            {activeSection === 'deliveryIssues' && <DeliveryIssuesList rows={deliveryIssues} loading={loadingReports} />}
-          </div>
+          <LoadingOverlay show={loadingReports} label="Loading Meta Ads data…">
+            <div className="mt-6">
+              {activeSection === 'overview'       && <OverviewCards overview={overview} loading={loadingReports} currency={currency} />}
+              {activeSection === 'diagnostics'    && <DiagnosticsView data={diagnosticsData} loading={loadingReports} currency={currency} />}
+              {activeSection === 'campaigns'      && <CampaignsTable rows={campaigns} loading={loadingReports} currency={currency} />}
+              {activeSection === 'adsets'         && <AdSetsTable rows={adsets} loading={loadingReports} currency={currency} />}
+              {activeSection === 'ads'            && <AdsTable rows={ads} loading={loadingReports} currency={currency} />}
+              {activeSection === 'placements'     && <BreakdownTable rows={placements.rows} keys={['publisher_platform','platform_position']} loading={loadingReports} currency={currency} />}
+              {activeSection === 'devices'        && <BreakdownTable rows={devices.rows} keys={['device_platform']} loading={loadingReports} currency={currency} />}
+              {activeSection === 'demographics'   && <BreakdownTable rows={demographics.rows} keys={['age','gender']} loading={loadingReports} currency={currency} />}
+              {activeSection === 'dayHour'        && <BreakdownTable rows={dayHour.rows} keys={['hourly_stats_aggregated_by_advertiser_time_zone']} loading={loadingReports} currency={currency} />}
+              {activeSection === 'creatives'      && <CreativesGrid rows={creatives} loading={loadingReports} />}
+              {activeSection === 'deliveryIssues' && <DeliveryIssuesList rows={deliveryIssues} loading={loadingReports} />}
+            </div>
+          </LoadingOverlay>
         </>
       )}
     </div>

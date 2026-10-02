@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import LoadingOverlay from './LoadingOverlay';
 import { useNavigate } from 'react-router-dom';
 import {
   Apple,
@@ -138,6 +139,11 @@ const AppStoreConnect = () => {
   // Credential-edit modal (for rotating .p8 keys, e.g. upgrading Developer
   // role to Admin so App Analytics works).
   const [editOpen, setEditOpen] = useState(false);
+  // Monotonic tokens per loader so a slow previous fetch doesn't overwrite
+  // the fresh one when the user flips days / app / connection mid-flight.
+  const salesTokenRef = useRef(0);
+  const reviewsTokenRef = useRef(0);
+  const analyticsTokenRef = useRef(0);
 
   const selectedConnection = useMemo(
     () => connections.find(c => c.connectionId === selectedConnectionId) || null,
@@ -188,12 +194,15 @@ const AppStoreConnect = () => {
 
   const loadSales = useCallback(async () => {
     if (!selectedConnectionId) return;
+    const token = ++salesTokenRef.current;
     try {
       setLoadingSales(true);
       setError('');
       const res = await ascService.getSales({ connectionId: selectedConnectionId, days });
+      if (token !== salesTokenRef.current) return;
       setSales(res);
     } catch (e) {
+      if (token !== salesTokenRef.current) return;
       const body = e?.response?.data || {};
       // Vendor number missing is a common Phase 1 friction point — surface
       // it with a specific inline hint instead of just the generic error.
@@ -204,12 +213,13 @@ const AppStoreConnect = () => {
         setError(body.error || e.message);
       }
     } finally {
-      setLoadingSales(false);
+      if (token === salesTokenRef.current) setLoadingSales(false);
     }
   }, [selectedConnectionId, days]);
 
   const loadReviews = useCallback(async () => {
     if (!selectedConnectionId || !selectedAppId) return;
+    const token = ++reviewsTokenRef.current;
     try {
       setLoadingReviews(true);
       setError('');
@@ -218,20 +228,24 @@ const AppStoreConnect = () => {
         appId: selectedAppId,
         limit: 50,
       });
+      if (token !== reviewsTokenRef.current) return;
       setReviews(res.reviews || []);
     } catch (e) {
+      if (token !== reviewsTokenRef.current) return;
       setError(e?.response?.data?.error || e.message);
     } finally {
-      setLoadingReviews(false);
+      if (token === reviewsTokenRef.current) setLoadingReviews(false);
     }
   }, [selectedConnectionId, selectedAppId]);
 
   const loadAnalytics = useCallback(async () => {
     if (!selectedConnectionId) return;
+    const token = ++analyticsTokenRef.current;
     try {
       setLoadingAnalytics(true);
       setError('');
       const status = await ascService.analyticsStatus(selectedConnectionId);
+      if (token !== analyticsTokenRef.current) return;
       setAnalyticsStatus(status);
       if (status.bootstrapped && status.cachedInstances > 0) {
         const [f, s, m, g, r, md, gd] = await Promise.all([
@@ -243,6 +257,7 @@ const AppStoreConnect = () => {
           ascService.analyticsMetaAdsDaily(selectedConnectionId, days).catch(() => null),
           ascService.analyticsGoogleAdsDaily(selectedConnectionId, days).catch(() => null),
         ]);
+        if (token !== analyticsTokenRef.current) return;
         setFunnel(f);
         setSources(s);
         setMetaAds(m);
@@ -265,9 +280,10 @@ const AppStoreConnect = () => {
         setGoogleDaily({});
       }
     } catch (e) {
+      if (token !== analyticsTokenRef.current) return;
       setError(e?.response?.data?.error || e.message);
     } finally {
-      setLoadingAnalytics(false);
+      if (token === analyticsTokenRef.current) setLoadingAnalytics(false);
     }
   }, [selectedConnectionId, days]);
 
@@ -481,6 +497,7 @@ const AppStoreConnect = () => {
       )}
 
       {tab === 'overview' && (
+        <LoadingOverlay show={loadingSales} label="Loading App Store sales…">
         <div className="space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <StatCard label="New installs" value={fmtInt(totals.installs)} sub={`last ${days} days`} />
@@ -532,9 +549,11 @@ const AppStoreConnect = () => {
             Export raw JSON
           </button>
         </div>
+        </LoadingOverlay>
       )}
 
       {tab === 'reviews' && (
+        <LoadingOverlay show={loadingReviews} label="Loading reviews…">
         <div className="space-y-3">
           {loadingReviews && (
             <div className="text-sm text-gray-500 flex items-center gap-2">
@@ -563,9 +582,11 @@ const AppStoreConnect = () => {
             </div>
           ))}
         </div>
+        </LoadingOverlay>
       )}
 
       {tab === 'analytics' && (
+        <LoadingOverlay show={loadingAnalytics} label="Loading App Store analytics…">
         <div className="space-y-4">
           {loadingAnalytics && !analyticsStatus && (
             <div className="text-sm text-gray-500 flex items-center gap-2">
@@ -1000,6 +1021,7 @@ const AppStoreConnect = () => {
             </div>
           )}
         </div>
+        </LoadingOverlay>
       )}
 
       {tab === 'apps' && (
