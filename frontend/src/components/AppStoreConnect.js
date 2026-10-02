@@ -619,11 +619,35 @@ const AppStoreConnect = () => {
               {(() => {
                 const stDays = funnel.perDay.filter(d => d.installsFromSalesAndTrends).length;
 
-                // Fallback conversion-rate when Apple's attributed CVR is
-                // null (install attribution pending): compute paid-ads CVR
-                // as (Meta installs + Google installs) / (Meta clicks +
-                // Google clicks). Mixes platforms but gives a usable number
-                // instead of "—" when the user cares.
+                // Page Views fallback: when Apple's PPV is null (engagement
+                // pending), use Meta's app_store_visits (direct equivalent:
+                // user clicked an ad → landed on App Store page) + Google
+                // Ads clicks (UAC clicks are a reasonable proxy — Google
+                // doesn't expose a per-click App Store visit metric). This
+                // matches what the Meta/Google cards show below, so the
+                // summary and the attribution tables are no longer
+                // internally inconsistent.
+                let pvValue = funnel.totals.productPageViews;
+                let pvSub = pvValue == null ? 'Apple engagement pending' : 'product page + store sheet';
+                if (pvValue == null) {
+                  const metaAsv = metaAds?.totals?.appStoreVisits || 0;
+                  const gaClicks = googleAds?.totals?.clicks || 0;
+                  if (metaAsv + gaClicks > 0) {
+                    pvValue = metaAsv + gaClicks;
+                    pvSub = 'paid ads · Meta ASV + Google clicks';
+                  }
+                }
+
+                // Impressions fallback: Apple App Store impressions and
+                // Facebook/Instagram/Google ad impressions are different
+                // concepts (ad view vs. listing view), so instead of
+                // conflating them, point the user to the right place.
+                const impSub = funnel.totals.impressions == null
+                  ? 'Apple engagement pending — see Meta / Google cards for ad reach'
+                  : `last ${days} days`;
+
+                // Conversion-rate fallback: paid-ads CVR = (Meta installs +
+                // Google installs) / (Meta clicks + Google clicks).
                 let cvr = funnel.totals.conversionRate;
                 let cvrSub = 'attributed installs / PPV';
                 if (cvr == null) {
@@ -642,16 +666,12 @@ const AppStoreConnect = () => {
                     <StatCard
                       label="Impressions"
                       value={fmtInt(funnel.totals.impressions)}
-                      sub={funnel.totals.impressions == null
-                        ? 'Apple engagement pending'
-                        : `last ${days} days`}
+                      sub={impSub}
                     />
                     <StatCard
                       label="Page views"
-                      value={fmtInt(funnel.totals.productPageViews)}
-                      sub={funnel.totals.productPageViews == null
-                        ? 'Apple engagement pending'
-                        : 'product page + store sheet'}
+                      value={fmtInt(pvValue)}
+                      sub={pvSub}
                     />
                     <StatCard
                       label="Installs"
