@@ -1161,8 +1161,14 @@ function topScreenNames(screensByName, n) {
 
 // Plan breakdown under the "Selected a plan" funnel row. Shows one line per
 // (plan, billing_period) combination with distinct users + event count.
-// Renders a "register custom dims in GA4 Admin" hint if the query errored
-// (custom event dimensions `plan_id` / `billing_period` not registered).
+// Four display states — surface each so the user always knows why they're
+// seeing (or not seeing) data:
+//   1. no response yet (null)              → render nothing (loading state)
+//   2. GA4 returned an error               → "register custom dims" hint
+//   3. all rows are "(not set)"            → "dims registered but events
+//                                             haven't been tagged yet"
+//                                             (historical gap)
+//   4. meaningful rows                     → the per-plan breakdown
 const PlanBreakdownSubSteps = ({ planBreakdown }) => {
   if (!planBreakdown) return null;
   if (planBreakdown.error) {
@@ -1177,6 +1183,23 @@ const PlanBreakdownSubSteps = ({ planBreakdown }) => {
   }
   const rows = planBreakdown.rows || [];
   const meaningful = rows.filter(r => r.eventCount > 0 && r.plan !== '(not set)');
+  const notSetRow = rows.find(r => r.eventCount > 0 && r.plan === '(not set)');
+
+  // State 3: query succeeded, custom dims are registered, but every event
+  // is "(not set)" — means plan_selected fired before the custom dimension
+  // was registered in GA4 Admin, so GA4 didn't store the param value.
+  // Historical events don't backfill. Explain the gap instead of hiding.
+  if (meaningful.length === 0 && notSetRow) {
+    return (
+      <div className="mt-2 ml-4 pl-3 border-l-2 border-amber-100 text-[11px] text-amber-700">
+        ↳ {fmtInt(notSetRow.eventCount)} plan_selected events have{' '}
+        <code className="text-[10px] px-1 bg-amber-50 rounded">plan_id = (not set)</code> —
+        they fired before <code className="text-[10px] px-1 bg-amber-50 rounded">plan_id</code>{' '}
+        was registered as a custom dimension in GA4 Admin. Historical events don't backfill;
+        new plan_selected events (fired from now on) will carry the plan value and populate here.
+      </div>
+    );
+  }
   if (meaningful.length === 0) return null;
   return (
     <div className="mt-2 ml-4 pl-3 border-l-2 border-gray-100 space-y-1">
@@ -1194,6 +1217,12 @@ const PlanBreakdownSubSteps = ({ planBreakdown }) => {
           </div>
         </div>
       ))}
+      {notSetRow && (
+        <div className="text-[11px] text-gray-400 pt-1 border-t border-gray-100">
+          + {fmtInt(notSetRow.eventCount)} older events with no plan_id attached
+          (fired before the custom dimension was registered in GA4 Admin)
+        </div>
+      )}
     </div>
   );
 };
