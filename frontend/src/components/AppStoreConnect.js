@@ -638,13 +638,28 @@ const AppStoreConnect = () => {
                   }
                 }
 
-                // Impressions fallback: Apple App Store impressions and
-                // Facebook/Instagram/Google ad impressions are different
-                // concepts (ad view vs. listing view), so instead of
-                // conflating them, point the user to the right place.
-                const impSub = funnel.totals.impressions == null
-                  ? 'Apple engagement pending — see Meta / Google cards for ad reach'
+                // Impressions fallback: when Apple's App Store impression
+                // count is null (engagement report pending), fall back to
+                // combined Meta + Google ad impressions. These are "ad
+                // impressions on social/search" vs. "App Store listing
+                // impressions" — technically different events, but both
+                // measure "how many people saw something about your app",
+                // and together they're the paid-side reach. Same fallback
+                // pattern as Page Views so the four summary cards tell a
+                // consistent paid-funnel story (ad impressions → app-store
+                // visits → installs → cost-per-install).
+                let impValue = funnel.totals.impressions;
+                let impSub = impValue == null
+                  ? 'Apple engagement pending'
                   : `last ${days} days`;
+                if (impValue == null) {
+                  const metaImp = metaAds?.totals?.impressions || 0;
+                  const gaImp = googleAds?.totals?.impressions || 0;
+                  if (metaImp + gaImp > 0) {
+                    impValue = metaImp + gaImp;
+                    impSub = 'paid ads · Meta + Google ad reach';
+                  }
+                }
 
                 // Conversion-rate fallback: paid-ads CVR = (Meta installs +
                 // Google installs) / (Meta clicks + Google clicks).
@@ -665,7 +680,7 @@ const AppStoreConnect = () => {
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                     <StatCard
                       label="Impressions"
-                      value={fmtInt(funnel.totals.impressions)}
+                      value={fmtInt(impValue)}
                       sub={impSub}
                     />
                     <StatCard
