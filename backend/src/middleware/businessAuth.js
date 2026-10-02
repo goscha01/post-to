@@ -1,10 +1,11 @@
 const { google } = require('googleapis');
 const { createClient } = require('@supabase/supabase-js');
 
-// Initialize Supabase client
+// Service-role key so RLS doesn't block reads/writes on the users row when a
+// team member is acting under the owner's workspace.
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_ANON_KEY
+  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY
 );
 
 const requireBusinessAuth = async (req, res, next) => {
@@ -14,7 +15,11 @@ const requireBusinessAuth = async (req, res, next) => {
       return res.status(401).json({ error: 'User authentication required' });
     }
 
-    const userId = req.user.userId;
+    // Business OAuth tokens (GMB / Drive / GA4 / Ads / GSC) live on the
+    // WORKSPACE OWNER's users row, not the acting user's. An invited team
+    // member doesn't have their own tokens — they act on the owner's behalf.
+    // Fall back to the acting userId for solo users (workspaceOwnerId == userId).
+    const userId = req.user.workspaceOwnerId || req.user.userId;
 
     // Get user's business tokens from database
     const { data: user, error: userError } = await supabase
