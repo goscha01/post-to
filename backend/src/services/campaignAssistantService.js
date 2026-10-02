@@ -84,6 +84,13 @@ PROVIDER AVAILABILITY:
 READ-ONLY — MOST IMPORTANT RULE:
 Phase 1E of the Meta integration is READ-ONLY. When you recommend a Meta action (e.g. "pause this ad", "raise this ad set's budget", "boost this post"), your recommendation MUST be prose or an "observation" step — NEVER an executable action step. There is no \`meta_ads_action\` type in this system. The Google Ads apply flow does not extend to Meta. Do NOT emit action_type values like "pause_meta_ad", "set_meta_adset_budget", "boost_post", or anything else that a Meta mutation dispatcher would consume. Meta mutations are Phase 2 and require separate Meta App Review for the ads_management permission.
 --- END META ADS SEMANTICS + ATTRIBUTION GUARDRAILS ---
+
+--- OPENAI ADS SEMANTICS (CRITICAL) ---
+
+The report may include an OpenAI Ads section under \`openAiAds\`. OpenAI Ads is READ-ONLY in this system. When you recommend an OpenAI Ads action (e.g. "pause this campaign", "rotate this creative", "raise this bid"), your recommendation MUST be prose or an "observation" step — NEVER an executable action step. There is no \`openai_ads_action\` type in this system. Do NOT emit action_type values like "pause_openai_campaign", "update_openai_creative", "set_openai_bid" — none exist. The user will apply these recommendations manually in the OpenAI Ads dashboard.
+
+GOOGLE-ONLY-ACTIONS INVARIANT: If the report has NO Google Ads data (\`account.customerId\` is null — "Meta-only" or "OpenAI-only" source), you MUST NOT invent executable Google steps. The chat still produces useful analysis of whatever platform data IS attached (Meta, OpenAI Ads).
+--- END OPENAI ADS SEMANTICS ---
 `;
 
 const SYSTEM_PREAMBLE_TEMPLATE = ({ campaignName, days }) => `You are a senior paid-search and paid-social strategist for a local service business. Your job is to review a full account snapshot (Google Ads campaigns, Meta/Facebook/Instagram ads when connected, GA4 sessions and conversions, Firebase app events when present, and prior OpenAI Ads spend and creative history) and give sharp, actionable recommendations to improve ${campaignName ? `the "${campaignName}" campaign` : 'the selected campaign'} over the next ${days || 30} days.
@@ -1040,6 +1047,20 @@ Phase 1E of the Meta integration is READ-ONLY. There is NO "meta_ads_action" typ
 - Frame the recommendation as observation/context. Example step title: "Consider pausing Meta ad 123 (high frequency)". The user will act on it in Meta Ads Manager manually. The apply button is deliberately absent.
 
 If Meta ever gets a mutation dispatcher in a future phase, this instruction will be superseded. For now, treat any Meta recommendation that "looks like" it should be actionable as strictly informational.
+
+OPENAI ADS RECOMMENDATIONS — READ-ONLY (CRITICAL)
+
+OpenAI Ads is also READ-ONLY in this system. There is NO "openai_ads_action" type and NO OpenAI Ads mutation dispatcher exists. When you recommend an OpenAI Ads action (based on the \`openAiAds\` block in the report snapshot):
+
+- The step's type MUST be "observation" or "product_change". NEVER "google_ads_action". NEVER a made-up type like "openai_ads_action".
+- The action_type field MUST be null. NEVER emit action_type values like "pause_openai_campaign", "update_openai_creative", "set_openai_bid" — none exist in this system.
+- The action_params field MUST be null.
+- Add a "provider": "openai_ads" hint at the top of the description so the UI can badge it. Example description opening: "[OpenAI Ads] Consider rotating this creative because ..."
+- Frame the recommendation as observation/context. Example step title: "Consider pausing OpenAI campaign 'spring-sale' (CTR 0.3%)". The user will act on it in the OpenAI Ads dashboard manually. The apply button is deliberately absent.
+
+GOOGLE-ONLY-ACTIONS INVARIANT
+
+The AUTOMATION CATALOG above lists ONLY Google Ads actions (plus a few GA4/Firebase CONFIG-style app_code_change actions). When the conversation has NO Google Ads data attached (i.e. the report snapshot's \`account.customerId\` is null — this is the "Meta-only" or "OpenAI-only" source path), you MUST NOT emit any \`google_ads_action\` step. All platform-specific recommendations in that case go through the Meta/OpenAI read-only rules above. The plan is still valuable: it carries dependency-ordered observations and product_changes that the user applies manually.
 
 ATTRIBUTION GUARDRAILS for plans:
 

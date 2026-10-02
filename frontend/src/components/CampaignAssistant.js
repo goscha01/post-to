@@ -14,6 +14,19 @@ import metaAdsService from '../services/metaAdsService';
 
 const DAYS_OPTIONS = [7, 14, 30, 60, 90];
 
+const SOURCE_OPTIONS = [
+  { value: 'all', label: 'All sources (Google + Meta + OpenAI)' },
+  { value: 'google', label: 'Google Ads only' },
+  { value: 'meta', label: 'Meta Ads only (Facebook + Instagram)' },
+  { value: 'openai', label: 'OpenAI Ads only' },
+];
+
+// A conversation participates in plan generation whenever it has at least one
+// ad-platform scope. Ad-hoc conversations (no scope) don't get plans.
+const conversationHasPlanScope = (c) => !!(
+  c && (c.campaign_id || c.meta_ads_account_id || c.openai_ads_connection_id)
+);
+
 const ACCEPTED_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
 const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;   // 5 MB per file
 const MAX_ATTACHMENTS_PER_TURN = 4;
@@ -140,6 +153,10 @@ const CampaignAssistant = () => {
   // is empty until the user has picked one there.
   const [metaAdAccounts, setMetaAdAccounts] = useState([]);
   const [selectedMetaAdAccountId, setSelectedMetaAdAccountId] = useState('');
+  // Which ad source to analyze. Drives which setup fields are visible + what
+  // the backend must receive. 'all' is the historical behavior (Google
+  // required, Meta/OpenAI optional).
+  const [source, setSource] = useState('all');
   const [days, setDays] = useState(30);
   const [creating, setCreating] = useState(false);
   const [setupError, setSetupError] = useState(null);
@@ -325,23 +342,46 @@ const CampaignAssistant = () => {
 
   // -- Actions --
   const startNewAnalysis = useCallback(async () => {
-    if (!selectedCustomerId || !selectedCampaignId) {
-      setSetupError('Pick a customer and campaign first.');
+    const needsGoogle = source === 'all' || source === 'google';
+    if (needsGoogle && (!selectedCustomerId || !selectedCampaignId)) {
+      setSetupError('Pick a Google Ads customer and campaign first.');
+      return;
+    }
+    if (source === 'meta' && !selectedMetaAdAccountId) {
+      setSetupError('Pick a Meta ad account first — save one on /meta-ads if the list is empty.');
+      return;
+    }
+    if (source === 'openai' && !selectedOpenAiAdsConnectionId) {
+      setSetupError('Pick an OpenAI Ads account first — connect one on the Connections page if the list is empty.');
       return;
     }
     setSetupError(null);
     setCreating(true);
     try {
+      // Only ship IDs the chosen source actually uses. This keeps the backend
+      // path clean (Meta-only analysis never pulls a Google token even if the
+      // user previously had a customer selected).
+      const useGoogle = needsGoogle;
+      const useMeta = source === 'all' || source === 'meta';
+      const useOpenAi = source === 'all' || source === 'openai';
+      const titleFallback = useGoogle
+        ? (selectedCampaign?.name || `Campaign ${selectedCampaignId}`)
+        : source === 'meta'
+          ? `Meta ${selectedMetaAdAccountId}`
+          : source === 'openai'
+            ? 'OpenAI Ads analysis'
+            : 'Campaign analysis';
       const res = await campaignAssistantService.createConversation({
-        customerId: selectedCustomerId,
-        campaignId: selectedCampaignId,
-        campaignName: selectedCampaign?.name || null,
-        propertyId: selectedGa4PropertyId || null,
-        firebasePropertyId: selectedFirebasePropertyId || null,
-        openAiAdsConnectionId: selectedOpenAiAdsConnectionId || null,
-        metaAdAccountId: selectedMetaAdAccountId || null,
+        source,
+        customerId: useGoogle ? selectedCustomerId : null,
+        campaignId: useGoogle ? selectedCampaignId : null,
+        campaignName: useGoogle ? (selectedCampaign?.name || null) : null,
+        propertyId: useGoogle ? (selectedGa4PropertyId || null) : null,
+        firebasePropertyId: useGoogle ? (selectedFirebasePropertyId || null) : null,
+        openAiAdsConnectionId: useOpenAi ? (selectedOpenAiAdsConnectionId || null) : null,
+        metaAdAccountId: useMeta ? (selectedMetaAdAccountId || null) : null,
         days,
-        title: selectedCampaign?.name || `Campaign ${selectedCampaignId}`,
+        title: titleFallback,
       });
       const conv = res.conversation;
       setConversations(prev => [conv, ...prev]);
@@ -356,6 +396,7 @@ const CampaignAssistant = () => {
       setCreating(false);
     }
   }, [
+    source,
     selectedCustomerId, selectedCampaignId, selectedGa4PropertyId,
     selectedFirebasePropertyId, selectedOpenAiAdsConnectionId,
     selectedMetaAdAccountId, selectedCampaign, days,
@@ -854,6 +895,8 @@ const CampaignAssistant = () => {
       {/* Left rail: setup + conversations */}
       <div className="lg:w-80 flex-shrink-0 space-y-4">
         <SetupCard
+          source={source}
+          onSelectSource={setSource}
           customers={customers}
           customersLoading={customersLoading}
           selectedCustomerId={selectedCustomerId}
@@ -903,7 +946,14 @@ const CampaignAssistant = () => {
           </div>
           {activeConversation && (
             <div className="text-xs text-gray-500 hidden md:block">
-              Customer {activeConversation.google_ads_customer_id} · {activeConversation.days}d
+              {activeConversation.google_ads_customer_id
+                ? `Customer ${activeConversation.google_ads_customer_id}`
+                : activeConversation.meta_ads_account_id
+                  ? `Meta ${activeConversation.meta_ads_account_id}`
+                  : activeConversation.openai_ads_connection_id
+                    ? 'OpenAI Ads'
+                    : 'Ad-hoc'}
+              {activeConversation.days ? ` · ${activeConversation.days}d` : ''}
             </div>
           )}
         </div>
@@ -917,7 +967,7 @@ const CampaignAssistant = () => {
           />
         )}
 
-        {activeConversation && activeConversation.campaign_id && (
+        {activeConversation && conversationHasPlanScope(activeConversation) && (
           <ActionPlanPanel
             plan={latestPlan}
             loading={planLoading}
@@ -1043,6 +1093,7 @@ const CampaignAssistant = () => {
 // Setup card (left)
 // ---------------------------------------------------------------------------
 const SetupCard = ({
+  source, onSelectSource,
   customers, customersLoading, selectedCustomerId, onSelectCustomer,
   campaigns, campaignsLoading, selectedCampaignId, onSelectCampaign,
   ga4Properties, selectedGa4PropertyId, onSelectGa4Property,
@@ -1058,6 +1109,16 @@ const SetupCard = ({
     : streaming
     ? 'Streaming response…'
     : 'Run analysis';
+  // Which setup fields to show per source. 'all' is the historical behavior.
+  // Non-Google sources skip the Google customer/campaign/GA4 pickers entirely.
+  const showGoogle = source === 'all' || source === 'google';
+  const showMeta = source === 'all' || source === 'meta';
+  const showOpenAi = source === 'all' || source === 'openai';
+  // Button disabled gate — mirrors backend validation in startNewAnalysis.
+  const canStart =
+    (showGoogle ? (selectedCustomerId && selectedCampaignId) : true) &&
+    (source === 'meta' ? !!selectedMetaAdAccountId : true) &&
+    (source === 'openai' ? !!selectedOpenAiAdsConnectionId : true);
   // Split GA4 into "matches the selected Ads customer's Google login" vs the
   // rest. Same list gets used by both the web GA4 and Firebase-linked GA4
   // pickers. Cross-owner is allowed by the backend (per-resource token
@@ -1103,57 +1164,74 @@ const SetupCard = ({
       <h2 className="font-semibold text-sm text-gray-900">New analysis</h2>
     </div>
 
-    <Field
-      label="Google Ads customer"
-      hint={customers.length === 0 && !customersLoading
-        ? 'No connected customers. Connect one on the Ads page first.'
-        : undefined}
-    >
+    <Field label="Source">
       <select
-        value={selectedCustomerId}
-        onChange={(e) => onSelectCustomer(e.target.value)}
-        disabled={customersLoading || busy || customers.length === 0}
-        className="w-full text-sm border border-gray-300 rounded-md px-2 py-1.5 disabled:bg-gray-50"
+        value={source}
+        onChange={(e) => onSelectSource(e.target.value)}
+        disabled={busy}
+        className="w-full text-sm border border-gray-300 rounded-md px-2 py-1.5"
       >
-        <option value="">
-          {customersLoading ? 'Loading…' : '— Select customer —'}
-        </option>
-        {customers.map(c => {
-          const id = c.customerId || c.customer_id;
-          const rawName = c.descriptiveName || c.descriptive_name || c.display_name;
-          const email = c.ownerEmail || c.owner_email;
-          const name = rawName || `Customer ${id}`;
-          const label = email ? `${name} — ${email}` : name;
-          return <option key={id} value={id}>{label}</option>;
-        })}
+        {SOURCE_OPTIONS.map(o => (
+          <option key={o.value} value={o.value}>{o.label}</option>
+        ))}
       </select>
-      {selectedCustomerId && (
-        <p className="text-[11px] text-gray-500 mt-1">
-          Customer ID {selectedCustomerId}
-        </p>
-      )}
     </Field>
 
-    <Field label="Campaign">
-      <select
-        value={selectedCampaignId}
-        onChange={(e) => onSelectCampaign(e.target.value)}
-        disabled={!selectedCustomerId || campaignsLoading || busy}
-        className="w-full text-sm border border-gray-300 rounded-md px-2 py-1.5 disabled:bg-gray-50"
+    {showGoogle && (
+      <Field
+        label="Google Ads customer"
+        hint={customers.length === 0 && !customersLoading
+          ? 'No connected customers. Connect one on the Ads page first.'
+          : undefined}
       >
-        <option value="">
-          {campaignsLoading ? 'Loading campaigns…' : '— Select campaign —'}
-        </option>
-        {campaigns.map(c => {
-          const id = c.campaignId || c.id;
-          return (
-            <option key={id} value={id}>
-              {c.name} {c.status ? `· ${c.status}` : ''}
-            </option>
-          );
-        })}
-      </select>
-    </Field>
+        <select
+          value={selectedCustomerId}
+          onChange={(e) => onSelectCustomer(e.target.value)}
+          disabled={customersLoading || busy || customers.length === 0}
+          className="w-full text-sm border border-gray-300 rounded-md px-2 py-1.5 disabled:bg-gray-50"
+        >
+          <option value="">
+            {customersLoading ? 'Loading…' : '— Select customer —'}
+          </option>
+          {customers.map(c => {
+            const id = c.customerId || c.customer_id;
+            const rawName = c.descriptiveName || c.descriptive_name || c.display_name;
+            const email = c.ownerEmail || c.owner_email;
+            const name = rawName || `Customer ${id}`;
+            const label = email ? `${name} — ${email}` : name;
+            return <option key={id} value={id}>{label}</option>;
+          })}
+        </select>
+        {selectedCustomerId && (
+          <p className="text-[11px] text-gray-500 mt-1">
+            Customer ID {selectedCustomerId}
+          </p>
+        )}
+      </Field>
+    )}
+
+    {showGoogle && (
+      <Field label="Campaign">
+        <select
+          value={selectedCampaignId}
+          onChange={(e) => onSelectCampaign(e.target.value)}
+          disabled={!selectedCustomerId || campaignsLoading || busy}
+          className="w-full text-sm border border-gray-300 rounded-md px-2 py-1.5 disabled:bg-gray-50"
+        >
+          <option value="">
+            {campaignsLoading ? 'Loading campaigns…' : '— Select campaign —'}
+          </option>
+          {campaigns.map(c => {
+            const id = c.campaignId || c.id;
+            return (
+              <option key={id} value={id}>
+                {c.name} {c.status ? `· ${c.status}` : ''}
+              </option>
+            );
+          })}
+        </select>
+      </Field>
+    )}
 
     <Field label="Date range">
       <select
@@ -1166,32 +1244,40 @@ const SetupCard = ({
       </select>
     </Field>
 
-    <Field label="GA4 property (web)" optional>
-      <select
-        value={selectedGa4PropertyId}
-        onChange={(e) => onSelectGa4Property(e.target.value)}
-        disabled={busy}
-        className="w-full text-sm border border-gray-300 rounded-md px-2 py-1.5"
-      >
-        <option value="">— None —</option>
-        {renderGa4Options()}
-      </select>
-    </Field>
+    {showGoogle && (
+      <Field label="GA4 property (web)" optional>
+        <select
+          value={selectedGa4PropertyId}
+          onChange={(e) => onSelectGa4Property(e.target.value)}
+          disabled={busy}
+          className="w-full text-sm border border-gray-300 rounded-md px-2 py-1.5"
+        >
+          <option value="">— None —</option>
+          {renderGa4Options()}
+        </select>
+      </Field>
+    )}
 
-    <Field label="GA4 property (Firebase-linked)" optional hint="Pick the app-stream property if your Firebase project is linked to GA4">
-      <select
-        value={selectedFirebasePropertyId}
-        onChange={(e) => onSelectFirebaseProperty(e.target.value)}
-        disabled={busy}
-        className="w-full text-sm border border-gray-300 rounded-md px-2 py-1.5"
-      >
-        <option value="">— None —</option>
-        {renderGa4Options()}
-      </select>
-    </Field>
+    {showGoogle && (
+      <Field label="GA4 property (Firebase-linked)" optional hint="Pick the app-stream property if your Firebase project is linked to GA4">
+        <select
+          value={selectedFirebasePropertyId}
+          onChange={(e) => onSelectFirebaseProperty(e.target.value)}
+          disabled={busy}
+          className="w-full text-sm border border-gray-300 rounded-md px-2 py-1.5"
+        >
+          <option value="">— None —</option>
+          {renderGa4Options()}
+        </select>
+      </Field>
+    )}
 
-    {openAiAdsConnections.length > 0 && (
-      <Field label="OpenAI Ads account" optional>
+    {showOpenAi && openAiAdsConnections.length > 0 && (
+      <Field
+        label="OpenAI Ads account"
+        optional={source === 'all'}
+        hint={source === 'openai' ? 'Required for OpenAI-only analysis.' : undefined}
+      >
         <select
           value={selectedOpenAiAdsConnectionId}
           onChange={(e) => onSelectOpenAiAds(e.target.value)}
@@ -1207,12 +1293,19 @@ const SetupCard = ({
         </select>
       </Field>
     )}
+    {showOpenAi && openAiAdsConnections.length === 0 && source === 'openai' && (
+      <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
+        No OpenAI Ads account connected. Connect one on the Connections page first.
+      </p>
+    )}
 
-    {metaAdAccounts && metaAdAccounts.length > 0 && (
+    {showMeta && metaAdAccounts && metaAdAccounts.length > 0 && (
       <Field
         label="Meta ad account (Facebook + Instagram)"
-        optional
-        hint="Pick a Meta ad account you've saved on /meta-ads to include Meta data in the assistant's context."
+        optional={source === 'all'}
+        hint={source === 'meta'
+          ? 'Required for Meta-only analysis.'
+          : "Pick a Meta ad account you've saved on /meta-ads to include Meta data."}
       >
         <select
           value={selectedMetaAdAccountId}
@@ -1229,6 +1322,11 @@ const SetupCard = ({
         </select>
       </Field>
     )}
+    {showMeta && (!metaAdAccounts || metaAdAccounts.length === 0) && source === 'meta' && (
+      <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
+        No Meta ad accounts saved. Save one on /meta-ads first.
+      </p>
+    )}
 
     {error && (
       <div className="flex items-start gap-2 text-xs text-red-700 bg-red-50 border border-red-200 rounded-md p-2">
@@ -1239,7 +1337,7 @@ const SetupCard = ({
 
     <button
       onClick={onStart}
-      disabled={busy || !selectedCustomerId || !selectedCampaignId}
+      disabled={busy || !canStart}
       className="w-full py-2 bg-primary-600 text-white text-sm font-medium rounded-md hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
     >
       {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
@@ -1274,14 +1372,22 @@ const ConversationsCard = ({ conversations, activeId, onOpen, onDelete }) => (
     )}
     <ul className="space-y-0.5 max-h-[40vh] overflow-y-auto">
       {conversations.map(c => {
-        const isAdHoc = !c.campaign_id;
+        const hasScope = !!(c.campaign_id || c.meta_ads_account_id || c.openai_ads_connection_id);
+        const isAdHoc = !hasScope;
+        const fallbackTitle = c.campaign_id
+          ? `Campaign ${c.campaign_id}`
+          : c.meta_ads_account_id
+            ? `Meta ${c.meta_ads_account_id}`
+            : c.openai_ads_connection_id
+              ? 'OpenAI Ads analysis'
+              : 'Ad-hoc chat';
         return (
         <li key={c.id} className={`group flex items-center rounded-md px-2 py-1.5 cursor-pointer text-sm ${
           activeId === c.id ? 'bg-primary-50 text-primary-900' : 'hover:bg-gray-50 text-gray-700'
         }`}>
           <button onClick={() => onOpen(c.id)} className="flex-1 min-w-0 text-left">
             <div className="truncate flex items-center gap-1.5">
-              <span className="truncate">{c.title || (isAdHoc ? 'Ad-hoc chat' : `Campaign ${c.campaign_id}`)}</span>
+              <span className="truncate">{c.title || fallbackTitle}</span>
               {isAdHoc && (
                 <span className="flex-shrink-0 text-[10px] px-1.5 py-0.5 bg-gray-100 text-gray-600 rounded uppercase tracking-wide" title="Ad-hoc chat — no campaign attached">
                   chat

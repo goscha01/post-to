@@ -475,7 +475,7 @@ router.get('/conversations', async (req, res) => {
   try {
     const { data, error } = await supabase
       .from('campaign_assistant_conversations')
-      .select('id, title, google_ads_customer_id, campaign_id, campaign_name, ga4_property_id, ga4_app_property_id, days, created_at, updated_at')
+      .select('id, title, google_ads_customer_id, campaign_id, campaign_name, ga4_property_id, ga4_app_property_id, meta_ads_account_id, openai_ads_connection_id, days, created_at, updated_at')
       .eq('user_id', (req.user.workspaceOwnerId || req.user.userId))
       .order('updated_at', { ascending: false })
       .limit(MAX_CONVERSATIONS_PER_LIST);
@@ -556,19 +556,31 @@ router.delete('/conversations/:id', async (req, res) => {
 // Infer ad-hoc mode from the request body. Explicit `mode: 'ad_hoc'` wins;
 // otherwise an absent customerId is treated as ad-hoc. Keeps the single
 // POST /conversations surface — callers that want a campaign analysis pass
-// customerId + campaignId exactly like before.
+// `source` ('all' | 'google' | 'meta' | 'openai'). Legacy callers that
+// pre-date the dropdown still pass just customerId; we treat that as 'all'
+// for backward compatibility.
+const VALID_SOURCES = new Set(['all', 'google', 'meta', 'openai']);
+function requestedSource(body) {
+  if (!body) return null;
+  const s = body.source;
+  if (VALID_SOURCES.has(s)) return s;
+  if (body.customerId) return 'all';            // legacy caller
+  return null;                                   // ad-hoc
+}
 function isAdHocConversationRequest(body) {
   if (!body) return true;
   if (body.mode === 'ad_hoc') return true;
-  return !body.customerId;
+  return requestedSource(body) === null;
 }
 
-// Business-auth is only needed for the campaign-analysis path (we have to
-// pull Google Ads / GA4 data). Ad-hoc conversations don't call any Google
-// API during creation, so skip the check — tool-call-time resolution still
-// enforces per-tool connection requirements.
+// Business-auth is only needed when the analysis will actually hit Google
+// Ads / GA4 APIs. Ad-hoc + Meta-only + OpenAI-only paths don't need the
+// Google business token, so skip the check for them. Tool-call-time
+// resolution still enforces per-tool connection requirements.
 const maybeBusinessAuth = (req, res, next) => {
   if (isAdHocConversationRequest(req.body)) return next();
+  const s = requestedSource(req.body);
+  if (s === 'meta' || s === 'openai') return next();
   return requireBusinessAuth(req, res, next);
 };
 
@@ -628,14 +640,29 @@ router.post('/conversations', maybeBusinessAuth, async (req, res) => {
       metaAdAccountId,
       title,
     } = req.body || {};
+    const source = requestedSource(req.body);        // 'all' | 'google' | 'meta' | 'openai'
+    const useGoogle = source === 'all' || source === 'google';
+    const useMeta = source === 'all' || source === 'meta';
+    const useOpenAi = source === 'all' || source === 'openai';
     const days = parseDays(req.body?.days, 30);
     const campaignIdClean = digitsOnly(campaignId);
 
-    // Meta is optional. If the caller passes an id, validate it's in the
-    // user's saved selection (same auth contract as /api/meta-ads/*) and
-    // resolve the long-lived Meta user token. Any failure here leaves Meta
-    // out of the report — never blocks the conversation.
-    const metaResolved = await resolveMetaSelection(userId, metaAdAccountId);
+    // Per-source hard requirements. Meta/OpenAI-only paths do NOT need the
+    // Google Ads customer; conversely, Google-only paths don't need a Meta
+    // account id.
+    if (source === 'meta' && !metaAdAccountId) {
+      return res.status(400).json({ error: 'metaAdAccountId required for source=meta' });
+    }
+    if (source === 'openai' && !openAiAdsConnectionId) {
+      return res.status(400).json({ error: 'openAiAdsConnectionId required for source=openai' });
+    }
+
+    // Meta: when requested, validate it's in the user's saved selection
+    // (same auth contract as /api/meta-ads/*) and resolve the long-lived
+    // Meta user token. For source='all' with no Meta id this is a no-op.
+    const metaResolved = useMeta
+      ? await resolveMetaSelection(userId, metaAdAccountId)
+      : { adAccountId: null, accessToken: null };
     if (metaResolved.error === 'META_AD_ACCOUNT_NOT_AUTHORIZED') {
       return res.status(403).json({
         error:
@@ -643,37 +670,50 @@ router.post('/conversations', maybeBusinessAuth, async (req, res) => {
         code: 'META_AD_ACCOUNT_NOT_AUTHORIZED',
       });
     }
-
-    const [adsCustomer, ga4Prop, ga4AppProp] = await Promise.all([
-      resolveAdsCustomer(userId, customerId),
-      resolveGa4Property(userId, propertyId),
-      resolveGa4Property(userId, firebasePropertyId),
-    ]);
-    if (!adsCustomer.customerId) {
-      return res.status(400).json({ error: 'Google Ads customer required or not connected' });
+    if (source === 'meta' && !metaResolved.adAccountId) {
+      return res.status(400).json({ error: 'Meta ad account could not be resolved — reconnect Meta or pick a saved account on /meta-ads' });
     }
-    if (!campaignIdClean) {
-      return res.status(400).json({ error: 'campaignId required' });
+
+    // Google: skip resolution entirely when the source is Meta/OpenAI only.
+    // generateReport treats null customerId as "skip Google" so the Meta or
+    // OpenAI data still comes through.
+    let adsCustomer = { customerId: null, loginCustomerId: null, ownerGoogleId: null, descriptiveName: null };
+    let ga4Prop = { propertyId: null, displayName: null, ownerGoogleId: null };
+    let ga4AppProp = { propertyId: null, displayName: null, ownerGoogleId: null };
+    if (useGoogle) {
+      [adsCustomer, ga4Prop, ga4AppProp] = await Promise.all([
+        resolveAdsCustomer(userId, customerId),
+        resolveGa4Property(userId, propertyId),
+        resolveGa4Property(userId, firebasePropertyId),
+      ]);
+      if (!adsCustomer.customerId) {
+        return res.status(400).json({ error: 'Google Ads customer required or not connected' });
+      }
+      if (!campaignIdClean) {
+        return res.status(400).json({ error: 'campaignId required' });
+      }
     }
 
     const [adsToken, ga4Token, ga4AppToken] = await Promise.all([
-      tokenForOwner(req, adsCustomer.ownerGoogleId),
+      adsCustomer.customerId ? tokenForOwner(req, adsCustomer.ownerGoogleId) : Promise.resolve(null),
       ga4Prop.propertyId ? tokenForOwner(req, ga4Prop.ownerGoogleId) : Promise.resolve(null),
       ga4AppProp.propertyId ? tokenForOwner(req, ga4AppProp.ownerGoogleId) : Promise.resolve(null),
     ]);
 
-    // OpenAI Ads history is optional context. Failure to fetch is not fatal.
-    const openAiAdsHistory = await fetchOpenAiAdsHistory({
-      userId,
-      connectionId: openAiAdsConnectionId || null,
-      days,
-    });
+    // OpenAI Ads history is optional context. Failure to fetch is not fatal
+    // for 'all'; for 'openai' sole-source we want it present so flag below.
+    const openAiAdsHistory = useOpenAi
+      ? await fetchOpenAiAdsHistory({ userId, connectionId: openAiAdsConnectionId || null, days })
+      : null;
+    if (source === 'openai' && !openAiAdsHistory) {
+      return res.status(400).json({ error: 'Could not load OpenAI Ads history — check the connection on /connections' });
+    }
 
     const report = await optimizationReport.generateReport({
       adsAccessToken: adsToken,
       customerId: adsCustomer.customerId,
       loginCustomerId: adsCustomer.loginCustomerId,
-      campaignId: campaignIdClean,
+      campaignId: campaignIdClean || null,
       ga4AccessToken: ga4Token,
       propertyId: ga4Prop.propertyId,
       firebaseAccessToken: ga4AppToken,
@@ -694,21 +734,30 @@ router.post('/conversations', maybeBusinessAuth, async (req, res) => {
       firebasePropertyId: ga4AppProp.propertyId,
       firebasePropertyName: ga4AppProp.displayName,
       metaAdAccountId: metaResolved.adAccountId,
+      source,
     };
+
+    const titleFallback = campaignIdClean
+      ? `Campaign ${campaignIdClean}`
+      : metaResolved.adAccountId
+        ? `Meta ${metaResolved.adAccountId}`
+        : openAiAdsConnectionId
+          ? 'OpenAI Ads analysis'
+          : 'Analysis';
 
     const now = new Date().toISOString();
     const { data: conv, error: convErr } = await supabase
       .from('campaign_assistant_conversations')
       .insert({
         user_id: userId,
-        title: (title || campaignName || `Campaign ${campaignIdClean}`).slice(0, 255),
+        title: (title || campaignName || titleFallback).slice(0, 255),
         google_ads_customer_id: adsCustomer.customerId,
         google_ads_login_customer_id: adsCustomer.loginCustomerId,
-        campaign_id: campaignIdClean,
+        campaign_id: campaignIdClean || null,
         campaign_name: campaignName || null,
         ga4_property_id: ga4Prop.propertyId,
         ga4_app_property_id: ga4AppProp.propertyId,
-        openai_ads_connection_id: openAiAdsConnectionId || null,
+        openai_ads_connection_id: useOpenAi ? (openAiAdsConnectionId || null) : null,
         meta_ads_account_id: metaResolved.adAccountId,
         days,
         report_snapshot: report,
@@ -721,8 +770,11 @@ router.post('/conversations', maybeBusinessAuth, async (req, res) => {
     logger.info('campaignAssistant.conversation_created', {
       userId,
       conversationId: conv.id,
+      source,
       customerId: adsCustomer.customerId,
-      campaignId: campaignIdClean,
+      campaignId: campaignIdClean || null,
+      metaAdAccountId: metaResolved.adAccountId,
+      openAiAdsConnectionId: useOpenAi ? (openAiAdsConnectionId || null) : null,
       days,
       hasFirebase: !!ga4AppProp.propertyId,
       hasOpenAiAds: !!openAiAdsHistory,
@@ -737,6 +789,8 @@ router.post('/conversations', maybeBusinessAuth, async (req, res) => {
         campaign_id: conv.campaign_id,
         campaign_name: conv.campaign_name,
         google_ads_customer_id: conv.google_ads_customer_id,
+        meta_ads_account_id: conv.meta_ads_account_id,
+        openai_ads_connection_id: conv.openai_ads_connection_id,
         ga4_property_id: conv.ga4_property_id,
         ga4_app_property_id: conv.ga4_app_property_id,
         days: conv.days,
@@ -768,7 +822,30 @@ router.post('/conversations', maybeBusinessAuth, async (req, res) => {
 // re-check current state before applying a stale plan step, or to see the
 // effect of applied changes after they've taken effect.
 // ---------------------------------------------------------------------------
-router.post('/conversations/:id/refresh-snapshot', requireBusinessAuth, async (req, res) => {
+// Conditional business auth: only require it when the stored conversation
+// actually uses Google Ads. Meta-only / OpenAI-only conversations don't need
+// a Google business token to refresh. One extra Supabase read per refresh is
+// fine — the alternative is duplicating the whole handler per source.
+async function conditionalBusinessAuthForConversation(req, res, next) {
+  try {
+    const userId = (req.user?.workspaceOwnerId || req.user?.userId);
+    if (!userId) return res.status(401).json({ error: 'Auth required' });
+    const { data: conv } = await supabase
+      .from('campaign_assistant_conversations')
+      .select('google_ads_customer_id')
+      .eq('user_id', userId)
+      .eq('id', req.params.id)
+      .single();
+    if (conv && conv.google_ads_customer_id) {
+      return requireBusinessAuth(req, res, next);
+    }
+    return next();                        // non-Google (or non-existent — handler responds 404)
+  } catch (err) {
+    return next();
+  }
+}
+
+router.post('/conversations/:id/refresh-snapshot', conditionalBusinessAuthForConversation, async (req, res) => {
   const userId = (req.user.workspaceOwnerId || req.user.userId);
   const conversationId = req.params.id;
   const t0 = Date.now();
@@ -780,25 +857,39 @@ router.post('/conversations/:id/refresh-snapshot', requireBusinessAuth, async (r
       .eq('id', conversationId)
       .single();
     if (convErr || !conv) return res.status(404).json({ error: 'Conversation not found' });
-    if (!conv.google_ads_customer_id || !conv.campaign_id) {
-      return res.status(400).json({ error: 'Conversation is missing customer/campaign IDs — cannot refresh' });
+
+    // Scope must include at least one platform. Google half-configured
+    // (customer without campaign_id) is a bug worth surfacing.
+    const hasGoogle = !!conv.google_ads_customer_id;
+    const hasMeta = !!conv.meta_ads_account_id;
+    const hasOpenAi = !!conv.openai_ads_connection_id;
+    if (!hasGoogle && !hasMeta && !hasOpenAi) {
+      return res.status(400).json({ error: 'Conversation has no attached ad source — cannot refresh' });
+    }
+    if (hasGoogle && !conv.campaign_id) {
+      return res.status(400).json({ error: 'Conversation is missing campaign ID — cannot refresh' });
     }
 
-    const [adsCustomer, ga4Prop, ga4AppProp, metaResolved] = await Promise.all([
-      resolveAdsCustomer(userId, conv.google_ads_customer_id),
-      resolveGa4Property(userId, conv.ga4_property_id),
-      resolveGa4Property(userId, conv.ga4_app_property_id),
-      // Use the conversation's saved meta_ads_account_id when present.
-      // Meta may have been disconnected since — resolveMetaSelection returns
-      // { adAccountId: null } silently in that case and Meta drops out of
-      // the refreshed report without breaking anything else.
-      resolveMetaSelection(userId, conv.meta_ads_account_id),
-    ]);
-    if (!adsCustomer.customerId) {
-      return res.status(400).json({ error: 'Google Ads customer no longer connected — reconnect Google Business' });
+    let adsCustomer = { customerId: null, loginCustomerId: null, ownerGoogleId: null, descriptiveName: null };
+    let ga4Prop = { propertyId: null, displayName: null, ownerGoogleId: null };
+    let ga4AppProp = { propertyId: null, displayName: null, ownerGoogleId: null };
+    if (hasGoogle) {
+      [adsCustomer, ga4Prop, ga4AppProp] = await Promise.all([
+        resolveAdsCustomer(userId, conv.google_ads_customer_id),
+        resolveGa4Property(userId, conv.ga4_property_id),
+        resolveGa4Property(userId, conv.ga4_app_property_id),
+      ]);
+      if (!adsCustomer.customerId) {
+        return res.status(400).json({ error: 'Google Ads customer no longer connected — reconnect Google Business' });
+      }
     }
+    // Use the conversation's saved meta_ads_account_id when present.
+    // Meta may have been disconnected since — resolveMetaSelection returns
+    // { adAccountId: null } silently in that case and Meta drops out of
+    // the refreshed report without breaking anything else.
+    const metaResolved = await resolveMetaSelection(userId, conv.meta_ads_account_id);
     const [adsToken, ga4Token, ga4AppToken] = await Promise.all([
-      tokenForOwner(req, adsCustomer.ownerGoogleId),
+      adsCustomer.customerId ? tokenForOwner(req, adsCustomer.ownerGoogleId) : Promise.resolve(null),
       ga4Prop.propertyId ? tokenForOwner(req, ga4Prop.ownerGoogleId) : Promise.resolve(null),
       ga4AppProp.propertyId ? tokenForOwner(req, ga4AppProp.ownerGoogleId) : Promise.resolve(null),
     ]);

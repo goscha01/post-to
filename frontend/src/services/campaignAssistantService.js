@@ -19,6 +19,7 @@ const getConversation = async (id) => {
 };
 
 const createConversation = async ({
+  source,
   customerId, campaignId, campaignName,
   propertyId, firebasePropertyId, openAiAdsConnectionId,
   metaAdAccountId,
@@ -26,6 +27,7 @@ const createConversation = async ({
   mode,
 }) => {
   const res = await axios.post('/api/campaign-assistant/conversations', {
+    source: source || undefined,
     customerId, campaignId, campaignName,
     propertyId, firebasePropertyId, openAiAdsConnectionId,
     metaAdAccountId: metaAdAccountId || undefined,
