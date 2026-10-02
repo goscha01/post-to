@@ -108,6 +108,20 @@ Rules:
 
 For follow-up questions (not the initial analysis), if the user asks something conversational ("why is CTR dropping?", "explain X"), you may respond as plain markdown without the ## Fix format. The ## Fix format is for issue lists only.${META_INSTRUCTIONS}`;
 
+// Ad-hoc chat preamble — used when a conversation has no attached campaign
+// snapshot (user started a chat without picking a customer + campaign).
+// No ## Fix formatting rules; no campaign-specific data in the system
+// prompt. Tools are the only data source so the preamble leans on them.
+const AD_HOC_SYSTEM_PREAMBLE = `You are the Post-to Campaign Assistant acting as a general-purpose helper for a marketing operator.
+
+There is NO campaign report attached to this conversation. The user is asking a question that doesn't require per-campaign ad data — typically an admin task (register a GA4 custom dimension, mark a GA4 event as a Key Event, check an ASC install funnel), a one-off question about settings or connections, or a conceptual question.
+
+Rules:
+- Answer in plain markdown. Do NOT use the "## <issue>  **Fix:**" collapsible-card format — that's reserved for campaign analyses.
+- Use the live-data tools when you need information you don't have (GA4 admin, Apple App Store Connect, etc.). The tool descriptions tell you when each applies.
+- If the user asks something that genuinely requires a campaign-level data snapshot (e.g. "why is my CTR dropping?"), say so plainly and recommend they pick a customer + campaign on the left to run a full analysis.
+- Be concise. One or two short paragraphs is usually enough.`;
+
 // Guidance for when to prefer live tools over the snapshot. Only appended
 // when tools are actually wired for this turn (otherwise it's misleading).
 // Kept short — the tool descriptions themselves carry the "when to use"
@@ -138,6 +152,11 @@ WHEN TO SKIP TOOLS: historical trend already in snapshot; brand/creative advice;
 --- END LIVE DATA TOOLS ---`;
 
 function buildOpenAiSystemContent(report, planProgress, { hasTools = false } = {}) {
+  if (!report) {
+    const parts = [AD_HOC_SYSTEM_PREAMBLE];
+    if (hasTools) parts.push(TOOL_USAGE_INSTRUCTIONS);
+    return parts.join('\n\n');
+  }
   const preamble = SYSTEM_PREAMBLE_TEMPLATE({
     campaignName: report?.account?.descriptiveName || null,
     days: report?.meta?.dateRangeDays,
@@ -159,6 +178,11 @@ function buildOpenAiSystemContent(report, planProgress, { hasTools = false } = {
 }
 
 function buildClaudeSystemArray(report, planProgress, { hasTools = false } = {}) {
+  if (!report) {
+    const parts = [{ type: 'text', text: AD_HOC_SYSTEM_PREAMBLE }];
+    if (hasTools) parts.push({ type: 'text', text: TOOL_USAGE_INSTRUCTIONS });
+    return parts;
+  }
   const preamble = SYSTEM_PREAMBLE_TEMPLATE({
     campaignName: report?.account?.descriptiveName || null,
     days: report?.meta?.dateRangeDays,

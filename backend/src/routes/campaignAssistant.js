@@ -553,12 +553,74 @@ router.delete('/conversations/:id', async (req, res) => {
   }
 });
 
+// Infer ad-hoc mode from the request body. Explicit `mode: 'ad_hoc'` wins;
+// otherwise an absent customerId is treated as ad-hoc. Keeps the single
+// POST /conversations surface — callers that want a campaign analysis pass
+// customerId + campaignId exactly like before.
+function isAdHocConversationRequest(body) {
+  if (!body) return true;
+  if (body.mode === 'ad_hoc') return true;
+  return !body.customerId;
+}
+
+// Business-auth is only needed for the campaign-analysis path (we have to
+// pull Google Ads / GA4 data). Ad-hoc conversations don't call any Google
+// API during creation, so skip the check — tool-call-time resolution still
+// enforces per-tool connection requirements.
+const maybeBusinessAuth = (req, res, next) => {
+  if (isAdHocConversationRequest(req.body)) return next();
+  return requireBusinessAuth(req, res, next);
+};
+
 // ---------------------------------------------------------------------------
 // POST /conversations — create + capture report snapshot
 // ---------------------------------------------------------------------------
-router.post('/conversations', requireBusinessAuth, async (req, res) => {
+router.post('/conversations', maybeBusinessAuth, async (req, res) => {
   const userId = (req.user.workspaceOwnerId || req.user.userId);
   const t0 = Date.now();
+  // Ad-hoc path: no customer/campaign, no report snapshot, no Google data
+  // fetched. The conversation is just a chat shell — the model relies on
+  // live tools (GA4 admin, ASC, etc.) for anything it needs to know.
+  if (isAdHocConversationRequest(req.body)) {
+    try {
+      const rawTitle = typeof req.body?.title === 'string' ? req.body.title.trim() : '';
+      const title = (rawTitle || `Ad-hoc chat · ${new Date().toISOString().slice(0, 10)}`).slice(0, 255);
+      const { data: conv, error: convErr } = await supabase
+        .from('campaign_assistant_conversations')
+        .insert({
+          user_id: userId,
+          title,
+          report_snapshot: null,
+        })
+        .select()
+        .single();
+      if (convErr) throw new Error(`Failed to persist ad-hoc conversation: ${convErr.message}`);
+      logger.info('campaignAssistant.ad_hoc_conversation_created', {
+        userId, conversationId: conv.id, duration_ms: Date.now() - t0,
+      });
+      return res.json({
+        conversation: {
+          id: conv.id,
+          title: conv.title,
+          campaign_id: null,
+          campaign_name: null,
+          google_ads_customer_id: null,
+          ga4_property_id: null,
+          ga4_app_property_id: null,
+          days: null,
+          created_at: conv.created_at,
+          mode: 'ad_hoc',
+        },
+        snapshotMeta: null,
+        initialAnalysisPrompt: null,
+      });
+    } catch (err) {
+      logger.error('campaignAssistant.ad_hoc_create_failed', {
+        userId, error: err.message, duration_ms: Date.now() - t0,
+      });
+      return res.status(err.status || 500).json({ error: err.message || 'Failed to create ad-hoc conversation' });
+    }
+  }
   try {
     const {
       customerId, campaignId, campaignName,
@@ -845,9 +907,8 @@ router.post('/conversations/:id/chat', async (req, res) => {
   if (convErr || !conv) {
     return res.status(404).json({ error: 'Conversation not found' });
   }
-  if (!conv.report_snapshot) {
-    return res.status(400).json({ error: 'Conversation is missing a report snapshot' });
-  }
+  // Ad-hoc conversations have `report_snapshot === null` — the system
+  // prompt builder tolerates that and switches to the ad-hoc preamble.
 
   // Load prior main-chat messages (exclude card-scoped ones) for provider history.
   const { data: priorMessages, error: histErr } = await supabase

@@ -695,6 +695,33 @@ const CampaignAssistant = () => {
     setComposerAttachments(prev => prev.filter(a => a.id !== id));
   }, []);
 
+  // When the user sends a message with NO active conversation, we auto-
+  // create an ad-hoc one on the fly (no customer/campaign, no snapshot,
+  // just a chat shell that the tools-only system prompt can anchor to).
+  // Then we send the message as the first turn of that new conversation.
+  const createAdHocAndSend = useCallback(async (text, atts, targets) => {
+    setStreaming(true); // lock composer immediately so a double-click can't fire twice
+    try {
+      const derivedTitle = text ? text.replace(/\s+/g, ' ').trim().slice(0, 40) : null;
+      const res = await campaignAssistantService.createConversation({
+        mode: 'ad_hoc',
+        title: derivedTitle || undefined,
+      });
+      const conv = res.conversation;
+      setConversations(prev => [conv, ...prev]);
+      setActiveConversation(conv);
+      setSnapshotMeta(null);
+      setMessages([]);
+      // sendMessage flips setStreaming(true) itself; the previous set
+      // was just to block re-entry during the create round-trip.
+      setStreaming(false);
+      await sendMessage(text, conv.id, atts, targets);
+    } catch (err) {
+      setStreaming(false);
+      setComposerError(err.response?.data?.error || err.message || 'Could not start chat');
+    }
+  }, [sendMessage]);
+
   const handleSend = useCallback((targets = ['openai', 'claude']) => {
     const text = composer.trim();
     const hasAttachments = composerAttachments.length > 0;
@@ -704,8 +731,12 @@ const CampaignAssistant = () => {
     const atts = composerAttachments;
     setComposerAttachments([]);
     setComposerError(null);
+    if (!activeConversation) {
+      createAdHocAndSend(text, atts, targets);
+      return;
+    }
     sendMessage(text, undefined, atts, targets);
-  }, [composer, composerAttachments, streaming, sendMessage]);
+  }, [composer, composerAttachments, streaming, sendMessage, activeConversation, createAdHocAndSend]);
 
   // "Copy for review" — puts the given assistant response into the main
   // composer wrapped in a review-request prefix. User then picks a target
@@ -886,7 +917,7 @@ const CampaignAssistant = () => {
           />
         )}
 
-        {activeConversation && (
+        {activeConversation && activeConversation.campaign_id && (
           <ActionPlanPanel
             plan={latestPlan}
             loading={planLoading}
@@ -948,7 +979,7 @@ const CampaignAssistant = () => {
             />
             <button
               onClick={() => fileInputRef.current?.click()}
-              disabled={!activeConversation || streaming || composerAttachments.length >= MAX_ATTACHMENTS_PER_TURN}
+              disabled={streaming || composerAttachments.length >= MAX_ATTACHMENTS_PER_TURN}
               title={composerAttachments.length >= MAX_ATTACHMENTS_PER_TURN
                 ? `Max ${MAX_ATTACHMENTS_PER_TURN} images per message`
                 : 'Attach image(s) — PNG / JPEG / WebP / GIF, ≤5MB each. You can also paste from the clipboard.'}
@@ -969,8 +1000,8 @@ const CampaignAssistant = () => {
               }}
               placeholder={activeConversation
                 ? 'Ask a follow-up… paste screenshots or click the clip to attach images.'
-                : 'Start a new analysis first (pick a customer + campaign on the left)'}
-              disabled={!activeConversation || streaming}
+                : 'Type a message to start — or pick a customer + campaign on the left for a full campaign analysis.'}
+              disabled={streaming}
               rows={2}
               className="flex-1 resize-none border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:bg-gray-50 disabled:text-gray-400"
             />
@@ -978,7 +1009,7 @@ const CampaignAssistant = () => {
           <div className="flex gap-1.5 mt-2 justify-end">
             <button
               onClick={() => handleSend(['claude'])}
-              disabled={!activeConversation || streaming || (!composer.trim() && composerAttachments.length === 0)}
+              disabled={streaming || (!composer.trim() && composerAttachments.length === 0)}
               title="Send only to Claude"
               className="px-3 py-1.5 border border-orange-300 text-orange-700 bg-orange-50 text-xs font-medium rounded-md hover:bg-orange-100 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
             >
@@ -986,7 +1017,7 @@ const CampaignAssistant = () => {
             </button>
             <button
               onClick={() => handleSend(['openai'])}
-              disabled={!activeConversation || streaming || (!composer.trim() && composerAttachments.length === 0)}
+              disabled={streaming || (!composer.trim() && composerAttachments.length === 0)}
               title="Send only to OpenAI"
               className="px-3 py-1.5 border border-green-300 text-green-700 bg-green-50 text-xs font-medium rounded-md hover:bg-green-100 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
             >
@@ -994,7 +1025,7 @@ const CampaignAssistant = () => {
             </button>
             <button
               onClick={() => handleSend(['openai', 'claude'])}
-              disabled={!activeConversation || streaming || (!composer.trim() && composerAttachments.length === 0)}
+              disabled={streaming || (!composer.trim() && composerAttachments.length === 0)}
               title="Send to both providers (Enter)"
               className="px-3 py-1.5 bg-primary-600 text-white text-xs font-medium rounded-md hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
             >
@@ -1242,12 +1273,21 @@ const ConversationsCard = ({ conversations, activeId, onOpen, onDelete }) => (
       <p className="text-xs text-gray-500 px-2 py-2">No analyses yet.</p>
     )}
     <ul className="space-y-0.5 max-h-[40vh] overflow-y-auto">
-      {conversations.map(c => (
+      {conversations.map(c => {
+        const isAdHoc = !c.campaign_id;
+        return (
         <li key={c.id} className={`group flex items-center rounded-md px-2 py-1.5 cursor-pointer text-sm ${
           activeId === c.id ? 'bg-primary-50 text-primary-900' : 'hover:bg-gray-50 text-gray-700'
         }`}>
           <button onClick={() => onOpen(c.id)} className="flex-1 min-w-0 text-left">
-            <div className="truncate">{c.title || `Campaign ${c.campaign_id}`}</div>
+            <div className="truncate flex items-center gap-1.5">
+              <span className="truncate">{c.title || (isAdHoc ? 'Ad-hoc chat' : `Campaign ${c.campaign_id}`)}</span>
+              {isAdHoc && (
+                <span className="flex-shrink-0 text-[10px] px-1.5 py-0.5 bg-gray-100 text-gray-600 rounded uppercase tracking-wide" title="Ad-hoc chat — no campaign attached">
+                  chat
+                </span>
+              )}
+            </div>
             <div className="text-[11px] text-gray-500">
               {new Date(c.updated_at || c.created_at).toLocaleString()}
             </div>
@@ -1260,7 +1300,8 @@ const ConversationsCard = ({ conversations, activeId, onOpen, onDelete }) => (
             <Trash2 className="h-3.5 w-3.5" />
           </button>
         </li>
-      ))}
+        );
+      })}
     </ul>
   </div>
 );
@@ -3143,10 +3184,10 @@ const AssistantBody = ({ content, provider, conversationId }) => {
 const EmptyState = () => (
   <div className="h-full flex flex-col items-center justify-center text-center text-gray-500 py-16">
     <Sparkles className="h-8 w-8 text-primary-500 mb-2" />
-    <p className="text-sm font-medium text-gray-700">Pick a customer and campaign to start.</p>
+    <p className="text-sm font-medium text-gray-700">Type a question below for a quick answer.</p>
     <p className="text-xs mt-1 max-w-md">
-      The assistant pulls Google Ads + GA4 + (optionally) Firebase events and OpenAI Ads history,
-      then asks OpenAI and Claude for recommendations side by side.
+      Or pick a customer + campaign on the left for a full analysis across Google Ads, GA4, and
+      (optionally) Firebase events, OpenAI Ads, and Meta Ads — reviewed side by side by OpenAI and Claude.
     </p>
   </div>
 );
