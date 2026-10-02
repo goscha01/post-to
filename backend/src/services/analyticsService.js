@@ -747,6 +747,64 @@ async function markConversionEvent(accessToken, propertyId, eventName) {
 // AI to check "is 'purchase' already a Key Event?" before either marking
 // it or telling the user to click a Console button. Returns the raw
 // resource names so the model can also cross-reference deletion targets.
+// ---------- Auto-registered custom dimensions ----------
+//
+// Event parameters Post-to needs registered on every connected GA4 property
+// to render per-parameter breakdowns in the dashboard. ensurePostToCustomDimensions
+// below runs this list through createCustomDimension on property connect
+// (idempotent — 409 ALREADY_EXISTS returns noop:true).
+//
+// Keep this list minimal — only add params the UI actively uses, otherwise
+// users accumulate stale custom dims on their property.
+const AUTO_REGISTER_CUSTOM_DIMS = [
+  {
+    parameterName: 'plan_id',
+    displayName: 'Plan ID',
+    scope: 'EVENT',
+    description: 'Which plan tier the user selected (starter/pro/business/enterprise). Powers Post-to Analytics plan breakdown under the Selected a plan funnel step.',
+  },
+  {
+    parameterName: 'billing_period',
+    displayName: 'Billing Period',
+    scope: 'EVENT',
+    description: 'monthly / annual / seat — the billing cadence for the selected plan. Shown alongside Plan ID in the breakdown.',
+  },
+];
+
+// Idempotent batch registration — safe to call every time a property is
+// connected. Never throws: a single dimension failing (scope missing,
+// unexpected 4xx) is logged and skipped so the enclosing connection save
+// stays fast and reliable. Returns a per-dimension status array that
+// callers can log or return in a response.
+async function ensurePostToCustomDimensions(accessToken, propertyId) {
+  const results = [];
+  for (const dim of AUTO_REGISTER_CUSTOM_DIMS) {
+    try {
+      const res = await createCustomDimension(accessToken, propertyId, dim);
+      const status = res.noop ? 'noop' : 'created';
+      logger.info('analytics.ensure_custom_dimension', {
+        propertyId,
+        parameterName: dim.parameterName,
+        status,
+      });
+      results.push({ parameterName: dim.parameterName, status });
+    } catch (err) {
+      const httpStatus = err?.response?.status || err?.status;
+      const message = err?.response?.data?.error?.message || err?.message || 'unknown';
+      const status = httpStatus === 403 ? 'scope_missing' : 'failed';
+      logger.warn('analytics.ensure_custom_dimension', {
+        propertyId,
+        parameterName: dim.parameterName,
+        status,
+        httpStatus,
+        message,
+      });
+      results.push({ parameterName: dim.parameterName, status, message });
+    }
+  }
+  return results;
+}
+
 // ---------- Custom Dimensions (Admin API) ----------
 //
 // GA4 event parameters (e.g. `plan_id`, `billing_period`) must be registered
@@ -879,6 +937,7 @@ module.exports = {
   listConversionEvents,
   listCustomDimensions,
   createCustomDimension,
+  ensurePostToCustomDimensions,
   normalizeApiError,
   // exposed for tests
   _internal: { runReport, shapeReport, dateRangeFromDays, HIGHLIGHTED_EVENTS },

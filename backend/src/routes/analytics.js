@@ -401,6 +401,27 @@ router.post('/properties', express.json(), async (req, res) => {
       connectionId: row.id,
       ownerGoogleId: ownerGoogleId || null,
     });
+    // Auto-register the custom event dimensions Post-to needs for the
+    // dashboard breakdowns (plan_id, billing_period). Idempotent — 409
+    // ALREADY_EXISTS from GA4 returns noop:true. Awaited so the log output
+    // is synchronous for debuggability; typical latency is <500ms since
+    // only two dims are registered.
+    //
+    // Non-fatal — ensurePostToCustomDimensions never throws (catches
+    // per-dim), so a scope-missing or transient Admin API error won't
+    // block the connection save.
+    try {
+      const token = await tokenForProperty(req, String(propertyId).trim());
+      if (token?.access_token) {
+        await analytics.ensurePostToCustomDimensions(token.access_token, String(propertyId).trim());
+      }
+    } catch (dimErr) {
+      logger.warn('analytics.property.ensure_dims_failed', {
+        userId: (req.user.workspaceOwnerId || req.user.userId),
+        propertyId,
+        error: dimErr.message,
+      });
+    }
     res.status(201).json({ connection: row });
   } catch (err) {
     logger.error('analytics.property.connect_failed', {
