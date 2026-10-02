@@ -637,14 +637,28 @@ async function getInstallFunnel({ connectionId, days = 14, userId }) {
       };
     });
 
-  // Sum nulls as 0 for totals. Display totals use the S&T-preferred number
-  // so the summary card matches Overview.
-  const totals = perDay.reduce((acc, d) => ({
-    impressions: acc.impressions + (d.impressions || 0),
-    productPageViews: acc.productPageViews + (d.productPageViews || 0),
-    installs: acc.installs + (d.installs || 0),
-    redownloads: acc.redownloads + (perDayMap.get(d.date)?.redownloads || 0),
-  }), { impressions: 0, productPageViews: 0, installs: 0, redownloads: 0 });
+  // Totals: null when ZERO days in the window have real data for that
+  // metric (so the summary card shows "—", not "0"), otherwise the sum
+  // of what's present. "0 impressions, 4 days pending" is nonsense when
+  // every day is pending — it reads as "we counted 0" instead of "we
+  // have no data to count yet". A real 0 is only possible when at least
+  // one day has complete data showing 0 events.
+  const sumIfAny = (field) => {
+    let total = 0, hadReal = false;
+    for (const d of perDay) {
+      if (d[field] !== null && d[field] !== undefined) {
+        total += d[field];
+        hadReal = true;
+      }
+    }
+    return hadReal ? total : null;
+  };
+  const totals = {
+    impressions: sumIfAny('impressions'),
+    productPageViews: sumIfAny('productPageViews'),
+    installs: sumIfAny('installs'),
+    redownloads: perDay.reduce((s, d) => s + (perDayMap.get(d.date)?.redownloads || 0), 0),
+  };
 
   // Conversion rate must use ANALYTICS-ATTRIBUTED installs, not S&T
   // installs. S&T counts every install regardless of path (search "Get"
