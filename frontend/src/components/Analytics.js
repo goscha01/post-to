@@ -276,6 +276,10 @@ const Analytics = () => {
           connectionName: conn.displayName || conn.appBundleId || conn.connectionId,
           totals: funnel?.totals || null,
           days: funnel?.days || days,
+          // engagementStatus: 'pending' | 'partial' | 'ok'. The impressions
+          // tile uses it to distinguish "Apple hasn't published yet" from
+          // "genuinely zero" so users stop asking "why 0 impressions".
+          engagementStatus: funnel?.engagementStatus || 'ok',
         });
         setAdAttribution(attribution);
       } catch (err) {
@@ -664,15 +668,24 @@ const AppStoreSection = ({ ascState }) => {
   //                                   includes restores + direct URL installs
   //                                   that have no page-view touchpoint)
   // Each tile carries a `note` explaining what to make of a 0 / unusual value.
+  // Impressions=0 can mean three different things — distinguish them so the
+  // user doesn't have to guess which.
+  const engagementStatus = ascState.engagementStatus;
+  const impressionsNote =
+    engagementStatus === 'pending'
+      ? "Apple hasn't published engagement data for any day in this window yet (typical 2-3 day lag from Apple's analytics pipeline). This number will fill in automatically — not a bug on our end."
+      : engagementStatus === 'partial'
+      ? "Apple is still publishing engagement data for the most recent days of this window (typical 2-3 day lag). Numbers below are provisional."
+      : t.impressions === 0 || t.impressions === null
+      ? 'No impressions in this period. The app is not being surfaced in App Store search or browse — every install is coming from external channels (direct URLs, referrer apps, deep links, Apple Search Ads that bypass impressions).'
+      : 'App Store listing shown in organic search or browse';
   const cards = [
     {
       key: 'impressions',
       label: 'Impressions',
       icon: Eye,
       value: fmtInt(t.impressions),
-      note: t.impressions === 0
-        ? 'App not surfaced in App Store search/browse this period. All traffic is from external channels (direct URLs, referrers).'
-        : 'App Store listing shown in search or browse',
+      note: impressionsNote,
     },
     {
       key: 'ppv',
