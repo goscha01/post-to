@@ -158,6 +158,10 @@ const MetaAds = () => {
   // Meta and racks up 429s. Keyed on (adAccountId, days) because
   // that's the only combination that materially changes the fanout.
   const lastFiredRef = useRef({ adAccountId: null, days: null, atMs: 0 });
+  // deliveryIssues is an array; `[]` means both "not fetched" and
+  // "fetched, no issues", so we track the fetched state separately.
+  // diagnosticsData returns an object so `=== null` is enough there.
+  const deliveryIssuesFetchedRef = useRef(false);
   // Per-section failure list from the last fanout. Shown as an inline
   // warning with a Retry button so the user can recover from Meta's
   // frequent rate-limit (429 / code 4|17|32) without blanking the page.
@@ -311,6 +315,11 @@ const MetaAds = () => {
     setLoadingReports(true);
     setError('');
     setFailedSections([]);
+    // Invalidate lazy-loaded tabs so they re-fetch when the user
+    // visits them next (data from a different day range is stale).
+    setDiagnosticsData(null);
+    setDeliveryIssues([]);
+    deliveryIssuesFetchedRef.current = false;
 
     // Wave 1 — fast, single-Meta-call endpoints.
     const wave1Calls = [
@@ -351,38 +360,78 @@ const MetaAds = () => {
       setLoadingReports(false); // overlay off — user can start reading
     }
 
-    // Wave 2 — heavy endpoints that internally fan out multiple Meta
-    // calls. Run after wave 1 so Meta's rate-limit window has had a
-    // chance to breathe. Don't block the overlay on these; the two
-    // affected tabs (Diagnostics, Delivery Issues) render their own
-    // "Loading…" state until these settle.
-    setLoadingWave2(true);
-    const wave2Calls = [
-      { key: 'diagnostics',    label: 'Diagnostics',     fn: () => metaAdsService.getDiagnostics(adAccountId, rangeDays) },
-      { key: 'deliveryIssues', label: 'Delivery Issues', fn: () => metaAdsService.getDeliveryIssues(adAccountId) },
-    ];
-    const wave2Applyers = {
-      diagnostics:    (v) => setDiagnosticsData(v),
-      deliveryIssues: (v) => setDeliveryIssues(v.issues || []),
-    };
-
-    const wave2Results = await Promise.allSettled(wave2Calls.map((c) => c.fn()));
-    if (token !== loadTokenRef.current) return;
-
-    // Auth-shaped errors from wave 2 are still meaningful (token could
-    // have expired mid-flight), but we never clear data from wave 1.
-    if (checkAuthShapedError(wave2Results, token)) {
-      if (token === loadTokenRef.current) setLoadingWave2(false);
-      return;
-    }
-
-    const { failures: wave2Failures } = applyFanoutResults(wave2Results, wave2Calls, wave2Applyers, token);
-    if (token === loadTokenRef.current) {
-      if (wave2Failures.length > 0) setFailedSections((prev) => [...prev, ...wave2Failures]);
-      setLoadingWave2(false);
-    }
+    // Diagnostics and Delivery Issues are NOT fired here. They're
+    // backend endpoints that each fan out 3-6 extra Meta API calls
+    // which overlap with wave 1 and reliably 429 against Meta's
+    // single-account rate limit. We lazy-load them from the tab-change
+    // effect below so Meta is only ever hit when the user actually
+    // wants that data.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Precompute the "selectedAdAccountId is in our saved selection" boolean
+  // so our effects don't depend on `selection.adAccountIds` (an array
+  // reference whose identity flips every time setSelection runs with a
+  // fresh literal, even when the ids don't actually change). That identity
+  // flip was retriggering the fanout and producing a 429 storm against
+  // Meta. Depending on the boolean keeps the trigger logic the same but
+  // dedupes identity-only re-renders.
+  const selectionIncludesSelected = !!(
+    selectedAdAccountId && selection.adAccountIds?.includes(selectedAdAccountId)
+  );
+
+  // Lazy-load Diagnostics when the user opens that tab. Guarded on
+  // diagnosticsData being null so switching tabs mid-flight or back-
+  // and-forth doesn't double-fire.
+  useEffect(() => {
+    if (activeSection !== 'diagnostics') return;
+    if (!selectedAdAccountId || !selectionIncludesSelected) return;
+    if (diagnosticsData !== null) return;
+    if (loadingWave2) return;
+    (async () => {
+      setLoadingWave2(true);
+      try {
+        const d = await metaAdsService.getDiagnostics(selectedAdAccountId, days);
+        setDiagnosticsData(d);
+        setFailedSections((prev) => prev.filter((f) => f.key !== 'diagnostics'));
+      } catch (err) {
+        const info = metaAdsService.interpretMetaError(err);
+        setFailedSections((prev) => [
+          ...prev.filter((f) => f.key !== 'diagnostics'),
+          { key: 'diagnostics', label: 'Diagnostics', intent: info.intent, message: info.message },
+        ]);
+      } finally {
+        setLoadingWave2(false);
+      }
+    })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSection, selectedAdAccountId, days, selectionIncludesSelected]);
+
+  // Lazy-load Delivery Issues when the user opens that tab.
+  useEffect(() => {
+    if (activeSection !== 'deliveryIssues') return;
+    if (!selectedAdAccountId || !selectionIncludesSelected) return;
+    if (deliveryIssuesFetchedRef.current) return;
+    if (loadingWave2) return;
+    (async () => {
+      setLoadingWave2(true);
+      try {
+        const di = await metaAdsService.getDeliveryIssues(selectedAdAccountId);
+        setDeliveryIssues(di.issues || []);
+        deliveryIssuesFetchedRef.current = true;
+        setFailedSections((prev) => prev.filter((f) => f.key !== 'deliveryIssues'));
+      } catch (err) {
+        const info = metaAdsService.interpretMetaError(err);
+        setFailedSections((prev) => [
+          ...prev.filter((f) => f.key !== 'deliveryIssues'),
+          { key: 'deliveryIssues', label: 'Delivery Issues', intent: info.intent, message: info.message },
+        ]);
+      } finally {
+        setLoadingWave2(false);
+      }
+    })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSection, selectedAdAccountId, selectionIncludesSelected]);
 
   // ----- effects -----
   useEffect(() => {
@@ -393,16 +442,6 @@ const MetaAds = () => {
     if (connState.status === 'connected') loadAccounts();
   }, [connState.status, loadAccounts]);
 
-  // Precompute the "selectedAdAccountId is in our saved selection" boolean
-  // so this effect doesn't depend on `selection.adAccountIds` (an array
-  // reference whose identity flips every time setSelection runs with a
-  // fresh literal, even when the ids don't actually change). That identity
-  // flip was retriggering the fanout and producing a 429 storm against
-  // Meta. Depending on the boolean keeps the trigger logic the same but
-  // dedupes identity-only re-renders.
-  const selectionIncludesSelected = !!(
-    selectedAdAccountId && selection.adAccountIds?.includes(selectedAdAccountId)
-  );
   useEffect(() => {
     if (connState.status === 'connected' && selectionIncludesSelected) {
       loadReports(selectedAdAccountId, days);
