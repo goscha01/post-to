@@ -29,6 +29,7 @@ const socialRoutes = require('./routes/social');
 const automationsRoutes = require('./routes/automations');
 const feedsRoutes = require('./routes/feeds');
 const teamRoutes = require('./routes/team');
+const webhooksRoutes = require('./routes/webhooks');
 const scheduledPublisher = require('./workers/scheduledPublisher');
 const automationScheduler = require('./workers/automationScheduler');
 const ascAnalyticsScheduler = require('./workers/ascAnalyticsScheduler');
@@ -140,6 +141,9 @@ app.use('/api/drive', driveRoutes);
 app.use('/api/social', socialRoutes);
 app.use('/api/automations', automationsRoutes);
 app.use('/api/team', teamRoutes);
+// Inbound webhooks — unauthed by JWT, gated by shared-secret headers.
+// Currently: RevenueCat subscription lifecycle events.
+app.use('/api/webhooks', webhooksRoutes);
 // Public RSS + JSON feed endpoints — not under /api because RSS readers
 // expect canonical-looking URLs. Auth is via feed_token in the URL.
 app.use('/feeds', feedsRoutes);

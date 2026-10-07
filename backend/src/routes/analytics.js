@@ -37,6 +37,7 @@ const express = require('express');
 const authMiddleware = require('../middleware/authMiddleware');
 const requireBusinessAuth = require('../middleware/businessAuth');
 const analytics = require('../services/analyticsService');
+const subscriptionState = require('../services/subscriptionStateService');
 const connections = require('../services/connectionsService');
 const { getAllBusinessTokens } = require('../utils/businessTokens');
 const logger = require('../utils/logger');
@@ -497,5 +498,35 @@ router.get('/screen-views',    reportHandler(analytics.getScreenViews,    'scree
 router.get('/plan-breakdown',           reportHandler(analytics.getPlanSelectedBreakdown,  'planBreakdown'));
 router.get('/purchase-started-breakdown', reportHandler(analytics.getPurchaseStartedBreakdown, 'purchaseStartedBreakdown'));
 router.get('/purchase-breakdown',       reportHandler(analytics.getPurchaseBreakdown,      'purchaseBreakdown'));
+
+// Real subscription state (RevenueCat-backed). Replaces the arithmetic
+// "In trial / incomplete purchase (est.)" estimate on the Analytics page.
+// No propertyId required — RC data is app-wide, not per GA4 property.
+// Returns { available:false, reason } when RC webhook hasn't ingested
+// anything yet so the frontend can fall back to the GA4 estimate.
+router.get('/subscription-state', async (req, res) => {
+  const days = parseInt(req.query.days, 10) || 30;
+  const userId = req.user.workspaceOwnerId || req.user.userId;
+  try {
+    const t0 = Date.now();
+    const result = await subscriptionState.getSubscriptionState(days);
+    logger.info('analytics.subscription_state.ok', {
+      userId,
+      days,
+      duration_ms: Date.now() - t0,
+      available: result.available,
+      activeTrials: result.active?.total || 0,
+      endedInWindow: result.postTrial?.totalEnded || 0,
+    });
+    res.json({ days, subscriptionState: result });
+  } catch (err) {
+    logger.error('analytics.subscription_state.failed', {
+      userId,
+      days,
+      error: err.message,
+    });
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
 
 module.exports = router;

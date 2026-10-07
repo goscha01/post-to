@@ -1,0 +1,446 @@
+// RevenueCat subscription state ingestion + read model.
+//
+// Two concerns:
+//   1. ingestEvent({ event }) — called by the /api/webhooks/revenuecat route.
+//      Inserts the raw event (dedupe on event_id) and upserts trial_states.
+//   2. getSubscriptionState(days) — called by GET /api/analytics/subscription-state.
+//      Aggregates trial_states for the Analytics page's Active trials +
+//      Post-trial outcome sections.
+//
+// Status derivation lives in deriveNextState() — a pure function tested in
+// isolation. Keeping it pure avoids race conditions between the raw-insert
+// and the trial_states upsert.
+
+const { createClient } = require('@supabase/supabase-js');
+const logger = require('../utils/logger');
+
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY
+);
+
+// ---------- Product mapping ----------
+//
+// Maps the store `product_id` (as RC reports it) to Post-to's plan taxonomy.
+// Unknown products are still ingested — the raw product_id is preserved on
+// trial_states.product_id so the UI can surface them with a hint to add the
+// mapping. Fill this map once the ProofPix App Store Connect / Play Console
+// product IDs are confirmed.
+//
+// Grep the ProofPix mobile repo for `com.proofpix` or `.monthly` to find the
+// authoritative list before editing. Keep bundle-id / app-name variants here
+// (users occasionally re-identify an app) rather than relying on string
+// transforms.
+const PRODUCT_MAP = {
+  // Examples — replace with real product IDs:
+  //   'com.proofpix.pro.monthly':      { planId: 'pro',      billingPeriod: 'monthly' },
+  //   'com.proofpix.pro.annual':       { planId: 'pro',      billingPeriod: 'annual'  },
+  //   'com.proofpix.business.monthly': { planId: 'business', billingPeriod: 'monthly' },
+  //   'com.proofpix.business.annual':  { planId: 'business', billingPeriod: 'annual'  },
+  //   'com.proofpix.starter.monthly':  { planId: 'starter',  billingPeriod: 'monthly' },
+};
+
+function mapProduct(productId) {
+  if (productId && PRODUCT_MAP[productId]) return PRODUCT_MAP[productId];
+  // Heuristic fallback — product IDs like "pro_monthly" / "business.annual" are
+  // common. Lets the UI render a reasonable label even before the map is filled.
+  if (productId) {
+    const lower = String(productId).toLowerCase();
+    const planId = ['business', 'pro', 'starter', 'enterprise'].find(p => lower.includes(p)) || null;
+    const billingPeriod = lower.includes('annual') || lower.includes('yearly')
+      ? 'annual'
+      : lower.includes('monthly') || lower.includes('month')
+        ? 'monthly'
+        : null;
+    if (planId || billingPeriod) return { planId, billingPeriod };
+  }
+  return { planId: null, billingPeriod: null };
+}
+
+// ---------- Normalization ----------
+//
+// RC's webhook body uses nested `event` object. We flatten what we need into
+// a stable shape so the rest of this file doesn't care about RC's envelope.
+function normalizeRcEvent(body) {
+  const e = body?.event || body || {};
+  const toTs = (ms) => (ms ? new Date(Number(ms)).toISOString() : null);
+  return {
+    eventId: String(e.id || e.event_id || ''),
+    eventType: String(e.type || '').toUpperCase(),
+    appUserId: String(e.app_user_id || e.original_app_user_id || ''),
+    productId: e.product_id || null,
+    periodType: e.period_type || null,
+    purchasedAt: toTs(e.purchased_at_ms),
+    expirationAt: toTs(e.expiration_at_ms),
+    isTrialPeriod: typeof e.is_trial_period === 'boolean' ? e.is_trial_period : null,
+    cancelReason: e.cancel_reason || null,
+    environment: e.environment || null,
+    store: e.store || null,
+    raw: body,
+  };
+}
+
+// ---------- Status derivation ----------
+//
+// Pure function: given the current trial_states row (or null) and an incoming
+// normalized event, returns the next trial_states row. Caller decides whether
+// to UPSERT based on the backdated-event guard.
+//
+// Order matters — first matching rule wins:
+//
+//   is_trial_period=true & event ∈ {INITIAL_PURCHASE, RENEWAL}  → trialing
+//   CANCELLATION & prior status=trialing                        → canceled_in_trial
+//   CANCELLATION                                                → active (still paid until expiration)
+//   RENEWAL w/o trial & prior status=trialing                   → converted
+//   RENEWAL / NON_RENEWING_PURCHASE / PRODUCT_CHANGE            → active
+//   INITIAL_PURCHASE w/o trial                                  → active
+//   UNCANCELLATION & prior.canceled_at                          → revert to active/trialing
+//   EXPIRATION                                                  → expired
+//   BILLING_ISSUE                                               → billing_issue
+//   SUBSCRIPTION_PAUSED                                         → paused
+//
+// SUBSCRIBER_ALIAS and TRANSFER are handled separately (merge rows, not state
+// transition). TEST events are ignored by the webhook route before this runs.
+function deriveNextState(current, evt) {
+  const mapped = mapProduct(evt.productId);
+  const base = {
+    appUserId: evt.appUserId,
+    planId: mapped.planId || current?.plan_id || null,
+    billingPeriod: mapped.billingPeriod || current?.billing_period || null,
+    productId: evt.productId || current?.product_id || null,
+    trialStartAt: current?.trial_start_at || null,
+    trialEndAt: current?.trial_end_at || null,
+    canceledAt: current?.canceled_at || null,
+    convertedAt: current?.converted_at || null,
+    lastEventType: evt.eventType,
+    lastEventAt: evt.purchasedAt || new Date().toISOString(),
+    environment: evt.environment || current?.environment || null,
+  };
+
+  const priorStatus = current?.status || null;
+  const inTrial = evt.isTrialPeriod === true || evt.periodType === 'TRIAL';
+
+  switch (evt.eventType) {
+    case 'INITIAL_PURCHASE':
+      if (inTrial) {
+        return {
+          ...base,
+          status: 'trialing',
+          trialStartAt: evt.purchasedAt || base.trialStartAt,
+          trialEndAt: evt.expirationAt || base.trialEndAt,
+        };
+      }
+      return { ...base, status: 'active' };
+
+    case 'RENEWAL':
+      if (inTrial) {
+        return {
+          ...base,
+          status: 'trialing',
+          trialStartAt: base.trialStartAt || evt.purchasedAt,
+          trialEndAt: evt.expirationAt || base.trialEndAt,
+        };
+      }
+      // Trial → paid transition: mark conversion but don't overwrite trial_end_at
+      // (so the UI can still show "converted on day N of trial").
+      if (priorStatus === 'trialing') {
+        return {
+          ...base,
+          status: 'converted',
+          convertedAt: evt.purchasedAt || new Date().toISOString(),
+        };
+      }
+      return { ...base, status: 'active' };
+
+    case 'PRODUCT_CHANGE':
+    case 'NON_RENEWING_PURCHASE':
+      return { ...base, status: 'active' };
+
+    case 'CANCELLATION':
+      // RC fires CANCELLATION when the user *schedules* a cancellation — the
+      // subscription is still active until expiration_at. Only flip to a
+      // canceled bucket if we know they were still in trial; otherwise keep
+      // them as active and just stamp canceled_at.
+      if (priorStatus === 'trialing' || inTrial) {
+        return {
+          ...base,
+          status: 'canceled_in_trial',
+          canceledAt: evt.purchasedAt || new Date().toISOString(),
+        };
+      }
+      return {
+        ...base,
+        status: priorStatus === 'active' ? 'active' : 'active',
+        canceledAt: evt.purchasedAt || new Date().toISOString(),
+      };
+
+    case 'UNCANCELLATION':
+      // Revert: trial? still trialing. Else active.
+      return {
+        ...base,
+        status: inTrial || priorStatus === 'canceled_in_trial' ? 'trialing' : 'active',
+        canceledAt: null,
+      };
+
+    case 'EXPIRATION':
+      return { ...base, status: 'expired' };
+
+    case 'BILLING_ISSUE':
+      return { ...base, status: 'billing_issue' };
+
+    case 'SUBSCRIPTION_PAUSED':
+      return { ...base, status: 'paused' };
+
+    default:
+      // TEMPORARY_ENTITLEMENT_GRANT, TRANSFER, SUBSCRIBER_ALIAS, TEST, etc.
+      // Record the event but don't change state.
+      return current
+        ? { ...base, status: priorStatus || 'active', lastEventType: evt.eventType }
+        : null;
+  }
+}
+
+// ---------- Ingestion ----------
+
+// Returns { stored: bool, duplicate: bool, stateChanged: bool, newState? }
+async function ingestEvent(rawBody) {
+  const evt = normalizeRcEvent(rawBody);
+
+  if (!evt.eventId) {
+    throw Object.assign(new Error('event_id missing'), { status: 400 });
+  }
+  if (!evt.appUserId) {
+    throw Object.assign(new Error('app_user_id missing'), { status: 400 });
+  }
+  if (!evt.eventType) {
+    throw Object.assign(new Error('event type missing'), { status: 400 });
+  }
+
+  // 1) Insert raw event. ON CONFLICT (event_id) DO NOTHING for RC retry dedupe.
+  const insertRes = await supabase
+    .from('subscription_events')
+    .insert({
+      event_id: evt.eventId,
+      event_type: evt.eventType,
+      app_user_id: evt.appUserId,
+      product_id: evt.productId,
+      period_type: evt.periodType,
+      purchased_at: evt.purchasedAt,
+      expiration_at: evt.expirationAt,
+      is_trial_period: evt.isTrialPeriod,
+      cancel_reason: evt.cancelReason,
+      environment: evt.environment,
+      store: evt.store,
+      raw: evt.raw,
+    })
+    .select('id');
+
+  if (insertRes.error) {
+    // 23505 = unique_violation on event_id — RC replayed the event. Treat as idempotent success.
+    if (insertRes.error.code === '23505') {
+      return { stored: false, duplicate: true, stateChanged: false };
+    }
+    throw insertRes.error;
+  }
+
+  // 2) Look up current trial_states row for backdated-event guard + prior status.
+  const { data: existing, error: readErr } = await supabase
+    .from('trial_states')
+    .select('*')
+    .eq('app_user_id', evt.appUserId)
+    .maybeSingle();
+  if (readErr) throw readErr;
+
+  // Backdated event guard — if an older event arrives after a newer one (RC
+  // replays or out-of-order delivery), skip the upsert so we don't regress
+  // the derived state. The raw event is still persisted above.
+  if (existing && existing.last_event_at && evt.purchasedAt) {
+    if (new Date(evt.purchasedAt) < new Date(existing.last_event_at)) {
+      logger.debug('revenuecat.ingest.backdated_skip', {
+        appUserId: evt.appUserId,
+        eventType: evt.eventType,
+        eventAt: evt.purchasedAt,
+        stateAt: existing.last_event_at,
+      });
+      return { stored: true, duplicate: false, stateChanged: false };
+    }
+  }
+
+  const next = deriveNextState(existing, evt);
+  if (!next) {
+    return { stored: true, duplicate: false, stateChanged: false };
+  }
+
+  const { error: upsertErr } = await supabase
+    .from('trial_states')
+    .upsert({
+      app_user_id: next.appUserId,
+      plan_id: next.planId,
+      billing_period: next.billingPeriod,
+      product_id: next.productId,
+      status: next.status,
+      trial_start_at: next.trialStartAt,
+      trial_end_at: next.trialEndAt,
+      canceled_at: next.canceledAt,
+      converted_at: next.convertedAt,
+      last_event_type: next.lastEventType,
+      last_event_at: next.lastEventAt,
+      environment: next.environment,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'app_user_id' });
+  if (upsertErr) throw upsertErr;
+
+  if (existing?.status !== next.status) {
+    logger.info('revenuecat.trial_state_transition', {
+      appUserId: evt.appUserId,
+      from: existing?.status || '(new)',
+      to: next.status,
+      eventType: evt.eventType,
+      planId: next.planId,
+      billingPeriod: next.billingPeriod,
+    });
+  }
+
+  return {
+    stored: true,
+    duplicate: false,
+    stateChanged: existing?.status !== next.status,
+    newState: next.status,
+  };
+}
+
+// ---------- Read model ----------
+
+function daysBetween(fromIso, toIso) {
+  const ms = new Date(toIso).getTime() - new Date(fromIso).getTime();
+  return Math.round(ms / 86_400_000);
+}
+
+function groupByPlan(rows) {
+  const buckets = new Map();
+  for (const r of rows) {
+    const key = `${r.plan_id || 'unknown'}|${r.billing_period || 'unknown'}`;
+    if (!buckets.has(key)) {
+      buckets.set(key, {
+        planId: r.plan_id || 'unknown',
+        billingPeriod: r.billing_period || 'unknown',
+        productId: r.product_id || null,
+        users: 0,
+        rows: [],
+      });
+    }
+    const b = buckets.get(key);
+    b.users += 1;
+    b.rows.push(r);
+  }
+  return Array.from(buckets.values()).sort((a, b) => b.users - a.users);
+}
+
+// Shape returned to the frontend:
+// {
+//   available: true,
+//   active: {
+//     total: 12,
+//     byPlan: [{ planId, billingPeriod, users, nextEndAt }],
+//     endingSoon: [{ appUserId, planId, billingPeriod, endsAt, daysLeft }]
+//   },
+//   postTrial: {
+//     windowDays: 30,
+//     totalEnded: 26,
+//     converted:         { total, byPlan },
+//     canceled_in_trial: { total, byPlan },
+//     expired:           { total, byPlan }
+//   }
+// }
+//
+// Returns { available: false, reason } when the table is empty (RC webhook
+// not yet receiving events) so the UI can show the GA4-estimate fallback.
+async function getSubscriptionState(days = 30) {
+  const windowDays = Math.max(1, Math.min(365, parseInt(days, 10) || 30));
+  const windowStart = new Date(Date.now() - windowDays * 86_400_000).toISOString();
+
+  // Active trials: all rows currently in `trialing` status, soonest-ending first.
+  const { data: activeRows, error: activeErr } = await supabase
+    .from('trial_states')
+    .select('app_user_id, plan_id, billing_period, product_id, trial_end_at')
+    .eq('status', 'trialing')
+    .order('trial_end_at', { ascending: true, nullsFirst: false });
+  if (activeErr) {
+    // Table doesn't exist yet (deploy ran before migration). Fall back to the
+    // GA4 estimate so the dashboard still renders during the deploy window.
+    if (/relation .* does not exist|42P01/i.test(activeErr.message || '')) {
+      return { available: false, reason: 'migration_pending', windowDays };
+    }
+    throw activeErr;
+  }
+
+  // Post-trial outcomes: terminal states observed in the window.
+  const { data: endedRows, error: endedErr } = await supabase
+    .from('trial_states')
+    .select('app_user_id, plan_id, billing_period, product_id, status, last_event_at')
+    .in('status', ['converted', 'canceled_in_trial', 'expired'])
+    .gte('last_event_at', windowStart);
+  if (endedErr) throw endedErr;
+
+  // If both tables are empty AND we have no events in subscription_events,
+  // the webhook isn't wired yet — tell the frontend so it shows the GA4 fallback.
+  if ((activeRows?.length || 0) === 0 && (endedRows?.length || 0) === 0) {
+    const { count } = await supabase
+      .from('subscription_events')
+      .select('*', { count: 'exact', head: true });
+    if (!count || count === 0) {
+      return { available: false, reason: 'no_revenuecat_events_yet', windowDays };
+    }
+  }
+
+  const now = new Date();
+  const activeBuckets = groupByPlan(activeRows || []).map(b => {
+    // nextEndAt = earliest trial_end_at in bucket (soonest-churning segment).
+    const nextEndAt = b.rows
+      .map(r => r.trial_end_at)
+      .filter(Boolean)
+      .sort()[0] || null;
+    return { planId: b.planId, billingPeriod: b.billingPeriod, users: b.users, nextEndAt };
+  });
+
+  const endingSoon = (activeRows || [])
+    .filter(r => r.trial_end_at)
+    .map(r => ({
+      appUserId: r.app_user_id,
+      planId: r.plan_id || 'unknown',
+      billingPeriod: r.billing_period || 'unknown',
+      endsAt: r.trial_end_at,
+      daysLeft: daysBetween(now.toISOString(), r.trial_end_at),
+    }))
+    .filter(r => r.daysLeft >= 0 && r.daysLeft <= 7)
+    .slice(0, 20);
+
+  const bucketize = (status) => {
+    const rows = (endedRows || []).filter(r => r.status === status);
+    return { total: rows.length, byPlan: groupByPlan(rows).map(b => ({ planId: b.planId, billingPeriod: b.billingPeriod, users: b.users })) };
+  };
+
+  return {
+    available: true,
+    windowDays,
+    active: {
+      total: (activeRows || []).length,
+      byPlan: activeBuckets,
+      endingSoon,
+    },
+    postTrial: {
+      windowDays,
+      totalEnded: (endedRows || []).length,
+      converted: bucketize('converted'),
+      canceled_in_trial: bucketize('canceled_in_trial'),
+      expired: bucketize('expired'),
+    },
+  };
+}
+
+module.exports = {
+  ingestEvent,
+  getSubscriptionState,
+  // exported for tests
+  _internal: { normalizeRcEvent, deriveNextState, mapProduct, PRODUCT_MAP },
+};
