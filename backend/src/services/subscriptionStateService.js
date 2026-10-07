@@ -12,12 +12,116 @@
 // and the trial_states upsert.
 
 const { createClient } = require('@supabase/supabase-js');
+const { Client: PgClient } = require('pg');
 const logger = require('../utils/logger');
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY
 );
+
+// ---------- Self-applying migration ----------
+//
+// Mirrors ascAnalyticsScheduler.ensureTable() — probes for the tables via the
+// Supabase JS client (REST, always reachable), and if missing, runs the CREATE
+// TABLE DDL via a direct pg connection. The pg connection uses the IPv4
+// pooler when available (SUPABASE_POOLER_URL) and falls back to the direct
+// host (SUPABASE_DATABASE_URL), which Railway's container can resolve.
+//
+// Called from index.js at boot. Idempotent — safe to run on every restart.
+// Logs its decision so the Railway log stream shows exactly what happened.
+const MIGRATION_SQL = `
+CREATE TABLE IF NOT EXISTS subscription_events (
+  id              BIGSERIAL PRIMARY KEY,
+  event_id        TEXT UNIQUE NOT NULL,
+  event_type      TEXT NOT NULL,
+  app_user_id     TEXT NOT NULL,
+  product_id      TEXT,
+  period_type     TEXT,
+  purchased_at    TIMESTAMPTZ,
+  expiration_at   TIMESTAMPTZ,
+  is_trial_period BOOLEAN,
+  cancel_reason   TEXT,
+  environment     TEXT,
+  store           TEXT,
+  raw             JSONB NOT NULL,
+  received_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_sub_events_user_time
+  ON subscription_events (app_user_id, received_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sub_events_type_time
+  ON subscription_events (event_type, received_at DESC);
+ALTER TABLE subscription_events ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Allow all operations on subscription_events" ON subscription_events;
+CREATE POLICY "Allow all operations on subscription_events"
+  ON subscription_events FOR ALL USING (true);
+
+CREATE TABLE IF NOT EXISTS trial_states (
+  app_user_id      TEXT PRIMARY KEY,
+  plan_id          TEXT,
+  billing_period   TEXT,
+  product_id       TEXT,
+  status           TEXT NOT NULL,
+  trial_start_at   TIMESTAMPTZ,
+  trial_end_at     TIMESTAMPTZ,
+  canceled_at      TIMESTAMPTZ,
+  converted_at     TIMESTAMPTZ,
+  last_event_type  TEXT,
+  last_event_at    TIMESTAMPTZ NOT NULL,
+  environment      TEXT,
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_trial_states_status_end
+  ON trial_states (status, trial_end_at);
+CREATE INDEX IF NOT EXISTS idx_trial_states_last_event
+  ON trial_states (last_event_at DESC);
+ALTER TABLE trial_states ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Allow all operations on trial_states" ON trial_states;
+CREATE POLICY "Allow all operations on trial_states"
+  ON trial_states FOR ALL USING (true);
+`;
+
+async function ensureTables() {
+  logger.info('revenuecat.ensure_tables.start', {});
+  const { error: probeErr } = await supabase
+    .from('trial_states')
+    .select('app_user_id')
+    .limit(1);
+  if (!probeErr) {
+    logger.info('revenuecat.ensure_tables.already_present', {});
+    return { ok: true, ran: false };
+  }
+  const missing = /does not exist|undefined_table|PGRST20[24]|schema cache|not find the table/i.test(probeErr.message || '');
+  if (!missing) {
+    logger.warn('revenuecat.ensure_tables.probe_failed', { error: probeErr.message });
+    return { ok: false, ran: false, error: probeErr.message };
+  }
+
+  const dbUrl = process.env.SUPABASE_POOLER_URL || process.env.SUPABASE_DATABASE_URL;
+  if (!dbUrl) {
+    logger.warn('revenuecat.ensure_tables.skipped', {
+      reason: 'Neither SUPABASE_POOLER_URL nor SUPABASE_DATABASE_URL set',
+    });
+    return { ok: false, ran: false };
+  }
+  const usingPooler = !!process.env.SUPABASE_POOLER_URL;
+  const client = new PgClient({ connectionString: dbUrl, ssl: { rejectUnauthorized: false } });
+  try {
+    await client.connect();
+    await client.query(MIGRATION_SQL);
+    logger.info('revenuecat.ensure_tables.applied', { via: usingPooler ? 'pooler' : 'direct' });
+    return { ok: true, ran: true };
+  } catch (err) {
+    logger.warn('revenuecat.ensure_tables.apply_failed', {
+      error: err.message,
+      via: usingPooler ? 'pooler' : 'direct',
+      hint: usingPooler ? null : 'Direct DB URL may be IPv6-only. Set SUPABASE_POOLER_URL (Supabase Dashboard → Settings → Database → Connection pooling → Transaction mode).',
+    });
+    return { ok: false, ran: false, error: err.message };
+  } finally {
+    await client.end().catch(() => {});
+  }
+}
 
 // ---------- Product mapping ----------
 //
@@ -441,6 +545,7 @@ async function getSubscriptionState(days = 30) {
 module.exports = {
   ingestEvent,
   getSubscriptionState,
+  ensureTables,
   // exported for tests
   _internal: { normalizeRcEvent, deriveNextState, mapProduct, PRODUCT_MAP },
 };

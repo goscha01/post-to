@@ -33,6 +33,7 @@ const webhooksRoutes = require('./routes/webhooks');
 const scheduledPublisher = require('./workers/scheduledPublisher');
 const automationScheduler = require('./workers/automationScheduler');
 const ascAnalyticsScheduler = require('./workers/ascAnalyticsScheduler');
+const subscriptionStateService = require('./services/subscriptionStateService');
 const campaignMonitorService = require('./services/campaignMonitorService');
 const apiLogger = require('./middleware/apiLogger');
 
@@ -230,6 +231,11 @@ app.listen(PORT, () => {
       console.error('asc_analytics_scheduler.start_error', err?.message);
     }
   }
+  // RevenueCat subscription-state schema — self-apply at boot. Same pattern
+  // as asc_analytics_cache: /supabase/ isn't shipped to the Railway container,
+  // so we migrate from the running process (idempotent, logged).
+  subscriptionStateService.ensureTables()
+    .catch(err => console.error('revenuecat.ensure_tables.error', err?.message));
   // Campaign Assistant auto-monitor tick — every 6h, evaluates due observation
   // steps and marks them done / failed based on live GA4 + Google Ads data.
   // Opt-out via DISABLE_CAMPAIGN_MONITOR=1.
