@@ -83,6 +83,11 @@ const Analytics = () => {
   const [planBreakdown, setPlanBreakdown] = useState(null);
   const [purchaseStartedBreakdown, setPurchaseStartedBreakdown] = useState(null);
   const [purchaseBreakdown, setPurchaseBreakdown] = useState(null);
+  // Real subscription state via RevenueCat webhook ingestion. `null` before
+  // load. { available: true, active, postTrial } when RC is reporting data,
+  // { available: false, reason } when RC isn't wired yet — in that case the
+  // FunnelSection falls back to the arithmetic GA4 estimate (InTrialEstimate).
+  const [subscriptionState, setSubscriptionState] = useState(null);
   // ASC (App Store Connect — iOS top-of-funnel) is fetched independently of
   // the GA4 property. `null` before load, `{ connected: false }` when the
   // user has no ASC connection, `{ connected: true, totals, connectionName }`
@@ -184,7 +189,7 @@ const Analytics = () => {
     // fail on properties that don't yet have any funnel-eligible data. Fetched
     // with .catch so a funnel failure doesn't blank out the whole dashboard.
     try {
-      const [o, t, l, e, c, d, g, f, pb, psb, pb2] = await Promise.all([
+      const [o, t, l, e, c, d, g, f, pb, psb, pb2, ss] = await Promise.all([
         analyticsService.getOverview(propertyId, rangeDays),
         analyticsService.getTraffic(propertyId, rangeDays),
         analyticsService.getLandingPages(propertyId, rangeDays),
@@ -208,6 +213,10 @@ const Analytics = () => {
           console.warn('[Analytics] purchase breakdown failed:', err?.response?.data || err?.message);
           return null;
         }),
+        analyticsService.getSubscriptionState(rangeDays).catch(err => {
+          console.warn('[Analytics] subscription state failed:', err?.response?.data || err?.message);
+          return null;
+        }),
       ]);
       if (token !== loadTokenRef.current) return;
       setOverview(o.overview);
@@ -221,6 +230,7 @@ const Analytics = () => {
       setPlanBreakdown(pb?.planBreakdown || null);
       setPurchaseStartedBreakdown(psb?.purchaseStartedBreakdown || null);
       setPurchaseBreakdown(pb2?.purchaseBreakdown || null);
+      setSubscriptionState(ss?.subscriptionState || null);
     } catch (err) {
       if (token !== loadTokenRef.current) return;
       const status = err.response?.status;
@@ -430,6 +440,7 @@ const Analytics = () => {
             planBreakdown={planBreakdown}
             purchaseStartedBreakdown={purchaseStartedBreakdown}
             purchaseBreakdown={purchaseBreakdown}
+            subscriptionState={subscriptionState}
             loading={loadingReports}
           />
 
@@ -937,7 +948,7 @@ const AdAttributionSection = ({ attribution, ascState }) => {
 // User info — ordered sequence inside the onboarding flow). Per-plan
 // breakdowns are rendered under the three paid-funnel events:
 // Selected a plan / Started purchase / Paid.
-const FunnelSection = ({ inAppFunnel, planBreakdown, purchaseStartedBreakdown, purchaseBreakdown, loading }) => {
+const FunnelSection = ({ inAppFunnel, planBreakdown, purchaseStartedBreakdown, purchaseBreakdown, subscriptionState, loading }) => {
   const funnel = inAppFunnel?.funnel || null;
   const source = inAppFunnel?.source;
   const fallbackReason = inAppFunnel?.fallbackReason;
@@ -1050,13 +1061,179 @@ const FunnelSection = ({ inAppFunnel, planBreakdown, purchaseStartedBreakdown, p
               </div>
             );
           })}
-          <InTrialEstimate
+          <SubscriptionStateSection
+            subscriptionState={subscriptionState}
             funnel={funnel}
             purchaseStartedBreakdown={purchaseStartedBreakdown}
             purchaseBreakdown={purchaseBreakdown}
           />
         </div>
       </Section>
+    </div>
+  );
+};
+
+// Entry point for the "trial / subscription state" section below the funnel.
+// Prefers real RevenueCat data when the webhook has ingested events, falls
+// back to the arithmetic GA4 estimate otherwise. Keeps a single visual slot
+// in the UI so there's no layout shift when RC comes online.
+const SubscriptionStateSection = ({ subscriptionState, funnel, purchaseStartedBreakdown, purchaseBreakdown }) => {
+  if (subscriptionState?.available) {
+    return <SubscriptionStateLive subscriptionState={subscriptionState} />;
+  }
+  return (
+    <InTrialEstimate
+      funnel={funnel}
+      purchaseStartedBreakdown={purchaseStartedBreakdown}
+      purchaseBreakdown={purchaseBreakdown}
+      unavailableReason={subscriptionState?.reason}
+    />
+  );
+};
+
+// Format helpers for the live sections.
+const fmtDaysLeft = (n) => {
+  if (n == null) return '';
+  if (n <= 0) return 'ends today';
+  if (n === 1) return 'ends tomorrow';
+  return `ends in ${n}d`;
+};
+
+const fmtPlanLabel = (planId, billingPeriod) => {
+  const plan = planId && planId !== 'unknown' ? planId : '(unknown plan)';
+  const period = billingPeriod && billingPeriod !== 'unknown' ? billingPeriod : null;
+  return { plan, period };
+};
+
+// Live RC-backed trial sections: Active trials (per-plan rollup + endingSoon
+// list) + Post-trial outcome (converted / canceled_in_trial / expired per plan).
+const SubscriptionStateLive = ({ subscriptionState }) => {
+  const { active, postTrial, windowDays } = subscriptionState;
+  const noActive = (active?.total || 0) === 0;
+  const noPostTrial = (postTrial?.totalEnded || 0) === 0;
+
+  return (
+    <div className="mt-4 pt-4 border-t border-gray-200 space-y-6">
+      {/* Live via RevenueCat label — tells the user which source is active */}
+      <div className="flex items-center gap-2 text-[11px] text-emerald-700">
+        <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500" />
+        <span>Live via RevenueCat</span>
+      </div>
+
+      {/* Section A — Active trials */}
+      <div>
+        <div className="flex items-baseline justify-between gap-2">
+          <span className="text-sm font-medium text-gray-800">Active trials</span>
+          <span className="text-sm font-semibold text-gray-900 tabular-nums">{fmtInt(active?.total || 0)}</span>
+        </div>
+        {noActive ? (
+          <p className="mt-1 text-[11px] text-gray-500">No users are currently in a trial period.</p>
+        ) : (
+          <div className="mt-2 ml-4 pl-3 border-l-2 border-gray-100 space-y-1">
+            {(active.byPlan || []).map((b, i) => {
+              const { plan, period } = fmtPlanLabel(b.planId, b.billingPeriod);
+              return (
+                <div key={i} className="flex items-center justify-between text-xs">
+                  <div className="flex items-baseline gap-2 min-w-0">
+                    <span className="text-gray-600">↳ {plan}</span>
+                    {period && <span className="text-[10px] text-gray-400 font-mono">{period}</span>}
+                  </div>
+                  <span className="tabular-nums text-gray-800">{fmtInt(b.users)} users</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {active?.endingSoon && active.endingSoon.length > 0 && (
+          <div className="mt-3">
+            <div className="text-[11px] uppercase tracking-wide text-gray-500 mb-1">Ending within 7 days</div>
+            <div className="ml-4 pl-3 border-l-2 border-amber-100 space-y-1">
+              {active.endingSoon.map((r, i) => {
+                const { plan, period } = fmtPlanLabel(r.planId, r.billingPeriod);
+                return (
+                  <div key={i} className="flex items-center justify-between text-xs">
+                    <div className="flex items-baseline gap-2 min-w-0">
+                      <span className="text-gray-600">↳ {plan}</span>
+                      {period && <span className="text-[10px] text-gray-400 font-mono">{period}</span>}
+                      <span className="text-[10px] text-amber-700">{fmtDaysLeft(r.daysLeft)}</span>
+                    </div>
+                    <span className="tabular-nums text-gray-500 font-mono text-[10px]">
+                      {new Date(r.endsAt).toISOString().slice(0, 10)}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Section B — Post-trial outcome */}
+      <div>
+        <div className="flex items-baseline justify-between gap-2">
+          <div className="flex items-baseline gap-2 min-w-0">
+            <span className="text-sm font-medium text-gray-800">Post-trial outcome</span>
+            <span className="text-[11px] text-gray-500">last {windowDays} days</span>
+          </div>
+          <span className="text-sm font-semibold text-gray-900 tabular-nums">{fmtInt(postTrial?.totalEnded || 0)} ended</span>
+        </div>
+        {noPostTrial ? (
+          <p className="mt-1 text-[11px] text-gray-500">No trials have ended in this window.</p>
+        ) : (
+          <div className="mt-2 space-y-3">
+            <PostTrialBucket
+              label="Converted to paid"
+              bucket={postTrial.converted}
+              total={postTrial.totalEnded}
+              tone="emerald"
+            />
+            <PostTrialBucket
+              label="Canceled in trial"
+              bucket={postTrial.canceled_in_trial}
+              total={postTrial.totalEnded}
+              tone="rose"
+            />
+            <PostTrialBucket
+              label="Expired (payment failed or not renewed)"
+              bucket={postTrial.expired}
+              total={postTrial.totalEnded}
+              tone="gray"
+            />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const PostTrialBucket = ({ label, bucket, total, tone }) => {
+  if (!bucket || bucket.total === 0) return null;
+  const pct = total > 0 ? Math.round((bucket.total / total) * 100) : 0;
+  const borderClass = {
+    emerald: 'border-emerald-100',
+    rose: 'border-rose-100',
+    gray: 'border-gray-100',
+  }[tone] || 'border-gray-100';
+  return (
+    <div>
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-xs font-medium text-gray-700">{label}</span>
+        <span className="text-xs tabular-nums text-gray-800">{fmtInt(bucket.total)} ({pct}%)</span>
+      </div>
+      <div className={`mt-1 ml-4 pl-3 border-l-2 ${borderClass} space-y-1`}>
+        {bucket.byPlan.map((b, i) => {
+          const { plan, period } = fmtPlanLabel(b.planId, b.billingPeriod);
+          return (
+            <div key={i} className="flex items-center justify-between text-xs">
+              <div className="flex items-baseline gap-2 min-w-0">
+                <span className="text-gray-600">↳ {plan}</span>
+                {period && <span className="text-[10px] text-gray-400 font-mono">{period}</span>}
+              </div>
+              <span className="tabular-nums text-gray-800">{fmtInt(b.users)} users</span>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 };
@@ -1072,7 +1249,8 @@ const FunnelSection = ({ inAppFunnel, planBreakdown, purchaseStartedBreakdown, p
 //
 // Real "who's trialing right now" requires RevenueCat webhook data — this is
 // only an estimate from GA4 event counts. Labelled accordingly.
-const InTrialEstimate = ({ funnel, purchaseStartedBreakdown, purchaseBreakdown }) => {
+const InTrialEstimate = ({ funnel, purchaseStartedBreakdown, purchaseBreakdown, unavailableReason }) => {
+  if (!funnel) return null;
   const started = funnel.find(s => s.key === 'purchase_start');
   const paid = funnel.find(s => s.key === 'paid');
   if (!started || !paid) return null;
@@ -1103,8 +1281,11 @@ const InTrialEstimate = ({ funnel, purchaseStartedBreakdown, purchaseBreakdown }
         <span className="text-sm font-semibold text-gray-900 tabular-nums">{fmtInt(trialing)}</span>
       </div>
       <p className="mt-1 text-[11px] text-gray-500">
-        Approximation — includes users still actively trialing, canceled trials, and payment failures. A real "who's trialing right now" view
-        requires RevenueCat webhook data (not wired yet).
+        {unavailableReason === 'migration_pending'
+          ? <>RevenueCat ingestion deployed but database migration still pending — the live sections will appear within a few minutes.</>
+          : unavailableReason === 'no_revenuecat_events_yet'
+            ? <>RevenueCat webhook configured but no events ingested yet. Live trial sections will appear once the first subscription event arrives.</>
+            : <>Approximation — includes users still actively trialing, canceled trials, and payment failures. The live "who's trialing right now" view requires the RevenueCat webhook (not yet configured in the RC dashboard).</>}
       </p>
       {perPlan.length > 0 && (
         <div className="mt-2 ml-4 pl-3 border-l-2 border-gray-100 space-y-1">

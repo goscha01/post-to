@@ -112,6 +112,24 @@ const getPurchaseBreakdown = async (propertyId, days) => {
   return res.data;
 };
 
+// Real subscription state from the RevenueCat webhook ingestion. Returns:
+//   { days, subscriptionState: {
+//       available: true,
+//       windowDays,
+//       active: { total, byPlan, endingSoon },
+//       postTrial: { windowDays, totalEnded, converted, canceled_in_trial, expired }
+//     }
+//   }
+// Or { subscriptionState: { available: false, reason } } when the RC webhook
+// hasn't ingested anything yet — frontend falls back to the arithmetic GA4
+// estimate (purchase_started − purchase).
+const getSubscriptionState = async (days) => {
+  const res = await axios.get('/api/analytics/subscription-state', {
+    params: days ? { days } : {},
+  });
+  return res.data;
+};
+
 // App Store Connect helpers — iOS top-of-funnel (impressions → PPVs → installs).
 // Kept in this service (not a separate ascService) so the Analytics page has
 // one import surface for all its data.
@@ -173,6 +191,7 @@ const analyticsService = {
   getPlanBreakdown,
   getPurchaseStartedBreakdown,
   getPurchaseBreakdown,
+  getSubscriptionState,
   listAscConnections,
   getAscInstallFunnel,
   getAscAdAttribution,
