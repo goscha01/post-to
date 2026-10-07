@@ -819,7 +819,7 @@ const AUTO_REGISTER_CUSTOM_DIMS = [
     parameterName: 'screen_name',
     displayName: 'Screen Name',
     scope: 'EVENT',
-    description: 'App screen the user is viewing (first_load, onboarding_welcome, onboarding_user_info, paywall, …). Required so the in-app funnel can filter screen_view steps by screen inside GA4 runFunnelReport.',
+    description: 'App screen name - required so the Post-to in-app funnel can filter screen_view steps by screen in GA4 runFunnelReport.',
   },
 ];
 
