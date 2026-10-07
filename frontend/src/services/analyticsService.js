@@ -112,7 +112,8 @@ const getPurchaseBreakdown = async (propertyId, days) => {
   return res.data;
 };
 
-// Real subscription state from the RevenueCat webhook ingestion. Returns:
+// Real subscription state from Apple S2S notifications (forwarded by
+// proof-pix-proxy to our /api/webhooks/subscription-event endpoint). Returns:
 //   { days, subscriptionState: {
 //       available: true,
 //       windowDays,

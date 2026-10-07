@@ -83,7 +83,8 @@ const Analytics = () => {
   const [planBreakdown, setPlanBreakdown] = useState(null);
   const [purchaseStartedBreakdown, setPurchaseStartedBreakdown] = useState(null);
   const [purchaseBreakdown, setPurchaseBreakdown] = useState(null);
-  // Real subscription state via RevenueCat webhook ingestion. `null` before
+  // Real subscription state via Apple S2S ingestion (forwarded by the
+  // proof-pix-proxy Apple webhook handler). `null` before
   // load. { available: true, active, postTrial } when RC is reporting data,
   // { available: false, reason } when RC isn't wired yet — in that case the
   // FunnelSection falls back to the arithmetic GA4 estimate (InTrialEstimate).
@@ -1074,7 +1075,7 @@ const FunnelSection = ({ inAppFunnel, planBreakdown, purchaseStartedBreakdown, p
 };
 
 // Entry point for the "trial / subscription state" section below the funnel.
-// Prefers real RevenueCat data when the webhook has ingested events, falls
+// Prefers real Apple-notification data when the webhook has ingested events, falls
 // back to the arithmetic GA4 estimate otherwise. Keeps a single visual slot
 // in the UI so there's no layout shift when RC comes online.
 const SubscriptionStateSection = ({ subscriptionState, funnel, purchaseStartedBreakdown, purchaseBreakdown }) => {
@@ -1114,10 +1115,10 @@ const SubscriptionStateLive = ({ subscriptionState }) => {
 
   return (
     <div className="mt-4 pt-4 border-t border-gray-200 space-y-6">
-      {/* Live via RevenueCat label — tells the user which source is active */}
+      {/* Live-data badge — tells the user this isn't the GA4 estimate */}
       <div className="flex items-center gap-2 text-[11px] text-emerald-700">
         <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500" />
-        <span>Live via RevenueCat</span>
+        <span>Live via Apple notifications</span>
       </div>
 
       {/* Section A — Active trials */}
@@ -1241,13 +1242,13 @@ const PostTrialBucket = ({ label, bucket, total, tone }) => {
 // Approximation of users who tapped Subscribe / Start trial but haven't fired
 // `purchase` yet — the pool we'd call "in trial" (plus some abandons / payment
 // failures). Rendered below the funnel to make the "which plan is being
-// trialed" question answerable without a RevenueCat integration.
+// trialed" question answerable without the proxy's Apple-webhook forwarding wired.
 //
 // Per-plan rows are the per-plan diff (purchase_started_users -
 // purchase_users). Negative diffs (someone paid without an in-period
 // purchase_started event — e.g. web upgrade) are clamped to 0.
 //
-// Real "who's trialing right now" requires RevenueCat webhook data — this is
+// Real "who's trialing right now" requires Apple-notification ingestion — this is
 // only an estimate from GA4 event counts. Labelled accordingly.
 const InTrialEstimate = ({ funnel, purchaseStartedBreakdown, purchaseBreakdown, unavailableReason }) => {
   if (!funnel) return null;
@@ -1282,10 +1283,10 @@ const InTrialEstimate = ({ funnel, purchaseStartedBreakdown, purchaseBreakdown, 
       </div>
       <p className="mt-1 text-[11px] text-gray-500">
         {unavailableReason === 'migration_pending'
-          ? <>RevenueCat ingestion deployed but database migration still pending — the live sections will appear within a few minutes.</>
-          : unavailableReason === 'no_revenuecat_events_yet'
-            ? <>RevenueCat webhook configured but no events ingested yet. Live trial sections will appear once the first subscription event arrives.</>
-            : <>Approximation — includes users still actively trialing, canceled trials, and payment failures. The live "who's trialing right now" view requires the RevenueCat webhook (not yet configured in the RC dashboard).</>}
+          ? <>Subscription ingestion deployed but database migration still pending — the live sections will appear within a few minutes.</>
+          : unavailableReason === 'no_revenuecat_events_yet' || unavailableReason === 'no_subscription_events_yet'
+            ? <>Subscription webhook configured but no events ingested yet. Live trial sections will appear once the first Apple S2S notification arrives (requires a sandbox purchase in TestFlight or any real App Store purchase).</>
+            : <>Approximation — includes users still actively trialing, canceled trials, and payment failures. The live "who's trialing right now" view requires proof-pix-proxy's Apple webhook handler to forward events here (not yet wired).</>}
       </p>
       {perPlan.length > 0 && (
         <div className="mt-2 ml-4 pl-3 border-l-2 border-gray-100 space-y-1">

@@ -499,11 +499,12 @@ router.get('/plan-breakdown',           reportHandler(analytics.getPlanSelectedB
 router.get('/purchase-started-breakdown', reportHandler(analytics.getPurchaseStartedBreakdown, 'purchaseStartedBreakdown'));
 router.get('/purchase-breakdown',       reportHandler(analytics.getPurchaseBreakdown,      'purchaseBreakdown'));
 
-// Real subscription state (RevenueCat-backed). Replaces the arithmetic
-// "In trial / incomplete purchase (est.)" estimate on the Analytics page.
-// No propertyId required — RC data is app-wide, not per GA4 property.
-// Returns { available:false, reason } when RC webhook hasn't ingested
-// anything yet so the frontend can fall back to the GA4 estimate.
+// Real subscription state (Apple S2S backed, forwarded by proof-pix-proxy).
+// Replaces the arithmetic "In trial / incomplete purchase (est.)" estimate
+// on the Analytics page. No propertyId required — subscription data is
+// app-wide, not per GA4 property. Returns { available:false, reason } when
+// the webhook hasn't ingested anything yet so the frontend falls back to
+// the GA4 estimate.
 router.get('/subscription-state', async (req, res) => {
   const days = parseInt(req.query.days, 10) || 30;
   const userId = req.user.workspaceOwnerId || req.user.userId;

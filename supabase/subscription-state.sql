@@ -1,7 +1,12 @@
--- RevenueCat subscription state — powers the Analytics page's trial sections.
+-- Subscription state — powers the Analytics page's trial sections.
+--
+-- Source today: Apple App Store Server Notifications V2, forwarded by
+-- proof-pix-proxy to POST /api/webhooks/subscription-event after it verifies
+-- the signedPayload. Planned future source: Google Play RTDN, forwarded the
+-- same way. Nothing in this schema is Apple-specific.
 --
 -- Two tables:
---   subscription_events — append-only raw event log (every RC webhook POST).
+--   subscription_events — append-only raw event log (every webhook POST).
 --     Source of truth; keeps full payload for forensic queries + replay.
 --   trial_states       — derived per-subscriber current state. Last-write-wins
 --     upsert driven by subscription_events ingestion. Reads come from here.
@@ -15,8 +20,9 @@
 --   billing_issue       → payment failed, in grace period
 --   paused              → store-level pause (Play Store only)
 --
--- Dedupe: subscription_events.event_id has a UNIQUE index. The webhook route
--- uses ON CONFLICT (event_id) DO NOTHING so RC retries are a no-op.
+-- Dedupe: subscription_events.event_id has a UNIQUE index (= Apple's
+-- notificationUUID). The webhook route uses ON CONFLICT (event_id) DO NOTHING
+-- so retries are a no-op.
 --
 -- Safe to re-run.
 

@@ -1,8 +1,14 @@
-// RevenueCat subscription state ingestion + read model.
+// Subscription state ingestion + read model.
+//
+// Source today: Apple App Store Server Notifications V2, forwarded here by
+// proof-pix-proxy's /webhooks/apple/notifications handler after it verifies
+// the signedPayload. Planned future source: Google Play Real-Time Developer
+// Notifications (RTDN), forwarded the same way.
 //
 // Two concerns:
-//   1. ingestEvent({ event }) — called by the /api/webhooks/revenuecat route.
-//      Inserts the raw event (dedupe on event_id) and upserts trial_states.
+//   1. ingestEvent(body) — called by POST /api/webhooks/subscription-event.
+//      Inserts the raw event (dedupe on event_id = Apple's notificationUUID)
+//      and upserts trial_states.
 //   2. getSubscriptionState(days) — called by GET /api/analytics/subscription-state.
 //      Aggregates trial_states for the Analytics page's Active trials +
 //      Post-trial outcome sections.
@@ -30,6 +36,10 @@ const supabase = createClient(
 //
 // Called from index.js at boot. Idempotent — safe to run on every restart.
 // Logs its decision so the Railway log stream shows exactly what happened.
+//
+// Table names are intentionally generic (subscription_events / trial_states)
+// — the data comes from Apple S2S notifications today, with Play Store RTDN
+// as a planned future source. Nothing in the schema is Apple-specific.
 const MIGRATION_SQL = `
 CREATE TABLE IF NOT EXISTS subscription_events (
   id              BIGSERIAL PRIMARY KEY,
@@ -82,24 +92,24 @@ CREATE POLICY "Allow all operations on trial_states"
 `;
 
 async function ensureTables() {
-  logger.info('revenuecat.ensure_tables.start', {});
+  logger.info('subscription.ensure_tables.start', {});
   const { error: probeErr } = await supabase
     .from('trial_states')
     .select('app_user_id')
     .limit(1);
   if (!probeErr) {
-    logger.info('revenuecat.ensure_tables.already_present', {});
+    logger.info('subscription.ensure_tables.already_present', {});
     return { ok: true, ran: false };
   }
   const missing = /does not exist|undefined_table|PGRST20[24]|schema cache|not find the table/i.test(probeErr.message || '');
   if (!missing) {
-    logger.warn('revenuecat.ensure_tables.probe_failed', { error: probeErr.message });
+    logger.warn('subscription.ensure_tables.probe_failed', { error: probeErr.message });
     return { ok: false, ran: false, error: probeErr.message };
   }
 
   const dbUrl = process.env.SUPABASE_POOLER_URL || process.env.SUPABASE_DATABASE_URL;
   if (!dbUrl) {
-    logger.warn('revenuecat.ensure_tables.skipped', {
+    logger.warn('subscription.ensure_tables.skipped', {
       reason: 'Neither SUPABASE_POOLER_URL nor SUPABASE_DATABASE_URL set',
     });
     return { ok: false, ran: false };
@@ -109,10 +119,10 @@ async function ensureTables() {
   try {
     await client.connect();
     await client.query(MIGRATION_SQL);
-    logger.info('revenuecat.ensure_tables.applied', { via: usingPooler ? 'pooler' : 'direct' });
+    logger.info('subscription.ensure_tables.applied', { via: usingPooler ? 'pooler' : 'direct' });
     return { ok: true, ran: true };
   } catch (err) {
-    logger.warn('revenuecat.ensure_tables.apply_failed', {
+    logger.warn('subscription.ensure_tables.apply_failed', {
       error: err.message,
       via: usingPooler ? 'pooler' : 'direct',
       hint: usingPooler ? null : 'Direct DB URL may be IPv6-only. Set SUPABASE_POOLER_URL (Supabase Dashboard → Settings → Database → Connection pooling → Transaction mode).',
@@ -157,23 +167,87 @@ function mapProduct(productId) {
 
 // ---------- Normalization ----------
 //
-// RC's webhook body uses nested `event` object. We flatten what we need into
-// a stable shape so the rest of this file doesn't care about RC's envelope.
-function normalizeRcEvent(body) {
-  const e = body?.event || body || {};
-  const toTs = (ms) => (ms ? new Date(Number(ms)).toISOString() : null);
+// Expected request body is the shape produced by proof-pix-proxy's Apple S2S
+// handler after it verifies + decodes Apple's signedPayload. Mirrors the field
+// names returned by verifyAndDecodeNotification() in that repo's
+// apple-webhook-utils.js, plus the full decoded `transaction` object so we can
+// pull purchase/expiration dates and appAccountToken.
+//
+// Shape expected (all optional unless noted):
+//   {
+//     notificationType: 'SUBSCRIBED' | 'DID_RENEW' | 'DID_CHANGE_RENEWAL_STATUS'
+//                     | 'EXPIRED' | 'DID_FAIL_TO_RENEW' | 'GRACE_PERIOD_EXPIRED'
+//                     | 'DID_RECOVER' | 'REFUND' | ...,         // required
+//     subtype: 'INITIAL_BUY' | 'RESUBSCRIBE' | 'AUTO_RENEW_DISABLED'
+//            | 'AUTO_RENEW_ENABLED' | 'VOLUNTARY' | 'BILLING_RETRY' | ...,
+//     notificationUUID: '...',                                    // required (dedupe key)
+//     environment: 'Sandbox' | 'Production',
+//     bundleId: 'com.goscha01.proofpix.app',
+//     productId: 'com.goscha01.proofpix.pro.monthly',
+//     transactionId: '...',
+//     originalTransactionId: '...',                               // required for user grouping
+//     isTrial: true,
+//     isPaidEntitlement: false,
+//     transaction: {
+//       appAccountToken: '<uuid>',                                // preferred user id
+//       purchaseDate: 1759856400000,                              // ms
+//       expiresDate: 1760461200000,                               // ms
+//       ...
+//     },
+//     renewal: { autoRenewStatus: 0|1, expirationIntent: 1-5, ... },
+//   }
+//
+// For backwards compat during the pivot, we also accept the legacy RC shape
+// (nested `event` with snake_case fields) and translate it. New callers should
+// use the Apple shape.
+function normalizeAppleNotification(body) {
+  // Legacy RC shape fallback — kept until the proxy fully migrates (will be
+  // removed once we've confirmed no RC traffic for 7 days).
+  if (body?.event?.app_user_id || body?.event?.type) {
+    const e = body.event;
+    const toTs = (ms) => (ms ? new Date(Number(ms)).toISOString() : null);
+    return {
+      eventId: String(e.id || e.event_id || ''),
+      eventType: String(e.type || '').toUpperCase(),
+      subtype: null,
+      appUserId: String(e.app_user_id || e.original_app_user_id || ''),
+      productId: e.product_id || null,
+      purchasedAt: toTs(e.purchased_at_ms),
+      expirationAt: toTs(e.expiration_at_ms),
+      isTrial: typeof e.is_trial_period === 'boolean' ? e.is_trial_period : null,
+      isPaidEntitlement: null,
+      autoRenewStatus: null,
+      environment: e.environment || null,
+      store: e.store || 'APP_STORE',
+      raw: body,
+    };
+  }
+
+  // Native Apple shape (from proof-pix-proxy).
+  const tx = body?.transaction || {};
+  const rn = body?.renewal || {};
+  const toTs = (ms) => (ms != null ? new Date(Number(ms)).toISOString() : null);
+  // User id priority: appAccountToken (set by the app when calling finishTransaction)
+  // → originalTransactionId (stable across renewals, groups a subscription family).
+  const appUserId = String(tx.appAccountToken || body.originalTransactionId || tx.originalTransactionId || '');
   return {
-    eventId: String(e.id || e.event_id || ''),
-    eventType: String(e.type || '').toUpperCase(),
-    appUserId: String(e.app_user_id || e.original_app_user_id || ''),
-    productId: e.product_id || null,
-    periodType: e.period_type || null,
-    purchasedAt: toTs(e.purchased_at_ms),
-    expirationAt: toTs(e.expiration_at_ms),
-    isTrialPeriod: typeof e.is_trial_period === 'boolean' ? e.is_trial_period : null,
-    cancelReason: e.cancel_reason || null,
-    environment: e.environment || null,
-    store: e.store || null,
+    eventId: String(body.notificationUUID || ''),
+    // event_type stores Apple's compound identifier so we can distinguish
+    // DID_CHANGE_RENEWAL_STATUS.AUTO_RENEW_DISABLED from .AUTO_RENEW_ENABLED
+    // in subscription_events for forensic queries.
+    eventType: body.subtype
+      ? `${String(body.notificationType || '').toUpperCase()}.${String(body.subtype).toUpperCase()}`
+      : String(body.notificationType || '').toUpperCase(),
+    subtype: body.subtype || null,
+    appUserId,
+    productId: body.productId || tx.productId || null,
+    purchasedAt: toTs(tx.purchaseDate),
+    expirationAt: toTs(tx.expiresDate),
+    isTrial: typeof body.isTrial === 'boolean' ? body.isTrial : null,
+    isPaidEntitlement: typeof body.isPaidEntitlement === 'boolean' ? body.isPaidEntitlement : null,
+    autoRenewStatus: typeof rn.autoRenewStatus === 'number' ? rn.autoRenewStatus : null,
+    environment: body.environment || null,
+    store: 'APP_STORE',
     raw: body,
   };
 }
@@ -181,24 +255,29 @@ function normalizeRcEvent(body) {
 // ---------- Status derivation ----------
 //
 // Pure function: given the current trial_states row (or null) and an incoming
-// normalized event, returns the next trial_states row. Caller decides whether
-// to UPSERT based on the backdated-event guard.
+// normalized Apple notification, returns the next trial_states row. Caller
+// decides whether to UPSERT based on the backdated-event guard.
 //
-// Order matters — first matching rule wins:
+// Apple notificationType → status transition matrix. First matching rule wins:
 //
-//   is_trial_period=true & event ∈ {INITIAL_PURCHASE, RENEWAL}  → trialing
-//   CANCELLATION & prior status=trialing                        → canceled_in_trial
-//   CANCELLATION                                                → active (still paid until expiration)
-//   RENEWAL w/o trial & prior status=trialing                   → converted
-//   RENEWAL / NON_RENEWING_PURCHASE / PRODUCT_CHANGE            → active
-//   INITIAL_PURCHASE w/o trial                                  → active
-//   UNCANCELLATION & prior.canceled_at                          → revert to active/trialing
-//   EXPIRATION                                                  → expired
-//   BILLING_ISSUE                                               → billing_issue
-//   SUBSCRIPTION_PAUSED                                         → paused
+//   SUBSCRIBED (INITIAL_BUY/RESUBSCRIBE) + isTrial                   → trialing
+//   SUBSCRIBED (INITIAL_BUY/RESUBSCRIBE) + isPaidEntitlement         → active
+//   DID_RENEW + isTrial                                              → trialing (still in intro)
+//   DID_RENEW + !isTrial + prior=trialing                            → converted (trial→paid)
+//   DID_RENEW + !isTrial                                             → active
+//   DID_CHANGE_RENEWAL_STATUS + AUTO_RENEW_DISABLED + prior=trialing → canceled_in_trial
+//   DID_CHANGE_RENEWAL_STATUS + AUTO_RENEW_DISABLED                  → active (keep status; stamp canceled_at)
+//   DID_CHANGE_RENEWAL_STATUS + AUTO_RENEW_ENABLED                   → active/trialing (clear canceled_at)
+//   EXPIRED                                                          → expired
+//   GRACE_PERIOD_EXPIRED                                             → expired
+//   DID_FAIL_TO_RENEW                                                → billing_issue
+//   DID_RECOVER                                                      → active (billing issue recovered)
+//   REFUND                                                           → expired (treat refunded = churned)
+//   PRICE_INCREASE / RENEWAL_EXTENDED / OFFER_REDEEMED / TEST / …    → no state change
 //
-// SUBSCRIBER_ALIAS and TRANSFER are handled separately (merge rows, not state
-// transition). TEST events are ignored by the webhook route before this runs.
+// Reference: proof-pix-proxy's classifyTransactionType() in
+// apple-webhook-utils.js documents the same event space from the Firebase
+// side; this file does the equivalent for persisted subscription state.
 function deriveNextState(current, evt) {
   const mapped = mapProduct(evt.productId);
   const base = {
@@ -216,11 +295,14 @@ function deriveNextState(current, evt) {
   };
 
   const priorStatus = current?.status || null;
-  const inTrial = evt.isTrialPeriod === true || evt.periodType === 'TRIAL';
+  const notification = (evt.eventType || '').split('.')[0];
+  const subtype = evt.subtype || '';
 
-  switch (evt.eventType) {
-    case 'INITIAL_PURCHASE':
-      if (inTrial) {
+  switch (notification) {
+    case 'SUBSCRIBED':
+      // INITIAL_BUY (first-ever purchase) or RESUBSCRIBE (after lapse) —
+      // if it's a trial offer, the user is trialing; otherwise paid directly.
+      if (evt.isTrial) {
         return {
           ...base,
           status: 'trialing',
@@ -230,8 +312,9 @@ function deriveNextState(current, evt) {
       }
       return { ...base, status: 'active' };
 
-    case 'RENEWAL':
-      if (inTrial) {
+    case 'DID_RENEW':
+      if (evt.isTrial) {
+        // Rare — only possible with multi-period intro offers.
         return {
           ...base,
           status: 'trialing',
@@ -239,9 +322,9 @@ function deriveNextState(current, evt) {
           trialEndAt: evt.expirationAt || base.trialEndAt,
         };
       }
-      // Trial → paid transition: mark conversion but don't overwrite trial_end_at
-      // (so the UI can still show "converted on day N of trial").
       if (priorStatus === 'trialing') {
+        // Canonical trial-to-paid conversion. Preserve trial_end_at so the UI
+        // can show "converted on day N of trial".
         return {
           ...base,
           status: 'converted',
@@ -250,47 +333,50 @@ function deriveNextState(current, evt) {
       }
       return { ...base, status: 'active' };
 
-    case 'PRODUCT_CHANGE':
-    case 'NON_RENEWING_PURCHASE':
-      return { ...base, status: 'active' };
-
-    case 'CANCELLATION':
-      // RC fires CANCELLATION when the user *schedules* a cancellation — the
-      // subscription is still active until expiration_at. Only flip to a
-      // canceled bucket if we know they were still in trial; otherwise keep
-      // them as active and just stamp canceled_at.
-      if (priorStatus === 'trialing' || inTrial) {
+    case 'DID_CHANGE_RENEWAL_STATUS':
+      if (subtype === 'AUTO_RENEW_DISABLED') {
+        // User scheduled cancellation. The subscription is still active until
+        // expiration_at. Flip to canceled_in_trial only if we know they were
+        // still in trial; otherwise keep status and just stamp canceled_at
+        // (dashboard still shows them as active until the EXPIRED event lands).
+        if (priorStatus === 'trialing' || evt.isTrial) {
+          return {
+            ...base,
+            status: 'canceled_in_trial',
+            canceledAt: evt.purchasedAt || new Date().toISOString(),
+          };
+        }
         return {
           ...base,
-          status: 'canceled_in_trial',
+          status: priorStatus === 'converted' ? 'converted' : 'active',
           canceledAt: evt.purchasedAt || new Date().toISOString(),
         };
       }
-      return {
-        ...base,
-        status: priorStatus === 'active' ? 'active' : 'active',
-        canceledAt: evt.purchasedAt || new Date().toISOString(),
-      };
+      if (subtype === 'AUTO_RENEW_ENABLED') {
+        // User un-cancelled. Clear canceled_at + revert to the appropriate
+        // active-ish status.
+        return {
+          ...base,
+          status: evt.isTrial || priorStatus === 'canceled_in_trial' ? 'trialing' : 'active',
+          canceledAt: null,
+        };
+      }
+      // Other DID_CHANGE_RENEWAL_STATUS subtypes (none common in prod) — no transition.
+      return current ? { ...base, status: priorStatus || 'active' } : null;
 
-    case 'UNCANCELLATION':
-      // Revert: trial? still trialing. Else active.
-      return {
-        ...base,
-        status: inTrial || priorStatus === 'canceled_in_trial' ? 'trialing' : 'active',
-        canceledAt: null,
-      };
-
-    case 'EXPIRATION':
+    case 'EXPIRED':
+    case 'GRACE_PERIOD_EXPIRED':
+    case 'REFUND':
       return { ...base, status: 'expired' };
 
-    case 'BILLING_ISSUE':
+    case 'DID_FAIL_TO_RENEW':
       return { ...base, status: 'billing_issue' };
 
-    case 'SUBSCRIPTION_PAUSED':
-      return { ...base, status: 'paused' };
+    case 'DID_RECOVER':
+      return { ...base, status: 'active' };
 
     default:
-      // TEMPORARY_ENTITLEMENT_GRANT, TRANSFER, SUBSCRIBER_ALIAS, TEST, etc.
+      // TEST, PRICE_INCREASE, OFFER_REDEEMED, RENEWAL_EXTENDED, CONSUMPTION_REQUEST, …
       // Record the event but don't change state.
       return current
         ? { ...base, status: priorStatus || 'active', lastEventType: evt.eventType }
@@ -302,7 +388,7 @@ function deriveNextState(current, evt) {
 
 // Returns { stored: bool, duplicate: bool, stateChanged: bool, newState? }
 async function ingestEvent(rawBody) {
-  const evt = normalizeRcEvent(rawBody);
+  const evt = normalizeAppleNotification(rawBody);
 
   if (!evt.eventId) {
     throw Object.assign(new Error('event_id missing'), { status: 400 });
@@ -354,7 +440,7 @@ async function ingestEvent(rawBody) {
   // the derived state. The raw event is still persisted above.
   if (existing && existing.last_event_at && evt.purchasedAt) {
     if (new Date(evt.purchasedAt) < new Date(existing.last_event_at)) {
-      logger.debug('revenuecat.ingest.backdated_skip', {
+      logger.debug('subscription.ingest.backdated_skip', {
         appUserId: evt.appUserId,
         eventType: evt.eventType,
         eventAt: evt.purchasedAt,
@@ -389,7 +475,7 @@ async function ingestEvent(rawBody) {
   if (upsertErr) throw upsertErr;
 
   if (existing?.status !== next.status) {
-    logger.info('revenuecat.trial_state_transition', {
+    logger.info('subscription.trial_state_transition', {
       appUserId: evt.appUserId,
       from: existing?.status || '(new)',
       to: next.status,
@@ -487,7 +573,7 @@ async function getSubscriptionState(days = 30) {
       .from('subscription_events')
       .select('*', { count: 'exact', head: true });
     if (!count || count === 0) {
-      return { available: false, reason: 'no_revenuecat_events_yet', windowDays };
+      return { available: false, reason: 'no_subscription_events_yet', windowDays };
     }
   }
 
@@ -541,5 +627,5 @@ module.exports = {
   getSubscriptionState,
   ensureTables,
   // exported for tests
-  _internal: { normalizeRcEvent, deriveNextState, mapProduct },
+  _internal: { normalizeAppleNotification, deriveNextState, mapProduct },
 };

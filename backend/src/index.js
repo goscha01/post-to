@@ -143,7 +143,8 @@ app.use('/api/social', socialRoutes);
 app.use('/api/automations', automationsRoutes);
 app.use('/api/team', teamRoutes);
 // Inbound webhooks — unauthed by JWT, gated by shared-secret headers.
-// Currently: RevenueCat subscription lifecycle events.
+// Currently: subscription lifecycle events from proof-pix-proxy
+// (Apple S2S notifications it has already verified).
 app.use('/api/webhooks', webhooksRoutes);
 // Public RSS + JSON feed endpoints — not under /api because RSS readers
 // expect canonical-looking URLs. Auth is via feed_token in the URL.
@@ -231,11 +232,11 @@ app.listen(PORT, () => {
       console.error('asc_analytics_scheduler.start_error', err?.message);
     }
   }
-  // RevenueCat subscription-state schema — self-apply at boot. Same pattern
-  // as asc_analytics_cache: /supabase/ isn't shipped to the Railway container,
-  // so we migrate from the running process (idempotent, logged).
+  // subscription_events + trial_states schema — self-apply at boot. Same
+  // pattern as asc_analytics_cache: /supabase/ isn't shipped to the Railway
+  // container, so we migrate from the running process (idempotent, logged).
   subscriptionStateService.ensureTables()
-    .catch(err => console.error('revenuecat.ensure_tables.error', err?.message));
+    .catch(err => console.error('subscription.ensure_tables.error', err?.message));
   // Campaign Assistant auto-monitor tick — every 6h, evaluates due observation
   // steps and marks them done / failed based on live GA4 + Google Ads data.
   // Opt-out via DISABLE_CAMPAIGN_MONITOR=1.
