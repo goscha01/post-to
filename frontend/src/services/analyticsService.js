@@ -97,6 +97,21 @@ const getPlanBreakdown = async (propertyId, days) => {
   return res.data;
 };
 
+// Same shape as plan_selected breakdown but for the purchase_started event
+// (user tapped Subscribe / Start trial on the paywall). Powers the per-plan
+// sub-rows under the Started purchase funnel step and the In trial estimate.
+const getPurchaseStartedBreakdown = async (propertyId, days) => {
+  const res = await axios.get('/api/analytics/purchase-started-breakdown', withPropertyDays(propertyId, days));
+  return res.data;
+};
+
+// Same for the purchase event (confirmed paid). Powers the per-plan sub-rows
+// under the Paid funnel step.
+const getPurchaseBreakdown = async (propertyId, days) => {
+  const res = await axios.get('/api/analytics/purchase-breakdown', withPropertyDays(propertyId, days));
+  return res.data;
+};
+
 // App Store Connect helpers — iOS top-of-funnel (impressions → PPVs → installs).
 // Kept in this service (not a separate ascService) so the Analytics page has
 // one import surface for all its data.
@@ -156,6 +171,8 @@ const analyticsService = {
   getInAppFunnel,
   getScreenViews,
   getPlanBreakdown,
+  getPurchaseStartedBreakdown,
+  getPurchaseBreakdown,
   listAscConnections,
   getAscInstallFunnel,
   getAscAdAttribution,

@@ -76,14 +76,13 @@ const Analytics = () => {
   const [devices, setDevices] = useState([]);
   const [geography, setGeography] = useState([]);
   const [inAppFunnel, setInAppFunnel] = useState(null);
-  // Distinct users per screen (GA4 built-in screenName dimension). Powers the
-  // screen-level sub-steps under each in-app funnel step (e.g. onboarding
-  // screen drop-off). Kept as an object { name → users } for O(1) lookup.
-  const [screensByName, setScreensByName] = useState(null);
-  // plan_selected breakdown by plan_id + billing_period. Shown as sub-steps
-  // under the Selected a plan funnel row. `null` before load, `{ rows, error }`
-  // after (error is set if custom dims aren't registered in GA4 Admin).
+  // Per-plan breakdowns for the three paid-funnel events. `null` before load,
+  // `{ rows, error }` after. `error` is set when the plan_id/billing_period
+  // custom dims aren't registered in GA4 Admin, or (for the purchase events)
+  // when the app isn't attaching plan_id yet so rows arrive as "(not set)".
   const [planBreakdown, setPlanBreakdown] = useState(null);
+  const [purchaseStartedBreakdown, setPurchaseStartedBreakdown] = useState(null);
+  const [purchaseBreakdown, setPurchaseBreakdown] = useState(null);
   // ASC (App Store Connect — iOS top-of-funnel) is fetched independently of
   // the GA4 property. `null` before load, `{ connected: false }` when the
   // user has no ASC connection, `{ connected: true, totals, connectionName }`
@@ -185,7 +184,7 @@ const Analytics = () => {
     // fail on properties that don't yet have any funnel-eligible data. Fetched
     // with .catch so a funnel failure doesn't blank out the whole dashboard.
     try {
-      const [o, t, l, e, c, d, g, f, sv, pb] = await Promise.all([
+      const [o, t, l, e, c, d, g, f, pb, psb, pb2] = await Promise.all([
         analyticsService.getOverview(propertyId, rangeDays),
         analyticsService.getTraffic(propertyId, rangeDays),
         analyticsService.getLandingPages(propertyId, rangeDays),
@@ -197,12 +196,16 @@ const Analytics = () => {
           console.warn('[Analytics] in-app funnel failed:', err?.response?.data || err?.message);
           return null;
         }),
-        analyticsService.getScreenViews(propertyId, rangeDays).catch(err => {
-          console.warn('[Analytics] screen views failed:', err?.response?.data || err?.message);
-          return null;
-        }),
         analyticsService.getPlanBreakdown(propertyId, rangeDays).catch(err => {
           console.warn('[Analytics] plan breakdown failed:', err?.response?.data || err?.message);
+          return null;
+        }),
+        analyticsService.getPurchaseStartedBreakdown(propertyId, rangeDays).catch(err => {
+          console.warn('[Analytics] purchase_started breakdown failed:', err?.response?.data || err?.message);
+          return null;
+        }),
+        analyticsService.getPurchaseBreakdown(propertyId, rangeDays).catch(err => {
+          console.warn('[Analytics] purchase breakdown failed:', err?.response?.data || err?.message);
           return null;
         }),
       ]);
@@ -215,11 +218,9 @@ const Analytics = () => {
       setDevices(d.devices || []);
       setGeography(g.geography || []);
       setInAppFunnel(f?.inAppFunnel || null);
-      // Index screens by name for O(1) sub-step lookups in FunnelSection.
-      const screenMap = {};
-      (sv?.screenViews?.screens || []).forEach(s => { screenMap[s.screenName] = s.users; });
-      setScreensByName(screenMap);
       setPlanBreakdown(pb?.planBreakdown || null);
+      setPurchaseStartedBreakdown(psb?.purchaseStartedBreakdown || null);
+      setPurchaseBreakdown(pb2?.purchaseBreakdown || null);
     } catch (err) {
       if (token !== loadTokenRef.current) return;
       const status = err.response?.status;
@@ -426,8 +427,9 @@ const Analytics = () => {
 
           <FunnelSection
             inAppFunnel={inAppFunnel}
-            screensByName={screensByName}
             planBreakdown={planBreakdown}
+            purchaseStartedBreakdown={purchaseStartedBreakdown}
+            purchaseBreakdown={purchaseBreakdown}
             loading={loadingReports}
           />
 
@@ -925,40 +927,17 @@ const AdAttributionSection = ({ attribution, ascState }) => {
   );
 };
 
-// Sub-step definitions — map each funnel step key to the app screens that
-// represent it. Sub-steps use GA4 screenName distinct-user counts (unordered,
-// see FunnelSection comment). Kept front-end-side because it's a UI concern
-// (backend just serves raw screen counts).
-// Screens that map to each parent funnel step. Verified against the actual
-// screen_view events GA4 receives from ProofPix. Order within each step
-// reflects the user flow so sub-step rows read top-to-bottom in sequence.
-//
-// Onboarding flow (as of ProofPix instrumentation 2026-10-01):
-//   first_load  — route-level screen_view auto-fired by App.js nav listener
-//   onboarding_welcome   — fired on FirstLoadScreen mount (every onboarding user)
-//   onboarding_user_info — fired when the user focuses the name field (intent
-//                          signal: they're actively engaging, not bouncing)
-//   onboarding_permissions — intentionally absent; no permissions prompt in
-//                            this flow, fabricating it would be noise
-// Downstream of these: logOnboardingCompleted fires on Save & Continue
-// (the parent "Onboarding done" funnel step).
-const FUNNEL_SUBSTEPS = {
-  onboarding_done: [
-    { screenName: 'first_load',           label: 'First load' },
-    { screenName: 'onboarding_welcome',   label: 'Welcome' },
-    { screenName: 'onboarding_user_info', label: 'User info (name focus)' },
-  ],
-  paywall: [
-    { screenName: 'paywall', label: 'Paywall shown' },
-  ],
-};
-
 // Renders the in-app funnel from getInAppFunnel. Prefers GA4's v1alpha
 // runFunnelReport (real ordered drop-off). When that endpoint fails, the
 // backend falls back to per-step distinct-user counts via v1beta — same
 // shape, but the funnel is "approximate" (a user could skip a step and
 // still be counted at a later one). `inAppFunnel.source` tells us which.
-const FunnelSection = ({ inAppFunnel, screensByName, planBreakdown, loading }) => {
+//
+// All screen-level steps are now top-level funnel rows (first_load, Welcome,
+// User info — ordered sequence inside the onboarding flow). Per-plan
+// breakdowns are rendered under the three paid-funnel events:
+// Selected a plan / Started purchase / Paid.
+const FunnelSection = ({ inAppFunnel, planBreakdown, purchaseStartedBreakdown, purchaseBreakdown, loading }) => {
   const funnel = inAppFunnel?.funnel || null;
   const source = inAppFunnel?.source;
   const fallbackReason = inAppFunnel?.fallbackReason;
@@ -1055,116 +1034,103 @@ const FunnelSection = ({ inAppFunnel, screensByName, planBreakdown, loading }) =
                     style={{ width: `${barPct}%` }}
                   />
                 </div>
-                {/* Screen-level sub-steps for steps that have them mapped.
-                    Renders indented under the parent step. Compares to
-                    THIS step's user count (not top-of-funnel) so the
-                    "% completed" reads as "of users who viewed this
-                    screen, how many fired the parent step's event". */}
-                <FunnelSubSteps
-                  stepKey={stage.key}
-                  screensByName={screensByName}
-                  parentUsers={users}
-                />
-                {/* Plan breakdown under the "Selected a plan" step —
-                    which plan (starter/pro/business) and which cadence
-                    (monthly/annual/seat) users are picking. */}
+                {/* Per-plan breakdowns for the three paid-funnel events.
+                    plan_selected is tagged with plan_id today; purchase_started
+                    and purchase will populate once the mobile app attaches
+                    plan_id + billing_period to those events. */}
                 {stage.key === 'plan_selected' && (
                   <PlanBreakdownSubSteps planBreakdown={planBreakdown} />
+                )}
+                {stage.key === 'purchase_start' && (
+                  <PlanBreakdownSubSteps planBreakdown={purchaseStartedBreakdown} eventLabel="purchase_started" />
+                )}
+                {stage.key === 'paid' && (
+                  <PlanBreakdownSubSteps planBreakdown={purchaseBreakdown} eventLabel="purchase" />
                 )}
               </div>
             );
           })}
+          <InTrialEstimate
+            funnel={funnel}
+            purchaseStartedBreakdown={purchaseStartedBreakdown}
+            purchaseBreakdown={purchaseBreakdown}
+          />
         </div>
       </Section>
     </div>
   );
 };
 
-// Sub-steps for a single parent funnel step. Renders all mapped screens
-// (even at 0) so a broken mapping is visible instead of silently hidden.
-// When every mapped screen is missing from the data, prints a debug line
-// showing the top-N actual screen names GA4 knows about — makes it easy
-// to spot when Firebase-auto-generated screen names differ from the
-// snake_case names we expected.
+// Approximation of users who tapped Subscribe / Start trial but haven't fired
+// `purchase` yet — the pool we'd call "in trial" (plus some abandons / payment
+// failures). Rendered below the funnel to make the "which plan is being
+// trialed" question answerable without a RevenueCat integration.
 //
-// Sub-steps are UNORDERED distinct-user counts per screen — they can
-// exceed the parent step's user count because a user who viewed the
-// screen but didn't complete the parent event still counts here. We
-// compare against the parent step instead of top-of-funnel so the ratio
-// makes semantic sense: "63% of users who viewed first_load went on to
-// fire onboarding_completed" tells you drop-off within the step.
-const FunnelSubSteps = ({ stepKey, screensByName, parentUsers }) => {
-  const subs = FUNNEL_SUBSTEPS[stepKey];
-  if (!subs || !screensByName) return null;
-  const rows = subs.map(s => ({
-    ...s,
-    users: screensByName[s.screenName] ?? 0,
-    knownInData: screensByName[s.screenName] !== undefined,
-  }));
+// Per-plan rows are the per-plan diff (purchase_started_users -
+// purchase_users). Negative diffs (someone paid without an in-period
+// purchase_started event — e.g. web upgrade) are clamped to 0.
+//
+// Real "who's trialing right now" requires RevenueCat webhook data — this is
+// only an estimate from GA4 event counts. Labelled accordingly.
+const InTrialEstimate = ({ funnel, purchaseStartedBreakdown, purchaseBreakdown }) => {
+  const started = funnel.find(s => s.key === 'purchase_start');
+  const paid = funnel.find(s => s.key === 'paid');
+  if (!started || !paid) return null;
+  const startedUsers = Number(started.users || 0);
+  const paidUsers = Number(paid.users || 0);
+  const trialing = Math.max(0, startedUsers - paidUsers);
+
+  const startedRows = (purchaseStartedBreakdown?.rows || []).filter(r => r.plan !== '(not set)');
+  const paidRows = (purchaseBreakdown?.rows || []).filter(r => r.plan !== '(not set)');
+  const paidByKey = new Map(paidRows.map(r => [`${r.plan}|${r.billingPeriod}`, r.users]));
+  const perPlan = startedRows.map(r => {
+    const key = `${r.plan}|${r.billingPeriod}`;
+    const paidForPlan = paidByKey.get(key) || 0;
+    return {
+      plan: r.plan,
+      billingPeriod: r.billingPeriod,
+      users: Math.max(0, r.users - paidForPlan),
+    };
+  }).filter(r => r.users > 0);
+
   return (
-    <div className="mt-2 ml-4 pl-3 border-l-2 border-gray-100 space-y-1.5">
-      {rows.map((r) => {
-        // Completion-within-step: how many of the users who viewed this
-        // screen actually fired the parent step's event. If screen views
-        // ≥ parent event count, the ratio ≤ 100% and reads naturally as
-        // "X% of screen viewers completed the step". If screen views <
-        // parent (edge case — e.g. event fires without screen view), we
-        // just hide the ratio.
-        const completed = r.users > 0 && r.users >= parentUsers && parentUsers > 0
-          ? parentUsers / r.users
-          : null;
-        return (
-          <div key={r.screenName}>
-            <div className="flex items-center justify-between text-xs">
-              <div className="flex items-baseline gap-2 min-w-0">
-                <span className={r.knownInData ? 'text-gray-600' : 'text-gray-400'}>
-                  ↳ {r.label}
-                </span>
-                <span className="text-[10px] text-gray-400 font-mono truncate">{r.screenName}</span>
-                {!r.knownInData && (
-                  <span className="text-[10px] text-amber-600" title="This screen name doesn't appear in GA4's data">
-                    (not in data)
-                  </span>
-                )}
-              </div>
-              <div className="flex items-center gap-3 flex-shrink-0">
-                <span className="tabular-nums text-gray-800">{fmtInt(r.users)} views</span>
-                {completed !== null && (
-                  <span
-                    className="tabular-nums text-gray-500 text-[11px]"
-                    title="Of users who viewed this screen, the portion who went on to complete the parent step"
-                  >
-                    {fmtPercent(completed)} completed
-                  </span>
-                )}
-              </div>
-            </div>
-          </div>
-        );
-      })}
-      {/* Show top screens whenever ANY expected screen is missing (not just
-          when all are missing). Reveals the actual GA4 screen names so we
-          can update the FUNNEL_SUBSTEPS mapping. */}
-      {rows.some(r => !r.knownInData) && (
-        <div className="mt-2 text-[11px] text-gray-500">
-          <span className="text-amber-700">Screens missing:</span>{' '}
-          {rows.filter(r => !r.knownInData).map(r => r.screenName).join(', ')}
-          <br />
-          <span className="text-gray-600">All screens in GA4 (top 15):</span>{' '}
-          {topScreenNames(screensByName, 15).join(', ') || '(no screens tracked)'}
+    <div className="mt-4 pt-4 border-t border-gray-200">
+      <div className="flex items-baseline justify-between gap-2">
+        <div className="flex items-baseline gap-2 min-w-0">
+          <span className="text-sm font-medium text-gray-800">In trial / incomplete purchase (est.)</span>
+          <span className="text-[11px] text-gray-500">= Started purchase − Paid</span>
         </div>
+        <span className="text-sm font-semibold text-gray-900 tabular-nums">{fmtInt(trialing)}</span>
+      </div>
+      <p className="mt-1 text-[11px] text-gray-500">
+        Approximation — includes users still actively trialing, canceled trials, and payment failures. A real "who's trialing right now" view
+        requires RevenueCat webhook data (not wired yet).
+      </p>
+      {perPlan.length > 0 && (
+        <div className="mt-2 ml-4 pl-3 border-l-2 border-gray-100 space-y-1">
+          {perPlan.map((r, i) => (
+            <div key={i} className="flex items-center justify-between text-xs">
+              <div className="flex items-baseline gap-2 min-w-0">
+                <span className="text-gray-600">↳ {r.plan}</span>
+                {r.billingPeriod && r.billingPeriod !== '(not set)' && (
+                  <span className="text-[10px] text-gray-400 font-mono">{r.billingPeriod}</span>
+                )}
+              </div>
+              <span className="tabular-nums text-gray-800">{fmtInt(r.users)} users</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {perPlan.length === 0 && trialing > 0 && (
+        <p className="mt-2 text-[11px] text-amber-700">
+          Per-plan breakdown unavailable — the app isn't attaching <code className="text-[10px] px-1 bg-amber-50 rounded">plan_id</code>
+          {' '}to <code className="text-[10px] px-1 bg-amber-50 rounded">purchase_started</code> and <code className="text-[10px] px-1 bg-amber-50 rounded">purchase</code> events yet.
+          Once it does, this row will split by plan.
+        </p>
       )}
     </div>
   );
 };
-
-// Returns the top-N screen names from screensByName, sorted by user count.
-function topScreenNames(screensByName, n) {
-  return Object.entries(screensByName || {})
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, n)
-    .map(([name, users]) => `${name} (${users})`);
-}
 
 // Plan breakdown under the "Selected a plan" funnel row. Shows one line per
 // (plan, billing_period) combination with distinct users + event count.
@@ -1176,7 +1142,7 @@ function topScreenNames(screensByName, n) {
 //                                             haven't been tagged yet"
 //                                             (historical gap)
 //   4. meaningful rows                     → the per-plan breakdown
-const PlanBreakdownSubSteps = ({ planBreakdown }) => {
+const PlanBreakdownSubSteps = ({ planBreakdown, eventLabel = 'plan_selected' }) => {
   if (!planBreakdown) return null;
   if (planBreakdown.error) {
     return (
@@ -1199,11 +1165,11 @@ const PlanBreakdownSubSteps = ({ planBreakdown }) => {
   if (meaningful.length === 0 && notSetRow) {
     return (
       <div className="mt-2 ml-4 pl-3 border-l-2 border-amber-100 text-[11px] text-amber-700">
-        ↳ {fmtInt(notSetRow.eventCount)} plan_selected events have{' '}
+        ↳ {fmtInt(notSetRow.eventCount)} {eventLabel} events have{' '}
         <code className="text-[10px] px-1 bg-amber-50 rounded">plan_id = (not set)</code> —
-        they fired before <code className="text-[10px] px-1 bg-amber-50 rounded">plan_id</code>{' '}
-        was registered as a custom dimension in GA4 Admin. Historical events don't backfill;
-        new plan_selected events (fired from now on) will carry the plan value and populate here.
+        either the app isn't attaching <code className="text-[10px] px-1 bg-amber-50 rounded">plan_id</code> to this event yet, or they
+        fired before the custom dimension was registered in GA4 Admin. Historical events don't backfill;
+        new {eventLabel} events with the param will populate here.
       </div>
     );
   }
