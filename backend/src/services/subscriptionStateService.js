@@ -125,40 +125,34 @@ async function ensureTables() {
 
 // ---------- Product mapping ----------
 //
-// Maps the store `product_id` (as RC reports it) to Post-to's plan taxonomy.
-// Unknown products are still ingested — the raw product_id is preserved on
-// trial_states.product_id so the UI can surface them with a hint to add the
-// mapping. Fill this map once the ProofPix App Store Connect / Play Console
-// product IDs are confirmed.
+// Mirrors ProofPix's own productIdToPlan / productIdToBillingPeriod in
+// proof-pix-native/src/services/iapService.js (search `export const
+// productIdToPlan`). Keeping the logic identical means every product the
+// mobile app ships maps correctly on both platforms:
 //
-// Grep the ProofPix mobile repo for `com.proofpix` or `.monthly` to find the
-// authoritative list before editing. Keep bundle-id / app-name variants here
-// (users occasionally re-identify an app) rather than relying on string
-// transforms.
-const PRODUCT_MAP = {
-  // Examples — replace with real product IDs:
-  //   'com.proofpix.pro.monthly':      { planId: 'pro',      billingPeriod: 'monthly' },
-  //   'com.proofpix.pro.annual':       { planId: 'pro',      billingPeriod: 'annual'  },
-  //   'com.proofpix.business.monthly': { planId: 'business', billingPeriod: 'monthly' },
-  //   'com.proofpix.business.annual':  { planId: 'business', billingPeriod: 'annual'  },
-  //   'com.proofpix.starter.monthly':  { planId: 'starter',  billingPeriod: 'monthly' },
-};
-
+//   iOS products:   com.goscha01.proofpix.{pro,business,enterprise}.{monthly,annual}
+//                   com.goscha01.proofpix.{business,enterprise}.seat
+//   Android:        com.goscha01.proofpix.{pro,business,enterprise}         (monthly)
+//                   com.goscha01.proofpix.{pro,business,enterprise}.annual
+//                   com.goscha01.proofpix.{business,enterprise}.seat
+//
+// Substring matching (not a hard-coded map) handles both platforms with one
+// function and auto-covers any future SKU that follows the same convention.
+// Order matters: enterprise/business/pro before falling to starter; seat
+// takes precedence over annual/monthly for billing period.
 function mapProduct(productId) {
-  if (productId && PRODUCT_MAP[productId]) return PRODUCT_MAP[productId];
-  // Heuristic fallback — product IDs like "pro_monthly" / "business.annual" are
-  // common. Lets the UI render a reasonable label even before the map is filled.
-  if (productId) {
-    const lower = String(productId).toLowerCase();
-    const planId = ['business', 'pro', 'starter', 'enterprise'].find(p => lower.includes(p)) || null;
-    const billingPeriod = lower.includes('annual') || lower.includes('yearly')
-      ? 'annual'
-      : lower.includes('monthly') || lower.includes('month')
-        ? 'monthly'
-        : null;
-    if (planId || billingPeriod) return { planId, billingPeriod };
-  }
-  return { planId: null, billingPeriod: null };
+  if (!productId) return { planId: null, billingPeriod: null };
+  const s = String(productId);
+  let planId;
+  if (s.includes('enterprise') && !s.includes('seat')) planId = 'enterprise';
+  else if (s.includes('business') && !s.includes('seat')) planId = 'business';
+  else if (s.includes('pro')) planId = 'pro';
+  else planId = 'starter';
+  let billingPeriod;
+  if (s.includes('.seat')) billingPeriod = 'seat';
+  else if (s.includes('.annual')) billingPeriod = 'annual';
+  else billingPeriod = 'monthly';
+  return { planId, billingPeriod };
 }
 
 // ---------- Normalization ----------
@@ -547,5 +541,5 @@ module.exports = {
   getSubscriptionState,
   ensureTables,
   // exported for tests
-  _internal: { normalizeRcEvent, deriveNextState, mapProduct, PRODUCT_MAP },
+  _internal: { normalizeRcEvent, deriveNextState, mapProduct },
 };
