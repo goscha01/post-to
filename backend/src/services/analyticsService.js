@@ -343,24 +343,41 @@ async function getEvents(accessToken, propertyId, days) {
 // the REST endpoint directly via the OAuth2 client's `.request()` — same
 // auth, no SDK dep.
 //
-// Flat 9-step funnel from install → paid, mixing dedicated events (first_open,
-// onboarding_completed, paywall_view, plan_selected, purchase_started,
-// purchase) with screen_view steps filtered by screen_name (first_load,
-// onboarding_welcome, onboarding_user_info). Screen_view filtering requires
-// `screen_name` to be registered as an event-scoped custom dimension on the
-// property — see AUTO_REGISTER_CUSTOM_DIMS. If the dim isn't registered yet,
-// runFunnelReport fails and we fall through to the v1beta per-step counts
-// which don't need it.
+// Flat 6-step funnel from install → paid using dedicated events the mobile
+// app explicitly fires (first_open, onboarding_completed, paywall_view,
+// plan_selected, purchase_started, purchase). All 6 are standard events — no
+// custom dimension needed, strict ordering works out of the box.
+//
+// SCREEN-VIEW STEPS REMOVED (2026-10-08): the 3 within-onboarding screen
+// steps (first_load, onboarding_welcome, onboarding_user_info) used to live
+// here, filtered on screen_view by screen_name. They always returned 0
+// because GA4 treats `screen_name` as a RESERVED parameter on the reserved
+// `screen_view` event — the Firebase SDK routes it to the automatic
+// screen-tracking slot, NOT to customEvent:screen_name. Zero events ever
+// matched the filter, which collapsed the strict ordered funnel at step 2
+// and cascaded zeros into every step after.
+//
+// To re-enable screen-level steps (post mobile-app release):
+//   1. Ship logScreenView() in proof-pix-native/src/utils/analytics.js with
+//      `nav_screen: screenName` as a THIRD param alongside screen_name/
+//      screen_class. `nav_screen` is not reserved, so GA4 stores it in
+//      customEvent:nav_screen as expected.
+//   2. Re-register the custom dim as `nav_screen` on the connected GA4
+//      property (already pre-registered via AUTO_REGISTER_CUSTOM_DIMS so
+//      new events start populating immediately when the app release ships).
+//   3. Uncomment the three screen steps below, change screenName:
+//      'first_load' → navScreen: 'first_load' (and update stepFilter /
+//      screenViewFilter to use eventParameterName: 'nav_screen').
 const IN_APP_FUNNEL_STEPS = [
-  { key: 'first_open',           label: 'First open',       eventName: 'first_open' },
-  { key: 'first_load',           label: 'First load',       eventName: 'screen_view', screenName: 'first_load' },
-  { key: 'onboarding_welcome',   label: 'Welcome',          eventName: 'screen_view', screenName: 'onboarding_welcome' },
-  { key: 'onboarding_user_info', label: 'User info (name focus)', eventName: 'screen_view', screenName: 'onboarding_user_info' },
-  { key: 'onboarding_done',      label: 'Onboarding done',  eventName: 'onboarding_completed' },
-  { key: 'paywall',              label: 'Saw paywall',      eventName: 'paywall_view' },
-  { key: 'plan_selected',        label: 'Selected a plan',  eventName: 'plan_selected' },
-  { key: 'purchase_start',       label: 'Started purchase', eventName: 'purchase_started' },
-  { key: 'paid',                 label: 'Paid',             eventName: 'purchase' },
+  { key: 'first_open',      label: 'First open',       eventName: 'first_open' },
+  // { key: 'first_load',           label: 'First load',       eventName: 'screen_view', screenName: 'first_load' },
+  // { key: 'onboarding_welcome',   label: 'Welcome',          eventName: 'screen_view', screenName: 'onboarding_welcome' },
+  // { key: 'onboarding_user_info', label: 'User info (name focus)', eventName: 'screen_view', screenName: 'onboarding_user_info' },
+  { key: 'onboarding_done', label: 'Onboarding done',  eventName: 'onboarding_completed' },
+  { key: 'paywall',         label: 'Saw paywall',      eventName: 'paywall_view' },
+  { key: 'plan_selected',   label: 'Selected a plan',  eventName: 'plan_selected' },
+  { key: 'purchase_start',  label: 'Started purchase', eventName: 'purchase_started' },
+  { key: 'paid',            label: 'Paid',             eventName: 'purchase' },
 ];
 
 function eventNameFilter(eventName) {
@@ -368,18 +385,24 @@ function eventNameFilter(eventName) {
 }
 
 // Builds a funnel step filter for a screen_view event with a specific
-// screen_name param value. Nested funnelParameterFilterExpression — GA4
-// resolves this by matching screen_view events whose `screen_name` param
-// equals the given value. Requires `screen_name` to be registered as an
-// event-scoped custom dimension on the property (otherwise GA4 400s with
-// "Field eventParameterName:screen_name is not a valid field").
+// screen name. Reads the value from the `nav_screen` custom event parameter
+// (NOT `screen_name` — that one is reserved by GA4 on reserved events like
+// screen_view; passing it to logEvent routes the value into the automatic
+// screen-tracking slot which is not queryable at property scope on hybrid
+// web+app properties).
+//
+// Mobile-app contract: logScreenView() must pass `nav_screen` alongside
+// `screen_name` (see proof-pix-native/src/utils/analytics.js). The
+// `nav_screen` custom dim is auto-registered on property connect via
+// AUTO_REGISTER_CUSTOM_DIMS. If the dim isn't registered, GA4 400s with
+// "Field eventParameterName:nav_screen is not a valid field".
 function screenViewFilter(screenName) {
   return {
     funnelEventFilter: {
       eventName: 'screen_view',
       funnelParameterFilterExpression: {
         funnelParameterFilter: {
-          eventParameterName: 'screen_name',
+          eventParameterName: 'nav_screen',
           stringFilter: { matchType: 'EXACT', value: screenName },
         },
       },
@@ -431,24 +454,28 @@ async function getInAppFunnel(accessToken, propertyId, days) {
     return null;
   });
 
-  // Per-screen distinct users for the screen_view-based steps. Lets us compute
-  // rawUsers for screen steps (how many hit this screen in any order) and
-  // populates the v1beta fallback when runFunnelReport isn't available.
+  // Per-screen distinct users for the screen_view-based steps (currently
+  // commented out of IN_APP_FUNNEL_STEPS — see the big comment above the
+  // array for the reserved-param story). Queries `customEvent:nav_screen`,
+  // which the mobile app populates alongside the reserved `screen_name` on
+  // every logScreenView() call. No-ops when there are no screen-view steps,
+  // which is the current prod state.
   const stepScreenNames = [...new Set(IN_APP_FUNNEL_STEPS.map(s => s.screenName).filter(Boolean))];
   const rawScreensPromise = stepScreenNames.length === 0 ? Promise.resolve(null) : runReport(accessToken, propertyId, {
     dateRanges: dateRangeFromDays(days),
-    dimensions: [{ name: 'customEvent:screen_name' }],
+    dimensions: [{ name: 'customEvent:nav_screen' }],
     metrics: [{ name: 'activeUsers' }],
     dimensionFilter: {
       andGroup: {
         expressions: [
           { filter: { fieldName: 'eventName', stringFilter: { matchType: 'EXACT', value: 'screen_view' } } },
-          { filter: { fieldName: 'customEvent:screen_name', inListFilter: { values: stepScreenNames } } },
+          { filter: { fieldName: 'customEvent:nav_screen', inListFilter: { values: stepScreenNames } } },
         ],
       },
     },
   }).catch(err => {
-    // Non-fatal — most likely screen_name not yet registered as custom dim.
+    // Non-fatal — most likely nav_screen not yet registered as custom dim
+    // (happens on properties where mobile app hasn't shipped yet).
     logger.warn('analytics.funnel.raw_screens_failed', { message: err.message });
     return null;
   });
@@ -479,7 +506,7 @@ async function getInAppFunnel(accessToken, propertyId, days) {
       ? new Map(shapeReport(rawEventsRes).rows.map(r => [r.eventName, Number(r.activeUsers || 0)]))
       : new Map();
     const rawByScreen = rawScreensRes
-      ? new Map(shapeReport(rawScreensRes).rows.map(r => [r['customEvent:screen_name'], Number(r.activeUsers || 0)]))
+      ? new Map(shapeReport(rawScreensRes).rows.map(r => [r['customEvent:nav_screen'], Number(r.activeUsers || 0)]))
       : new Map();
     const funnel = IN_APP_FUNNEL_STEPS.map((s, idx) => ({
       key: s.key,
@@ -511,7 +538,7 @@ async function getInAppFunnel(accessToken, propertyId, days) {
       ? new Map(shapeReport(rawEventsRes).rows.map(r => [r.eventName, Number(r.activeUsers || 0)]))
       : new Map();
     const usersByScreen = rawScreensRes
-      ? new Map(shapeReport(rawScreensRes).rows.map(r => [r['customEvent:screen_name'], Number(r.activeUsers || 0)]))
+      ? new Map(shapeReport(rawScreensRes).rows.map(r => [r['customEvent:nav_screen'], Number(r.activeUsers || 0)]))
       : new Map();
     const funnel = IN_APP_FUNNEL_STEPS.map(s => {
       const users = stepRawUsers(s, usersByEvent, usersByScreen) ?? 0;
@@ -820,6 +847,12 @@ const AUTO_REGISTER_CUSTOM_DIMS = [
     displayName: 'Screen Name',
     scope: 'EVENT',
     description: 'App screen name - required so the Post-to in-app funnel can filter screen_view steps by screen in GA4 runFunnelReport.',
+  },
+  {
+    parameterName: 'nav_screen',
+    displayName: 'Nav Screen',
+    scope: 'EVENT',
+    description: 'App screen name - non-reserved alternative to screen_name (which GA4 captures into a different slot on reserved screen_view events).',
   },
 ];
 
