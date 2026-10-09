@@ -82,6 +82,25 @@ const getInAppFunnel = async (propertyId, days) => {
   return res.data;
 };
 
+// Product-usage funnel: created project → added before/after → made comparison →
+// shared result. Same shape as getInAppFunnel. The "shared" step accepts
+// EITHER report_shared OR photo_export (both are legitimate "sent somewhere"
+// signals from the mobile app).
+const getUsageFunnel = async (propertyId, days) => {
+  const res = await axios.get('/api/analytics/usage-funnel', withPropertyDays(propertyId, days));
+  return res.data;
+};
+
+// Retention cohort — of users whose first_touch falls in the window, how
+// many came back on D1, D7, D30? Returns:
+//   { retention: { cohortSize, points: [{ day, users, rate }], rangeDays } }
+// Only offsets strictly smaller than rangeDays are populated (D30 appears
+// for 90-day ranges, D7+ for 30-day, D1 for 7-day).
+const getRetention = async (propertyId, days) => {
+  const res = await axios.get('/api/analytics/retention', withPropertyDays(propertyId, days));
+  return res.data;
+};
+
 // Distinct users per screenName (GA4 built-in dimension). Used by the
 // frontend to render screen-level sub-steps under each in-app funnel step.
 const getScreenViews = async (propertyId, days) => {
@@ -188,6 +207,8 @@ const analyticsService = {
   getDevices,
   getGeography,
   getInAppFunnel,
+  getUsageFunnel,
+  getRetention,
   getScreenViews,
   getPlanBreakdown,
   getPurchaseStartedBreakdown,

@@ -76,6 +76,13 @@ const Analytics = () => {
   const [devices, setDevices] = useState([]);
   const [geography, setGeography] = useState([]);
   const [inAppFunnel, setInAppFunnel] = useState(null);
+  // Product-usage funnel (project_created → before → after → comparison →
+  // shared). Independent of paid-conversion funnel above. `null` before
+  // load, `{ funnel, source, fallbackReason, rangeDays }` after.
+  const [usageFunnel, setUsageFunnel] = useState(null);
+  // Retention cohort (D1 / D7 / D30 return rates). `null` before load,
+  // `{ cohortSize, points: [{ day, users, rate }], rangeDays, note?, error? }`.
+  const [retention, setRetention] = useState(null);
   // Per-plan breakdowns for the three paid-funnel events. `null` before load,
   // `{ rows, error }` after. `error` is set when the plan_id/billing_period
   // custom dims aren't registered in GA4 Admin, or (for the purchase events)
@@ -130,6 +137,8 @@ const Analytics = () => {
       overview,
       appStore: ascState?.connected ? ascState.totals : null,
       inAppFunnel: inAppFunnel?.funnel || null,
+      usageFunnel: usageFunnel?.funnel || null,
+      retention: retention || null,
       trafficSources: traffic,
       landingPages: landing,
       campaigns,
@@ -190,7 +199,7 @@ const Analytics = () => {
     // fail on properties that don't yet have any funnel-eligible data. Fetched
     // with .catch so a funnel failure doesn't blank out the whole dashboard.
     try {
-      const [o, t, l, e, c, d, g, f, pb, psb, pb2, ss] = await Promise.all([
+      const [o, t, l, e, c, d, g, f, pb, psb, pb2, ss, uf, ret] = await Promise.all([
         analyticsService.getOverview(propertyId, rangeDays),
         analyticsService.getTraffic(propertyId, rangeDays),
         analyticsService.getLandingPages(propertyId, rangeDays),
@@ -218,6 +227,14 @@ const Analytics = () => {
           console.warn('[Analytics] subscription state failed:', err?.response?.data || err?.message);
           return null;
         }),
+        analyticsService.getUsageFunnel(propertyId, rangeDays).catch(err => {
+          console.warn('[Analytics] usage funnel failed:', err?.response?.data || err?.message);
+          return null;
+        }),
+        analyticsService.getRetention(propertyId, rangeDays).catch(err => {
+          console.warn('[Analytics] retention failed:', err?.response?.data || err?.message);
+          return null;
+        }),
       ]);
       if (token !== loadTokenRef.current) return;
       setOverview(o.overview);
@@ -232,6 +249,8 @@ const Analytics = () => {
       setPurchaseStartedBreakdown(psb?.purchaseStartedBreakdown || null);
       setPurchaseBreakdown(pb2?.purchaseBreakdown || null);
       setSubscriptionState(ss?.subscriptionState || null);
+      setUsageFunnel(uf?.usageFunnel || null);
+      setRetention(ret?.retention || null);
     } catch (err) {
       if (token !== loadTokenRef.current) return;
       const status = err.response?.status;
@@ -444,6 +463,10 @@ const Analytics = () => {
             subscriptionState={subscriptionState}
             loading={loadingReports}
           />
+
+          <UsageFunnelSection usageFunnel={usageFunnel} loading={loadingReports} />
+
+          <RetentionSection retention={retention} loading={loadingReports} />
 
           {events.highlighted && events.highlighted.length > 0 && (
             <HighlightedEvents events={events.highlighted} />
@@ -1068,6 +1091,192 @@ const FunnelSection = ({ inAppFunnel, planBreakdown, purchaseStartedBreakdown, p
             purchaseStartedBreakdown={purchaseStartedBreakdown}
             purchaseBreakdown={purchaseBreakdown}
           />
+        </div>
+      </Section>
+    </div>
+  );
+};
+
+// Product-usage funnel — "did people actually use the thing they installed?"
+//
+// Independent of the paid-conversion funnel above. The last step accepts
+// EITHER report_shared OR photo_export (backend ORs them inside the step
+// filter, so numbers reflect either signal counting toward "shared").
+//
+// Visual pattern mirrors FunnelSection: horizontal bars, %-of-leads label,
+// drop-off %, raw-vs-sequential comparison. Fewer features (no plan
+// breakdowns) because usage steps don't have per-plan dimensions attached.
+const UsageFunnelSection = ({ usageFunnel, loading }) => {
+  const funnel = usageFunnel?.funnel || null;
+  const source = usageFunnel?.source;
+  const fallbackReason = usageFunnel?.fallbackReason;
+  const subtitle = source === 'v1beta_fallback' ? (
+    <>
+      <span className="text-amber-600">Approximate (fallback)</span> — GA4 runFunnelReport unavailable:{' '}
+      <span className="font-mono">{fallbackReason || 'error'}</span>. Numbers are per-step distinct users, not strict sequential drop-off.
+    </>
+  ) : (
+    'Ordered — created project → added before/after → made comparison → shared. Real drop-off via GA4 runFunnelReport.'
+  );
+  if (loading) {
+    return (
+      <div className="mt-6">
+        <Section title="Product-Usage Funnel" subtitle={subtitle}>
+          <TableLoading />
+        </Section>
+      </div>
+    );
+  }
+  if (!funnel || funnel.length === 0) {
+    return (
+      <div className="mt-6">
+        <Section title="Product-Usage Funnel" subtitle={subtitle}>
+          <TableEmpty />
+        </Section>
+      </div>
+    );
+  }
+  const topUsers = Number(funnel[0]?.users || 0);
+  return (
+    <div className="mt-6">
+      <Section title="Product-Usage Funnel" subtitle={subtitle}>
+        <div className="p-4 space-y-3">
+          {funnel.map((stage, i) => {
+            const users = Number(stage.users || 0);
+            const prevUsers = i === 0 ? users : Number(funnel[i - 1]?.users || 0);
+            const pctOfLead = topUsers > 0 ? users / topUsers : 0;
+            const dropOff = i === 0 ? 0 : Math.max(0, prevUsers > 0 ? 1 - users / prevUsers : 0);
+            const barPct = Math.max(pctOfLead * 100, 0.5);
+            return (
+              <div key={stage.key}>
+                <div className="flex items-center justify-between text-sm gap-2">
+                  <div className="flex items-baseline gap-2 min-w-0">
+                    <span className="text-gray-800 font-medium">{stage.label}</span>
+                    {stage.event && (
+                      <span
+                        className="text-xs text-gray-400 font-mono truncate"
+                        title={stage.event}
+                      >
+                        · {stage.event}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-3 text-xs flex-shrink-0">
+                    <span className="font-semibold text-gray-900 tabular-nums">
+                      {fmtInt(users)}
+                    </span>
+                    {stage.rawUsers != null && stage.rawUsers !== users && (
+                      <span
+                        className="text-gray-400 tabular-nums"
+                        title="Users who fired this event in the period, ignoring funnel order. Difference vs. sequential means users hit the event out of sequence."
+                      >
+                        (raw {fmtInt(stage.rawUsers)})
+                      </span>
+                    )}
+                    <span className="text-gray-500 tabular-nums">
+                      {fmtPercent(pctOfLead)} of starters
+                    </span>
+                    {i > 0 && (
+                      <span
+                        className={`tabular-nums ${dropOff > 0 ? 'text-red-500' : 'text-gray-400'}`}
+                        title={`Drop-off from ${funnel[i - 1].label}`}
+                      >
+                        ↓ {fmtPercent(dropOff)}
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div className="mt-1 h-2 bg-gray-100 rounded">
+                  <div
+                    className="h-2 bg-primary-500 rounded transition-all"
+                    style={{ width: `${barPct}%` }}
+                  />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </Section>
+    </div>
+  );
+};
+
+// Retention cohort — D1 / D7 / D30 return rates for users who first-touched
+// in the selected window. Each tile shows:
+//   - Day label (D1 / D7 / D30)
+//   - Returning user count
+//   - Return rate as % of cohort size
+//
+// The backend only populates offsets strictly smaller than the window
+// (90-day → all three, 30-day → D1+D7, 7-day → D1 only), so the number of
+// tiles grows with the picker. Note under the tiles explains why.
+const RetentionSection = ({ retention, loading }) => {
+  const subtitle = 'Of new users in this window, how many came back on day 1 / 7 / 30 — GA4 cohort report.';
+  if (loading) {
+    return (
+      <div className="mt-6">
+        <Section title="Retention" subtitle={subtitle}>
+          <TableLoading />
+        </Section>
+      </div>
+    );
+  }
+  if (!retention) {
+    return (
+      <div className="mt-6">
+        <Section title="Retention" subtitle={subtitle}>
+          <TableEmpty />
+        </Section>
+      </div>
+    );
+  }
+  if (retention.error) {
+    return (
+      <div className="mt-6">
+        <Section title="Retention" subtitle={subtitle}>
+          <div className="p-4 text-sm text-red-600">
+            Retention report failed: <span className="font-mono text-xs">{retention.error}</span>
+          </div>
+        </Section>
+      </div>
+    );
+  }
+  const points = retention.points || [];
+  const cohortSize = Number(retention.cohortSize || 0);
+  return (
+    <div className="mt-6">
+      <Section title="Retention" subtitle={subtitle}>
+        <div className="p-4">
+          <div className="text-xs text-gray-500 mb-3">
+            Cohort size: <span className="font-semibold text-gray-800 tabular-nums">{fmtInt(cohortSize)}</span>{' '}
+            new users first-opened in the last {retention.rangeDays} days.
+          </div>
+          {points.length === 0 ? (
+            <div className="text-sm text-gray-500">
+              {retention.note || 'No retention data available for this window.'}
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              {points.map(p => (
+                <div key={p.day} className="bg-gray-50 border border-gray-200 rounded-md p-4">
+                  <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+                    Day {p.day} return
+                  </div>
+                  <div className="mt-2 text-2xl font-semibold text-gray-900 tabular-nums">
+                    {fmtPercent(p.rate)}
+                  </div>
+                  <div className="mt-1 text-xs text-gray-500 tabular-nums">
+                    {fmtInt(p.users)} of {fmtInt(cohortSize)} users came back
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          {points.length < 3 && (
+            <div className="text-xs text-gray-400 mt-3">
+              Pick a longer date range to see later retention points. D7 needs 30-day, D30 needs 90-day.
+            </div>
+          )}
         </div>
       </Section>
     </div>

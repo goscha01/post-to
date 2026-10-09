@@ -558,6 +558,188 @@ function describeStep(step) {
   return step.eventName || '(unknown)';
 }
 
+// ---------- Usage funnel ----------
+//
+// The "what did people actually do in the app" journey, independent of the
+// paid-conversion funnel above. Each step is one of the dedicated events
+// fired from proof-pix-native/src/utils/analytics.js. The last step accepts
+// EITHER report_shared OR photo_export (both are legitimate "the user sent
+// the result somewhere" signals) via funnelFieldFilter + inListFilter.
+const USAGE_FUNNEL_STEPS = [
+  { key: 'project_created',  label: 'Created project',    eventNames: ['project_created'] },
+  { key: 'before_photo',     label: 'Added before photo', eventNames: ['before_photo_started'] },
+  { key: 'after_photo',      label: 'Added after photo',  eventNames: ['after_photo_completed'] },
+  { key: 'comparison',       label: 'Made comparison',    eventNames: ['collage_completed'] },
+  { key: 'shared',           label: 'Shared result',      eventNames: ['report_shared', 'photo_export'] },
+];
+
+function usageStepFilter(step) {
+  return {
+    funnelFieldFilter: {
+      fieldName: 'eventName',
+      inListFilter: { values: step.eventNames },
+    },
+  };
+}
+
+async function getUsageFunnel(accessToken, propertyId, days) {
+  const rangeDays = Math.max(1, Math.min(365, parseInt(days, 10) || 30));
+  const auth = oauthClientFor(accessToken);
+  const body = {
+    dateRanges: dateRangeFromDays(days),
+    funnel: {
+      isOpenFunnel: false,
+      steps: USAGE_FUNNEL_STEPS.map(s => ({
+        name: s.label,
+        filterExpression: usageStepFilter(s),
+      })),
+    },
+  };
+  const url = `https://analyticsdata.googleapis.com/v1alpha/properties/${propertyId}:runFunnelReport`;
+
+  const allEventNames = [...new Set(USAGE_FUNNEL_STEPS.flatMap(s => s.eventNames))];
+  const rawEventsPromise = runReport(accessToken, propertyId, {
+    dateRanges: dateRangeFromDays(days),
+    dimensions: [{ name: 'eventName' }],
+    metrics: [{ name: 'activeUsers' }],
+    dimensionFilter: {
+      filter: {
+        fieldName: 'eventName',
+        inListFilter: { values: allEventNames },
+      },
+    },
+  }).catch(err => {
+    logger.warn('analytics.usage_funnel.raw_events_failed', { message: err.message });
+    return null;
+  });
+
+  // Multi-event steps don't have a cheap "distinct users across any of these
+  // events" number from the per-event-grouped raw query. Report MAX of the
+  // per-event counts — a lower bound on true distinct users. Only matters
+  // for the fallback path; runFunnelReport handles the union correctly.
+  const rawUsersFor = (step, byEvent) => {
+    const counts = step.eventNames.map(e => byEvent.get(e) ?? 0);
+    const positive = counts.filter(n => n > 0);
+    if (positive.length === 0) return null;
+    return Math.max(...positive);
+  };
+
+  try {
+    const [{ data: response }, rawEventsRes] = await Promise.all([
+      auth.request({ url, method: 'POST', data: body }),
+      rawEventsPromise,
+    ]);
+    const rows = response?.funnelTable?.rows || [];
+    if (rows.length !== USAGE_FUNNEL_STEPS.length) {
+      logger.warn('analytics.usage_funnel.row_count_mismatch', {
+        expected: USAGE_FUNNEL_STEPS.length,
+        got: rows.length,
+      });
+    }
+    const rawByEvent = rawEventsRes
+      ? new Map(shapeReport(rawEventsRes).rows.map(r => [r.eventName, Number(r.activeUsers || 0)]))
+      : new Map();
+    const funnel = USAGE_FUNNEL_STEPS.map((s, idx) => ({
+      key: s.key,
+      label: s.label,
+      users: Number(rows[idx]?.metricValues?.[0]?.value || 0),
+      rawUsers: rawUsersFor(s, rawByEvent),
+      event: s.eventNames.join(' | '),
+    }));
+    return { funnel, source: 'runFunnelReport', rangeDays };
+  } catch (err) {
+    const errorData = err?.response?.data;
+    const errorMessage = errorData?.error?.message || err?.message || 'unknown';
+    logger.error('analytics.usage_funnel.runFunnelReport_failed', {
+      propertyId,
+      days: rangeDays,
+      status: err?.response?.status || err?.status,
+      message: errorMessage,
+    });
+    const rawEventsRes = await rawEventsPromise;
+    const byEvent = rawEventsRes
+      ? new Map(shapeReport(rawEventsRes).rows.map(r => [r.eventName, Number(r.activeUsers || 0)]))
+      : new Map();
+    const funnel = USAGE_FUNNEL_STEPS.map(s => {
+      const users = rawUsersFor(s, byEvent) ?? 0;
+      return { key: s.key, label: s.label, users, rawUsers: users, event: s.eventNames.join(' | ') };
+    });
+    return {
+      funnel,
+      source: 'v1beta_fallback',
+      fallbackReason: errorMessage,
+      rangeDays,
+    };
+  }
+}
+
+// ---------- Retention cohort ----------
+//
+// Of users whose first_touch_date falls in the lookback window, how many
+// return on D1, D7, D30? Uses GA4's native cohort report (runReport +
+// cohortSpec) which handles the per-user-first-day arithmetic internally.
+//
+// We only include offsets strictly smaller than rangeDays — a user who
+// first-opened yesterday hasn't had 7 days to come back, so including D7
+// in a 7-day window would bias the rate from a single day of cohort.
+// For the three day ranges the UI offers:
+//   7-day  → D1 only
+//   30-day → D1, D7
+//   90-day → D1, D7, D30
+//
+// cohortNthDay comes back as a zero-padded 4-char string ("0001"); we
+// normalise to numeric before indexing.
+async function getRetention(accessToken, propertyId, days) {
+  const rangeDays = Math.max(1, Math.min(365, parseInt(days, 10) || 30));
+  const WANTED_OFFSETS = [1, 7, 30].filter(d => d < rangeDays);
+  if (WANTED_OFFSETS.length === 0) {
+    return { cohortSize: 0, points: [], rangeDays, note: 'Range too short for retention — pick 30+ days.' };
+  }
+  // GA4 DAILY cohortsRange is capped at 42.
+  const endOffset = Math.min(42, Math.max(...WANTED_OFFSETS));
+
+  try {
+    const response = await runReport(accessToken, propertyId, {
+      cohortSpec: {
+        cohorts: [{
+          name: 'all',
+          dateRange: { startDate: `${rangeDays}daysAgo`, endDate: 'today' },
+          dimension: 'firstTouchDate',
+        }],
+        cohortsRange: {
+          granularity: 'DAILY',
+          startOffset: 0,
+          endOffset,
+        },
+      },
+      dimensions: [{ name: 'cohort' }, { name: 'cohortNthDay' }],
+      metrics: [{ name: 'cohortActiveUsers' }],
+    });
+    const shaped = shapeReport(response);
+    const byDay = new Map();
+    for (const row of shaped.rows) {
+      const n = parseInt(row.cohortNthDay, 10);
+      if (Number.isFinite(n)) {
+        byDay.set(n, (byDay.get(n) || 0) + Number(row.cohortActiveUsers || 0));
+      }
+    }
+    const cohortSize = byDay.get(0) || 0;
+    const points = WANTED_OFFSETS.map(d => {
+      const users = byDay.get(d) || 0;
+      return {
+        day: d,
+        users,
+        rate: cohortSize > 0 ? users / cohortSize : 0,
+      };
+    });
+    return { cohortSize, points, rangeDays };
+  } catch (err) {
+    const message = err?.response?.data?.error?.message || err?.message || 'unknown';
+    logger.warn('analytics.retention.failed', { propertyId, message });
+    return { cohortSize: 0, points: [], error: message, rangeDays };
+  }
+}
+
 // Breakdown of a given event by plan_id + billing_period. Powers the
 // "which plan" sub-rows under the Selected a plan / Started purchase / Paid
 // funnel steps.
@@ -1016,6 +1198,8 @@ module.exports = {
   getEvents,
   getCampaigns,
   getInAppFunnel,
+  getUsageFunnel,
+  getRetention,
   getScreenViews,
   getPlanSelectedBreakdown,
   getPurchaseStartedBreakdown,

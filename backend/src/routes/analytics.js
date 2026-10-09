@@ -494,6 +494,8 @@ router.get('/campaigns',       reportHandler(analytics.getCampaigns,      'campa
 router.get('/devices',         reportHandler(analytics.getDevices,        'devices'));
 router.get('/geography',       reportHandler(analytics.getGeography,      'geography'));
 router.get('/in-app-funnel',   reportHandler(analytics.getInAppFunnel,    'inAppFunnel'));
+router.get('/usage-funnel',    reportHandler(analytics.getUsageFunnel,    'usageFunnel'));
+router.get('/retention',       reportHandler(analytics.getRetention,      'retention'));
 router.get('/screen-views',    reportHandler(analytics.getScreenViews,    'screenViews'));
 router.get('/plan-breakdown',           reportHandler(analytics.getPlanSelectedBreakdown,  'planBreakdown'));
 router.get('/purchase-started-breakdown', reportHandler(analytics.getPurchaseStartedBreakdown, 'purchaseStartedBreakdown'));
