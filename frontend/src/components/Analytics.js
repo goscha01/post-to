@@ -83,6 +83,10 @@ const Analytics = () => {
   // Retention cohort (D1 / D7 / D30 return rates). `null` before load,
   // `{ cohortSize, points: [{ day, users, rate }], rangeDays, note?, error? }`.
   const [retention, setRetention] = useState(null);
+  // Trial expiry projection — purchase_started event dates + 7-day Apple
+  // intro offer. `null` before load, `{ assumedTrialDays, totalEvents,
+  // earliest/latest start/expiry, byDay[] }` after.
+  const [trialExpiryEstimate, setTrialExpiryEstimate] = useState(null);
   // Per-plan breakdowns for the three paid-funnel events. `null` before load,
   // `{ rows, error }` after. `error` is set when the plan_id/billing_period
   // custom dims aren't registered in GA4 Admin, or (for the purchase events)
@@ -199,7 +203,7 @@ const Analytics = () => {
     // fail on properties that don't yet have any funnel-eligible data. Fetched
     // with .catch so a funnel failure doesn't blank out the whole dashboard.
     try {
-      const [o, t, l, e, c, d, g, f, pb, psb, pb2, ss, uf, ret] = await Promise.all([
+      const [o, t, l, e, c, d, g, f, pb, psb, pb2, ss, uf, ret, tee] = await Promise.all([
         analyticsService.getOverview(propertyId, rangeDays),
         analyticsService.getTraffic(propertyId, rangeDays),
         analyticsService.getLandingPages(propertyId, rangeDays),
@@ -235,6 +239,10 @@ const Analytics = () => {
           console.warn('[Analytics] retention failed:', err?.response?.data || err?.message);
           return null;
         }),
+        analyticsService.getTrialExpiryEstimate(propertyId, rangeDays).catch(err => {
+          console.warn('[Analytics] trial expiry estimate failed:', err?.response?.data || err?.message);
+          return null;
+        }),
       ]);
       if (token !== loadTokenRef.current) return;
       setOverview(o.overview);
@@ -251,6 +259,7 @@ const Analytics = () => {
       setSubscriptionState(ss?.subscriptionState || null);
       setUsageFunnel(uf?.usageFunnel || null);
       setRetention(ret?.retention || null);
+      setTrialExpiryEstimate(tee?.trialExpiryEstimate || null);
     } catch (err) {
       if (token !== loadTokenRef.current) return;
       const status = err.response?.status;
@@ -461,6 +470,7 @@ const Analytics = () => {
             purchaseStartedBreakdown={purchaseStartedBreakdown}
             purchaseBreakdown={purchaseBreakdown}
             subscriptionState={subscriptionState}
+            trialExpiryEstimate={trialExpiryEstimate}
             loading={loadingReports}
           />
 
@@ -972,7 +982,7 @@ const AdAttributionSection = ({ attribution, ascState }) => {
 // User info — ordered sequence inside the onboarding flow). Per-plan
 // breakdowns are rendered under the three paid-funnel events:
 // Selected a plan / Started purchase / Paid.
-const FunnelSection = ({ inAppFunnel, planBreakdown, purchaseStartedBreakdown, purchaseBreakdown, subscriptionState, loading }) => {
+const FunnelSection = ({ inAppFunnel, planBreakdown, purchaseStartedBreakdown, purchaseBreakdown, subscriptionState, trialExpiryEstimate, loading }) => {
   const funnel = inAppFunnel?.funnel || null;
   const source = inAppFunnel?.source;
   const fallbackReason = inAppFunnel?.fallbackReason;
@@ -1088,8 +1098,10 @@ const FunnelSection = ({ inAppFunnel, planBreakdown, purchaseStartedBreakdown, p
           <SubscriptionStateSection
             subscriptionState={subscriptionState}
             funnel={funnel}
+            planBreakdown={planBreakdown}
             purchaseStartedBreakdown={purchaseStartedBreakdown}
             purchaseBreakdown={purchaseBreakdown}
+            trialExpiryEstimate={trialExpiryEstimate}
           />
         </div>
       </Section>
@@ -1293,15 +1305,17 @@ const RetentionSection = ({ retention, loading }) => {
 // Prefers real Apple-notification data when the webhook has ingested events, falls
 // back to the arithmetic GA4 estimate otherwise. Keeps a single visual slot
 // in the UI so there's no layout shift when RC comes online.
-const SubscriptionStateSection = ({ subscriptionState, funnel, purchaseStartedBreakdown, purchaseBreakdown }) => {
+const SubscriptionStateSection = ({ subscriptionState, funnel, planBreakdown, purchaseStartedBreakdown, purchaseBreakdown, trialExpiryEstimate }) => {
   if (subscriptionState?.available) {
     return <SubscriptionStateLive subscriptionState={subscriptionState} />;
   }
   return (
     <InTrialEstimate
       funnel={funnel}
+      planBreakdown={planBreakdown}
       purchaseStartedBreakdown={purchaseStartedBreakdown}
       purchaseBreakdown={purchaseBreakdown}
+      trialExpiryEstimate={trialExpiryEstimate}
       unavailableReason={subscriptionState?.reason}
     />
   );
@@ -1465,7 +1479,7 @@ const PostTrialBucket = ({ label, bucket, total, tone }) => {
 //
 // Real "who's trialing right now" requires Apple-notification ingestion — this is
 // only an estimate from GA4 event counts. Labelled accordingly.
-const InTrialEstimate = ({ funnel, purchaseStartedBreakdown, purchaseBreakdown, unavailableReason }) => {
+const InTrialEstimate = ({ funnel, planBreakdown, purchaseStartedBreakdown, purchaseBreakdown, trialExpiryEstimate, unavailableReason }) => {
   if (!funnel) return null;
   const started = funnel.find(s => s.key === 'purchase_start');
   const paid = funnel.find(s => s.key === 'paid');
@@ -1487,6 +1501,16 @@ const InTrialEstimate = ({ funnel, purchaseStartedBreakdown, purchaseBreakdown, 
     };
   }).filter(r => r.users > 0);
 
+  // Starter (free tier) users — sourced from plan_selected breakdown, since
+  // starter never fires purchase_started (iapService short-circuits for the
+  // free tier). Rendered as a separate "on free tier" row below the paid-
+  // trial breakdown so it doesn't claim to be "in trial" semantically.
+  const starterUsers = (planBreakdown?.rows || [])
+    .filter(r => r.plan === 'starter')
+    .reduce((a, b) => a + Number(b.users || 0), 0);
+
+  const expiry = trialExpiryEstimate && trialExpiryEstimate.totalEvents > 0 ? trialExpiryEstimate : null;
+
   return (
     <div className="mt-4 pt-4 border-t border-gray-200">
       <div className="flex items-baseline justify-between gap-2">
@@ -1503,6 +1527,18 @@ const InTrialEstimate = ({ funnel, purchaseStartedBreakdown, purchaseBreakdown, 
             ? <>Subscription webhook configured but no events ingested yet. Live trial sections will appear once the first Apple S2S notification arrives (requires a sandbox purchase in TestFlight or any real App Store purchase).</>
             : <>Approximation — includes users still actively trialing, canceled trials, and payment failures. The live "who's trialing right now" view requires proof-pix-proxy's Apple webhook handler to forward events here (not yet wired).</>}
       </p>
+      {expiry && (
+        <div className="mt-2 flex items-baseline gap-2 text-[11px] text-gray-600">
+          <span className="font-medium">Expected trial expiry:</span>
+          <span className="font-mono tabular-nums">
+            {expiry.earliestExpectedExpiry}
+            {expiry.earliestExpectedExpiry !== expiry.latestExpectedExpiry && <> → {expiry.latestExpectedExpiry}</>}
+          </span>
+          <span className="text-gray-400">
+            (started between {expiry.earliestStartDate} and {expiry.latestStartDate}, +{expiry.assumedTrialDays}-day Apple intro)
+          </span>
+        </div>
+      )}
       {perPlan.length > 0 && (
         <div className="mt-2 ml-4 pl-3 border-l-2 border-gray-100 space-y-1">
           {perPlan.map((r, i) => (
@@ -1524,6 +1560,21 @@ const InTrialEstimate = ({ funnel, purchaseStartedBreakdown, purchaseBreakdown, 
           {' '}to <code className="text-[10px] px-1 bg-amber-50 rounded">purchase_started</code> and <code className="text-[10px] px-1 bg-amber-50 rounded">purchase</code> events yet.
           Once it does, this row will split by plan.
         </p>
+      )}
+      {starterUsers > 0 && (
+        <div className="mt-3 pt-3 border-t border-gray-100 flex items-baseline justify-between gap-2 text-xs">
+          <div className="flex items-baseline gap-2 min-w-0">
+            <span className="text-gray-600">On free tier</span>
+            <span className="text-[10px] text-gray-400 font-mono">starter</span>
+            <span
+              className="text-[10px] text-gray-400"
+              title="Starter is the free tier — users on it never fire purchase_started, so they're not in trial. Count sourced from plan_selected events."
+            >
+              not in trial — on free plan
+            </span>
+          </div>
+          <span className="tabular-nums text-gray-800">{fmtInt(starterUsers)} users</span>
+        </div>
       )}
     </div>
   );

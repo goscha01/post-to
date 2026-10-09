@@ -131,6 +131,19 @@ const getPurchaseBreakdown = async (propertyId, days) => {
   return res.data;
 };
 
+// Rough per-day trial-start projection — purchase_started events bucketed by
+// date with an assumed 7-day Apple intro offer added. Returns:
+//   { trialExpiryEstimate: {
+//       assumedTrialDays, totalEvents,
+//       earliestStartDate, latestStartDate,
+//       earliestExpectedExpiry, latestExpectedExpiry,
+//       byDay: [{ startDate, expectedExpiry, eventCount, users }],
+//   } }
+const getTrialExpiryEstimate = async (propertyId, days) => {
+  const res = await axios.get('/api/analytics/trial-expiry-estimate', withPropertyDays(propertyId, days));
+  return res.data;
+};
+
 // Real subscription state from Apple S2S notifications (forwarded by
 // proof-pix-proxy to our /api/webhooks/subscription-event endpoint). Returns:
 //   { days, subscriptionState: {
@@ -213,6 +226,7 @@ const analyticsService = {
   getPlanBreakdown,
   getPurchaseStartedBreakdown,
   getPurchaseBreakdown,
+  getTrialExpiryEstimate,
   getSubscriptionState,
   listAscConnections,
   getAscInstallFunnel,

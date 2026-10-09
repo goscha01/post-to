@@ -500,6 +500,7 @@ router.get('/screen-views',    reportHandler(analytics.getScreenViews,    'scree
 router.get('/plan-breakdown',           reportHandler(analytics.getPlanSelectedBreakdown,  'planBreakdown'));
 router.get('/purchase-started-breakdown', reportHandler(analytics.getPurchaseStartedBreakdown, 'purchaseStartedBreakdown'));
 router.get('/purchase-breakdown',       reportHandler(analytics.getPurchaseBreakdown,      'purchaseBreakdown'));
+router.get('/trial-expiry-estimate',    reportHandler(analytics.getTrialExpiryEstimate,    'trialExpiryEstimate'));
 
 // Real subscription state (Apple S2S backed, forwarded by proof-pix-proxy).
 // Replaces the arithmetic "In trial / incomplete purchase (est.)" estimate

@@ -369,11 +369,14 @@ async function getEvents(accessToken, propertyId, days) {
 //      'first_load' → navScreen: 'first_load' (and update stepFilter /
 //      screenViewFilter to use eventParameterName: 'nav_screen').
 const IN_APP_FUNNEL_STEPS = [
-  { key: 'first_open',      label: 'First open',       eventName: 'first_open' },
-  // { key: 'first_load',           label: 'First load',       eventName: 'screen_view', screenName: 'first_load' },
-  // { key: 'onboarding_welcome',   label: 'Welcome',          eventName: 'screen_view', screenName: 'onboarding_welcome' },
-  // { key: 'onboarding_user_info', label: 'User info (name focus)', eventName: 'screen_view', screenName: 'onboarding_user_info' },
-  { key: 'onboarding_done', label: 'Onboarding done',  eventName: 'onboarding_completed' },
+  { key: 'first_open',           label: 'First open',             eventName: 'first_open' },
+  // first_load screen step still commented out — no logScreenView('first_load')
+  // call in proof-pix-native, so it never fires. The two below DO fire from
+  // FirstLoadScreen.js (lines 108 + 348). nav_screen custom dim is auto-
+  // registered via AUTO_REGISTER_CUSTOM_DIMS so screenViewFilter resolves.
+  { key: 'onboarding_welcome',   label: 'Welcome',                eventName: 'screen_view', screenName: 'onboarding_welcome' },
+  { key: 'onboarding_user_info', label: 'User info (name focus)', eventName: 'screen_view', screenName: 'onboarding_user_info' },
+  { key: 'onboarding_done',      label: 'Onboarding done',        eventName: 'onboarding_completed' },
   { key: 'paywall',         label: 'Saw paywall',      eventName: 'paywall_view' },
   { key: 'plan_selected',   label: 'Selected a plan',  eventName: 'plan_selected' },
   { key: 'purchase_start',  label: 'Started purchase', eventName: 'purchase_started' },
@@ -821,6 +824,82 @@ async function getPurchaseBreakdown(accessToken, propertyId, days) {
   return getPlanBreakdownForEvent(accessToken, propertyId, days, 'purchase');
 }
 
+// Trial expiry estimate — projects when the trials in flight are expected to
+// end, based on when their `purchase_started` events fired. Groups events by
+// day via GA4's `date` dimension, then adds the standard Apple intro-offer
+// window (7 days) to earliest/latest start dates to bracket the expiry range.
+//
+// Rough approximation: assumes every started purchase is a trial (not an
+// immediate-pay purchase) and uses a single trial length. Real per-user
+// expiry only becomes available once the Apple S2S webhook starts ingesting
+// — see subscriptionStateService.trial_states. Clearly labelled "est." in
+// the UI so nobody treats these as per-user truth.
+const ASSUMED_TRIAL_DAYS = 7;
+async function getTrialExpiryEstimate(accessToken, propertyId, days) {
+  const rangeDays = Math.max(1, Math.min(365, parseInt(days, 10) || 30));
+  try {
+    const response = await runReport(accessToken, propertyId, {
+      dateRanges: dateRangeFromDays(days),
+      dimensions: [{ name: 'date' }],
+      metrics: [{ name: 'eventCount' }, { name: 'activeUsers' }],
+      dimensionFilter: {
+        filter: {
+          fieldName: 'eventName',
+          stringFilter: { matchType: 'EXACT', value: 'purchase_started' },
+        },
+      },
+      orderBys: [{ dimension: { dimensionName: 'date' }, desc: false }],
+      limit: 400,
+    });
+    const shaped = shapeReport(response);
+    const rows = shaped.rows
+      .map(r => ({
+        date: r.date,
+        eventCount: Number(r.eventCount || 0),
+        users: Number(r.activeUsers || 0),
+      }))
+      .filter(r => r.eventCount > 0);
+
+    if (rows.length === 0) {
+      return { assumedTrialDays: ASSUMED_TRIAL_DAYS, rangeDays, totalEvents: 0, byDay: [] };
+    }
+
+    const ymd = (yyyymmdd) =>
+      `${yyyymmdd.slice(0, 4)}-${yyyymmdd.slice(4, 6)}-${yyyymmdd.slice(6, 8)}`;
+    const addDays = (dateStr, n) => {
+      const d = new Date(dateStr);
+      d.setUTCDate(d.getUTCDate() + n);
+      return d.toISOString().slice(0, 10);
+    };
+
+    const byDay = rows.map(r => {
+      const startDate = ymd(r.date);
+      return {
+        startDate,
+        expectedExpiry: addDays(startDate, ASSUMED_TRIAL_DAYS),
+        eventCount: r.eventCount,
+        users: r.users,
+      };
+    });
+    const totalEvents = byDay.reduce((a, b) => a + b.eventCount, 0);
+
+    return {
+      assumedTrialDays: ASSUMED_TRIAL_DAYS,
+      rangeDays,
+      totalEvents,
+      earliestStartDate: byDay[0].startDate,
+      latestStartDate: byDay[byDay.length - 1].startDate,
+      earliestExpectedExpiry: byDay[0].expectedExpiry,
+      latestExpectedExpiry: byDay[byDay.length - 1].expectedExpiry,
+      byDay,
+    };
+  } catch (err) {
+    const message = err?.response?.data?.error?.message || err?.message || 'unknown';
+    logger.warn('analytics.trial_expiry_estimate.failed', { propertyId, message });
+    return { assumedTrialDays: ASSUMED_TRIAL_DAYS, rangeDays, totalEvents: 0, byDay: [], error: message };
+  }
+}
+
 // Distinct users per screen (via GA4's built-in `screenName` dimension).
 // Used by the frontend to render screen-level sub-steps under each in-app
 // funnel step — the classic "which onboarding screen do people leak on".
@@ -1223,6 +1302,7 @@ module.exports = {
   getPlanSelectedBreakdown,
   getPurchaseStartedBreakdown,
   getPurchaseBreakdown,
+  getTrialExpiryEstimate,
   markConversionEvent,
   listConversionEvents,
   listCustomDimensions,
