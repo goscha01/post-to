@@ -1249,7 +1249,13 @@ const RetentionSection = ({ retention, loading }) => {
         <div className="p-4">
           <div className="text-xs text-gray-500 mb-3">
             Cohort size: <span className="font-semibold text-gray-800 tabular-nums">{fmtInt(cohortSize)}</span>{' '}
-            new users first-opened in the last {retention.rangeDays} days.
+            new users first-opened
+            {retention.cohortStart && retention.cohortEnd ? (
+              <> between <span className="font-mono">{retention.cohortStart}</span> and <span className="font-mono">{retention.cohortEnd}</span>.</>
+            ) : (
+              <> in the last {retention.rangeDays} days.</>
+            )}
+            {' '}The window ends before today so every member has had time to reach the longest offset.
           </div>
           {points.length === 0 ? (
             <div className="text-sm text-gray-500">

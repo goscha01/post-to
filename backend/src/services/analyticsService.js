@@ -698,12 +698,25 @@ async function getRetention(accessToken, propertyId, days) {
   // GA4 DAILY cohortsRange is capped at 42.
   const endOffset = Math.min(42, Math.max(...WANTED_OFFSETS));
 
+  // cohortSpec.dateRange rejects the "NdaysAgo" / "today" shortcuts that regular
+  // dateRanges accept — it requires absolute YYYY-MM-DD. Also: the cohort window
+  // must END far enough in the past for every member to have had `endOffset`
+  // days to come back. Otherwise members from the latest cohort day have no
+  // chance to contribute to the final retention point and the rate skews low.
+  // So we end the cohort `endOffset` days before today and start another
+  // `rangeDays` before that.
+  const ymd = (d) => d.toISOString().slice(0, 10);
+  const cohortEnd = new Date();
+  cohortEnd.setUTCDate(cohortEnd.getUTCDate() - endOffset);
+  const cohortStart = new Date(cohortEnd);
+  cohortStart.setUTCDate(cohortStart.getUTCDate() - rangeDays);
+
   try {
     const response = await runReport(accessToken, propertyId, {
       cohortSpec: {
         cohorts: [{
           name: 'all',
-          dateRange: { startDate: `${rangeDays}daysAgo`, endDate: 'today' },
+          dateRange: { startDate: ymd(cohortStart), endDate: ymd(cohortEnd) },
           dimension: 'firstTouchDate',
         }],
         cohortsRange: {
@@ -732,7 +745,13 @@ async function getRetention(accessToken, propertyId, days) {
         rate: cohortSize > 0 ? users / cohortSize : 0,
       };
     });
-    return { cohortSize, points, rangeDays };
+    return {
+      cohortSize,
+      points,
+      rangeDays,
+      cohortStart: ymd(cohortStart),
+      cohortEnd: ymd(cohortEnd),
+    };
   } catch (err) {
     const message = err?.response?.data?.error?.message || err?.message || 'unknown';
     logger.warn('analytics.retention.failed', { propertyId, message });
