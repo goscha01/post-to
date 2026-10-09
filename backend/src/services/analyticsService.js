@@ -570,15 +570,35 @@ function describeStep(step) {
 //
 // The "what did people actually do in the app" journey, independent of the
 // paid-conversion funnel above. Each step is one of the dedicated events
-// fired from proof-pix-native/src/utils/analytics.js. The last step accepts
-// EITHER report_shared OR photo_export (both are legitimate "the user sent
-// the result somewhere" signals) via funnelFieldFilter + inListFilter.
+// fired from proof-pix-native/src/utils/analytics.js.
+//
+// Editor usage: no dedicated "editor_opened" event exists on mobile
+// (PhotoEditorScreen.js has no analytics instrumentation), so we proxy
+// editor engagement with label_customization OR voice_note_used — the two
+// concrete interactions a user can perform inside the editor. photo_save
+// alone wouldn't be enough: it fires even when no editing was done.
+//
+// Reports: report_created fires when the user generates a report;
+// report_shared fires when they actually send it. photo_export is a
+// separate output path (export the composed photo rather than a report),
+// kept as its own step so "shared report" vs "exported photo" are
+// countable independently.
+//
+// Runs with isOpenFunnel: true (see getUsageFunnel). Several steps —
+// editor, report, share, export — are OPTIONAL branches of the user
+// journey, not strict-ordered prerequisites. Open funnel counts each
+// step's distinct users independently, so a user who exported without
+// sharing still appears in "Exported photo". Strict ordering would
+// collapse every non-happy-path user to 0 at the first branch.
 const USAGE_FUNNEL_STEPS = [
   { key: 'project_created',  label: 'Created project',    eventNames: ['project_created'] },
   { key: 'before_photo',     label: 'Added before photo', eventNames: ['before_photo_started'] },
   { key: 'after_photo',      label: 'Added after photo',  eventNames: ['after_photo_completed'] },
+  { key: 'editor_usage',     label: 'Used editor',        eventNames: ['label_customization', 'voice_note_used'] },
   { key: 'comparison',       label: 'Made comparison',    eventNames: ['collage_completed'] },
-  { key: 'shared',           label: 'Shared result',      eventNames: ['report_shared', 'photo_export'] },
+  { key: 'report_created',   label: 'Created report',     eventNames: ['report_created'] },
+  { key: 'report_shared',    label: 'Shared report',      eventNames: ['report_shared'] },
+  { key: 'photo_exported',   label: 'Exported photo',     eventNames: ['photo_export'] },
 ];
 
 function usageStepFilter(step) {
@@ -596,7 +616,11 @@ async function getUsageFunnel(accessToken, propertyId, days) {
   const body = {
     dateRanges: dateRangeFromDays(days),
     funnel: {
-      isOpenFunnel: false,
+      // Open funnel: optional steps (editor, report, share, export) can be
+      // skipped. A user who exported without creating a report still
+      // counts for "Exported photo". Strict ordering would 0-out every
+      // branch after the first optional step.
+      isOpenFunnel: true,
       steps: USAGE_FUNNEL_STEPS.map(s => ({
         name: s.label,
         filterExpression: usageStepFilter(s),

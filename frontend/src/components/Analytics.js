@@ -1128,7 +1128,7 @@ const UsageFunnelSection = ({ usageFunnel, loading }) => {
       <span className="font-mono">{fallbackReason || 'error'}</span>. Numbers are per-step distinct users, not strict sequential drop-off.
     </>
   ) : (
-    'Ordered — created project → added before/after → made comparison → shared. Real drop-off via GA4 runFunnelReport.'
+    'Open — each step counts distinct users independently. Optional branches (editor, report, share, export) don\'t drop later steps. Drop-off % is diff vs. previous row for context, not strict ordering.'
   );
   if (loading) {
     return (
