@@ -1528,15 +1528,35 @@ const InTrialEstimate = ({ funnel, planBreakdown, purchaseStartedBreakdown, purc
             : <>Approximation — includes users still actively trialing, canceled trials, and payment failures. The live "who's trialing right now" view requires proof-pix-proxy's Apple webhook handler to forward events here (not yet wired).</>}
       </p>
       {expiry && (
-        <div className="mt-2 flex items-baseline gap-2 text-[11px] text-gray-600">
-          <span className="font-medium">Expected trial expiry:</span>
-          <span className="font-mono tabular-nums">
-            {expiry.earliestExpectedExpiry}
-            {expiry.earliestExpectedExpiry !== expiry.latestExpectedExpiry && <> → {expiry.latestExpectedExpiry}</>}
-          </span>
-          <span className="text-gray-400">
-            (started between {expiry.earliestStartDate} and {expiry.latestStartDate}, +{expiry.assumedTrialDays}-day Apple intro)
-          </span>
+        <div className="mt-2">
+          <div className="flex items-baseline justify-between gap-2 text-[11px] text-gray-600">
+            <span className="font-medium">Expected trial expiries</span>
+            <span className="text-gray-400">
+              purchase_started date + {expiry.assumedTrialDays}-day Apple intro
+            </span>
+          </div>
+          <div className="mt-1 ml-4 pl-3 border-l-2 border-gray-100">
+            {/* Sort by expected expiry ASC — soonest to expire first (most
+                actionable: those users will convert or churn imminently). */}
+            {[...expiry.byDay]
+              .sort((a, b) => a.expectedExpiry.localeCompare(b.expectedExpiry))
+              .map((d, i) => (
+                <div key={d.startDate + i} className="flex items-baseline justify-between gap-3 text-[11px]">
+                  <div className="flex items-baseline gap-2 min-w-0">
+                    <span className="font-mono tabular-nums text-gray-800">{d.expectedExpiry}</span>
+                    <span className="text-gray-400 text-[10px]">
+                      ← started {d.startDate}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-3 flex-shrink-0 text-gray-600">
+                    <span className="tabular-nums">{fmtInt(d.users)} user{d.users === 1 ? '' : 's'}</span>
+                    {d.eventCount !== d.users && (
+                      <span className="tabular-nums text-gray-400">{fmtInt(d.eventCount)} taps</span>
+                    )}
+                  </div>
+                </div>
+              ))}
+          </div>
         </div>
       )}
       {perPlan.length > 0 && (
