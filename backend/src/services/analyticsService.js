@@ -369,14 +369,19 @@ async function getEvents(accessToken, propertyId, days) {
 //      'first_load' → navScreen: 'first_load' (and update stepFilter /
 //      screenViewFilter to use eventParameterName: 'nav_screen').
 const IN_APP_FUNNEL_STEPS = [
-  { key: 'first_open',           label: 'First open',             eventName: 'first_open' },
-  // first_load screen step still commented out — no logScreenView('first_load')
-  // call in proof-pix-native, so it never fires. The two below DO fire from
-  // FirstLoadScreen.js (lines 108 + 348). nav_screen custom dim is auto-
-  // registered via AUTO_REGISTER_CUSTOM_DIMS so screenViewFilter resolves.
-  { key: 'onboarding_welcome',   label: 'Welcome',                eventName: 'screen_view', screenName: 'onboarding_welcome' },
-  { key: 'onboarding_user_info', label: 'User info (name focus)', eventName: 'screen_view', screenName: 'onboarding_user_info' },
-  { key: 'onboarding_done',      label: 'Onboarding done',        eventName: 'onboarding_completed' },
+  { key: 'first_open',      label: 'First open',       eventName: 'first_open' },
+  // Onboarding screen_view steps stay commented out. They were re-enabled in
+  // b87d0f0 (mobile fires logScreenView with nav_screen= from FirstLoadScreen),
+  // then re-reverted after the strict funnel cascaded to 0 on the paid steps:
+  // nav_screen custom dim wasn't registered on the already-connected property
+  // (AUTO_REGISTER_CUSTOM_DIMS only runs on fresh connect), so GA4 found no
+  // matching screen_view events and strict ordering collapsed everything
+  // downstream. To re-enable: either (a) run ensurePostToCustomDimensions
+  // once against the live property via a backfill script, or (b) switch the
+  // paid funnel to isOpenFunnel: true so empty steps don't cascade.
+  // { key: 'onboarding_welcome',   label: 'Welcome',          eventName: 'screen_view', screenName: 'onboarding_welcome' },
+  // { key: 'onboarding_user_info', label: 'User info (name focus)', eventName: 'screen_view', screenName: 'onboarding_user_info' },
+  { key: 'onboarding_done', label: 'Onboarding done',  eventName: 'onboarding_completed' },
   { key: 'paywall',         label: 'Saw paywall',      eventName: 'paywall_view' },
   { key: 'plan_selected',   label: 'Selected a plan',  eventName: 'plan_selected' },
   { key: 'purchase_start',  label: 'Started purchase', eventName: 'purchase_started' },
